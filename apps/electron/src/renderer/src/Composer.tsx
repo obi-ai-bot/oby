@@ -30,7 +30,8 @@ import TaskChips from './TaskChips';
 import QueuedWords from './QueuedWords';
 import { chipsOf, defaultsOf } from './chips';
 import { FOLDER_DROPPED, dropped, fileWords, isFileDrag, noCommands, skillsMatching, slashOf, useMentionFiles, useSkills, useStopping } from './composerInput';
-import { useLive, type SkillsWhere } from './live';
+import { takesWorkspace, useLive, type SkillsWhere } from './live';
+import { WORKSPACE_WORDS } from '../../shared/finish';
 import { onObid } from './lean';
 import { has } from '../../shared/capabilities';
 import type { ConversationFile } from './obid';
@@ -192,6 +193,12 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const folders = !canFolders || project || inProject ? [] : conversation ? kept : homeFolders;
   // how many folders the conversation works in: a file of one of several is named after its folder
   const chat = chats.find((c) => c.id === conversation);
+  // where the conversation Home's words start works (WORKSPACE-3, as T3 Code: This folder by default,
+  // or A new worktree), chosen with its first message and never after: Home's box only, with folders
+  // or a project to work in, once obid takes it
+  const workspaceOn = takesWorkspace(useLive());
+  const [workspace, setWorkspace] = useState<'folder' | 'worktree'>('folder');
+  const choosesWorkspace = home && workspaceOn && (homeFolders.length > 0 || !!project);
   const workFolders = inProject ? projects.find((p) => p.id === chat?.project)?.folders.length ?? 1 : kept.length;
   // the tool the conversation talks through, for the commands' list when no chip names one
   const [accounts] = useAccounts();
@@ -396,6 +403,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         ...(chipsShown && defaultsOf(chipsOf(draft)) ? { defaults: defaultsOf(chipsOf(draft)) } : {}),
         // the skill picked, beside the words; never put in them (COMPOSER-27)
         ...(skillsOn && skill ? { skill } : {}),
+        // where the conversation these words start works (WORKSPACE-3)
+        ...(choosesWorkspace ? { workspace } : {}),
       });
       if (went instanceof Promise) {
         sending.current = true;
@@ -405,7 +414,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       }
       if (folders.length && !inProject) usedFolders(folders);
       // Home's go with the conversation they start; a conversation keeps its own
-      if (!conversation) setHomeFolders([]);
+      if (!conversation) { setHomeFolders([]); setWorkspace('folder'); }
       b.clear();
       setFilled(false);
       setStacked(false);
@@ -530,7 +539,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         )}
         {/* no talking (v1): send before the usage gauge, which keeps the end */}
         <div className={`composer-grid${everything && !wordsOnly ? '' : ' is-send-first'}`}>
-          {(attached.length > 0 || repo || folders.length > 0 || (home && projectsOn) || (skillsOn && skill)) && (
+          {(attached.length > 0 || repo || folders.length > 0 || (home && projectsOn) || (skillsOn && skill) || choosesWorkspace) && (
             <div ref={tagRow} className={`composer-tags${hiddenAbove ? ' is-scrolled' : ''}`} onScroll={(e) => setHiddenAbove(e.currentTarget.scrollTop > 0)}>
               {/* the skill picked, first: it goes with these words (COMPOSER-26) */}
               {skillsOn && skill && (
@@ -541,6 +550,14 @@ export default function Composer({ placeholder, prompts = false, note, label, on
               )}
               {/* Home's project, first (choosing one lets go of the folders picked here) */}
               {home && projectsOn && <ProjectChip chosen={homeProject} onChoose={(p) => { setHomeProject(p); if (p) setHomeFolders([]); }} className="composer-project" />}
+              {/* where the conversation works: This folder, or A new worktree (WORKSPACE-3) */}
+              {choosesWorkspace && (
+                <span role="radiogroup" aria-label="Where it works" className="composer-workspace">
+                  {(['folder', 'worktree'] as const).map((w) => (
+                    <button key={w} type="button" role="radio" aria-checked={workspace === w} onClick={() => setWorkspace(w)}>{WORKSPACE_WORDS[w]}</button>
+                  ))}
+                </span>
+              )}
               {folders.map((f) => (
                 <span key={f} data-glide={`folder:${f}`} className="composer-tag" title={f}>
                   <FolderOpen size={15} strokeWidth={1.7} />

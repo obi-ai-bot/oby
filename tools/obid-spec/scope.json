@@ -1273,7 +1273,12 @@
             "FOLDERS-7",
             "FOLDERS-9",
             "FOLDERS-10",
-            "FOLDERS-22"
+            "FOLDERS-22",
+            "WORKSPACE-2",
+            "WORKSPACE-3",
+            "WORKSPACE-4",
+            "WORKSPACE-5",
+            "WORKSPACE-6"
           ],
           "elsewhere": {
             "FOLDERS-11": "Electron folders gate (obid half: status folders-v1).",
@@ -1293,7 +1298,8 @@
             "FOLDERS-19": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-20": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-21": "not built: proposed (folders for jobs, trust, failures).",
-            "FOLDERS-23": "not built: proposed (folders for jobs, trust, failures)."
+            "FOLDERS-23": "not built: proposed (folders for jobs, trust, failures).",
+            "WORKSPACE-1": "not built: proposed (the lanes wire the write list; its builder is proved by Kani in workspace/writes.rs)."
           }
         },
         "setup.md": {

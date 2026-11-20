@@ -196,6 +196,10 @@ contextBridge.exposeInMainWorld('app', {
     // Undo this round, on the owner's click: main reads obid's sentence again, asks in its own
     // dialog and signs it (CHANGES-14)
     undo: (job: string, action: string) => ipcRenderer.invoke('obid-undo', job, action) as Promise<Answer>,
+    // A finishing action in a conversation's folder (WORKSPACE-4, 5), on the owner's click: main reads
+    // obid's sentence for it, asks in its own dialog and signs it
+    finish: (conversation: string, folder: string, action: string) =>
+      ipcRenderer.invoke('obid-finish', conversation, folder, action) as Promise<Answer>,
     limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     // Pair a device: main signs the invitation with this Mac's device key

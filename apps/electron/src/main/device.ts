@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { HOME, obid, takesKeys, type Answer, type Trusted } from './obid';
 import { mayConfirm, takeInput, wordsHeader } from './words';
 import { ipc } from './ipc';
+import { FINISH_WORDS } from '../shared/finish';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
@@ -313,6 +314,29 @@ export function confirming(trusted: Trusted) {
       if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Not undone: you said not now.' }) };
       const device = await register(), signedAt = now();
       return obid('POST', path, { device, action, signedAt, signature: signed(`oby-undo\n${id}\n${action}\n${signedAt}`) });
+    } catch (err) {
+      return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    }
+  }, REFUSED);
+
+  // A finishing action in a conversation's folder, on the owner's click (docs/contracts/folders.md,
+  // WORKSPACE-4 and 5): as Undo, main reads obid's own sentence for it itself, asks in main's own
+  // dialog, which the page can't click or word, and signs (`oby-finish`) only on its button there.
+  // Asked only right after an input main saw.
+  channels.handle('obid-finish', [string, string, oneOf('commit', 'push', 'pullRequest', 'publishRepository', 'initializeGit')], async (e, conversation, folder, finish): Promise<Answer> => {
+    if (!takeInput()) return { status: 403, text: JSON.stringify({ error: 'That takes your own click.' }) };
+    try {
+      const path = `/v1/conversations/${encodeURIComponent(conversation)}/workspace`;
+      const sentence = await obid('GET', `${path}?${new URLSearchParams({ folder, finish }).toString()}`);
+      if (sentence.status !== 200) return sentence;
+      const action = (JSON.parse(sentence.text) as { action?: string }).action;
+      if (typeof action !== 'string' || !action) return { status: 409, text: JSON.stringify({ error: 'That can’t be done there now. Look at it again.' }) };
+      const w = BrowserWindow.fromWebContents(e.sender);
+      const asked = { type: 'question' as const, message: `${FINISH_WORDS[finish]}?`, detail: action, buttons: [FINISH_WORDS[finish], 'Not now'], defaultId: 1, cancelId: 1 };
+      const { response } = await (w ? dialog.showMessageBox(w, asked) : dialog.showMessageBox(asked));
+      if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Nothing done: you said not now.' }) };
+      const device = await register(), signedAt = now();
+      return obid('POST', path, { folder, finish, approval: { device, action, signedAt, signature: signed(`oby-finish\n${conversation}\n${action}\n${signedAt}`) } });
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }

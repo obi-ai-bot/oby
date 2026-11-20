@@ -2824,6 +2824,8 @@ pub async fn remove(
 pub(crate) async fn forget(shared: &Shared, id: &str, helper: bool) -> Result<(), Error> {
     let uploads = shared.conversations.delete_any(id, helper)?;
     crate::brain::drop_uploads(shared, uploads).await;
+    // Its worktrees go with it, their branches stay (crate::workspace).
+    crate::workspace::forget(shared, id).await;
     // What Oby offered there can't be started from it any more.
     shared.link.close_offers(id);
     Ok(())

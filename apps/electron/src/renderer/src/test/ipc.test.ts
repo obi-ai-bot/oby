@@ -121,6 +121,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'obid-publish': { args: ['j1', 'Publish this', {}], refusal: FORBIDDEN },
   'obid-limit-answer': { args: ['d1', 1, 'stop'], refusal: FORBIDDEN },
   'obid-undo': { args: ['j1', 'Undo this'], refusal: FORBIDDEN },
+  'obid-finish': { args: ['c1', '/Users/me/api', 'commit'], refusal: FORBIDDEN },
   'open-worktree': { args: ['j1', 'terminal'], refusal: false },
   'worktree-editor': { args: [], refusal: null },
   'open-task-server': { args: ['j1', 3000], refusal: false },

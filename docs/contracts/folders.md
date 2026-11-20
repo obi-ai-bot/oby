@@ -151,4 +151,48 @@ All add-only. No new value in any enum the Swift apps decode as closed: job `sta
 - **FOLDERS-22, the same words twice.** Words with folders sent again with the same `id` start no second set of tasks.
 - **FOLDERS-23, too big.** A folder over the snapshot limit fails before the agent starts, saying its size.
 
+## Workspace: this folder or a new worktree (B00-11)
+
+As T3 Code does it (the owner's answers of 2026-11-15, questions 6 and 7: "follow what T3 does"; docs/design/oby-slash-and-factory-settings/README.md, §5 and §6). Sangam owns what the user sees: the words below are T3's, placeholders until he words them.
+
+- **Outcome.** Someone with no GitHub, or no wish for a pull request, gets a one-line fix in place: each conversation chooses where it works, and finishing offers what the folder can do.
+- **Status.** WORKSPACE-2 to 6 are implemented (`core/crates/obid/src/workspace.rs`, `folders::finishing`, `git::state`, `publish::scan_folder`; the app's choice in `Composer.tsx` and its finishing line in `ChatView.tsx`), behind the capability `workspace-v1`. **WORKSPACE-1 is proposed:** the write list's builder is built and proved (`core/crates/obid/src/workspace/writes.rs`, its Kani harness), but the lanes don't use it yet: the change that wires it into `jobs/lanes.rs` changes `docs/contracts/lanes.md` (LANES-12, CODEX-2) and carries WORKSPACE-1's test. Until then a conversation's commands write only its room, as LANES-12 says.
+
+### The choice
+
+- A conversation's workspace is `folder` (**This folder**, the default: the project's checkout, edited in place; T3's `local`, "Current checkout") or `worktree` (**A new worktree**: a worktree of the folder's repository on a branch of its own; T3's `worktree`, "New worktree"). It's sent as `workspace` with the conversation's first message (`POST /v1/plans` with `new`), and never changes after: sent with later words it's `422`, and `PATCH /v1/conversations/{id}` doesn't take it.
+- In `worktree`, obid makes one worktree per folder that is a git repository with a commit: `git worktree add -b oby/<the conversation's id, first 8> <home>/workspaces/<conversation>/<name> HEAD`, in the folder's own repository, a free branch name taken (`-2`, `-3` …). The folder's files, its branch and its `HEAD` don't change. A folder added later gets its worktree the next time obid looks.
+- A folder that isn't a git repository, or has no commit, always works in place, whatever was chosen (T3's `resolveSendEnvMode`).
+- Factory jobs always get their own worktree in obid's clone (`home/worktrees/<job>`), whatever the conversation chose: the factory runs several at once, as T3 makes a worktree per model when one message goes to several.
+- A worktree is removed with its conversation (`DELETE /v1/conversations/{id}`), and by the cleanup pass once its branch is merged: it has commits of its own, nothing uncommitted, and its remote's default branch, as last fetched, holds its `HEAD`. Its branch, and every commit on it, stay in the folder's repository. As T3, there is no local merge of a worktree's branch.
+
+### Finishing
+
+obid answers which actions each folder can take now, from git alone (never gh, never the network), as T3's `GitActionsControl.logic.ts` decides them:
+
+| The folder | Actions |
+|---|---|
+| Not a git repository | `initializeGit` |
+| No remote, with changes | `commit` |
+| No remote, everything committed | `publishRepository` (none for a repository with no commit) |
+| A remote | `commit` with changes; `push` with commits the remote hasn't and none to pull; `pullRequest` with commits its default branch hasn't, off that branch, none to pull |
+
+- Each action is the owner's click: main reads obid's sentence for it, asks in its own dialog and signs `oby-finish\n<conversation>\n<sentence>\n<signedAt>` with the device's key; obid lets it through once, as Publish by hand. An action finishing can't take now is `409`; an unsigned one `403`.
+- `commit` adds and commits everything (`Changes made with Oby`); `initializeGit` runs `git init`; neither leaves the Mac.
+- `push`, `pullRequest` and `publishRepository` pass the secret scan of everything they send first (each commit's patch, message and author, every file), as a job's push does: a finding, or a scan that can't run, sends nothing. `publishRepository` makes a private repository on GitHub named after the folder (`gh repo create <name> --private --source <path> --remote origin --push`); `pullRequest` pushes first when it needs to, then `gh pr create`.
+- obid's git never runs a hook or an fsmonitor of the folder's repository (`core.hooksPath=/dev/null`, `core.fsmonitor=false`), as every git call of obid's.
+
+### What the sandbox may write (WORKSPACE-1, proposed)
+
+In `folder`, the conversation's commands may write that folder and nothing else of the person's home; in `worktree`, its worktree and nothing else. Never obid's home (but that worktree), the person's home itself or a folder holding it, or any account's folder. The five non-negotiables don't move: no secret, login or vault value reaches the folder. The list is built by one pure function (`workspace::writes::writes`), proved by Kani over any paths.
+
+### Scenarios
+
+- **WORKSPACE-1 (proposed), `workspace_1_folder_edits_in_place_and_no_further`.** A conversation started with "This folder" edits files in the project's folder, and a command writing outside it is refused by the sandbox.
+- **WORKSPACE-2, `workspace_2_worktree_leaves_the_folder`.** A conversation started with "A new worktree" works on its own branch, and the folder's files are byte-identical; the worktree goes with the conversation, its branch stays.
+- **WORKSPACE-3, `workspace_3_choice_is_kept`.** The choice can't change after the first message; left out, it's "This folder".
+- **WORKSPACE-4, `workspace_4_no_remote_commit_then_publish`.** In a folder with no remote, finishing offers `commit` only and makes no gh call; once clean, it offers `publishRepository`.
+- **WORKSPACE-5, `workspace_5_not_git_initialize`.** In a folder that isn't a git repository, work happens in place, and finishing offers `initializeGit`.
+- **WORKSPACE-6, `workspace_6_factory_jobs_get_a_worktree`.** Every factory job gets its own worktree, whatever the conversation chose.
+
 Real-Mac "Test it when it's done": pick a new empty folder, a cloned repository and a GitHub repository in one message from Home; see three tasks; confirm the first two folders' results with Finder and `git branch`, and the third's pull request; quit and reopen the app mid-task (FOLDERS-20).

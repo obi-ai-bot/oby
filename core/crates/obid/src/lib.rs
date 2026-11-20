@@ -92,6 +92,7 @@ pub mod transcript;
 pub mod triage;
 pub mod usage;
 pub mod vault;
+pub mod workspace;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -270,6 +271,8 @@ async fn keep_worktrees_clean(shared: Arc<api::Shared>, cancelled: Arc<AtomicBoo
         let wanted = jobs::disk_wanted(api::disk_free(&shared.config.home));
         if woken || now - last >= CLEAN_EVERY.as_secs() as i64 || wanted > 0 {
             last = now;
+            // A conversation's worktree whose branch is merged goes too (WORKSPACE, B00-11).
+            workspace::tidy(&shared).await;
             if shared.jobs.clean_worktrees(now, cleared, wanted).await > 0 {
                 let (shared, cancelled) = (shared.clone(), cancelled.clone());
                 let measure = move || shared.cleanup.remeasure_unless(&cancelled);

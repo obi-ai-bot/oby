@@ -73,6 +73,8 @@ declare global {
         publish(job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }): Promise<{ status: number; text: string }>;
         // Undo this round: main asks in its own dialog and signs obid's sentence (CHANGES-14)
         undo(job: string, action: string): Promise<{ status: number; text: string }>;
+        // A finishing action in a conversation's folder: main asks in its own dialog and signs obid's sentence (WORKSPACE-4, 5)
+        finish(conversation: string, folder: string, action: string): Promise<{ status: number; text: string }>;
         limitAnswer(item: string, revision: number, choice: string, account?: string): Promise<{ status: number; text: string }>;
         pairInvite(): Promise<{ status: number; text: string }>;
         live(onSnapshot: (s: LiveSnapshot) => void, onMessage: (m: LiveMessage) => void): () => void;
