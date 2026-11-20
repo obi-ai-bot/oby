@@ -128,13 +128,13 @@ const ops = {
       await skipFirstRun(page);
       await page.waitForLoadState('domcontentloaded');
     }
+    // storage: the window's own remembered choices (the side panel kept open or closed), on the demo or on obid
+    if (r.storage) {
+      if (typeof r.storage !== 'object' || Object.entries(r.storage).some(([k, v]) => !/^oby\.[A-Za-z.]+$/.test(k) || typeof v !== 'string')) throw new Error('storage: oby.* keys with string values');
+      await page.evaluate((kept) => { for (const [k, v] of Object.entries(kept)) localStorage.setItem(k, v); }, r.storage);
+    }
     // the app's demo data (src/renderer/src/mock.ts) in the chat-first window, for what needs no obid
     if (r.mock) {
-      // storage: the window's own remembered choices for the demo (the side panel kept open or closed)
-      if (r.storage) {
-        if (typeof r.storage !== 'object' || Object.entries(r.storage).some(([k, v]) => !/^oby\.[A-Za-z.]+$/.test(k) || typeof v !== 'string')) throw new Error('storage: oby.* keys with string values');
-        await page.evaluate((kept) => { for (const [k, v] of Object.entries(kept)) localStorage.setItem(k, v); }, r.storage);
-      }
       const url = new URL(page.url());
       // query: more of the demo's words after ?everything&chat (browser=<n>: a board of the browser's design)
       if (r.query !== undefined && !/^[a-z0-9=&_-]*$/i.test(r.query)) throw new Error('query: letters, digits, =, & and dashes');
@@ -145,9 +145,9 @@ const ops = {
     // invisible still, but able to take the keyboard while a desktop.* step brings it forward to
     // press keys through macOS (agent-desktop), as a person's keys reach the menu bar
     if (r.size) await app.evaluate(({ BrowserWindow }, s) => { const w = BrowserWindow.getAllWindows()[0]; w?.setResizable(true); w?.setSize(s.width, s.height); }, r.size);
-    // the demo with choices of its own (storage) opens again at its size, so they apply as at that
+    // a window with choices of its own (storage) opens again at its size, so they apply as at that
     // width (the side panel docks where it fits)
-    if (r.mock && r.storage && r.size) {
+    if (r.storage && r.size) {
       await page.reload();
       await page.waitForLoadState('domcontentloaded');
     }

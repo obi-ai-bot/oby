@@ -503,7 +503,9 @@ OBID = "${state.obid}"
 def browser_obid():
     return [
         step("obid", "obid-start", agent="fake-harness-jobs", browser=True),
-        step("app", "app.launch", obid=OBID, size={"width": 1280, "height": 800}),
+        # the side panel kept closed, as the boards have it: left to fit, it docks or not by the window's
+        # width at its first render, which races the resize to 1280px
+        step("app", "app.launch", obid=OBID, size={"width": 1280, "height": 800}, storage={"oby.chatPanelOpen": "0"}),
     ]
 
 
