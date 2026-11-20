@@ -65,6 +65,7 @@ vi.mock('electron', async () => {
     powerMonitor: { on() {} },
     safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) },
+    clipboard: { readText: () => '' },
     shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
@@ -159,6 +160,10 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'mac-pill': { args: [null], refusal: null },
   'mac-pill-stop': { args: [], refusal: undefined },
   'mac-pill-now': { args: [], refusal: null },
+  'terminal-open': { args: ['task', 'j1', 80, 24], refusal: { error: 'Not this app’s page.' } },
+  'terminal-write': { args: ['t1', 'ls'], refusal: undefined },
+  'terminal-resize': { args: ['t1', 100, 30], refusal: undefined },
+  'terminal-close': { args: ['t1'], refusal: undefined },
 };
 
 const UNSET = Symbol('unset');

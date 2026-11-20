@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ChangesPanel from './ChangesPanel';
+import TerminalPanel from './terminal/TerminalPanel';
 import './tokens.css';
 import './app.css';
 import Home from './Home';
@@ -60,7 +61,7 @@ function App() {
   if (!onboarding && !ready) return <Splash />;
   if (!onboarding && welcome) return <Welcome onDone={done} />;
   // (keyed, so neither starts over as the other comes or goes)
-  return <BrowserProvider>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome />{home && <ChangesPanel />}</BrowserProvider>;
+  return <BrowserProvider>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome />{home && <ChangesPanel />}{home && <TerminalPanel />}</BrowserProvider>;
 }
 
 // the Mac's pill and frame (browser/Mac.tsx): main's own windows over the screen, drawing only that
