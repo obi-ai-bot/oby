@@ -48,6 +48,8 @@ pub struct Shared {
     pub relay: Arc<crate::relay::Relay>,
     /// Connected apps and their job-scoped MCP broker.
     pub connections: Arc<crate::connections::Connections>,
+    /// Oby's browser: every job's, its API and the agents' tools (crate::browser).
+    pub browser: Arc<crate::browser::Service>,
     pub jobs: Arc<Jobs>,
     pub events: Events,
     /// The conversations, shared by every device and plan request (#493).
@@ -237,6 +239,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .route("/v1/alerts", get(crate::routes::alerts))
         .merge(crate::connections::router())
+        .merge(crate::browser::routes::router())
         .merge(crate::connectors::router())
         .merge(crate::tetrix::router())
         .merge(crate::chatgpt_relay::router())
@@ -504,9 +507,11 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
     let api = request.uri().path().starts_with("/v1/");
     let path = request.uri().path();
     let agent_mcp = agent_route_of(path);
+    // The browser's MCP server names no job: its caller's broker token says which.
+    let browser_mcp = path == crate::browser::contract::PATH_MCP;
     // On Linux an agent reaches obid at slirp4netns's host alias: admitted for the agent's own
     // routes only, its broker's, Tetrix's and ChatGPT's relay, each with its token.
-    let agent_route = agent_mcp.is_some();
+    let agent_route = agent_mcp.is_some() || browser_mcp;
     let via_gateway = agent_route && agent_gateway_request(request.uri(), request.headers());
     let admitted = admit(request.uri(), request.headers(), &shared.token).or_else(|error| {
         if !agent_route || (!loopback_request(request.uri(), request.headers()) && !via_gateway) {
@@ -522,7 +527,7 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
                 shared.connections.allows(id, token)
                     || shared.harness.session(id, token).is_some()
                     || shared.harness.waiting_with(id, token)
-            })
+            }) || (browser_mcp && shared.connections.job_of(token).is_some())
         }) {
             Ok(())
         } else if via_gateway {
@@ -535,7 +540,9 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
     });
     let mut response = match admitted {
         Ok(()) => next.run(request).await,
-        Err(error) => error.into_response(),
+        Err(error) => {
+            crate::browser::routes::gate_reason(path, request.headers(), error).into_response()
+        }
     };
     if api {
         let headers = response.headers_mut();

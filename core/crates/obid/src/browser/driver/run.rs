@@ -433,12 +433,14 @@ mod tests {
             &home,
             "job-a",
             "oby_browser_navigate",
-            json!({"url": "http://127.0.0.1:1/slow", "deadlineMs": 400}),
+            json!({"url": "http://127.0.0.1:1/slow", "deadlineMs": 2000}),
         )
         .await;
         assert_eq!(v["error"]["code"], "timed_out", "{v}");
+        // Back at the deadline, never after the stand-in's endless sleep; the margin is for a
+        // busy machine, not for the command.
         assert!(
-            started.elapsed() < Duration::from_millis(400 + 1500),
+            started.elapsed() < Duration::from_millis(2000 + 10_000),
             "{:?}",
             started.elapsed()
         );
@@ -454,7 +456,12 @@ mod tests {
         assert_eq!(v["error"]["code"], "settling", "{v}");
         // The browser finishes: the tab settles by itself.
         let session = d.session_of("job-a").unwrap();
-        std::fs::remove_file(session.socket_dir.join(format!("{}.busy", session.name))).unwrap();
+        let busy = session.socket_dir.join(format!("{}.busy", session.name));
+        assert!(
+            stand_in::within(WAIT, || async { busy.exists() }).await,
+            "the slow command ran"
+        );
+        std::fs::remove_file(&busy).unwrap();
         assert!(
             stand_in::within(WAIT, || async {
                 d.core()

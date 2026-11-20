@@ -1,0 +1,397 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: GET /v1/browser and its events follow the engine as an agent opens and drives a page",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-1 (src/lab/browserapi.rs, Api::sync_job and the events stream): before any tool the job's browser is notStarted; its first tool brings the browser up (events: starting, then ready) under its own allowance, apart from the command's deadline, and opens the fixture through its MCP tools; GET /v1/browser lists the tab as the agent's, ready, on this Mac, with the page's title; the agent snapshots, types and clicks Sign in; the events stream has the tab, each action with its words (\"Clicking Sign in\", outcome done), in order; a second tab opens beside it, and closing the first says tabClosed and leaves only the second. Without the owner token the list is refused. Ported from the lab onto obid (docs/contracts/browser.md): a scratch obid on the stand-ins, a Codex job sleeping as its agent with its broker token, the lab API's fixture site, the real agent-browser and Chrome for Testing obid installs, seeded from obid-spec's cache.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/browser"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "not-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 0
+            },
+            "browsers.0": {
+              "job": "${state.j1.job}",
+              "agent": "codex",
+              "state": "notStarted"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-2"
+        ]
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        },
+        "within": 300
+      }
+    },
+    {
+      "id": "tabs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "browsers.0.state": "ready",
+            "tabs": {
+              "$len": 1
+            },
+            "tabs.0.id": "${state.open.structured.result.tab}",
+            "tabs.0.owner": {
+              "kind": "agent",
+              "job": "${state.j1.job}",
+              "agent": "codex"
+            },
+            "tabs.0.state": "ready",
+            "tabs.0.title": "Sign in to the lab",
+            "tabs.0.url": {
+              "$contains": "${state.site.url}"
+            },
+            "tabs.0.computer.id": "local",
+            "tabs.0.heldBy": null,
+            "settings.agentsUseBrowser": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "no-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "as": "none",
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "no_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "wrong-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "as": "wrong",
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "Sign in"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "type",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "Ada"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "click",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Sign in"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "events",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 800,
+        "within": 10,
+        "expect": {
+          "paths": {
+            "inOrder": true,
+            "of.tab": {
+              "$any": {
+                "tab": {
+                  "id": "${state.open.structured.result.tab}",
+                  "state": "ready",
+                  "title": "Sign in to the lab"
+                }
+              }
+            },
+            "of.action": {
+              "$any": {
+                "text": "Clicking Sign in",
+                "outcome": "done",
+                "tabId": "${state.open.structured.result.tab}",
+                "job": "${state.j1.job}"
+              }
+            },
+            "of.browser": {
+              "$len": 2
+            },
+            "of.browser.0.browser": {
+              "job": "${state.j1.job}",
+              "state": "starting"
+            },
+            "of.browser.1.browser": {
+              "job": "${state.j1.job}",
+              "state": "ready"
+            },
+            "types": {
+              "$contains": "action"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-2",
+          "BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "typed",
+      "use": "runtime.rust:browser-read",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "selector": "#name",
+        "expect": {
+          "paths": {
+            "value": "Ada"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "open2",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/",
+          "newTab": true
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_close_tab",
+        "args": {
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.closed": true
+          }
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 1
+            },
+            "tabs.0.id": "${state.open2.structured.result.tab}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-3"
+        ]
+      }
+    },
+    {
+      "id": "closed-event",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.tabClosed": {
+              "$any": {
+                "tabId": "${state.open.structured.result.tab}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-3"
+        ]
+      }
+    }
+  ]
+}

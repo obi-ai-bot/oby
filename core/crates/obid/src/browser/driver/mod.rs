@@ -14,6 +14,7 @@
 
 mod binaries;
 mod call;
+mod chrome_said;
 mod download_file;
 mod downloads;
 mod drive;
@@ -21,12 +22,16 @@ mod frame;
 mod live;
 mod live_file;
 mod options;
+mod person;
 mod procs;
 mod reap;
 mod run;
 mod session;
-#[cfg(test)]
-mod stand_in;
+/// The tests' stand-in agent-browser: obid's unit tests', and a debug build's integration tests'
+/// (`OBID_TEST_BROWSER_STAND_IN`); never in a release build.
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub mod stand_in;
 mod stream;
 mod stream_reader;
 mod waiting;
