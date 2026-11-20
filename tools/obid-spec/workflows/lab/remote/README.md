@@ -109,16 +109,12 @@ T3 Code's SSH fixes were read first (59% of its SSH commits); the classes this a
 
 Each item is something the lab does in obid's place today.
 
-1. **An HTTPS listener for direct addresses.** obid refuses any `listen` or `gateway` that isn't on
-   127.0.0.1 (config.rs, gateway.rs). The lab runs a TLS front on the machine (`lab.remote.front`,
-   python3) from `0.0.0.0:8443` to the gateway. obid needs its own: on the interfaces the owner
-   picks, with a self-signed P-256 certificate it makes and keeps in `home/keys`, its SHA-256 the pin.
-2. **`obid pair-computer`**, a command run over SSH on the owner's click (as `obid vault` is): register
-   the given device key (the SSH login is the owner's presence, as `home/pairing` is today) and make
-   a one-time invitation, printing one JSON line. The lab does it with a bash script on ssh's stdin
-   that writes `home/pairing` and calls obid's own API there with curl (`pair_computer_script`, placed
-   with obid and reading the Mac's name and key from stdin, so it can be a key's forced command); the
-   API token stays on that computer but is read by a shell and curl, which obid wouldn't need.
+1. **An HTTPS listener for direct addresses.** Ported: obid serves its gateway over HTTPS on the
+   addresses `direct` names, with a self-signed P-256 certificate kept in `home/keys`, its SHA-256 the
+   pin in `GET /v1/status` (docs/contracts/remote.md, COMPUTERS-10). `code-pair.json` reaches obid's
+   own (`lab.remote.direct`); `lab.remote.front` (python3) is left only for the impostor machine.
+2. **`obid pair-computer`.** Ported (COMPUTERS-7): `pair_computer_script` is now only obid's own
+   command's path, so it can be a key's forced command.
 3. **A computer's token reaches the window's routes.** A paired device's token goes through the
    iPhone's allowlist (gateway.rs: 68 of the 156 routes in docs/api/routes.txt), which leaves out routes the window uses (connections,
    the vault, adding folders, a member's unsealed setting…). A paired computer needs the window's

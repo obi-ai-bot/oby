@@ -1,7 +1,7 @@
-//! Where this obid answers, as it bound them (docs/contracts/remote.md, COMPUTERS-9): its API and its
-//! gateway, kept in `home/addresses.json` (0600) each time it starts, so `obid pair-computer`
-//! reaches the obid that runs, a port the system picked (`:0`) included. Addresses on 127.0.0.1
-//! only: nothing in it is a secret, and nothing reads it but `obid pair-computer`.
+//! Where this obid answers, as it bound them (docs/contracts/remote.md, COMPUTERS-9): its API, its
+//! gateway and the gateway's direct addresses, kept in `home/addresses.json` (0600) each time it starts, so `obid pair-computer`
+//! reaches the obid that runs, a port the system picked (`:0`) included. Nothing in it is a
+//! secret, and nothing reads it but `obid pair-computer`.
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -15,6 +15,9 @@ pub struct Addresses {
     pub api: SocketAddr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<SocketAddr>,
+    /// The gateway over HTTPS, as bound (crate::remote::direct).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct: Vec<SocketAddr>,
 }
 
 /// Keeps them, replacing what an earlier start kept.
@@ -42,6 +45,7 @@ mod tests {
         let a = Addresses {
             api: "127.0.0.1:50123".parse().unwrap(),
             gateway: Some("127.0.0.1:50124".parse().unwrap()),
+            direct: vec!["0.0.0.0:50125".parse().unwrap()],
         };
         keep(&home, &a).unwrap();
         assert_eq!(read(&home), Some(a));

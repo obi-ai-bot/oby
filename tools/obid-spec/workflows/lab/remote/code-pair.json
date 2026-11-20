@@ -42,14 +42,20 @@
       "id": "obid",
       "use": "runtime.rust:lab.machine.obid",
       "inputs": {
-        "machine": "${state.box}"
+        "machine": "${state.box}",
+        "config": {
+          "direct": [
+            "0.0.0.0:8443"
+          ]
+        }
       }
     },
     {
       "id": "front",
-      "use": "runtime.rust:lab.remote.front",
+      "use": "runtime.rust:lab.remote.direct",
       "inputs": {
-        "machine": "${state.box}"
+        "machine": "${state.box}",
+        "obid": "${state.obid}"
       }
     },
     {
@@ -428,10 +434,16 @@
     },
     {
       "id": "a-new-certificate-on-the-same-machine",
-      "use": "runtime.rust:lab.remote.front",
+      "use": "runtime.rust:lab.remote.direct",
       "inputs": {
         "machine": "${state.box}",
+        "obid": "${state.obid}",
         "certificate": "new",
+        "config": {
+          "direct": [
+            "0.0.0.0:8443"
+          ]
+        },
         "expect": {
           "paths": {
             "pin": {
