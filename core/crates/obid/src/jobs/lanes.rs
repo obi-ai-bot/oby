@@ -455,12 +455,69 @@ impl Jobs {
     }
 }
 
-/// `places` as an own Codex run's profile denies them (LANES-27): each path, and everything under
-/// it, which Codex's sandbox needs said for a name with a `*` in it (codex-cli 0.163.0, measured).
+/// `places` as an own Codex run's profile denies them (LANES-27), as codex-cli 0.163.0 enforces
+/// them (measured on macOS and Linux): a path by itself, which denies what it holds; a name with a
+/// `*` as `<name>/**`, which macOS's sandbox enforces and Linux's never does, so also each path it
+/// matches now, by name. None inside another: on Linux a folder denied with something in it denied
+/// too keeps Codex from starting a thread (bubblewrap can't make the inner one's mount point).
 fn codex_denied(places: &[PathBuf]) -> Vec<String> {
-    (places.iter().map(|p| p.to_string_lossy()))
-        .flat_map(|p| [p.to_string(), format!("{p}/**")])
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut patterns: Vec<String> = Vec::new();
+    for place in places {
+        let text = place.to_string_lossy();
+        if text.contains('*') {
+            patterns.push(format!("{text}/**"));
+            paths.extend(matching(place));
+        } else {
+            paths.push(place.clone());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    let outer = |p: &PathBuf| !paths.iter().any(|q| q != p && p.starts_with(q));
+    (paths.iter().filter(|p| outer(p)))
+        .map(|p| p.to_string_lossy().into_owned())
+        .chain(patterns)
         .collect()
+}
+
+/// The paths `pattern` matches now, each `*` in a name standing for any part of it.
+fn matching(pattern: &Path) -> Vec<PathBuf> {
+    let mut found = vec![PathBuf::new()];
+    for part in pattern.components() {
+        let name = part.as_os_str().to_string_lossy();
+        if !name.contains('*') {
+            found.iter_mut().for_each(|f| f.push(part));
+            continue;
+        }
+        found = (found.iter())
+            .flat_map(|f| std::fs::read_dir(f).into_iter().flatten().flatten())
+            .filter(|entry| wild(&name, &entry.file_name().to_string_lossy()))
+            .map(|entry| entry.path())
+            .collect();
+    }
+    found.retain(|f| f.symlink_metadata().is_ok());
+    found
+}
+
+/// Whether `name` is `pattern`, each `*` in it any run of characters.
+fn wild(pattern: &str, name: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or("");
+    let Some(mut rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    for (i, part) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            return rest.ends_with(part);
+        }
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.is_empty()
 }
 
 /// Whether `job`'s run of `tool` on `account` leaves Oby's box: in the own lane, but never a Codex
@@ -572,6 +629,57 @@ pub(crate) fn claude_place(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LANES-27: what profile `oby` names is what codex-cli 0.163.0 enforces on macOS and Linux: a
+    /// place by itself, never also something inside it (on Linux, Codex couldn't start a thread),
+    /// and a name with a `*` as its pattern and as each path it matches now.
+    #[test]
+    fn lanes_27_codex_names_each_place_once_and_a_pattern_by_what_it_matches() {
+        let root = std::env::temp_dir().join(format!("obid-l27-{}", uuid::Uuid::new_v4()));
+        for dir in [
+            "vault",
+            "accounts/a",
+            "conversations/c1/login",
+            "conversations/c2/login",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in [
+            "vault/secrets.json",
+            "accounts/a/settings.local.json",
+            "api-token",
+        ] {
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        let places = [
+            root.join("vault"),
+            root.join("vault/secrets.json"),
+            root.join("api-token"),
+            root.join("missing"),
+            root.join("accounts"),
+            root.join("accounts/a/settings*.json"),
+            root.join("conversations/*/login"),
+        ];
+        let text = |p: &str| root.join(p).to_string_lossy().into_owned();
+        assert_eq!(
+            codex_denied(&places),
+            [
+                text("accounts"),
+                text("api-token"),
+                text("conversations/c1/login"),
+                text("conversations/c2/login"),
+                text("missing"),
+                text("vault"),
+                format!("{}/**", text("accounts/a/settings*.json")),
+                format!("{}/**", text("conversations/*/login")),
+            ]
+        );
+        assert!(wild("settings*.json", "settings.local.json"));
+        assert!(wild("*", "anything"));
+        assert!(!wild("settings*.json", "settings.json.bak"));
+        assert!(!wild("a*b", "ab-c"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// LANES-26 (docs/contracts/lanes.md): an own run reaches obid's servers on loopback; a boxed
     /// one keeps the box's host address, and macOS's loopback address stays as it is.
