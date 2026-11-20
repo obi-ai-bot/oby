@@ -1,0 +1,468 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: add a computer with a code, its certificate pinned; another machine at the same address is refused",
+  "version": "1.0.0",
+  "description": "Other computers (src/lab/remote.rs): the other computer's owner makes a six-digit code and a link that carries its direct address with its certificate pinned; the window redeems the code there for a device token (a wrong code and a used one pair nothing) and adds its own key through it, which then signs the owner's words; when another machine answers at the same address, or the same machine shows another certificate, the window refuses it. obid has no HTTPS listener yet: a TLS front on the machine stands in for it. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "linux-obid",
+      "use": "runtime.rust:lab.machine.obid-build",
+      "inputs": {
+        "limit": 1200
+      }
+    },
+    {
+      "id": "window",
+      "use": "runtime.rust:lab.remote.window",
+      "inputs": {
+        "name": "obid-spec's Mac"
+      }
+    },
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "box"
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "other"
+      }
+    },
+    {
+      "id": "obid",
+      "use": "runtime.rust:lab.machine.obid",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    },
+    {
+      "id": "front",
+      "use": "runtime.rust:lab.remote.front",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    },
+    {
+      "id": "other-front",
+      "use": "runtime.rust:lab.remote.front",
+      "inputs": {
+        "machine": "${state.other}"
+      }
+    },
+    {
+      "id": "address",
+      "use": "runtime.rust:lab.remote.address",
+      "inputs": {
+        "to": "${state.front.host}:8443"
+      }
+    },
+    {
+      "id": "tried-invite",
+      "use": "runtime.rust:lab.remote.invite",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "front": "${state.front}",
+        "url": "${state.address.url}",
+        "kind": "lan",
+        "name": "Linux box"
+      }
+    },
+    {
+      "id": "wrong-try-1",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "tries",
+        "link": "${state.tried-invite.link}",
+        "code": "wrong-1",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 401
+          }
+        }
+      }
+    },
+    {
+      "id": "wrong-try-2",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "tries",
+        "link": "${state.tried-invite.link}",
+        "code": "wrong-2",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 401
+          }
+        }
+      }
+    },
+    {
+      "id": "wrong-try-3",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "tries",
+        "link": "${state.tried-invite.link}",
+        "code": "wrong-3",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 401
+          }
+        }
+      }
+    },
+    {
+      "id": "wrong-try-4",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "tries",
+        "link": "${state.tried-invite.link}",
+        "code": "wrong-4",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 401
+          }
+        }
+      }
+    },
+    {
+      "id": "the-fifth-wrong-try",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "tries",
+        "link": "${state.tried-invite.link}",
+        "code": "wrong-5",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 401
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "five-wrong-tries-end-the-code",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "tries",
+        "link": "${state.tried-invite.link}",
+        "code": "${state.tried-invite.code}",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 410
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:lab.remote.invite",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "front": "${state.front}",
+        "url": "${state.address.url}",
+        "kind": "lan",
+        "name": "Linux box",
+        "expect": {
+          "paths": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "link": {
+              "$matches": "^oby-computer:"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "a-wrong-code-pairs-nothing",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "box",
+        "link": "${state.invite.link}",
+        "code": "not-the-code",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 401
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "the-code-pairs-it-pinned",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "box",
+        "link": "${state.invite.link}",
+        "code": "${state.invite.code}",
+        "expect": {
+          "paths": {
+            "paired": true,
+            "status": 200,
+            "keyStatus": 200,
+            "computer.hasToken": true,
+            "computer.current": "direct",
+            "computer.routes.0.via.pin": "${state.front.pin}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "the-code-is-used-once",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "box-again",
+        "link": "${state.invite.link}",
+        "code": "${state.invite.code}",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "status": 410
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "it-answers-through-the-pinned-address",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "route": "direct",
+            "reached": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-7"
+        ]
+      }
+    },
+    {
+      "id": "narrower",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "its-key-added-with-the-code-signs-the-owners-words",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "bypass"
+        },
+        "sign": "owner",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.mode": "bypass"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "second-invite",
+      "use": "runtime.rust:lab.remote.invite",
+      "inputs": {
+        "machine": "${state.box}",
+        "obid": "${state.obid}",
+        "front": "${state.front}",
+        "url": "${state.address.url}",
+        "kind": "lan",
+        "name": "Linux box"
+      }
+    },
+    {
+      "id": "another-machine-at-the-same-address",
+      "use": "runtime.rust:lab.remote.address",
+      "inputs": {
+        "address": "${state.address}",
+        "to": "${state.other-front.host}:8443"
+      }
+    },
+    {
+      "id": "the-impostor-gets-no-code",
+      "use": "runtime.rust:lab.remote.redeem",
+      "inputs": {
+        "computer": "impostor",
+        "link": "${state.second-invite.link}",
+        "code": "${state.second-invite.code}",
+        "expect": {
+          "paths": {
+            "paired": false,
+            "said": {
+              "$contains": "another computer answered"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3"
+        ]
+      }
+    },
+    {
+      "id": "nor-the-windows-calls",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "reached": false,
+            "said": {
+              "$contains": "another computer answered"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-3",
+          "LAB-REMOTE-7"
+        ]
+      }
+    },
+    {
+      "id": "back-at-the-address",
+      "use": "runtime.rust:lab.remote.address",
+      "inputs": {
+        "address": "${state.address}",
+        "to": "${state.front.host}:8443"
+      }
+    },
+    {
+      "id": "answers-again",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "status": 200,
+            "route": "direct"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-7"
+        ]
+      }
+    },
+    {
+      "id": "a-new-certificate-on-the-same-machine",
+      "use": "runtime.rust:lab.remote.front",
+      "inputs": {
+        "machine": "${state.box}",
+        "certificate": "new",
+        "expect": {
+          "paths": {
+            "pin": {
+              "$ne": "${state.front.pin}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-certificate-not-pinned-is-refused",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "reached": false,
+            "said": {
+              "$contains": "${state.a-new-certificate-on-the-same-machine.pin}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-7"
+        ]
+      }
+    }
+  ]
+}

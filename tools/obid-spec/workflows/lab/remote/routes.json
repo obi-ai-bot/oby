@@ -1,0 +1,320 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: two routes to one computer; the best is used, the next takes over when it's cut, the window moves back up, and with none Oby says what it tried",
+  "version": "1.0.0",
+  "description": "Other computers (src/lab/remote.rs): a computer added over SSH gets a direct route too (LAN, HTTPS pinned); the window's supervisor uses the direct one, moves to SSH when the direct one is cut, back up once it answers twice in a row, and when both are cut answers which routes it tried and why. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "linux-obid",
+      "use": "runtime.rust:lab.machine.obid-build",
+      "inputs": {
+        "limit": 1200
+      }
+    },
+    {
+      "id": "window",
+      "use": "runtime.rust:lab.remote.window",
+      "inputs": {
+        "name": "obid-spec's Mac"
+      }
+    },
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "box"
+      }
+    },
+    {
+      "id": "obid",
+      "use": "runtime.rust:lab.machine.obid",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    },
+    {
+      "id": "ssh",
+      "use": "runtime.rust:lab.machine.ssh",
+      "inputs": {
+        "machine": "${state.box}",
+        "alias": "lab-box"
+      }
+    },
+    {
+      "id": "pair",
+      "use": "runtime.rust:lab.remote.pair-ssh",
+      "inputs": {
+        "computer": "box",
+        "ssh": "${state.ssh}",
+        "obid": "${state.obid}",
+        "expect": {
+          "paths": {
+            "paired": true,
+            "computer.current": "ssh"
+          }
+        }
+      }
+    },
+    {
+      "id": "front",
+      "use": "runtime.rust:lab.remote.front",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    },
+    {
+      "id": "a-direct-route",
+      "use": "runtime.rust:lab.remote.route",
+      "inputs": {
+        "computer": "box",
+        "id": "lan",
+        "url": "${state.front.url}",
+        "pin": "${state.front.pin}",
+        "expect": {
+          "paths": {
+            "routes.0.id": "lan",
+            "routes.0.kind": "lan",
+            "routes.1.id": "ssh",
+            "current": "ssh"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    },
+    {
+      "id": "watch",
+      "use": "runtime.rust:lab.remote.watch",
+      "inputs": {
+        "computer": "box",
+        "everyMs": 300
+      }
+    },
+    {
+      "id": "the-best-route-is-used",
+      "use": "runtime.rust:lab.remote.wait",
+      "inputs": {
+        "computer": "box",
+        "route": "lan",
+        "within": 30,
+        "expect": {
+          "paths": {
+            "current": "lan",
+            "moves": {
+              "$any": {
+                "change": {
+                  "change": "moved",
+                  "from": "ssh",
+                  "to": "lan"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    },
+    {
+      "id": "calls-go-direct",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "route": "lan"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    },
+    {
+      "id": "cut-the-direct-route",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "pkill -f '[.]oby-lab-front/front.py'; sleep 0.3; pgrep -fc '[.]oby-lab-front/front.py' || true",
+        "expect": {
+          "paths": {
+            "stdout": "0\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-next-takes-over",
+      "use": "runtime.rust:lab.remote.wait",
+      "inputs": {
+        "computer": "box",
+        "route": "ssh",
+        "within": 30,
+        "expect": {
+          "paths": {
+            "current": "ssh",
+            "moves": {
+              "$any": {
+                "change": {
+                  "change": "moved",
+                  "from": "lan",
+                  "to": "ssh"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    },
+    {
+      "id": "calls-go-over-ssh",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "route": "ssh"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    },
+    {
+      "id": "the-direct-route-is-back",
+      "use": "runtime.rust:lab.remote.front",
+      "inputs": {
+        "machine": "${state.box}",
+        "expect": {
+          "paths": {
+            "pin": "${state.front.pin}"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-window-moves-up-again",
+      "use": "runtime.rust:lab.remote.wait",
+      "inputs": {
+        "computer": "box",
+        "route": "lan",
+        "within": 30,
+        "expect": {
+          "paths": {
+            "current": "lan",
+            "moves": {
+              "$count": [
+                {
+                  "change": {
+                    "change": "moved",
+                    "to": "lan"
+                  }
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    },
+    {
+      "id": "cut-every-route",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "root": true,
+        "command": "pkill -f '[.]oby-lab-front/front.py'; systemctl stop ssh.socket ssh.service; pkill -f '[s]shd: oby' ; sleep 0.3; echo cut",
+        "expect": {
+          "paths": {
+            "stdout": "cut\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "none-answers",
+      "use": "runtime.rust:lab.remote.wait",
+      "inputs": {
+        "computer": "box",
+        "route": null,
+        "within": 60,
+        "expect": {
+          "paths": {
+            "current": null,
+            "moves": {
+              "$any": {
+                "change": {
+                  "change": "lost"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    },
+    {
+      "id": "oby-says-which-routes-it-tried",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "reached": false,
+            "said": {
+              "$matches": "lan \\(lan https://.*ssh \\(ssh lab-box\\)"
+            },
+            "tried": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-4"
+        ]
+      }
+    }
+  ]
+}

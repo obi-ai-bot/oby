@@ -19,6 +19,20 @@ use std::time::{Duration, Instant};
 
 /// How long one step may take before the host gives up on it.
 const STEP_LIMIT: Duration = Duration::from_secs(300);
+/// The most a lab step may ask for with its own `limit` (OBIDSPEC-16).
+const LAB_STEP_MOST: Duration = Duration::from_secs(1800);
+
+/// How long `node`'s step may take: [`STEP_LIMIT`], or for a lab node (src/lab/mod.rs) the step's
+/// own `limit` in seconds, at most [`LAB_STEP_MOST`]: a machine building a Linux obid from nothing
+/// takes longer than 300 s. Any other node's `limit` is its own input, never the host's.
+fn step_limit(node: &str, inputs: &Value) -> Duration {
+    match inputs.get("limit").and_then(Value::as_u64) {
+        Some(seconds) if node.starts_with("lab.") => {
+            Duration::from_secs(seconds).min(LAB_STEP_MOST)
+        }
+        _ => STEP_LIMIT,
+    }
+}
 /// The most workflows at once: the Mac is shared (each runs one or two obids).
 const MAX_JOBS: usize = 6;
 
@@ -548,9 +562,10 @@ async fn execute(
         inputs: serde_json::to_vec(inputs).map_err(|e| e.to_string())?,
         ..Default::default()
     };
-    let answer = tokio::time::timeout(STEP_LIMIT, client.execute(request))
+    let limit = step_limit(node, inputs);
+    let answer = tokio::time::timeout(limit, client.execute(request))
         .await
-        .map_err(|_| format!("ran past {} s", STEP_LIMIT.as_secs()))?
+        .map_err(|_| format!("ran past {} s", limit.as_secs()))?
         .map_err(|e| format!("the node's transport failed: {e}"))?
         .into_inner();
     if !answer.success {
@@ -680,4 +695,35 @@ fn print_table(results: &[WorkflowResult], took: Duration) {
         skipped.len(),
         took.as_secs_f64()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn obidspec_16_a_lab_step_takes_its_own_limit_capped_and_no_other_step_does() {
+        let limit = |n: u64| json!({ "limit": n });
+        assert_eq!(
+            step_limit("lab.machine.obid-build", &limit(1200)),
+            Duration::from_secs(1200)
+        );
+        assert_eq!(
+            step_limit("lab.machine.obid-build", &limit(5000)),
+            LAB_STEP_MOST,
+            "capped"
+        );
+        assert_eq!(step_limit("lab.machine.run", &json!({})), STEP_LIMIT);
+        assert_eq!(
+            step_limit("call", &limit(1200)),
+            STEP_LIMIT,
+            "not a lab node"
+        );
+        assert_eq!(step_limit("app.read", &limit(60)), STEP_LIMIT);
+        assert_eq!(
+            step_limit("lab.machine.run", &json!({ "limit": "1200" })),
+            STEP_LIMIT,
+            "seconds as a number only"
+        );
+    }
 }
