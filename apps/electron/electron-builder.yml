@@ -10,14 +10,23 @@ productName: Oby
 directories:
   buildResources: build
   output: dist
-# Vite bundles the renderer's packages, and main uses only Electron and Node.
+# Vite bundles the renderer's packages, and main uses only Electron, Node and node-pty (the
+# terminal's shells, main/terminal.ts): its JavaScript and its Mac builds (N-API: no rebuild for
+# Electron), the native module and its spawn-helper unpacked, where macOS can run and load them.
 files:
   - out/**
   - native/window-style/build/Release/window_style.node
   - package.json
   - "!node_modules/**"
+  - node_modules/node-pty/package.json
+  - node_modules/node-pty/LICENSE
+  - node_modules/node-pty/lib/*.js
+  - "!node_modules/node-pty/lib/*.test.js"
+  - "!node_modules/node-pty/lib/testUtils*.js"
+  - node_modules/node-pty/prebuilds/darwin-${arch}/**
 asarUnpack:
   - native/**/*.node
+  - node_modules/node-pty/prebuilds/**
 npmRebuild: false
 # No running the app as plain Node, no Node flags or inspector from outside, and only the app's own
 # checked asar: main holds obid's token.

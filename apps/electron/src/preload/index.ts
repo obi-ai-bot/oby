@@ -208,6 +208,27 @@ contextBridge.exposeInMainWorld('app', {
     },
     stop: () => ipcRenderer.send('mac-pill-stop'),
   },
+  // the owner's own shell in a task's or conversation's working copy (main/terminal.ts,
+  // docs/contracts/terminal.md): opened right after the owner's click main saw, with only where and
+  // the size the page measured (main finds the folder); what's typed, which main lets through only as
+  // it saw it typed; a new size; closed; and each shell's output and end
+  terminal: {
+    open: (place: 'task' | 'conversation', id: string, cols: number, rows: number) =>
+      ipcRenderer.invoke('terminal-open', place, id, cols, rows) as Promise<{ term: string; cwd: string; name: string } | { error: string }>,
+    write: (term: string, data: string) => ipcRenderer.send('terminal-write', term, data),
+    resize: (term: string, cols: number, rows: number) => ipcRenderer.send('terminal-resize', term, cols, rows),
+    close: (term: string) => ipcRenderer.send('terminal-close', term),
+    onData(fn: (term: string, data: string) => void) {
+      const listener = (_: unknown, term: string, data: string) => fn(term, data);
+      ipcRenderer.on('terminal-data', listener);
+      return () => { ipcRenderer.off('terminal-data', listener); };
+    },
+    onExit(fn: (term: string, code: number, signal: number | null) => void) {
+      const listener = (_: unknown, term: string, code: number, signal: number | null) => fn(term, code, signal);
+      ipcRenderer.on('terminal-exit', listener);
+      return () => { ipcRenderer.off('terminal-exit', listener); };
+    },
+  },
   // obid's browser, followed by main, which holds the token (main/browser.ts, BROWSERAPP-8): its events
   // from now on (`open` each time the stream connects again), and a tab's frames while the page draws
   // it; each a function that stops listening
