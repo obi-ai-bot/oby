@@ -61,7 +61,7 @@ that one build; with the build cached the Linux three take about 90 s and the Ma
 | LAB-REMOTE-5 | After "Remove this computer" (`DELETE /v1/pairing` through the route, with the Mac's own token), the Mac's token is refused, its signed words too. | `ssh-pair.json` |
 | LAB-REMOTE-6 | A job the window starts runs on the Linux obid with obid's stand-in agents, in that machine's folder, and its result reaches the Mac through the tunnel. | `ssh-pair.json` |
 | LAB-REMOTE-7 | A direct address is HTTPS with the certificate pinned: the pinned one connects; another machine's certificate at the same address, or a new certificate on the same machine, is refused. | `code-pair.json` |
-| LAB-REMOTE-8 | A computer's token reaches a route of the window's past a phone's allowlist (the vault), and never pairing. | `ssh-pair.json` |
+| LAB-REMOTE-8 | A computer's token reaches the gateway's list and nothing kept on loopback: not the vault, not pairing. | `ssh-pair.json` |
 | LAB-REMOTE-MAC-1 | The other computer is a Mac: the workflow's key in `~/.ssh/authorized_keys` is restricted, runs nothing but that obid's pairing program (`id -un` gets "That isn't a device key."), tunnels to that obid's gateway and to no other port; a host key never accepted is refused. | `mac-ssh-pair.json` |
 | LAB-REMOTE-MAC-2 | Pairing that Mac over SSH: its pairing file used up, a device token through the tunnel, and a wider setting only with the window's key's signature. | `mac-ssh-pair.json` |
 | LAB-REMOTE-MAC-3 | A job the window starts runs in that obid's own worktree (`worktrees/<job>/`), and its result reaches the window. | `mac-ssh-pair.json` |
@@ -116,8 +116,10 @@ Each item is something the lab does in obid's place today.
    own (`lab.remote.direct`); `lab.remote.front` (python3) is left only for the impostor machine.
 2. **`obid pair-computer`.** Ported (COMPUTERS-7): `pair_computer_script` is now only obid's own
    command's path, so it can be a key's forced command.
-3. **A computer's token reaches the window's routes.** Ported (COMPUTERS-14): a computer's
-   pairing reaches every route of obid's but pairing and the sign-ins, past the iPhone's allowlist.
+3. **A computer's token reaches the window's routes.** Partly ported (COMPUTERS-14): a computer's
+   pairing is its own kind, and reaches the gateway's list, as a phone's. The routes the window uses
+   past it (connections, the vault, adding folders, a member's unsealed setting…) are each kept on
+   loopback by obid's docs today: adding them is the owner's call, route by route.
 4. **Signed words bound to the token's own key.** Ported (COMPUTERS-15): through a computer's token
    only the key bound to its pairing signs the owner's words; `obid pair-computer` names the key it
    registered in its invitation, and redeeming binds it.

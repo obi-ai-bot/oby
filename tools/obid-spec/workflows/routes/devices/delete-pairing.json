@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "DELETE /v1/pairing",
   "version": "1.0.0",
-  "description": "Another computer's own device token ends its pairing on the gateway (COMPUTERS-16), where a phone's can't; before that, its token reaches a window's route past a phone's list and never pairing (COMPUTERS-14).",
+  "description": "Another computer's own device token ends its pairing on the gateway (COMPUTERS-16), where a phone's can't; before that, its token reaches the gateway's list and nothing kept on loopback, and no path read two ways (COMPUTERS-14).",
   "trigger": {
     "http": {
       "method": "DELETE",
@@ -108,7 +108,7 @@
       }
     },
     {
-      "id": "a-windows-route",
+      "id": "on-the-list",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": {
@@ -116,7 +116,7 @@
           "token": "${state.computer.body.token}"
         },
         "method": "GET",
-        "path": "/v1/obid/vault",
+        "path": "/v1/repos",
         "as": "token",
         "token": "${state.computer.body.token}",
         "expect": {
@@ -130,17 +130,39 @@
       }
     },
     {
-      "id": "not-a-phones",
+      "id": "never-the-vault",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": {
           "base": "${state.o.gatewayBase}",
-          "token": "${state.phone.body.token}"
+          "token": "${state.computer.body.token}"
         },
         "method": "GET",
         "path": "/v1/obid/vault",
         "as": "token",
-        "token": "${state.phone.body.token}",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-14"
+        ]
+      }
+    },
+    {
+      "id": "escaped-segment-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/%70airing/devices",
+        "as": "token",
+        "token": "${state.computer.body.token}",
         "expect": {
           "status": 404
         }

@@ -169,19 +169,47 @@ pub fn allows(method: &Method, path: &str) -> bool {
     })
 }
 
-/// Whether another computer of the owner's, paired with its own kind of pairing, may `method`
-/// `path` through the gateway (docs/contracts/remote.md, COMPUTERS-14): the window's routes, every
-/// route of obid's but pairing (`/v1/pairing` and under it: a paired computer never pairs, lists or
-/// revokes others) and the sign-ins, whose loopback redirects only that computer's own browser can
-/// finish (Tetrix's never on the gateway: core/AGENTS.md, "Tetrix").
-pub fn allows_computer(_method: &Method, path: &str) -> bool {
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let pairing = segments.len() >= 2 && segments[0] == "v1" && segments[1] == "pairing";
-    let sign_in = segments.last() == Some(&"sign-in");
-    segments.first() == Some(&"v1") && !pairing && !sign_in
+/// `path` as one route, decoded, before any list is read: `None` when a segment is empty, `.` or
+/// `..`, holds a backslash or NUL, or has a `%` escape that isn't two hex digits, isn't UTF-8, or
+/// decodes to any of those, a `/` or a `%`. A path that could be read two ways is refused, so the
+/// gateway's list reads the route obid's router serves (docs/contracts/remote.md, COMPUTERS-14).
+pub fn plain_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix('/')?;
+    let mut plain = String::with_capacity(path.len());
+    for segment in rest.split('/') {
+        let segment = decoded(segment)?;
+        if segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.contains(['/', '\\', '%', '\0'])
+        {
+            return None;
+        }
+        plain.push('/');
+        plain.push_str(&segment);
+    }
+    Some(plain)
 }
 
-/// The open invitation: digests only, never the secret or the code.
+/// `segment` with its `%` escapes decoded, when each is two hex digits and the result is UTF-8.
+fn decoded(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(at + 1..at + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The open invitation: digests only, never the secret or the code./// The open invitation: digests only, never the secret or the code.
 struct Pending {
     secret: String,
     code: String,
@@ -216,8 +244,8 @@ struct Device {
     /// redeemed an invitation the owner made on their own device. A pairing from before has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keyable_until: Option<i64>,
-    /// Another computer of the owner's, not a phone (COMPUTERS-14): its token reaches the window's
-    /// routes ([`allows_computer`]), and only its own key's words count through it.
+    /// Another computer of the owner's, not a phone (COMPUTERS-14): only its own key's words count
+    /// through its token, and it may end its own pairing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     computer: bool,
 }
@@ -950,20 +978,21 @@ async fn unpair(State(through): State<Through>, request: Request) -> Response {
 /// its content type.
 async fn forward(State(through): State<Through>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    const NOT_HERE: &str = "That route isn't available through the gateway.";
-    if !allows_computer(&parts.method, parts.uri.path()) {
-        return error(StatusCode::NOT_FOUND, NOT_HERE);
+    // A phone's and a computer's token reach the same list (COMPUTERS-14): a route off it is one
+    // obid's docs keep on its loopback API, until the owner adds it by name.
+    if !plain_path(parts.uri.path()).is_some_and(|path| allows(&parts.method, &path)) {
+        return error(
+            StatusCode::NOT_FOUND,
+            "That route isn't available through the gateway.",
+        );
     }
     let token = bearer(&parts.headers);
-    // Without a device token that works here, a route off a phone's list is `404`, as it always was.
-    let listed = allows(&parts.method, parts.uri.path());
     // A phone paired through the Obysphere is reached only sealed, by its own relay token's
     // socket; any other only here, on the listener.
     let via = parts.extensions.get::<Relayed>().map(|r| r.0.as_str());
     let device =
         match token.and_then(|t| through.shared.gateway.device_via(t, SystemTime::now(), via)) {
             Some(Ok(device)) => device,
-            _ if !listed => return error(StatusCode::NOT_FOUND, NOT_HERE),
             Some(Err(())) if via.is_none() => {
                 return error(
                     StatusCode::UNAUTHORIZED,
@@ -983,8 +1012,7 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
                 );
             }
         };
-    // A phone reaches its allowlist; another computer the window's routes (COMPUTERS-14), and only
-    // its own key's words count through its token (COMPUTERS-15).
+    // Only another computer's own key's words count through its token (COMPUTERS-15).
     if through.shared.gateway.is_computer(&device) {
         let words = parts
             .headers
@@ -998,8 +1026,6 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
                 "Those words aren't signed by this computer's own key. Add this computer again.",
             );
         }
-    } else if !listed {
-        return error(StatusCode::NOT_FOUND, NOT_HERE);
     }
     let Ok(body) = axum::body::to_bytes(body, BODY).await else {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "That request is too large.");
@@ -1847,37 +1873,48 @@ mod tests {
     }
 
     #[test]
-    fn computers_14_a_computer_reaches_the_windows_routes_but_pairing_and_sign_ins() {
-        for (method, path) in [
-            (Method::GET, "/v1/obid/vault"),
-            (Method::PUT, "/v1/obid/vault/github"),
-            (Method::POST, "/v1/folders"),
-            (Method::GET, "/v1/status"),
-            (Method::POST, "/v1/devices/abc/pairing"),
+    fn computers_14_a_path_through_the_gateway_names_one_route_as_written() {
+        for (path, plain) in [
+            ("/v1/status", "/v1/status"),
+            (
+                "/v1/inbox/listen%2Dreview-1/answer",
+                "/v1/inbox/listen-review-1/answer",
+            ),
+            (
+                "/v1/artifacts/abc/1/my%20notes.md",
+                "/v1/artifacts/abc/1/my notes.md",
+            ),
+            ("/v1/%70airing/devices", "/v1/pairing/devices"),
         ] {
-            assert!(allows_computer(&method, path), "{method} {path}");
+            assert_eq!(plain_path(path).as_deref(), Some(plain), "{path}");
         }
-        for (method, path) in [
-            (Method::POST, "/v1/pairing"),
-            (Method::POST, "/v1/pairing/invite"),
-            (Method::GET, "/v1/pairing/devices"),
-            (Method::DELETE, "/v1/pairing/devices/abc"),
-            (Method::POST, "/v1/tetrix/sign-in"),
-            (Method::POST, "/v1/accounts/abc/sign-in"),
-            (Method::DELETE, "/v1/github/sign-in"),
-            (Method::GET, "/"),
-            (Method::GET, "/metrics"),
+        assert!(!allows(
+            &Method::GET,
+            &plain_path("/v1/%70airing/devices").unwrap()
+        ));
+        for path in [
+            "/v1/./pairing/devices",
+            "//v1/pairing/devices",
+            "/v1/pairing/../pairing/devices",
+            "/v1/pairing/devices/",
+            "/v1\\pairing",
+            "v1/status",
+            "/v1/jobs/%2e%2e/report",
+            "/v1/jobs/%2E/report",
+            "/v1/artifacts/abc/1/a%2Fb",
+            "/v1/artifacts/abc/1/a%5Cb",
+            "/v1/artifacts/abc/1/a%252e",
+            "/v1/artifacts/abc/1/a%00",
+            "/v1/artifacts/abc/1/%ff",
+            "/v1/artifacts/abc/1/%2",
         ] {
-            assert!(!allows_computer(&method, path), "{method} {path}");
+            assert_eq!(plain_path(path), None, "{path}");
         }
-        // Every route a phone has, a computer has too.
-        for (method, path) in ROUTES {
-            let path = path.replace("**", "x/y").replace('*', "x");
-            assert!(
-                allows_computer(&Method::from_bytes(method.as_bytes()).unwrap(), &path),
-                "{method} {path}"
-            );
-        }
+        // A computer's token reaches the gateway's list and nothing past it.
+        assert!(!allows(&Method::GET, "/v1/obid/vault"));
+        assert!(!allows(&Method::PUT, "/v1/obid/vault/github"));
+        assert!(!allows(&Method::GET, "/v1/pairing/devices"));
+        assert!(!allows(&Method::POST, "/v1/repos/setup"));
     }
 
     #[test]

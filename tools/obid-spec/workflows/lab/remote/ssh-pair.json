@@ -195,7 +195,7 @@
       }
     },
     {
-      "id": "a-windows-route-past-the-phones",
+      "id": "never-the-vault",
       "use": "runtime.rust:lab.remote.call",
       "inputs": {
         "computer": "box",
@@ -203,7 +203,7 @@
         "path": "/v1/obid/vault",
         "expect": {
           "paths": {
-            "status": 200
+            "status": 404
           }
         }
       },

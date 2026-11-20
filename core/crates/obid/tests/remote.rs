@@ -196,22 +196,27 @@ fn words_by(scalar: u8, device: &str, method: &str, path: &str, body: &Value) ->
     format!("{device} {signed_at} {signature}")
 }
 
-/// COMPUTERS-14 to 16, on the real obid: a computer paired over SSH reaches the window's routes,
-/// never pairing nor a sign-in, where a phone reaches only its allowlist; the owner's words count
-/// through its token only signed by the key `obid pair-computer` registered for it; and the Mac
-/// removes it with its own token, which ends it and forgets that key there.
-#[test]
-fn computers_14_to_16_a_computers_token_its_own_key_and_removing_it() {
-    let folder = Folder::new("remote-computer-token");
-    let obid = started(&folder);
+/// What [`computer_and_phone`] paired: the Mac's key and its id, the computer's device token and
+/// pairing, and a phone's token beside it.
+struct Paired {
+    key: String,
+    device: String,
+    token: String,
+    pairing: String,
+    phone_token: String,
+}
+
+/// A computer paired over SSH with `obid pair-computer` (the Mac's key 9), and a phone paired on
+/// the same gateway, for the difference.
+fn computer_and_phone(obid: &Obid) -> Paired {
     let gateway = obid.gateway.unwrap();
     let key = device_key(9);
-    let (code, out, err) = pair_computer(&obid, &format!("Studio Mac\n{key}\n"));
+    let (code, out, err) = pair_computer(obid, &format!("Studio Mac\n{key}\n"));
     assert_eq!(code, 0, "{out}{err}");
     let said: Value = serde_json::from_str(out.trim()).unwrap();
     let device = said["device"]["id"].as_str().unwrap().to_owned();
     let redeem = json!({"credential": said["invite"]["secret"], "name": "Studio Mac"});
-    let (status, text) = through(&obid, None, "POST", "/v1/pairing", Some(&redeem));
+    let (status, text) = through(obid, None, "POST", "/v1/pairing", Some(&redeem));
     assert_eq!(status, 200, "{text}");
     let paired: Value = serde_json::from_str(text.trim()).unwrap();
     let token = paired["token"].as_str().unwrap().to_owned();
@@ -223,14 +228,14 @@ fn computers_14_to_16_a_computers_token_its_own_key_and_removing_it() {
 
     // A phone, paired on the same gateway, for the difference.
     let phone = call(
-        &obid,
+        obid,
         "POST",
         "/v1/pairing/invite",
         Some(&json!({"url": format!("http://127.0.0.1:{gateway}")})),
     );
     assert_eq!(phone.status, 200, "{}", phone.text);
     let (status, text) = through(
-        &obid,
+        obid,
         None,
         "POST",
         "/v1/pairing",
@@ -242,21 +247,65 @@ fn computers_14_to_16_a_computers_token_its_own_key_and_removing_it() {
         .unwrap()
         .to_owned();
 
-    // COMPUTERS-14: the window's routes, past the phone's allowlist; never pairing or a sign-in.
-    let (status, text) = through(&obid, Some(&token), "GET", "/v1/obid/vault", None);
-    assert_eq!(status, 200, "a window's route: {text}");
-    let (status, _) = through(&obid, Some(&phone_token), "GET", "/v1/obid/vault", None);
-    assert_eq!(status, 404, "not a phone's");
+    Paired {
+        key,
+        device,
+        token,
+        pairing,
+        phone_token,
+    }
+}
+
+/// COMPUTERS-14 to 16, on the real obid: a computer paired over SSH reaches the gateway's list, as
+/// a phone does, never a route kept on loopback, and no path read two ways; the owner's words count
+/// through its token only signed by the key `obid pair-computer` registered for it; and the Mac
+/// removes it with its own token, which ends it and forgets that key there.
+#[test]
+fn computers_14_to_16_a_computers_token_its_own_key_and_removing_it() {
+    let folder = Folder::new("remote-computer-token");
+    let obid = started(&folder);
+    let Paired {
+        key,
+        device,
+        token,
+        pairing,
+        phone_token,
+    } = computer_and_phone(&obid);
+
+    // COMPUTERS-14: the gateway's list, as a phone's; never a route obid's docs keep on its
+    // loopback API (the vault: docs/contracts/vault.md), pairing or a sign-in.
+    let (status, text) = through(&obid, Some(&token), "GET", "/v1/repos", None);
+    assert_eq!(status, 200, "on the list: {text}");
     for (method, path) in [
+        ("GET", "/v1/obid/vault"),
+        ("PUT", "/v1/obid/vault/GITHUB_TOKEN"),
+        ("DELETE", "/v1/obid/vault/GITHUB_TOKEN"),
         ("GET", "/v1/pairing/devices"),
         ("POST", "/v1/pairing/invite"),
         ("DELETE", "/v1/pairing/devices/x"),
         ("POST", "/v1/tetrix/sign-in"),
-        ("POST", "/v1/github/sign-in"),
+        ("POST", "/v1/repos/setup"),
+        ("PUT", "/v1/settings/agents/claude"),
     ] {
-        let (status, text) = through(&obid, Some(&token), method, path, Some(&json!({})));
+        let (status, text) = through(
+            &obid,
+            Some(&token),
+            method,
+            path,
+            Some(&json!({"value": "s3cret"})),
+        );
         assert_eq!(status, 404, "{method} {path}: {text}");
+        assert!(
+            text.contains("isn't available through the gateway"),
+            "{text}"
+        );
     }
+    let vault = call(&obid, "GET", "/v1/obid/vault", None);
+    assert!(
+        !vault.text.contains("GITHUB_TOKEN"),
+        "nothing saved: {}",
+        vault.text
+    );
     let listed = call(&obid, "GET", "/v1/pairing/devices", None);
     let entry = listed
         .body
@@ -312,6 +361,36 @@ fn computers_14_to_16_a_computers_token_its_own_key_and_removing_it() {
         Some(&json!({"name": "Studio Mac", "publicKey": key})),
     );
     assert_eq!(again.status, 403, "{}", again.text);
+}
+
+/// COMPUTERS-14, on the real obid: a path that reads two ways is refused at the gateway before
+/// its list is read, whoever's token it carries, and none reaches a pairing route.
+#[test]
+fn computers_14_a_path_read_two_ways_reaches_no_route() {
+    let folder = Folder::new("remote-computer-paths");
+    let obid = started(&folder);
+    let Paired {
+        token,
+        pairing,
+        phone_token,
+        ..
+    } = computer_and_phone(&obid);
+    for path in [
+        "/v1/%70airing/devices",
+        "/v1/./pairing/devices",
+        "//v1/pairing/devices",
+        "/v1/pairing/../pairing/devices",
+    ] {
+        for bearer in [&token, &phone_token] {
+            let (status, text) = through(&obid, Some(bearer), "GET", path, None);
+            assert_eq!(status, 404, "{path}: {text}");
+            assert!(!text.contains(&pairing), "no paired device listed: {text}");
+            assert!(
+                text.contains("isn't available through the gateway"),
+                "{path}: {text}"
+            );
+        }
+    }
 }
 
 /// COMPUTERS-7: without a gateway no other computer can reach this obid, and it says so.
