@@ -1,0 +1,282 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking: a later turn reads what was asked",
+  "version": "1.0.0",
+  "description": "oby_asks reads what was asked and answered, quoted; that marks the conversation with words that name no one, also with no answer yet, and what it asks next waits for the owner's Confirm (ASK-13).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "dana-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.dana}"
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"Which branch has the fix?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "obiRequest",
+            "state": "open",
+            "obi": {
+              "quoted": {
+                "text": "Which branch has the fix?"
+              }
+            }
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "not-marked-yet",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.asked.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_asks {}",
+          "conversation": "${state.asked.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Which branch has the fix?"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-13"
+        ]
+      }
+    },
+    {
+      "id": "ask-13-reading-marks-the-conversation-also-with-no-answer-yet",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.asked.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": "what another Oby said, read with oby_asks"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-13"
+        ]
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dana\", \"question\": \"And the tests?\"}",
+          "conversation": "${state.asked.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for the owner's OK"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-13"
+        ]
+      }
+    },
+    {
+      "id": "ask-13-what-it-asks-next-waits-for-the-confirm",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "text": {
+                  "$contains": "And the tests?"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-13"
+        ]
+      }
+    },
+    {
+      "id": "ask-13-nothing-went",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "obi": {
+                  "quoted": {
+                    "text": "And the tests?"
+                  }
+                }
+              }
+            },
+            "0.kind": "obiRequest"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-13"
+        ]
+      }
+    }
+  ]
+}
