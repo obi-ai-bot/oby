@@ -60,6 +60,8 @@ pub struct Rules {
     pub downloads: bool,
     /// A stream reader gets the newest frame; a slow one drops frames.
     pub frames: bool,
+    /// Starting a job's browser has its own allowance, apart from the first command's deadline.
+    pub start: bool,
 }
 
 impl Rules {
@@ -73,6 +75,7 @@ impl Rules {
         outside: true,
         downloads: true,
         frames: true,
+        start: true,
     };
 
     /// All rules but the ones named (comma-separated): the lab's red proofs.
@@ -89,6 +92,7 @@ impl Rules {
                 "outside" => r.outside = false,
                 "downloads" => r.downloads = false,
                 "frames" => r.frames = false,
+                "start" => r.start = false,
                 _ => {}
             }
         }
@@ -260,6 +264,9 @@ pub struct Job {
     pub seen_downloads: BTreeSet<String>,
     /// The lab's hook: how long an act waits between being let through and being run.
     pub commit_delay_ms: u64,
+    /// Whether its browser is up, and why not when it failed.
+    pub browser: c::BrowserState,
+    pub browser_reason: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -284,6 +291,104 @@ pub enum Take {
     /// Held now (no new act is let through), but `n` acts let through before are still running:
     /// the take answers once they've finished.
     Wait(u32),
+}
+
+/// Who starts a job's browser ([`Api::claim_start`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    Up,
+    Mine,
+    Wait,
+    NoJob,
+}
+
+/// One attempt at starting a job's browser (launching Chrome for its profile): obid's driver, the
+/// lab's engine nodes, or a test's stub.
+#[async_trait::async_trait]
+pub trait Launch: Sync {
+    async fn launch(&self, job: &str) -> Result<(), String>;
+}
+
+fn still_starting(after: Duration) -> Refused {
+    Refused::new(
+        409,
+        "browser_starting",
+        format!(
+            "The browser is still starting after {} s (the Mac may be busy). Nothing ran; try again in a moment.",
+            after.as_secs()
+        ),
+    )
+}
+
+/// Brings a job's browser up before its command runs, within `allowance`, apart from the
+/// command's own deadline, which counts only once this answered. The first caller launches
+/// (again after a failed attempt, until the allowance passes); the others wait for it. Past the
+/// allowance the answer is `browser_starting`, never a bare timeout. `changed` hands each new state
+/// to whoever shows it. With the rule off the first command launches the browser itself, inside
+/// its own deadline (the red proof).
+pub async fn browser_up(
+    api: &Mutex<Api>,
+    launcher: &dyn Launch,
+    job: &str,
+    allowance: Duration,
+    changed: &(dyn Fn() + Sync),
+) -> Result<(), Refused> {
+    if !api.lock().unwrap().rules.start {
+        return Ok(());
+    }
+    let started = Instant::now();
+    let until = started + allowance;
+    let claim = api.lock().unwrap().claim_start(job);
+    changed();
+    match claim {
+        Start::Up => return Ok(()),
+        Start::NoJob => return Err(Refused::new(401, "bad_token", "No such job.")),
+        Start::Wait => loop {
+            let state = api
+                .lock()
+                .unwrap()
+                .job(job)
+                .map(|j| (j.browser, j.browser_reason.clone()));
+            match state {
+                Some((c::BrowserState::Ready, _)) => return Ok(()),
+                Some((c::BrowserState::Failed, why)) => {
+                    return Err(Refused::new(
+                        409,
+                        "browser",
+                        why.unwrap_or_else(|| "The browser didn't start.".into()),
+                    ))
+                }
+                _ if Instant::now() >= until => return Err(still_starting(started.elapsed())),
+                _ => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        },
+        Start::Mine => {}
+    }
+    let outcome = loop {
+        let left = until.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(left, launcher.launch(job)).await {
+            Ok(Ok(())) => break Ok(()),
+            // A failed attempt is tried again while the allowance lasts.
+            Ok(Err(e)) if Instant::now() + Duration::from_millis(250) >= until => {
+                break Err(Refused::new(
+                    409,
+                    "browser",
+                    format!("The browser didn't start: {e}"),
+                ))
+            }
+            Ok(Err(_)) => tokio::time::sleep(Duration::from_millis(250)).await,
+            Err(_) => break Err(still_starting(started.elapsed())),
+        }
+    };
+    {
+        let mut a = api.lock().unwrap();
+        match &outcome {
+            Ok(()) => a.set_browser(job, c::BrowserState::Ready, None),
+            Err(e) => a.set_browser(job, c::BrowserState::Failed, Some(e.message.clone())),
+        }
+    }
+    changed();
+    outcome
 }
 
 /// The browser's API: who may call, tabs and their holds, asks, downloads, settings and events.
@@ -450,6 +555,8 @@ impl Api {
                 refs: BTreeMap::new(),
                 seen_downloads: BTreeSet::new(),
                 commit_delay_ms: 0,
+                browser: c::BrowserState::NotStarted,
+                browser_reason: None,
             },
         );
     }
@@ -769,6 +876,50 @@ impl Api {
         c::TabsAnswer {
             tabs: self.tabs.values().map(|t| t.tab.clone()).collect(),
             settings: self.settings,
+            browsers: self
+                .jobs
+                .keys()
+                .filter_map(|j| self.job_browser(j))
+                .collect(),
+        }
+    }
+
+    // ── A job's browser ────────────────────────────────────────────────────────────────────────
+
+    pub fn job_browser(&self, job: &str) -> Option<c::JobBrowser> {
+        self.jobs.get(job).map(|j| c::JobBrowser {
+            job: j.id.clone(),
+            agent: j.agent.clone(),
+            state: j.browser,
+            reason: j.browser_reason.clone(),
+        })
+    }
+
+    /// A job's browser is now in `state`: a `browser` event when that's new.
+    pub fn set_browser(&mut self, job: &str, state: c::BrowserState, reason: Option<String>) {
+        let Some(j) = self.jobs.get_mut(job) else {
+            return;
+        };
+        if j.browser == state && j.browser_reason == reason {
+            return;
+        }
+        j.browser = state;
+        j.browser_reason = reason;
+        if let Some(browser) = self.job_browser(job) {
+            self.push(c::EventBody::Browser { browser });
+        }
+    }
+
+    /// Who starts a job's browser: the first caller, while the others wait for it.
+    pub fn claim_start(&mut self, job: &str) -> Start {
+        match self.jobs.get(job).map(|j| j.browser) {
+            None => Start::NoJob,
+            Some(c::BrowserState::Ready) => Start::Up,
+            Some(c::BrowserState::Starting) => Start::Wait,
+            Some(c::BrowserState::NotStarted | c::BrowserState::Failed) => {
+                self.set_browser(job, c::BrowserState::Starting, None);
+                Start::Mine
+            }
         }
     }
 
@@ -1099,6 +1250,8 @@ struct Shared {
     /// What the API wrote: request lines, and every answer and event it gave.
     log: PathBuf,
     answers: PathBuf,
+    /// The last event handed to the stream's readers.
+    published: Mutex<u64>,
 }
 
 impl Shared {
@@ -1106,10 +1259,13 @@ impl Shared {
         f(&mut self.api.lock().unwrap())
     }
 
-    /// Hands every event the API made since `after` to the stream's readers, and records them.
-    fn publish(&self, after: u64) {
-        let new = self.api(|a| a.events_after(after));
+    /// Hands every event the API made since the last call to the stream's readers, and records
+    /// them, as soon as they're made.
+    fn flush(&self) {
+        let mut published = self.published.lock().unwrap();
+        let new = self.api(|a| a.events_after(*published));
         for e in new {
+            *published = e.seq;
             self.record(&serde_json::to_value(&e).unwrap_or_default());
             let _ = self.events.send(e);
         }
@@ -1386,9 +1542,8 @@ async fn handle(shared: &Arc<Shared>, req: &Request, r: &Route) -> Answer {
     } else {
         None
     };
-    let before = shared.api(|a| a.last_seq());
     let answer = person_route(shared, req, r, device).await;
-    shared.publish(before);
+    shared.flush();
     answer
 }
 
@@ -1631,7 +1786,6 @@ fn watch_downloads(
             if new.is_empty() {
                 continue;
             }
-            let before = s.api(|a| a.last_seq());
             for (name, bytes) in new {
                 let deliver = browser::download_rule(&engine_rules, &started_by)
                     == browser::Download::Deliver;
@@ -1653,7 +1807,7 @@ fn watch_downloads(
                     a.download_seen(&job, tab.clone(), &name, who, place, bytes);
                 });
             }
-            s.publish(before);
+            s.flush();
             break;
         }
     });
@@ -1719,15 +1873,29 @@ async fn mcp(shared: &Arc<Shared>, req: &Request) -> Answer {
             let name = rpc["params"]["name"].as_str().unwrap_or("").to_string();
             let args = rpc["params"]["arguments"].clone();
             let args = if args.is_object() { args } else { json!({}) };
-            let before = shared.api(|a| a.last_seq());
             let result = call_tool(shared, &job, &name, &args).await;
-            shared.publish(before);
+            shared.flush();
             reply(result)
         }
         other => Answer::Json(
             200,
             json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("no method {other}")}}),
         ),
+    }
+}
+
+/// The lab's launch: the engine's own read of the job's page, which starts its agent-browser
+/// daemon and Chrome when they aren't up (browser.rs's `lab.browser.read`, its 30 s limit).
+struct EngineLaunch<'a>(&'a Run);
+
+#[async_trait::async_trait]
+impl Launch for EngineLaunch<'_> {
+    async fn launch(&self, job: &str) -> Result<(), String> {
+        match browser::run_node(self.0, "lab.browser.read", &json!({"conversation": job})).await {
+            Ok(v) if v["url"].is_string() => Ok(()),
+            Ok(v) => Err(format!("the browser answered {v}")),
+            Err(e) => Err(format!("{e:#}")),
+        }
     }
 }
 
@@ -1743,6 +1911,14 @@ async fn call_tool(shared: &Arc<Shared>, job: &str, name: &str, args: &Value) ->
         ));
     }
     let run = &shared.run;
+    // Every tool that reaches a page waits for the job's browser first, within its own allowance.
+    if !matches!(name, "oby_browser_list_tabs" | "oby_browser_ask_person") {
+        let allowance = Duration::from_millis(c::BROWSER_START_ALLOWANCE_MS);
+        let flush = || shared.flush();
+        if let Err(e) = browser_up(&shared.api, &EngineLaunch(run), job, allowance, &flush).await {
+            return mcp_refusal(&e);
+        }
+    }
     match name {
         "oby_browser_ask_person" => {
             let kind: c::AskKind = match serde_json::from_value(args["kind"].clone()) {
@@ -1791,6 +1967,8 @@ async fn call_tool(shared: &Arc<Shared>, job: &str, name: &str, args: &Value) ->
                 let _ = sync(shared, job).await;
                 v["result"]["asks"] =
                     serde_json::to_value(shared.api(|a| a.asks_of(job))).unwrap_or_default();
+                v["result"]["browser"] =
+                    serde_json::to_value(shared.api(|a| a.job_browser(job))).unwrap_or_default();
                 mcp_result(shared.api(|a| a.for_agent(v)))
             }
             Err(e) => mcp_refusal(&Refused::new(409, "browser", format!("{e:#}"))),
@@ -2015,7 +2193,6 @@ fn act_event(
     outcome: c::Outcome,
     reason: Option<&str>,
 ) {
-    let before = shared.api(|a| a.last_seq());
     shared.api(|a| {
         let text = a.action_text(job, tool, args);
         a.push(c::EventBody::Action {
@@ -2028,7 +2205,7 @@ fn act_event(
             reason: reason.map(str::to_string),
         })
     });
-    shared.publish(before);
+    shared.flush();
 }
 
 // ── The events stream ────────────────────────────────────────────────────────────────────────
@@ -2939,6 +3116,7 @@ async fn up(run: &Run) -> Result<Value> {
         tasks: Mutex::new(vec![]),
         log: dir.join("access.log"),
         answers: dir.join("answers.jsonl"),
+        published: Mutex::new(0),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -3134,9 +3312,8 @@ async fn run_once(run: &Run, name: &str, input: &Value) -> Result<Value> {
         "lab.browserapi.end-job" => {
             let s = shared()?;
             let id = input["job"].as_str().context("job")?;
-            let before = s.api(|a| a.last_seq());
             s.api(|a| a.end_job(id));
-            s.publish(before);
+            s.flush();
             Ok(json!({"ended": id}))
         }
         "lab.browserapi.call" => call(input).await,
@@ -3467,5 +3644,136 @@ mod tests {
             assert!(c::REASONS.contains(&r.reason), "{}", r.reason);
             assert!(r.body()["error"].is_string());
         }
+    }
+
+    /// A stub launch: sleeps `ms` (a busy Mac's Chrome), then is up; counts its attempts.
+    struct SlowLaunch {
+        ms: u64,
+        attempts: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl Launch for SlowLaunch {
+        async fn launch(&self, _job: &str) -> Result<(), String> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(self.ms)).await;
+            Ok(())
+        }
+    }
+
+    fn slow(ms: u64) -> SlowLaunch {
+        SlowLaunch {
+            ms,
+            attempts: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// The first command as the lab runs it: the browser brought up under its own allowance, then
+    /// the command under its deadline. With the rule off the browser isn't up yet when the command
+    /// starts, so the launch happens inside the command's deadline, as it did before.
+    async fn first_command(
+        rules: Rules,
+        launch: &SlowLaunch,
+        deadline: Duration,
+        allowance: Duration,
+    ) -> Result<(), &'static str> {
+        let api = Mutex::new(Api::new(rules, "t"));
+        api.lock().unwrap().add_job("j1", "claude", "t1");
+        browser_up(&api, launch, "j1", allowance, &|| ())
+            .await
+            .map_err(|e| e.reason)?;
+        let up = api.lock().unwrap().job("j1").map(|j| j.browser) == Some(c::BrowserState::Ready);
+        let command = async {
+            if !up {
+                // The engine's first command starts the browser itself.
+                let _ = launch.launch("j1").await;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        tokio::time::timeout(deadline, command)
+            .await
+            .map_err(|_| "timed_out")
+    }
+
+    #[tokio::test]
+    async fn a_slow_browser_start_has_its_own_allowance_and_the_command_deadline_counts_after_it() {
+        // Scaled down 100 times: a 15 s command deadline, a launch that takes 25 s, 60 s allowed.
+        let (deadline, allowance) = (Duration::from_millis(150), Duration::from_millis(600));
+        assert_eq!(
+            first_command(Rules::ALL, &slow(250), deadline, allowance).await,
+            Ok(())
+        );
+        // Before the fix (the rule off): the first command times out while Chrome launches.
+        assert_eq!(
+            first_command(Rules::broken("start"), &slow(250), deadline, allowance).await,
+            Err("timed_out")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_browser_still_starting_past_its_allowance_says_so_never_a_bare_timeout() {
+        let api = Mutex::new(Api::new(Rules::ALL, "t"));
+        api.lock().unwrap().add_job("j1", "claude", "t1");
+        let e = browser_up(&api, &slow(1000), "j1", Duration::from_millis(200), &|| ())
+            .await
+            .unwrap_err();
+        assert_eq!(e.reason, "browser_starting");
+        assert!(e.message.contains("still starting"), "{}", e.message);
+        let a = api.lock().unwrap();
+        let kinds: Vec<_> = a
+            .events_after(0)
+            .into_iter()
+            .filter_map(|e| match e.body {
+                c::EventBody::Browser { browser } => Some(browser.state),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, [c::BrowserState::Starting, c::BrowserState::Failed]);
+        assert_eq!(a.tabs().browsers[0].state, c::BrowserState::Failed);
+    }
+
+    #[tokio::test]
+    async fn one_caller_starts_the_browser_and_the_others_wait_for_it() {
+        let api = Mutex::new(Api::new(Rules::ALL, "t"));
+        api.lock().unwrap().add_job("j1", "claude", "t1");
+        let launch = slow(200);
+        let allowance = Duration::from_millis(2000);
+        let (a, b) = tokio::join!(
+            browser_up(&api, &launch, "j1", allowance, &|| ()),
+            browser_up(&api, &launch, "j1", allowance, &|| ())
+        );
+        assert!(a.is_ok() && b.is_ok());
+        assert_eq!(launch.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Up: later calls don't launch again.
+        browser_up(&api, &launch, "j1", allowance, &|| ())
+            .await
+            .unwrap();
+        assert_eq!(launch.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            api.lock().unwrap().job_browser("j1").unwrap().state,
+            c::BrowserState::Ready
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempt_is_tried_again_within_the_allowance() {
+        struct FailsOnce(std::sync::atomic::AtomicU32);
+        #[async_trait::async_trait]
+        impl Launch for FailsOnce {
+            async fn launch(&self, _job: &str) -> Result<(), String> {
+                match self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => Err("daemon not ready".into()),
+                    _ => Ok(()),
+                }
+            }
+        }
+        let api = Mutex::new(Api::new(Rules::ALL, "t"));
+        api.lock().unwrap().add_job("j1", "claude", "t1");
+        let launch = FailsOnce(std::sync::atomic::AtomicU32::new(0));
+        browser_up(&api, &launch, "j1", Duration::from_secs(2), &|| ())
+            .await
+            .unwrap();
+        assert_eq!(launch.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

@@ -174,6 +174,36 @@ pub struct Tab {
 pub struct TabsAnswer {
     pub tabs: Vec<Tab>,
     pub settings: Settings,
+    /// Each job's browser: whether it is up yet (a job has one before it has a tab).
+    pub browsers: Vec<JobBrowser>,
+}
+
+// ── A job's browser ─────────────────────────────────────────────────────────────────────────────
+
+/// How long a job's browser may take to start (Chrome launching for its profile), apart from
+/// any command's deadline: a command's deadline counts only once the browser is up.
+pub const BROWSER_START_ALLOWANCE_MS: u64 = 60_000;
+
+/// Whether a job's browser is up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BrowserState {
+    NotStarted,
+    Starting,
+    Ready,
+    Failed,
+}
+
+pub const BROWSER_STATES: &[&str] = &["notStarted", "starting", "ready", "failed"];
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobBrowser {
+    pub job: String,
+    pub agent: String,
+    pub state: BrowserState,
+    /// For `failed`: why, in a sentence.
+    pub reason: Option<String>,
 }
 
 // ── Holding a tab ───────────────────────────────────────────────────────────────────────────────
@@ -475,6 +505,10 @@ pub enum EventBody {
     Settings {
         settings: Settings,
     },
+    /// A job's browser starting, up, or not started after all.
+    Browser {
+        browser: JobBrowser,
+    },
 }
 
 pub const EVENT_TYPES: &[&str] = &[
@@ -486,6 +520,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "download",
     "scriptRun",
     "settings",
+    "browser",
 ];
 
 impl EventBody {
@@ -499,6 +534,7 @@ impl EventBody {
             EventBody::Download { .. } => "download",
             EventBody::ScriptRun { .. } => "scriptRun",
             EventBody::Settings { .. } => "settings",
+            EventBody::Browser { .. } => "browser",
         }
     }
 }
@@ -545,6 +581,7 @@ pub const REASONS: &[&str] = &[
     "no_such_download",
     "not_found",
     "bad_request",
+    "browser_starting",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────
@@ -713,6 +750,9 @@ mod tests {
         assert_eq!(twin_list("EVENT_TYPES"), EVENT_TYPES);
         assert_eq!(twin_list("REASONS"), REASONS);
         assert_eq!(twin_list("MCP_TOOLS"), MCP_TOOLS);
+        assert_eq!(twin_list("BROWSER_STATES"), BROWSER_STATES);
+        assert!(TWIN.contains("export const BROWSER_START_ALLOWANCE_MS = 60_000;"));
+        assert_eq!(BROWSER_START_ALLOWANCE_MS, 60_000);
         assert_eq!(twin_const("WORDS_HEADER"), WORDS_HEADER);
         assert_eq!(twin_const("MCP_PROTOCOL_VERSION"), MCP_PROTOCOL_VERSION);
         for path in [
@@ -755,6 +795,17 @@ mod tests {
                 width: 1,
                 height: 1,
                 dropped: 0,
+            })
+            .unwrap(),
+            serde_json::to_value(TabsAnswer {
+                tabs: vec![],
+                settings: Settings::default(),
+                browsers: vec![JobBrowser {
+                    job: "j".into(),
+                    agent: "claude".into(),
+                    state: BrowserState::Starting,
+                    reason: None,
+                }],
             })
             .unwrap(),
             serde_json::to_value(Download {
@@ -897,6 +948,6 @@ mod tests {
         ] {
             assert!(REASONS.contains(&r.code()), "{}", r.code());
         }
-        assert_eq!(EVENT_TYPES.len(), 8);
+        assert_eq!(EVENT_TYPES.len(), 9);
     }
 }

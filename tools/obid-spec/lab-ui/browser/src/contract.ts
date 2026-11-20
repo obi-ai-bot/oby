@@ -97,6 +97,24 @@ export interface Tab {
 export interface TabsAnswer {
   tabs: Tab[];
   settings: Settings;
+  /// Each job's browser: whether it is up yet (a job has one before it has a tab).
+  browsers: JobBrowser[];
+}
+
+// ── A job's browser ─────────────────────────────────────────────────────────────────────────────
+
+/// How long a job's browser may take to start, apart from any command's deadline.
+export const BROWSER_START_ALLOWANCE_MS = 60_000;
+
+export const BROWSER_STATES = ["notStarted", "starting", "ready", "failed"] as const;
+export type BrowserState = (typeof BROWSER_STATES)[number];
+
+export interface JobBrowser {
+  job: string;
+  agent: string;
+  state: BrowserState;
+  /// For "failed": why, in a sentence.
+  reason: string | null;
 }
 
 export interface HoldAnswer {
@@ -246,6 +264,7 @@ export const EVENT_TYPES = [
   "download",
   "scriptRun",
   "settings",
+  "browser",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -267,7 +286,8 @@ export type EventBody =
   | { type: "askAnswered"; askId: string }
   | { type: "download"; download: Download }
   | { type: "scriptRun"; tabId: string; job: string; expression: string; result: Outside }
-  | { type: "settings"; settings: Settings };
+  | { type: "settings"; settings: Settings }
+  | { type: "browser"; browser: JobBrowser };
 
 /// One message of PATH_EVENTS: the SSE `id` is `seq`, its `event` is `type`.
 export type BrowserEvent = { seq: number } & EventBody;
@@ -310,6 +330,7 @@ export const REASONS = [
   "no_such_download",
   "not_found",
   "bad_request",
+  "browser_starting",
 ] as const;
 export type Reason = (typeof REASONS)[number];
 

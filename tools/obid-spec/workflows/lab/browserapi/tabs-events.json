@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "Lab browser API: GET /v1/browser and its events follow the engine as an agent opens and drives a page",
   "version": "1.0.0",
-  "description": "LAB-BROWSERAPI-1 (src/lab/browserapi.rs, Api::sync_job and the events stream): an agent's job opens the fixture through its MCP tools; GET /v1/browser lists the tab as the agent's, ready, on this Mac, with the page's title; the agent snapshots, types and clicks Sign in; the events stream has the tab, each action with its words (\"Clicking Sign in\", outcome done), in order; a second tab opens beside it, and closing the first says tabClosed and leaves only the second. Without the owner token the list is refused.",
+  "description": "LAB-BROWSERAPI-1 (src/lab/browserapi.rs, Api::sync_job and the events stream): before any tool the job's browser is notStarted; its first tool brings the browser up (events: starting, then ready) under its own allowance, apart from the command's deadline, and opens the fixture through its MCP tools; GET /v1/browser lists the tab as the agent's, ready, on this Mac, with the page's title; the agent snapshots, types and clicks Sign in; the events stream has the tab, each action with its words (\"Clicking Sign in\", outcome done), in order; a second tab opens beside it, and closing the first says tabClosed and leaves only the second. Without the owner token the list is refused.",
   "trigger": {
     "manual": {}
   },
@@ -44,6 +44,33 @@
       }
     },
     {
+      "id": "not-started",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs": {
+              "$len": 0
+            },
+            "body.browsers.0": {
+              "job": "j1",
+              "agent": "claude",
+              "state": "notStarted"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
       "id": "open",
       "use": "runtime.rust:lab.browserapi.mcp",
       "inputs": {
@@ -71,6 +98,7 @@
         "expect": {
           "paths": {
             "status": 200,
+            "body.browsers.0.state": "ready",
             "body.tabs": {
               "$len": 1
             },
@@ -228,6 +256,17 @@
                 "tabId": "${state.open.structured.result.tab}",
                 "job": "j1"
               }
+            },
+            "of.browser": {
+              "$len": 2
+            },
+            "of.browser.0.browser": {
+              "job": "j1",
+              "state": "starting"
+            },
+            "of.browser.1.browser": {
+              "job": "j1",
+              "state": "ready"
             },
             "types": {
               "$contains": "action"
