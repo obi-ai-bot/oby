@@ -209,6 +209,9 @@ impl Jobs {
             "core.hooksPath=/dev/null".into(),
             "-c".into(),
             "core.fsmonitor=false".into(),
+            // As `SAFE` in git.rs: a name outside ASCII as itself (CHANGES-15).
+            "-c".into(),
+            "core.quotePath=false".into(),
         ];
         argv.extend(args.iter().map(OsString::from));
         self.sandboxed(id, &argv, input, limit, max).await

@@ -162,8 +162,7 @@
       "ui": {
         "proves": [
           "CHANGES-5"
-        ],
-        "expectedRed": "#2738: a task's diff names a file outside ASCII in git's octal escapes"
+        ]
       }
     },
     {
@@ -185,8 +184,7 @@
       "ui": {
         "proves": [
           "CHANGES-5"
-        ],
-        "expectedRed": "#2738: a task's diff names a file outside ASCII in git's octal escapes"
+        ]
       }
     },
     {
