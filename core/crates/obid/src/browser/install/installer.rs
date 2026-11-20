@@ -1,9 +1,9 @@
-//! Putting the browser's engine in place, once (BROWSER-23): agent-browser first, then Chrome for
-//! Testing, each downloaded into a `.partial-*` folder of `<home>/browser/`, checked against its
-//! pin before it is unpacked, unpacked there, its executable checked (agent-browser's against its
-//! own pin), then renamed into place so a half-done install is never seen. One install at a time
-//! (an async mutex), in a task of its own: a caller that gives up (`browser_up`'s allowance) leaves
-//! it running, and the next call finds it done or still going.
+//! Putting the browser's engine in place, once (BROWSER-23): agent-browser first, then
+//! chrome-headless-shell, each downloaded into a `.partial-*` folder of `<home>/browser/`, checked
+//! against its pin before it is unpacked, unpacked there, its executable checked (agent-browser's
+//! against its own pin), then renamed into place so a half-done install is never seen. One install
+//! at a time (an async mutex), in a task of its own: a caller that gives up (`browser_up`'s
+//! allowance) leaves it running, and the next call finds it done or still going.
 //!
 //! It owns `<home>/browser/` but `jobs/`, `live/` and the sockets, which are the driver's; it never
 //! runs what it downloads and writes nothing outside `<home>/browser/`.
@@ -33,9 +33,13 @@ impl Installer {
     /// its own, so a caller that stops waiting doesn't stop it.
     pub async fn ensure(self: &Arc<Self>) -> Result<Installed, String> {
         let me = self.clone();
-        tokio::spawn(async move { me.ensure_here().await })
+        let done = tokio::spawn(async move { me.ensure_here().await })
             .await
-            .map_err(|e| format!("The browser's install stopped: {e}"))?
+            .map_err(|e| format!("The browser's install stopped: {e}"))?;
+        if let Err(why) = &done {
+            tracing::warn!("the browser's engine isn't installed: {why}");
+        }
+        done
     }
 
     async fn ensure_here(&self) -> Result<Installed, String> {
@@ -50,6 +54,10 @@ impl Installer {
             .and_then(|()| keep_private(&root, 0o700))
             .map_err(|e| format!("can't make {}: {e}", root.display()))?;
         remove_partials(&root);
+        tracing::info!(
+            "installing the browser's engine (agent-browser and chrome-headless-shell) into {}",
+            root.display()
+        );
         let client = reqwest::Client::new();
         // agent-browser first: it is small, and one that doesn't match stops the install before
         // Chrome's 200 MB.
@@ -57,6 +65,7 @@ impl Installer {
             agent_browser: one(&client, &root, &agent_browser).await?,
             chrome: one(&client, &root, &chrome).await?,
         };
+        tracing::info!("the browser's engine is installed and matches its pins");
         *done = Some(installed.clone());
         Ok(installed)
     }
@@ -446,7 +455,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            why.contains("Chrome for Testing has no build for linux-arm64"),
+            why.contains("chrome-headless-shell has no build for linux-arm64"),
             "{why}"
         );
         let _ = std::fs::remove_dir_all(home);

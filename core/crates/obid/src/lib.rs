@@ -70,6 +70,7 @@ pub mod publish;
 pub mod push;
 pub mod receipts;
 pub mod relay;
+pub mod remote;
 pub mod repos;
 pub mod review;
 pub mod routes;
@@ -370,11 +371,25 @@ pub async fn serve(
         },
         None => (None, None),
     };
+    // Where this obid answers, for `obid pair-computer` (crate::remote::addresses, COMPUTERS-9).
+    let answering = remote::addresses::Addresses {
+        api: bound,
+        gateway: gateway.as_ref().and_then(|l| l.local_addr().ok()),
+    };
+    if let Err(e) = remote::addresses::keep(&config.mac_home, &answering) {
+        tracing::warn!("can't keep obid's addresses for `obid pair-computer`: {e}");
+    }
     stopwatch.lap("listen");
     // The API answers from now on: `GET /v1/status` says obid is starting, and how far it got,
     // and every other call waits until it's ready (Door).
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let (opened, door) = Door::open(token.clone(), &stopwatch);
+    // Each API connection's send buffer stays small, so a slow reader of a tab's live stream
+    // drops frames rather than queueing them in the socket (crate::browser::send_buffer).
+    let listener =
+        axum::serve::ListenerExt::tap_io(listener, |connection: &mut tokio::net::TcpStream| {
+            crate::browser::send_buffer::small_send_buffer(connection)
+        });
     let server = tokio::spawn(
         axum::serve(listener, door)
             .with_graceful_shutdown(async move {
@@ -503,6 +518,9 @@ pub async fn serve(
     };
     let connections = connections::Connections::open(&config.home, &jobs, broker_host);
     jobs.use_connections(connections.clone());
+    // Oby's browser, browsers a stopped obid left reaped first (crate::browser, BROWSER-25).
+    let browser = browser::Service::open(&config.home).await;
+    jobs.use_browser(browser.clone());
     let tetrix = tetrix::Tetrix::open(
         &config.home,
         config.tetrix_presets.clone(),
@@ -567,6 +585,7 @@ pub async fn serve(
         gateway_state,
         relay,
         connections,
+        browser,
         jobs: jobs.clone(),
         events,
         conversations,
@@ -613,6 +632,8 @@ pub async fn serve(
             }
         });
     }
+    // A browser that closed itself (10 minutes idle) shows as not started again (crate::browser).
+    shared.browser.spawn_sweeper(stopping_rx.clone());
     // The worktrees' cleanup pass, in the background: never before the first answer.
     tokio::spawn(keep_worktrees_clean(shared.clone(), cancelled.clone()));
     // The machine's memory and each running job's, while jobs run (crate::meter).
@@ -716,6 +737,7 @@ pub async fn serve(
             shared.github.kill();
             shared.harness.end_all_warm();
             jobs.shutdown(JOBS_GRACE).await;
+            shared.browser.end_all().await;
             let _ = tokio::task::spawn_blocking(|| conn::sweeps_done(JOBS_GRACE)).await;
         })
     };

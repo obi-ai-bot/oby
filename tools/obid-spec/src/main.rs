@@ -615,6 +615,37 @@ fn print_one(r: &WorkflowResult) {
             s.why.as_deref().unwrap_or("")
         );
     }
+    // On CI the run folder is only in a large artifact: a failed workflow shows the end of each
+    // scratch obid's own log here, so the reason is in the job's log (obid takes secrets out of
+    // its log lines).
+    if failed(r) && std::env::var_os("GITHUB_ACTIONS").is_some() {
+        for log in obid_logs(std::path::Path::new(&r.folder)) {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            eprintln!("    {} › the end of {}:", r.name, log.display());
+            for l in &lines[lines.len().saturating_sub(40)..] {
+                eprintln!("      {l}");
+            }
+        }
+    }
+}
+
+/// Every `obid.log` under a workflow's folder, at most three levels down.
+fn obid_logs(folder: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = vec![];
+    let mut dirs = vec![(folder.to_path_buf(), 0)];
+    while let Some((dir, depth)) = dirs.pop() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() && depth < 3 {
+                dirs.push((p, depth + 1));
+            } else if p.file_name().is_some_and(|n| n == "obid.log") {
+                found.push(p);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 fn print_table(results: &[WorkflowResult], took: Duration) {

@@ -183,6 +183,23 @@ contextBridge.exposeInMainWorld('app', {
   // Add sign-in (main/sphere.ts, SPHEREAPP-13): whether one is linked, and linking one right after the owner's click
   sphereSigninStatus: () => ipcRenderer.invoke('sphere-signin-status') as Promise<SigninStatus | null>,
   sphereAddSignin: (provider: string) => ipcRenderer.invoke('sphere-add-signin', provider) as Promise<string | null>,
+  // obid's browser, followed by main, which holds the token (main/browser.ts, BROWSERAPP-8): its events
+  // from now on (`open` each time the stream connects again), and a tab's frames while the page draws
+  // it; each a function that stops listening
+  browser: {
+    follow(fn: (m: { name: string; data: string }) => void) {
+      const listener = (_: unknown, m: { name: string; data: string }) => fn(m);
+      ipcRenderer.on('browser-event', listener);
+      void ipcRenderer.invoke('browser-follow');
+      return () => { ipcRenderer.off('browser-event', listener); };
+    },
+    watch(tab: string, fn: (data: string) => void) {
+      const listener = (_: unknown, m: { tab: string; data: string }) => { if (m.tab === tab) fn(m.data); };
+      ipcRenderer.on('browser-frame', listener);
+      void ipcRenderer.invoke('browser-watch', tab);
+      return () => { ipcRenderer.off('browser-frame', listener); void ipcRenderer.invoke('browser-unwatch', tab); };
+    },
+  },
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {

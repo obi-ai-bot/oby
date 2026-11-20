@@ -2,6 +2,7 @@
 //! Rust nodes, against the real obid binary (docs/contracts/obid-spec.md).
 
 pub mod app;
+pub mod browser;
 pub mod coverage;
 pub mod desktop;
 pub mod events;

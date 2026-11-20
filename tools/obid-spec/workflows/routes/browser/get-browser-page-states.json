@@ -1,0 +1,262 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: a failed navigation marks the tab failed, in the list and the events, and a good one afterwards clears it, even to the same address",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-1, board 10 (src/lab/browserapi.rs, Api::failed and sync_job): the agent's navigate to a refused address (127.0.0.1:2), without naming its tab, fails; GET /v1/browser and the events stream both say the tab is failed. Navigating back to the very address it was on before succeeds and the tab is ready again, in the list and the events. The same with the tab named. Ported from the lab onto obid (docs/contracts/browser.md): a scratch obid on the stand-ins, a Codex job sleeping as its agent with its broker token, the lab API's fixture site, the real agent-browser and Chrome for Testing obid installs, seeded from obid-spec's cache.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/browser"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        },
+        "within": 300
+      }
+    },
+    {
+      "id": "bad",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "http://127.0.0.1:2/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-12"
+        ]
+      }
+    },
+    {
+      "id": "failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs.0.id": "${state.open.structured.result.tab}",
+            "tabs.0.state": "failed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-12"
+        ]
+      }
+    },
+    {
+      "id": "failed-event",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.tab": {
+              "$any": {
+                "tab": {
+                  "id": "${state.open.structured.result.tab}",
+                  "state": "failed"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-12"
+        ]
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "ready-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs.0.state": "ready",
+            "tabs.0.url": "${state.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-12"
+        ]
+      }
+    },
+    {
+      "id": "ready-event",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "after": "${state.failed-event.events.0.seq}",
+        "expect": {
+          "paths": {
+            "of.tab": {
+              "$any": {
+                "tab": {
+                  "id": "${state.open.structured.result.tab}",
+                  "state": "ready"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-12"
+        ]
+      }
+    },
+    {
+      "id": "bad-named",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "http://127.0.0.1:2/",
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "id": "failed-named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "tabs.0.state": "failed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-12"
+        ]
+      }
+    },
+    {
+      "id": "back-named",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/",
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "ready-named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "tabs.0.state": "ready"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-12"
+        ]
+      }
+    }
+  ]
+}

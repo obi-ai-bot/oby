@@ -23,7 +23,7 @@ pub async fn unpack(archive: Archive, file: &Path, into: &Path) -> Result<(), St
         }
         Archive::Zip => {
             let unzip = system_tool("unzip").ok_or(
-                "unzip isn't installed on this computer, so obid can't unpack Chrome for Testing: install unzip (for example `sudo apt install unzip`) and try again.",
+                "unzip isn't installed on this computer, so obid can't unpack chrome-headless-shell: install unzip (for example `sudo apt install unzip`) and try again.",
             )?;
             let mut c = tokio::process::Command::new(unzip);
             c.arg("-q").arg(file).arg("-d").arg(into);

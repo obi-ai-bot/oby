@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/browser/settings",
+  "version": "1.0.0",
+  "description": "The browser's two switches: both on before the owner says otherwise (BROWSER-15); without obid's token, refused no_token.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/browser/settings"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "on-by-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/settings",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agentsUseBrowser": true,
+            "agentsUseMac": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    },
+    {
+      "id": "no-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/settings",
+        "as": "none",
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "no_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    }
+  ]
+}

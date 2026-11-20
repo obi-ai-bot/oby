@@ -599,9 +599,8 @@ grep -q 'gateway listening' {OBY}/obid.out || {{ tail -20 {OBY}/obid.log; exit 1
 "#,
         config = serde_json::to_string_pretty(&config)?,
         pair = super::remote::computers::pair_computer_script(
-            &format!("{OBY}/home"),
-            API,
-            &format!("http://{GATEWAY}"),
+            &format!("{OBY}/bin/obid"),
+            &format!("{OBY}/config.json"),
         )
         .map_err(anyhow::Error::msg)?,
     );

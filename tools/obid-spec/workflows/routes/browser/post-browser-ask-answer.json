@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/browser/asks/{id}/answer",
+  "version": "1.0.0",
+  "description": "An answer to an agent's ask is the owner's own act: unsigned it is refused (401 unsigned) and signed for an ask obid doesn't have, 404 no_such_ask. The answer to a real ask, its event and the agent reading it are in post-browser-tab-secret.json (BROWSER-8).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/asks/{id}/answer"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/asks/ask-1/answer",
+        "body": {},
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-8"
+        ]
+      }
+    },
+    {
+      "id": "no-such-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/asks/ask-1/answer",
+        "body": {},
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 404,
+          "paths": {
+            "reason": "no_such_ask"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-8"
+        ]
+      }
+    }
+  ]
+}

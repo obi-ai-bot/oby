@@ -1,0 +1,368 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: the agent's download stays in its profile, the person's is delivered, and Save a copy copies the agent's",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-6 (src/lab/browserapi.rs, watch_downloads and save_copy over browser.rs's download_rule): the agent clicks Download file: the list says it's the agent's and in its profile, and it is still there; the person takes the tab and clicks the same link through the stream input: theirs is delivered; Save a copy (signed; unsigned refused) puts a copy in the person's Downloads while the agent's file stays. Ported from the lab onto obid (docs/contracts/browser.md): a scratch obid on the stand-ins, a Codex job sleeping as its agent with its broker token, the lab API's fixture site, the real agent-browser and Chrome for Testing obid installs, seeded from obid-spec's cache.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/downloads/{id}/saveCopy"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        },
+        "within": 300
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "Sign in"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-clicks",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "link",
+          "name": "Download file"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "agents",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "downloads": {
+              "$len": 1
+            },
+            "downloads.0.startedBy": "agent",
+            "downloads.0.place": "profile",
+            "downloads.0.job": "${state.j1.job}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "stays",
+      "use": "runtime.rust:browser-downloads",
+      "inputs": {
+        "obid": "${state.o}",
+        "job": "${state.j1.job}",
+        "expect": {
+          "paths": {
+            "inProfile": {
+              "$len": 1
+            },
+            "delivered": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "press",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "mouse",
+          "eventType": "mousePressed",
+          "x": "${state.site.download.x}",
+          "y": "${state.site.download.y}",
+          "button": "left",
+          "clickCount": 1
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "release",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "mouse",
+          "eventType": "mouseReleased",
+          "x": "${state.site.download.x}",
+          "y": "${state.site.download.y}",
+          "button": "left",
+          "clickCount": 1
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "persons",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "downloads": {
+              "$len": 2
+            },
+            "downloads.1.startedBy": "person",
+            "downloads.1.place": "delivered"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "delivered",
+      "use": "runtime.rust:browser-downloads",
+      "inputs": {
+        "obid": "${state.o}",
+        "job": "${state.j1.job}",
+        "expect": {
+          "paths": {
+            "inProfile": {
+              "$len": 1
+            },
+            "delivered": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "copy-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/downloads/${state.agents.body.downloads.0.id}/saveCopy",
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "copy",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/downloads/${state.agents.body.downloads.0.id}/saveCopy",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "savedAs": "${state.agents.body.downloads.0.name}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "copied",
+      "use": "runtime.rust:browser-downloads",
+      "inputs": {
+        "obid": "${state.o}",
+        "job": "${state.j1.job}",
+        "expect": {
+          "paths": {
+            "inProfile": {
+              "$len": 1
+            },
+            "delivered": {
+              "$contains": "${state.agents.body.downloads.0.name}"
+            },
+            "delivered.1": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "still-the-agents",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "expect": {
+          "paths": {
+            "downloads.0.place": "profile",
+            "downloads": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "events",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.download": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    }
+  ]
+}

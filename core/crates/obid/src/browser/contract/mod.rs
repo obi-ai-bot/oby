@@ -1,4 +1,4 @@
-//! The browser's contract (docs/contracts/browser.md, BROWSER-1 to 25): what the browser's screens
+//! The browser's contract (docs/contracts/browser.md, BROWSER-1 to 27): what the browser's screens
 //! and the agents' tools talk to, shaped as obid's API, add-only like the rest of it. The wire
 //! types are one per file below; this file holds the routes, the lists the clients decode, the
 //! reasons, and the agents' tool list with its schemas. It owns no state and writes nothing. Its
@@ -9,8 +9,8 @@
 //!
 //! - **The person's app** (the Electron app): every route but the MCP one, with obid's owner token
 //!   (`Authorization: Bearer <token>`). The owner's own acts on a tab (take, give back, a secret, an
-//!   answer, Save a copy, a setting) also carry the device's signed words (`X-Oby-Words`,
-//!   [`WORDS_HEADER`]) over the exact body, as obid's other owner's words.
+//!   answer, Save a copy, a setting, a way out of a page state) also carry the device's signed
+//!   words (`X-Oby-Words`, [`WORDS_HEADER`]) over the exact body, as obid's other owner's words.
 //! - **An agent**: only [`PATH_MCP`], JSON-RPC 2.0 over HTTP, with its job's own token, which dies
 //!   with the job. Never the owner token, never the person's routes.
 //!
@@ -30,8 +30,12 @@ mod answer_body;
 mod api_error;
 mod ask;
 mod ask_kind;
+mod back_body;
 mod browser_state;
 mod computer;
+mod dialog_body;
+#[cfg(test)]
+mod doc_guard;
 mod download;
 mod downloads_answer;
 mod event;
@@ -46,6 +50,7 @@ mod outside;
 mod owner;
 mod place;
 mod point;
+mod reload_body;
 mod save_copy_answer;
 mod secret_answer;
 mod secret_body;
@@ -62,8 +67,10 @@ pub use answer_body::AnswerBody;
 pub use api_error::ApiError;
 pub use ask::Ask;
 pub use ask_kind::AskKind;
+pub use back_body::BackBody;
 pub use browser_state::BrowserState;
 pub use computer::Computer;
+pub use dialog_body::DialogBody;
 pub use download::Download;
 pub use downloads_answer::DownloadsAnswer;
 pub use event::Event;
@@ -78,6 +85,7 @@ pub use outside::Outside;
 pub use owner::Owner;
 pub use place::Place;
 pub use point::Point;
+pub use reload_body::ReloadBody;
 pub use save_copy_answer::SaveCopyAnswer;
 pub use secret_answer::SecretAnswer;
 pub use secret_body::SecretBody;
@@ -115,6 +123,17 @@ pub const VERB_TAKE: &str = "take";
 pub const VERB_GIVE_BACK: &str = "giveBack";
 /// `POST` a [`SecretBody`], signed, while the person holds the tab ([`SecretAnswer`]).
 pub const VERB_SECRET: &str = "secret";
+/// The person's ways out of a page state (board 10, BROWSER-26), each signed and only on a tab the
+/// signing device holds (`not_held`, `not_holder`), each answering the [`Tab`] as it is after;
+/// never an agent's tool. `POST` a [`ReloadBody`]: Try again (failed) and Reload (timed out,
+/// crashed); a page that loads clears the tab's failure, one that still doesn't is refused
+/// `browser`.
+pub const VERB_RELOAD: &str = "reload";
+/// `POST` a [`BackBody`]: Go back, the tab's history back.
+pub const VERB_BACK: &str = "back";
+/// `POST` a [`DialogBody`]: the page's own dialog answered, Leave (`accept`) or Stay; with no
+/// dialog on the tab, refused `no_dialog`.
+pub const VERB_DIALOG: &str = "dialog";
 /// `POST` an [`AnswerBody`], signed: the person's answer to an agent's ask.
 pub const PATH_ASKS: &str = "/v1/browser/asks";
 pub const VERB_ANSWER: &str = "answer";
@@ -153,6 +172,9 @@ pub const ROUTES: &[&str] = &[
     "POST /v1/browser/tabs/{id}/take",
     "POST /v1/browser/tabs/{id}/giveBack",
     "POST /v1/browser/tabs/{id}/secret",
+    "POST /v1/browser/tabs/{id}/reload",
+    "POST /v1/browser/tabs/{id}/back",
+    "POST /v1/browser/tabs/{id}/dialog",
     "POST /v1/browser/asks/{id}/answer",
     "POST /v1/browser/mcp",
 ];
@@ -212,6 +234,7 @@ pub const REASONS: &[&str] = &[
     "upload_outside_room",
     "not_granted",
     "browser",
+    "certificate_page",
     // The API's.
     "browser_off",
     "no_token",
@@ -225,6 +248,7 @@ pub const REASONS: &[&str] = &[
     "not_found",
     "bad_request",
     "browser_starting",
+    "no_dialog",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────
@@ -435,6 +459,7 @@ mod tests {
             Refusal::ControlChanged,
             Refusal::Settling { tool: "x".into() },
             Refusal::Browser("x".into()),
+            Refusal::CertificatePage,
         ] {
             assert!(REASONS.contains(&r.code()), "{}", r.code());
         }

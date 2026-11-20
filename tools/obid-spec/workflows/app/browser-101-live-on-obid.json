@@ -1,0 +1,115 @@
+{
+  "schemaVersion": "2",
+  "name": "App live: on a real obid, the globe opens the browser, no pages yet (board 17, live)",
+  "version": "1.0.0",
+  "description": "The real app on a scratch obid that serves the browser (BROWSERAPP-7, BROWSERAPP-8): once obid answers GET /v1/browser, main follows its browser and the globe shows at the title bar's end; opened, the panel has no tabs and says so, as board 17.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "obid": "${state.obid}",
+        "size": {
+          "width": 1280,
+          "height": 800
+        }
+      }
+    },
+    {
+      "id": "globe",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show the browser, 0 tabs"
+        },
+        "within": 30,
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-8"
+        ]
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show the browser, 0 tabs"
+        }
+      }
+    },
+    {
+      "id": "panel",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640,
+            "box.x": 640
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-8"
+        ]
+      }
+    },
+    {
+      "id": "no-pages",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".empty-words"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "No pages yet.\nWhen an agent opens one, you see it here, live."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-8"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

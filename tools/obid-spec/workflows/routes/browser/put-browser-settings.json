@@ -1,0 +1,227 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/browser/settings",
+  "version": "1.0.0",
+  "description": "The owner turns a switch off with their device's signed words (unsigned: 401 unsigned; a device obid doesn't know: 401 unknown_device); the change is kept in obid's settings file and holds across a restart, and turned on again it is on (BROWSER-15).",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/browser/settings"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseMac": false
+        },
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    },
+    {
+      "id": "stranger-words",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": {
+          "id": "a-device-never-registered",
+          "key": "${state.d1.key}"
+        },
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseMac": false
+        }
+      }
+    },
+    {
+      "id": "unknown-device",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseMac": false
+        },
+        "headers": {
+          "X-Oby-Words": "${state.stranger-words.header}"
+        },
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unknown_device"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    },
+    {
+      "id": "still-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/settings",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agentsUseBrowser": true,
+            "agentsUseMac": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    },
+    {
+      "id": "off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseMac": false
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agentsUseBrowser": true,
+            "agentsUseMac": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    },
+    {
+      "id": "kept",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "settings.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "json": {
+            "paths": {
+              "browser.agentsUseMac": false,
+              "browser.agentsUseBrowser": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "after-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/browser/settings",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agentsUseBrowser": true,
+            "agentsUseMac": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    },
+    {
+      "id": "on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseMac": true
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agentsUseMac": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-15"
+        ]
+      }
+    }
+  ]
+}

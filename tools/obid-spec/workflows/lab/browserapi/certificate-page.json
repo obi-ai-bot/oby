@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "Lab browser: an agent can't get past the browser's certificate error page; reads still work, and navigating elsewhere",
   "version": "1.0.0",
-  "description": "LAB-BROWSERAPI-9 (src/lab/browser.rs, the `certificate` rule: Browsers::begin and may_start refuse certificate_page): the agent navigates to an HTTPS fixture whose self-signed certificate was made at run time; it stops at the browser's certificate page and the tab is certificate. The agent's evaluate of the page's own `certificateErrorPageController.proceed()` (which loads the page when nothing stops it) is refused (certificate_page) and the page is still the error page; so is answering a dialog. Snapshot, screenshot and list_tabs still work. With the fixture swapped to a second certificate behind the same origin, the agent's navigate stops at the certificate page again; its click on Advanced and on the page's Proceed link, by snapshot refs, are refused, and the page is still the error page. Navigating elsewhere works, and acting there works again.",
+  "description": "LAB-BROWSERAPI-9 (src/lab/browser.rs, the `certificate` rule: Browsers::begin and may_start refuse certificate_page): the agent navigates to an HTTPS fixture whose self-signed certificate was made at run time; it stops at the browser's certificate page and the tab is certificate. The agent's evaluate of the page's own `certificateErrorPageController.proceed()` (which loads the page when nothing stops it) is refused (certificate_page) and the page is still the error page; so is answering a dialog. Snapshot, screenshot and list_tabs still work. With the fixture swapped to a second certificate behind the same origin, the agent's navigate stops at the certificate page again; its click on Advanced and on the page's Proceed link, by snapshot refs, are refused (chrome-headless-shell, the lab's browser, draws no certificate page of its own: its error page has neither, so each click goes to a ref the page doesn't have, and is refused before any ref is looked at), and the page is still the error page. Navigating elsewhere works, and acting there works again.",
   "trigger": {
     "manual": {}
   },
@@ -320,6 +320,7 @@
           "name": "Advanced"
         },
         "snapshot": "${state.snap}",
+        "refOr": "e998",
         "expect": {
           "paths": {
             "isError": true,

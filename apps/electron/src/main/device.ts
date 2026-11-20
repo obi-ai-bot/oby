@@ -5,7 +5,8 @@ import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, write
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, takesKeys, type Answer, type Trusted } from './obid';
-import { mayConfirm, takeInput, wordsHeader } from './words';
+import { mayConfirm, signedHeader, takeInput, wordsHeader } from './words';
+import { INPUT_PATH, mayInput } from './browserInput';
 import { ipc } from './ipc';
 import { FINISH_WORDS } from '../shared/finish';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
@@ -173,6 +174,17 @@ async function projectFolders(method: string, path: string, body: unknown): Prom
 // owners: the preload saw the owner's own keystroke or click hold its words
 export async function ownersWords(method: string, path: string, body: unknown, owners = true): Promise<Answer> {
   const at = Date.now();
+  // the owner's mouse and keys on a browser tab they hold: signed only right after the very input
+  // main saw (browser.ts, BROWSERAPP-10); anything else goes unsigned, and obid refuses it
+  if (method === 'POST' && INPUT_PATH.test(path.split('?')[0])) {
+    let header: string | undefined;
+    try {
+      if (mayInput(body, at)) header = signedHeader(deviceKey(), (device ??= await register()), method, path, body);
+    } catch (err) {
+      console.error(`Oby couldn’t sign a browser input, so it goes unsigned: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return obid(method, path, body, header);
+  }
   unanswered = unanswered.filter((u) => at - u.at < AGAIN_MS && u.again < AGAIN);
   const request = keyOf(body) ? `${method} ${path}\n${JSON.stringify(body)}` : null;
   const kept = request === null ? undefined : unanswered.find((u) => u.request === request && u.again < AGAIN);

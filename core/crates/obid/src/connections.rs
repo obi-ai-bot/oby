@@ -310,6 +310,19 @@ impl Connections {
                 .is_some_and(|job| job == id)
     }
 
+    /// The job whose broker token `token` is, while that job is active: how a route with no job in
+    /// its path (the browser's MCP server, `POST /v1/browser/mcp`) knows who calls. None for a
+    /// token obid never gave, or one whose job ended.
+    pub fn job_of(&self, token: &str) -> Option<String> {
+        let job = self
+            .tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find_map(|(t, job)| crate::token::same(t, token).then(|| job.clone()))?;
+        self.allows(&job, token).then_some(job)
+    }
+
     pub(crate) fn record(&self, use_record: ConnectionUse) {
         if let Some(jobs) = self.jobs.upgrade() {
             jobs.connection_used(&use_record.job, use_record.clone());

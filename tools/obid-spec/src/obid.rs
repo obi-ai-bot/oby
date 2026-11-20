@@ -182,6 +182,96 @@ pub struct StartInput {
     /// Files to put in its scratch HOME (the person's home, for its stand-ins: `github/work.json`
     /// for the fake gh) before it starts.
     pub person: Option<serde_json::Map<String, Value>>,
+    /// The browser's engine (agent-browser and chrome-headless-shell) put in its home from obid-spec's
+    /// cache before it starts, cloned so it costs no disk; with the cache empty, obid downloads and
+    /// checks it on its first browser call, and the cleanup keeps it in the cache
+    /// ([`keep_browser_engine`]).
+    pub browser: Option<bool>,
+}
+
+/// The browser's engine as obid installs it under `<home>/browser/` (core/crates/obid/src/browser/
+/// install/pins.rs): its two folders, each put in place only once checked against its pin.
+pub const BROWSER_ENGINE: [&str; 2] = [
+    "agent-browser-0.43.0",
+    "chrome-headless-shell-158.0.8127.36",
+];
+
+/// The homes of this workflow's obids given the browser, for [`keep_browser_engine`].
+static BROWSER_HOMES: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// obid-spec's own cache of the engine one scratch obid downloaded and checked.
+pub fn browser_cache() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    Some(if cfg!(target_os = "macos") {
+        home.join("Library/Caches/obid-spec/obid-browser")
+    } else {
+        home.join(".cache/obid-spec/obid-browser")
+    })
+}
+
+/// A folder copied whole: an APFS clone on macOS (free on disk), hard links elsewhere.
+fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+    let flags = if cfg!(target_os = "macos") {
+        "-cR"
+    } else {
+        "-al"
+    };
+    let status = std::process::Command::new("/bin/cp")
+        .arg(flags)
+        .arg(from)
+        .arg(to)
+        .status()?;
+    anyhow::ensure!(status.success(), "cp {flags} {} failed", from.display());
+    Ok(())
+}
+
+/// The engine put in `home` from the cache, when the cache has it whole.
+fn seed_browser(home: &Path) -> Result<bool> {
+    let Some(cache) = browser_cache() else {
+        return Ok(false);
+    };
+    if !BROWSER_ENGINE.iter().all(|f| cache.join(f).is_dir()) {
+        return Ok(false);
+    }
+    let root = home.join("browser");
+    private_dir(&root)?;
+    for f in BROWSER_ENGINE {
+        if !root.join(f).exists() {
+            clone_tree(&cache.join(f), &root.join(f))?;
+        }
+    }
+    Ok(true)
+}
+
+/// Each engine folder the cache lacks, from a home whose obid put it in place (downloaded and
+/// checked against its pin): cloned into a private folder of the cache, then renamed in.
+pub fn keep_browser_engine() -> Value {
+    let homes: Vec<PathBuf> = BROWSER_HOMES.lock().unwrap().drain(..).collect();
+    let Some(cache) = browser_cache() else {
+        return Value::Null;
+    };
+    let mut kept = vec![];
+    for home in homes {
+        for f in BROWSER_ENGINE {
+            let from = home.join("browser").join(f);
+            if cache.join(f).exists() || !from.is_dir() {
+                continue;
+            }
+            let partial = cache.join(format!(".partial-{f}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&partial);
+            let done = private_dir(&cache)
+                .and_then(|()| clone_tree(&from, &partial))
+                .and_then(|()| Ok(std::fs::rename(&partial, cache.join(f))?));
+            match done {
+                Ok(()) => kept.push(f),
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&partial);
+                    eprintln!("obid-spec: the browser's {f} wasn't kept in the cache: {e:#}");
+                }
+            }
+        }
+    }
+    json!({"kept": kept})
 }
 
 pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
@@ -250,6 +340,18 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
                    "defaultBranch": "main", "check": "node --test", "pullRequests": false}],
     });
+    // The browser's workflows act as a job's agent: a Codex stand-in account, whose jobs are given
+    // Oby's own MCP server with their broker token (browser-job).
+    let mut files = input.files.clone().unwrap_or_default();
+    if input.browser == Some(true) {
+        let codex = json!({"agents": {"codex": {"accounts": [{"id": "codex", "name": "Codex",
+            "configDir": home.join("accounts/codex")}]}}});
+        merge(&mut config, &codex);
+        files
+            .entry("accounts/codex/auth.json".to_string())
+            .or_insert(json!({"OPENAI_API_KEY": "fake-codex"}));
+    }
+    let files = Some(files);
     if let Some(over) = &input.config {
         merge(&mut config, over);
     }
@@ -263,7 +365,7 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
     }
     let config_path = folder.join("config.json");
     private_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
-    for (base, files) in [(&home, &input.files), (&person, &input.person)] {
+    for (base, files) in [(&home, &files), (&person, &input.person)] {
         for (rel, text) in files.iter().flatten() {
             anyhow::ensure!(
                 !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."),
@@ -277,6 +379,11 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
             };
             private_file(&path, &text)?;
         }
+    }
+    let mut seeded = false;
+    if input.browser == Some(true) {
+        seeded = seed_browser(&home)?;
+        BROWSER_HOMES.lock().unwrap().push(home.clone());
     }
     let path = std::env::join_paths([
         run.agents(),
@@ -384,6 +491,7 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         "name": name, "pid": pid, "port": port, "base": format!("http://127.0.0.1:{port}"),
         "token": token, "home": home, "folder": folder, "person": person, "log": log,
         "owner": config["owner"], "restarted": restart, "gatewayBase": gateway,
+        "browserSeeded": seeded,
     }))
 }
 

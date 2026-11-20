@@ -3,7 +3,7 @@
 - **Date:** 2026-11-20
 - **Status:** In force
 - **Replaced:** The lab's way (agent-browser installed with npm and Chrome fetched by `agent-browser install`, only agent-browser's binary hash-checked)
-- **Changed by:** Nothing
+- **Changed by:** [2026-11-20-headless-shell.md](2026-11-20-headless-shell.md) (the browser is chrome-headless-shell, not Chrome for Testing)
 - **Contracts and scenarios:** [browser.md](../contracts/browser.md), BROWSER-23, 24 and 25
 
 ## The owner's words

@@ -1,8 +1,8 @@
 //! The browser's engine driver (BROWSER-23 to 25, and the engine side of BROWSER-10 to 13): one
-//! agent-browser daemon and its Chrome for Testing per job, started on the job's first browser call
-//! once [`crate::browser::install`] has put the engine in place, at most four live at once, each
-//! closing itself after 10 minutes idle, killed when its job ends and reaped when obid starts. It
-//! runs what the core's [`crate::browser::engine::Ticket`] says, right before checking it may
+//! agent-browser daemon and its chrome-headless-shell per job, started on the job's first browser
+//! call once [`crate::browser::install`] has put the engine in place, at most four live at once,
+//! each closing itself after 10 minutes idle, killed when its job ends and reaped when obid starts.
+//! It runs what the core's [`crate::browser::engine::Ticket`] says, right before checking it may
 //! start, under its deadline, never replaying one that timed out, and tells the core what the page
 //! is now.
 //!
@@ -14,6 +14,7 @@
 
 mod binaries;
 mod call;
+mod chrome_said;
 mod download_file;
 mod downloads;
 mod drive;
@@ -21,12 +22,17 @@ mod frame;
 mod live;
 mod live_file;
 mod options;
+mod person;
+mod person_page;
 mod procs;
 mod reap;
 mod run;
 mod session;
-#[cfg(test)]
-mod stand_in;
+/// The tests' stand-in agent-browser: obid's unit tests', and a debug build's integration tests'
+/// (`OBID_TEST_BROWSER_STAND_IN`); never in a release build.
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub mod stand_in;
 mod stream;
 mod stream_reader;
 mod waiting;

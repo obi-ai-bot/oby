@@ -1,0 +1,136 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/browser/events (Last-Event-ID)",
+  "version": "1.0.0",
+  "description": "BROWSER-4: GET /v1/browser carries the last event it reflects (seq N); the owner's signed change makes event N+1, a settings event; a reader reconnecting with Last-Event-ID N gets exactly it, and the list then carries N+1.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/browser/events"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "seq": 0,
+            "tabs": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseMac": false
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "agentsUseMac": false
+          }
+        }
+      }
+    },
+    {
+      "id": "replay",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "after": 0,
+        "expect": {
+          "paths": {
+            "count": 1,
+            "events.0.seq": 1,
+            "events.0.type": "settings",
+            "events.0.settings.agentsUseMac": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "nothing-after",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "after": 1,
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-4"
+        ]
+      }
+    },
+    {
+      "id": "after",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "seq": 1,
+            "settings.agentsUseMac": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-4"
+        ]
+      }
+    }
+  ]
+}
