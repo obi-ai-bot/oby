@@ -1,13 +1,23 @@
 // @vitest-environment happy-dom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Settings › Routines (docs/contracts/routines.md, ROUTINES-18 to 21): the real page, with main's
 // bridge (window.app.obid.call) standing in for obid's routines.
 
+// The page words times as today, yesterday or a weekday, so the clock is pinned to 13:00 local:
+// the runs 4, 30 and 50 hours back read the same at any hour CI runs (it failed near midnight UTC).
+const noon = new Date();
+noon.setHours(13, 0, 0, 0);
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(noon);
+});
+
 let root: Root | null = null;
 afterEach(async () => {
+  vi.useRealTimers();
   if (root) await act(async () => root!.unmount());
   root = null;
   delete (window as { app?: unknown }).app;
@@ -16,7 +26,7 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-const now = Date.now();
+const now = noon.getTime();
 const at = (hours: number) => new Date(now + hours * 3_600_000).toISOString();
 const routine = (more: Record<string, unknown>) => ({
   id: 'a1b2c3d4', name: 'Review open PRs', repo: 'obi-ai-bot/obi', kind: 'review', task: 'Review them.', agent: 'auto', account: 'auto',
