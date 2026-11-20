@@ -599,7 +599,8 @@
             "LIVETASK-34",
             "LIVETASK-35",
             "LIVETASK-36",
-            "LIVETASK-37"
+            "LIVETASK-37",
+            "LIVETASK-38"
           ],
           "elsewhere": {
             "LIVETASK-1": "Electron card/drawer/side-panel rendering (liveTask.test.tsx etc.). (7, 8, 18 retired.)",

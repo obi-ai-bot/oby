@@ -126,8 +126,7 @@
       "ui": {
         "proves": [
           "LIVETASK-10"
-        ],
-        "expectedRed": "#2737: a command cut by obid going down stays running in its task's transcript"
+        ]
       }
     }
   ]
