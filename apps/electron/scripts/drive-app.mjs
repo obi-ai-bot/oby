@@ -55,7 +55,9 @@ async function one(target, timeout = 10_000) {
 async function describe(el, attributes, styles) {
   const attrs = {};
   for (const a of attributes ?? []) attrs[a] = await el.getAttribute(a);
-  const out = { text: (await el.innerText()).trim(), visible: await el.isVisible(), attributes: attrs };
+  const text = (await el.innerText()).trim();
+  // words: the text as a person reads it, each run of white space one space (as the lab reads its screens)
+  const out = { text, words: text.replace(/\s+/g, ' '), visible: await el.isVisible(), attributes: attrs };
   if (styles) {
     out.styles = {};
     for (const [prop, token] of Object.entries(styles)) {

@@ -32,6 +32,9 @@ def launch(board, width, height, sidebar=False):
 
 
 def read(id, target, proves=None, **expect):
+    # words: the text with each run of white space one space (drive-app.mjs), as the lab reads its screens
+    if isinstance(expect.get("text"), str):
+        expect["words"] = " ".join(expect.pop("text").split())
     extra = {}
     if "styles" in expect:
         extra["styles"] = expect.pop("styles")
@@ -281,6 +284,110 @@ def board_06():
     )
 
 
+ASK_LINE = "Sign in Sign in to the staging admin · Codex 1 of 1"
+CARD = {"css": "[data-browser=asks] .decision-card"}
+
+
+def board_07():
+    workflow(
+        "browser-07-asks-sign-in.json",
+        "App: the agent asks you to sign in; Type the password fills the page (board 7)",
+        "The real app on its demo data at the design's board 7 (BROWSERAPP-11, BROWSERAPP-12): the agent's sign-in ask "
+        "sits over the message box, its heading the agent's first sentence; the strip turns orange and the tab's dot "
+        "orange (--needs). Type the password opens the password card (board 8); Fill in puts the dots in the page's "
+        "field, marked From Oby, and the card goes.",
+        [
+            launch(7, 1280, 800),
+            read("ask-head", {"css": "[data-browser=asks] .tc-ask-line"}, "BROWSERAPP-11", count=1, text=ASK_LINE),
+            read("ask-words", {"css": "[data-browser=asks] .tc-ask-text"}, "BROWSERAPP-11", count=1,
+                 text="The mail log is behind a sign-in. Take control and sign in yourself, or type the password here: it goes straight into the page, never to Codex."),
+            read("orange-strip", {"css": ".br-control-text"}, None, count=1, text="Codex asks you to sign in here"),
+            read("tab-dot-orange", {"css": ".br-tab .status-dot.is-needs"}, "BROWSERAPP-11", styles={"background-color": "--needs"}, **{"styles.background-color.matches": True}),
+            read("kind-orange", {"css": "[data-browser=asks] .tc-ask-kind"}, None, styles={"color": "--needs"}, **{"styles.color.matches": True}),
+            step("over-the-box", "app.measure", "BROWSERAPP-11", app=APP, target=CARD,
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+            compare("AsksYou", "BROWSERAPP-11", skip=BOARD_SKIPS[7]),
+            *pictures(7, "AsksYou", "board 7"),
+            click("type-the-password", {"role": "button", "name": "Type the password"}),
+            read("filling", {"css": ".br-control-text"}, "BROWSERAPP-12", count=1, text="You’re filling the password. Codex waits."),
+            step("type", "app.type", app=APP, target={"css": "[data-browser=secret-input]"}, text="0123456789"),
+            step("now-board-8", "app.compare", None, app=APP, board="Secret", skip=BOARD_SKIPS[8], expect={"paths": {"within": True, "sameWords": True}}, within=10),
+            click("fill-in", {"role": "button", "name": "Fill in"}),
+            read("page-field", {"css": "[data-browser=page-password]"}, "BROWSERAPP-12", count=1, text="••••••••••\nFrom Oby"),
+            read("card-gone", CARD, None, count=0, within=5),
+            close(),
+        ],
+    )
+
+
+def board_08():
+    secret = "app-secret-value-9271"
+    workflow(
+        "browser-08-password.json",
+        "App: a password goes straight into the page's field, never to the agent (board 8)",
+        "The real app on its demo data at the design's board 8 (BROWSERAPP-12): the password card says the value goes into "
+        "the page's Password field, that the agent never sees it and Oby doesn't keep it; Cancel goes back to the ask; typed "
+        "and filled, the page's field gets the dots and the value is nowhere in the window, nor left in any box.",
+        [
+            launch(8, 1280, 800),
+            read("card-line", {"css": "[data-browser=asks] .tc-ask-line"}, "BROWSERAPP-12", count=1, text="Password For staging.acme.dev · asked by Codex"),
+            read("never-sees", {"css": ".secret-note"}, "BROWSERAPP-12", count=1, text="It goes straight into the page’s Password field. Codex never sees it, and Oby doesn’t keep it."),
+            read("kind-blue", {"css": ".tc-ask-kind.is-blue"}, None, styles={"color": "--unread"}, **{"styles.color.matches": True}),
+            read("page-ringed", {"css": "[data-browser=page-password]"}, None, count=1, text="Password\nFrom Oby"),
+            step("over-the-box", "app.measure", "BROWSERAPP-12", app=APP, target=CARD,
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+            compare("Secret", "BROWSERAPP-12", skip=BOARD_SKIPS[8]),
+            *pictures(8, "Secret", "board 8"),
+            click("cancel", {"role": "button", "name": "Cancel"}),
+            read("back-to-ask", {"css": "[data-browser=asks] .tc-ask-line"}, None, count=1, text=ASK_LINE),
+            click("type-the-password", {"role": "button", "name": "Type the password"}),
+            step("type-secret", "app.type", app=APP, target={"css": "[data-browser=secret-input]"}, text=secret),
+            click("fill-in", {"role": "button", "name": "Fill in"}),
+            read("field-filled", {"css": "[data-browser=page-password]"}, "BROWSERAPP-12", count=1, text="•" * len(secret) + "\nFrom Oby"),
+            read("not-in-the-window", {"css": "html"}, "BROWSERAPP-12", count=1, text={"$not": {"$contains": secret}}),
+            read("no-box-left", {"css": "[data-browser=secret-input]"}, None, count=0),
+            close(),
+        ],
+    )
+
+
+def board_09():
+    nxt = {"role": "button", "name": "Next decision"}
+    line = {"css": "[data-browser=asks] .tc-ask-line"}
+    words = {"css": "[data-browser=asks] .tc-ask-text"}
+    workflow(
+        "browser-09-every-ask.json",
+        "App: every ask over the message box, one at a time: a CAPTCHA, a choice, a code, a passkey (board 9)",
+        "The real app on its demo data with the design's board 9 asks (BROWSERAPP-13), one at a time with 1 of 4 and the "
+        "next arrow, each in the board's words; a choice's heading is the agent's first sentence and its choices its buttons; "
+        "the code card has six boxes in blue. Board 9 is a sheet of the four cards side by side: here they're checked word "
+        "by word and over the message box, not by the sheet's places.",
+        [
+            launch(9, 1280, 800),
+            read("captcha", line, "BROWSERAPP-13", count=1, text="Check The page wants to know you’re a person · Codex 1 of 4"),
+            read("captcha-words", words, None, count=1, text="Codex can’t answer this. Take control and solve it; Codex goes on when you give the tab back."),
+            step("over-the-box", "app.measure", "BROWSERAPP-13", app=APP, target=CARD,
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+            *pictures(9, "Asks", "board 9 (a sheet): the CAPTCHA card"),
+            click("to-choice", nxt),
+            read("choice", line, "BROWSERAPP-13", count=1, text="Question Which plan should I pick at checkout? · Claude Code 2 of 4"),
+            read("choice-words", words, None, count=1, text="The test card works with both. Business adds SSO, which the next step checks."),
+            read("choices", {"css": "[data-browser=asks] .tc-options"}, "BROWSERAPP-13", count=1, text="Team · $12\nBusiness · $29\nI’ll choose in the page"),
+            click("to-code", nxt),
+            read("code", line, "BROWSERAPP-13", count=1, text="Code The code sent to your phone, for staging.acme.dev 3 of 4"),
+            read("code-boxes", {"css": ".code-boxes > span"}, None, count=6),
+            read("code-blue", {"css": ".tc-ask-kind.is-blue"}, None, styles={"color": "--unread"}, **{"styles.color.matches": True}),
+            click("to-passkey", nxt),
+            read("passkey", line, "BROWSERAPP-13", count=1, text="Passkey staging.acme.dev asks for your passkey · Codex 4 of 4"),
+            read("passkey-words", words, None, count=1, text="Only you can do this. Take control; your Mac asks for Touch ID."),
+            click("skip-passkey", {"role": "button", "name": "Skip"}),
+            # the last one answered, the one before it shows: three left
+            read("three-left", line, None, count=1, text="Code The code sent to your phone, for staging.acme.dev 3 of 3", within=5),
+            close(),
+        ],
+    )
+
+
 # obid's browser routes aren't served yet: they come with browser port 1's routes pull request
 # (4b; docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608 and core #2610 merged). Every step that
 # needs them is expected red until then; the pull request that lands them removes these marks.
@@ -323,6 +430,10 @@ BOARD_SKIPS = {
     # across the window the tabs start after the traffic lights (--after-lights), where macOS put them: 5px right of the
     # board's, as the app's own panel toggle is
     5: [".br-tab"],
+    # the decision card over the message box sits where the app's composer is (52px title bar, the app's thread): its
+    # boxes are held to the board in their words, their places reported (today's composer, not the board's)
+    7: [".decision-card", ".tc-ask-line", ".tc-ask-text"],
+    8: [".decision-card", ".tc-ask-line", ".secret-row", ".secret-note"],
 }
 
 
@@ -334,5 +445,8 @@ if __name__ == "__main__":
     board_04()
     board_05()
     board_06()
+    board_07()
+    board_08()
+    board_09()
     board_17()
     live_101()
