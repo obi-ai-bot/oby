@@ -1,0 +1,287 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sphere/exchanges/{id}/cancel",
+  "version": "1.0.0",
+  "description": "The owner calls off a request of theirs by hand (obi-requests.md, OBIREQ-5): obid's token alone; 404 for an exchange obid doesn't have, 409 for one another Oby sent and for one that already ended (nothing more is sent), 200 for an open outgoing one, which then reads cancelled with its cancel sent, and the other Oby's copy reads cancelled too.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sphere/exchanges/{id}/cancel"
+    }
+  },
+  "tags": [
+    "launch"
+  ],
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "dana",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dana",
+        "owner": "dana"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dana-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dana-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dana}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dana-key}",
+        "name": "Dana's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dana}",
+            "ownerKey": "${state.dana-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/exchanges/00000000-0000-4000-8000-000000000000/cancel",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/exchanges/00000000-0000-4000-8000-000000000000/cancel",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.dana-joined.obiId}",
+          "type": "question",
+          "body": {
+            "text": "What are you working on?"
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202
+        }
+      }
+    },
+    {
+      "id": "dana-has-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "direction": "incoming",
+            "type": "question"
+          }
+        }
+      }
+    },
+    {
+      "id": "incoming-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}/cancel",
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "OBIREQ-5"
+        ]
+      }
+    },
+    {
+      "id": "dana-still-has-it-open",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "state": {
+              "$ne": "cancelled"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "called-off-200",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}/cancel",
+        "expect": {
+          "status": 200,
+          "body": {
+            "correlationId": "${state.asked.body.correlationId}",
+            "direction": "outgoing",
+            "state": "cancelled"
+          }
+        }
+      }
+    },
+    {
+      "id": "reads-cancelled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "cancelled"
+          },
+          "paths": {
+            "messages": {
+              "$any": {
+                "direction": "sent",
+                "envelope": {
+                  "type": "cancel",
+                  "in_reply_to": "${state.asked.body.correlationId}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dana-reads-cancelled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dana}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "cancelled"
+          }
+        }
+      }
+    },
+    {
+      "id": "ended-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}/cancel",
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "OBIREQ-5"
+        ]
+      }
+    },
+    {
+      "id": "ended-sent-one-cancel",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.asked.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "cancelled"
+          },
+          "paths": {
+            "messages": {
+              "$count": [
+                {
+                  "direction": "sent",
+                  "envelope": {
+                    "type": "cancel"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "OBIREQ-5"
+        ]
+      }
+    }
+  ]
+}

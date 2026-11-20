@@ -678,7 +678,12 @@ fn underway(shared: &Shared, body: &Bytes) -> Result<Option<String>, ApiError> {
 /// their turn. Turns in other conversations go on.
 pub async fn stop(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
     if let Some(id) = underway(&shared, &body)? {
+        let begun = shared.turns.begun_in(&id);
         shared.turns.stop(Some(&id));
+        // What the turn asked other Obys is called off with it (obi-requests.md, OBIREQ-4).
+        if let Some(begun) = begun {
+            shared.link.call_off_turn(&id, begun);
+        }
     }
     Ok((StatusCode::OK, axum::Json(json!({"stopped": true}))).into_response())
 }

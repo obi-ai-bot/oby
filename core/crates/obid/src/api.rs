@@ -381,6 +381,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::sphere::routes::exchange),
         )
         .route(
+            "/v1/obid/sphere/exchanges/{id}/cancel",
+            post(crate::sphere::routes::call_off),
+        )
+        .route(
             "/v1/obid/sphere/peers/{owner}",
             get(crate::sphere::routes::peer_thread),
         )
