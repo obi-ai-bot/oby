@@ -24,10 +24,6 @@ nix.workspace = true
 p256.workspace = true
 rustix.workspace = true
 reqwest.workspace = true
-# Go on anyway reads the certificate a server presents (crate::browser::driver::certificate):
-# the rustls reqwest already builds, with its aws-lc-rs provider, no new crate.
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 tokio-stream.workspace = true
 tokio-tungstenite.workspace = true
 getrandom.workspace = true
@@ -50,7 +46,8 @@ icu_normalizer = { version = "2.3.0", default-features = false, features = ["com
 icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 # Other computers' direct addresses (src/remote/): the gateway over HTTPS with this computer's
 # own certificate, and the window's client that trusts only a pinned one. Already in the tree,
-# through reqwest, with the same aws-lc-rs.
+# through reqwest, with the same aws-lc-rs. Go on anyway reads the certificate a server presents
+# with them too (crate::browser::driver::certificate).
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 # The gateway calls obid's own router in process (src/gateway.rs).
