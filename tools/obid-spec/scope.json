@@ -24,7 +24,8 @@
             "SPHERE-21",
             "SPHERE-22",
             "SPHERE-23",
-            "SPHERE-24"
+            "SPHERE-24",
+            "SPHERE-25"
           ],
           "elsewhere": {
             "SPHERE-3": "the Electron side panel showing the joined Obysphere (apps/electron sphere.test.ts)",
