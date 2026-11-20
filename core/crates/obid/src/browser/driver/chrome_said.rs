@@ -37,7 +37,23 @@ pub async fn chrome_said(chrome: &Path, scratch: &Path) -> String {
         Ok(Ok(out)) => {
             let text = String::from_utf8_lossy(&out.stderr).into_owned();
             let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-            let tail = lines[lines.len().saturating_sub(LINES_KEPT)..].join(" | ");
+            // Chrome's own reason comes before a crash's stack trace: its FATAL, ERROR and failed
+            // checks first, else the last lines.
+            let reasons: Vec<&str> = lines
+                .iter()
+                .copied()
+                .filter(|l| {
+                    ["FATAL", "ERROR:", "Check failed", "error while loading"]
+                        .iter()
+                        .any(|k| l.contains(k))
+                })
+                .take(LINES_KEPT)
+                .collect();
+            let tail = if reasons.is_empty() {
+                lines[lines.len().saturating_sub(LINES_KEPT)..].join(" | ")
+            } else {
+                reasons.join(" | ")
+            };
             match (out.status.code(), tail.is_empty()) {
                 (Some(0), true) => "it started on its own and printed nothing".to_string(),
                 (code, true) => format!("it printed nothing (exit {code:?})"),
@@ -64,14 +80,18 @@ mod tests {
         let chrome = dir.join("chrome");
         std::fs::write(
             &chrome,
-            "#!/bin/bash\necho 'starting' >&2\necho 'error while loading shared libraries: libnss3.so' >&2\nexit 127\n",
+            "#!/bin/bash\necho 'starting' >&2\necho '[1:1:FATAL:zygote_host_impl_linux.cc] No usable sandbox!' >&2\nfor i in $(seq 1 30); do echo \"#$i 0x0 (chrome+0x$i)\" >&2; done\nexit 127\n",
         )
         .unwrap();
         let mut perms = std::fs::metadata(&chrome).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&chrome, perms).unwrap();
         let said = chrome_said(&chrome, &dir).await;
-        assert!(said.contains("libnss3.so"), "{said}");
+        assert!(
+            said.contains("No usable sandbox"),
+            "the reason, not the stack's tail: {said}"
+        );
+        assert!(!said.contains("#30"), "{said}");
         assert!(said.contains("127"), "{said}");
         assert!(
             !dir.join("chrome-said").exists(),
