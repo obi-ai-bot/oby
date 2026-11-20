@@ -1177,7 +1177,8 @@
             "LANES-17": "unit test.",
             "LANES-20": "real network/listen behaviour.",
             "LANES-22": "unit (process::tests).",
-            "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see."
+            "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see.",
+            "LANES-26": "unit test (jobs::lanes::tests::lanes_26_an_own_run_reaches_obid_on_loopback) and LANES-12's harness tests on Linux; on a real Linux obid, the lab workflow workflows/lab/lanes/own-conversation-linux.json, which coverage doesn't count (OBIDSPEC-16)."
           }
         },
         "agent-mcp.md": {
