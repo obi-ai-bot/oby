@@ -1,10 +1,11 @@
-//! The browser's routes (docs/api/browser.md; docs/contracts/browser.md, BROWSER-2 to 16): every
-//! path of the contract's `ROUTES`, merged into obid's router. obid's gate checks the owner token
-//! first (and, for the agents' route, admits a job's broker token); the owner's acts here also
-//! carry the device's signed words (`X-Oby-Words`, `crate::approval`): `PUT settings`, Save a copy,
-//! an answer, take, give back, a secret and the person's input (BROWSER-7: only from the device that
-//! holds the tab). The agents' MCP server is `POST /v1/browser/mcp`, its caller's job from its
-//! broker token (`crate::connections`), its plumbing `crate::mcp`'s.
+//! The browser's routes (docs/api/browser.md; docs/contracts/browser.md, BROWSER-2 to 16, 26):
+//! every path of the contract's `ROUTES`, merged into obid's router. obid's gate checks the owner
+//! token first (and, for the agents' route, admits a job's broker token); the owner's acts here
+//! also carry the device's signed words (`X-Oby-Words`, `crate::approval`): `PUT settings`, Save a
+//! copy, an answer, take, give back, a secret, the person's input (BROWSER-7: only from the device
+//! that holds the tab) and their ways out of a page state (reload, back, a dialog answered:
+//! BROWSER-26, only on a tab their device holds). The agents' MCP server is `POST /v1/browser/mcp`,
+//! its caller's job from its broker token (`crate::connections`), its plumbing `crate::mcp`'s.
 //!
 //! It owns no state: the browser's is [`super::Service`]'s. It writes nothing; a secret's value is
 //! never logged, evented or answered (obid logs no request body, and this module none of its own).
@@ -49,6 +50,9 @@ pub fn router() -> Router<Arc<Shared>> {
         .route("/v1/browser/tabs/{id}/take", post(take))
         .route("/v1/browser/tabs/{id}/giveBack", post(give_back))
         .route("/v1/browser/tabs/{id}/secret", post(secret))
+        .route("/v1/browser/tabs/{id}/reload", post(reload))
+        .route("/v1/browser/tabs/{id}/back", post(back))
+        .route("/v1/browser/tabs/{id}/dialog", post(dialog))
         .route("/v1/browser/mcp", post(mcp))
 }
 
@@ -511,6 +515,114 @@ async fn secret(
         field: b.field,
         filled: true,
     })
+}
+
+async fn reload(
+    State(shared): State<Arc<Shared>>,
+    Path(tab): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    way_out(&shared, tab, (method, uri, headers, body), c::VERB_RELOAD).await
+}
+
+async fn back(
+    State(shared): State<Arc<Shared>>,
+    Path(tab): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    way_out(&shared, tab, (method, uri, headers, body), c::VERB_BACK).await
+}
+
+async fn dialog(
+    State(shared): State<Arc<Shared>>,
+    Path(tab): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    way_out(&shared, tab, (method, uri, headers, body), c::VERB_DIALOG).await
+}
+
+/// The person's way out of a page state (BROWSER-26), in the lab's order (`browserapi.rs`,
+/// `way_out`): the device's signed words, the body, the tab held by that device (and, for a
+/// dialog's answer, a dialog on it), then the driver's person path. Answers the tab as it is after;
+/// one that still doesn't load stays failed, in the browser's words.
+async fn way_out(
+    shared: &Arc<Shared>,
+    tab: String,
+    (method, uri, headers, body): (Method, Uri, HeaderMap, Bytes),
+    verb: &str,
+) -> Response {
+    let device = match signed(shared, &method, &uri, &headers, &body) {
+        Ok(d) => d,
+        Err(e) => return refused(e),
+    };
+    let parsed = match verb {
+        c::VERB_DIALOG => parse::<c::DialogBody>(&body),
+        c::VERB_BACK => parse::<c::BackBody>(&body).map(|_| c::DialogBody::default()),
+        _ => parse::<c::ReloadBody>(&body).map(|_| c::DialogBody::default()),
+    };
+    let answer = match parsed {
+        Ok(b) => b,
+        Err(e) => return refused(e),
+    };
+    let service = &shared.browser;
+    let job = match service.api(|a| a.way_out(&device, &tab, verb)) {
+        Ok(j) => j,
+        Err(e) => return refused(e),
+    };
+    let target = service
+        .driver()
+        .core()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .person_may_act(&device, &tab)
+        .map(|t| t.target.clone());
+    let target = match target {
+        Ok(t) => t,
+        Err(r) => return refused(Refused::engine(r.code(), &r.message())),
+    };
+    let moved = service
+        .driver()
+        .person_page(
+            &job,
+            &tab,
+            &target,
+            verb,
+            answer.accept,
+            answer.prompt_text.as_deref(),
+        )
+        .await;
+    // The page moved: whatever failed before is over (a dialog answered is gone).
+    match &moved {
+        Ok(_) if verb == c::VERB_DIALOG => service.api(|a| a.dialog(&tab, None)),
+        Ok(_) => service.api(|a| a.loaded(&tab)),
+        Err(_) => {}
+    }
+    service.sync(&job);
+    if let Err(r) = moved {
+        // It still doesn't load: the tab says so, in the browser's words.
+        if r.code() == "browser" && verb != c::VERB_DIALOG {
+            service.api(|a| a.failed(&tab, &r.message()));
+            service.flush();
+        }
+        return refused(Refused::engine(r.code(), &r.message()));
+    }
+    match service.api(|a| a.tab(&tab).cloned()) {
+        Some(t) => ok(&t),
+        None => refused(Refused::new(
+            404,
+            "no_such_tab",
+            format!("There is no tab {tab}."),
+        )),
+    }
 }
 
 /// The agent's own folder: its job's worktree, else a folder of the browser's own for it.

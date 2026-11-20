@@ -23,6 +23,7 @@ mod live;
 mod live_file;
 mod options;
 mod person;
+mod person_page;
 mod procs;
 mod reap;
 mod run;
