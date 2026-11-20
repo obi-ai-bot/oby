@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { parseInvite, sphereAddress, type Joined } from '../../shared/invite';
 import { onObid } from './lean';
 import { ME } from './spheres';
+import { composing } from './shortcuts';
 
 // Joining an Obysphere from its invite link, pasted in the app (docs/contracts/sphere-app.md,
 // SPHEREAPP-3 and 4): on first run's Obysphere step and in Settings › Obysphere. The page only holds
@@ -65,7 +66,7 @@ function OwnerLine({ who, invite }: { who: ReturnType<typeof useOwnerId>; invite
         <span className="wl-sub">Join as</span>
         <input className="modal-field setup-field" value={editing} autoFocus aria-label="Owner id" maxLength={63}
           onChange={(e) => { setEditing(e.target.value); setProblem(null); }}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void save(); } if (e.key === 'Escape') { e.stopPropagation(); setEditing(null); setProblem(null); } }}
+          onKeyDown={(e) => { if (composing(e)) return; if (e.key === 'Enter') { e.preventDefault(); void save(); } if (e.key === 'Escape') { e.stopPropagation(); setEditing(null); setProblem(null); } }}
           autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
         <button type="button" className="set-button" onClick={() => void save()}>Save</button>
       </span>
@@ -136,7 +137,7 @@ export function JoinLink({ link, onb = false }: { link: ReturnType<typeof useJoi
     <div className={`join-link${onb ? ' is-onb' : ''}`}>
       <div className="join-link-line">
         <input className="modal-field setup-field" value={text} onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void join(); } }}
+          onKeyDown={(e) => { if (!composing(e) && e.key === 'Enter') { e.preventDefault(); void join(); } }}
           type="url" inputMode="url" placeholder="Paste its invite link" aria-label="Invite link" aria-invalid={!!problem} aria-describedby={problem ? why : undefined}
           autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
         <button type="button" className="set-button" disabled={!invite || busy} onClick={() => void join()}>{busy ? 'Joining…' : 'Join'}</button>

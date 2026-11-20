@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { DesktopIcon, HardDrivesIcon, LaptopIcon } from '@phosphor-icons/react';
 import { Check, Ellipsis, Plus } from 'lucide-react';
 import { Menu } from '../Menu';
+import { composing } from '../shortcuts';
 import { closeMenu, current, currentName, openSheet, rename, showMore, startRename, stopRename, toggleMenu, use, useComputers } from './store';
 import { THIS_MAC, buttonLabel, rowAbout, type Computer } from './view';
 import { ComputerSheets } from './sheets';
@@ -84,7 +85,7 @@ function Row({ c, inUse, more, renaming }: { c: Computer; inUse: boolean; more: 
               // Enter or a click elsewhere keeps the name; Esc (the menu's, above) leaves it as it was
               onFocus={(e) => e.currentTarget.select()}
               onBlur={(e) => void rename(c.id, e.currentTarget.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} />
+              onKeyDown={(e) => { if (!composing(e) && e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} />
             {aboutLine}
           </span>
         </div>

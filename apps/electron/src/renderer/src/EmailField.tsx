@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
 import { useScrollThumb } from './useScrollThumb';
+import { composing } from './shortcuts';
 
 // Addresses typed into one field (inviting people into an Obysphere, or into a
 // new one). Each, once finished (a comma, a space or Enter after it, or a list
@@ -62,6 +63,7 @@ export default function EmailField({ list, id, inputRef, short = false, onEnterE
           autoComplete="off"
           onChange={(e) => (SEPARATED.test(e.target.value) ? take(e.target.value) : setDraft(e.target.value))}
           onKeyDown={(e) => {
+            if (composing(e)) return;
             // Enter finishes what's typed; with nothing typed, it's the form's
             if (e.key === 'Enter') { e.preventDefault(); if (draft.trim()) take(draft); else onEnterEmpty?.(); }
             if (e.key === 'Backspace' && !draft && emails.length) setEmails((had) => had.slice(0, -1));

@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -222,6 +222,31 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan)).toBeNull();
     // words with no project go as before, whatever folders main read
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', { said: 'Fix the login', new: true }, undefined, ['/Users/me/never-picked'])).not.toBeNull();
+  });
+
+  it('words_19_verifying_a_members_key_signs_exactly_its_fingerprint_by_verify', () => {
+    const path = '/v1/obid/sphere/pins/dima', body = { fingerprint: 'ed25519:ab12cd34' };
+    expect(PIN_VERIFY).toBe('Verify');
+    expect(wordsOf('POST', path, body)).toEqual([PIN_VERIFY]);
+    expect(owners('POST', path, body, ['Verify'], [])).toEqual([0]);
+    // the fingerprint isn't one of the words, and no other button's label stands for Verify
+    expect(owners('POST', path, body, ['ed25519:ab12cd34'], [])).toBeNull();
+    for (const label of ['Confirm', 'Allow', 'Forget', 'Yes, it can']) expect(owners('POST', path, body, [label], [])).toBeNull();
+    // exactly {fingerprint}: any other key, kind or verb, or another route, signs nothing
+    for (const b of [undefined, {}, { fingerprint: 1 }, { fingerprint: 'ed25519:ab', owner: 'dima' }, { fingerprint: 'ed25519:ab', verified: true }, ['ed25519:ab']]) {
+      expect(wordsOf('POST', path, b)).toBeNull();
+    }
+    for (const method of ['PUT', 'PATCH', 'DELETE']) expect(wordsOf(method, path, body)).toBeNull();
+    expect(wordsOf('POST', '/v1/obid/sphere/pins', body)).toBeNull();
+    expect(wordsOf('POST', '/v1/obid/sphere/pins/dima/x', body)).toBeNull();
+    // Forget takes a decision back with the token alone: never signed
+    expect(wordsOf('DELETE', '/v1/obid/decisions/d1', undefined)).toBeNull();
+    // the signature covers the path, so it names whose key
+    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const [, at, signature] = wordsHeader(privateKey, 'd1', 'POST', path, body)!.split(' ');
+    const valid = (p: string) => verify('sha256', Buffer.from(`oby-words\nPOST\n${p}\n${createHash('sha256').update(JSON.stringify(body)).digest('hex')}\n${at}`), publicKey, Buffer.from(signature, 'base64'));
+    expect(valid(path)).toBe(true);
+    expect(valid('/v1/obid/sphere/pins/dirna')).toBe(false);
   });
 
   it('words_20_a_new_conversations_workspace_signs_with_its_words', () => {

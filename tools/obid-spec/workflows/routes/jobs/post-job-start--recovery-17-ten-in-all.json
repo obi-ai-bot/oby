@@ -1,0 +1,474 @@
+{
+  "schemaVersion": "2",
+  "name": "obid carries a job on by itself 10 times in all (RECOVERY-17)",
+  "version": "1.0.0",
+  "description": "Jobs a restart picks up with 8, 9 or 10 of their 10 continuations spent: at the cap each waits for the owner, interrupted with Try again, its branch kept and its reason naming the cap and what cut it last; one with a try left takes it; the owner's signed Try again starts the count again.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/start"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        },
+        "files": {
+          "jobs/ffff0001.json": {
+            "id": "ffff0001",
+            "request": "DIE ALWAYS KEEP PROMPTS",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-ffff0001",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "DIE ALWAYS KEEP PROMPTS",
+            "title": null,
+            "status": "queued",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999800,
+            "finished": null,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 8,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true
+          },
+          "jobs/ffff0002.json": {
+            "id": "ffff0002",
+            "request": "KEEP PROMPTS",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-ffff0002",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "KEEP PROMPTS",
+            "title": null,
+            "status": "running",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999800,
+            "finished": null,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 10,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true
+          },
+          "jobs/ffff0004.json": {
+            "id": "ffff0004",
+            "request": "QUIET KEEP PROMPTS",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-ffff0004",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "QUIET KEEP PROMPTS",
+            "title": null,
+            "status": "queued",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999800,
+            "finished": null,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 9,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true
+          },
+          "jobs/ffff0005.json": {
+            "id": "ffff0005",
+            "request": "QUIET ONCE KEEP PROMPTS",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-ffff0005",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "QUIET ONCE KEEP PROMPTS",
+            "title": null,
+            "status": "queued",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999800,
+            "finished": null,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 8,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "recovery-17-a-cut-run-at-the-cap",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/ffff0001",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "branch": "oby/investigate-ffff0001"
+          },
+          "paths": {
+            "reason": {
+              "$matches": "by itself 10 times.*stopped without finishing|stopped without finishing.*by itself 10 times"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "recovery-17-the-restart-took-one-the-cut-the-last",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/ffff0001/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "recovery-17-a-restart-at-the-cap",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/ffff0002",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "branch": "oby/investigate-ffff0002"
+          },
+          "paths": {
+            "reason": {
+              "$matches": "by itself 10 times.*obid or the Mac went down while it ran|obid or the Mac went down while it ran.*by itself 10 times"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "recovery-17-quiet-at-the-cap",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/ffff0004",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "branch": "oby/investigate-ffff0004"
+          },
+          "paths": {
+            "reason": {
+              "$matches": "by itself 10 times.*no progress for 3 seconds|no progress for 3 seconds.*by itself 10 times"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "recovery-17-quiet-its-turn-and-the-note",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/ffff0004/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "recovery-17-one-left-is-taken",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/ffff0005",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "recovery-17-that-took-the-tenth",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/ffff0005.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.tries": 10
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "owners-try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/ffff0002/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "recovery-17-the-owner-starts-the-count-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/ffff0002",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    },
+    {
+      "id": "recovery-17-none-spent-after",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/ffff0002.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.tries": {
+                "$oneOf": [
+                  0,
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-17"
+        ]
+      }
+    }
+  ]
+}
