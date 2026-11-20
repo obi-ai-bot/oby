@@ -885,51 +885,25 @@ pub mod computers {
 
     // ---------------------------------------------------------------- pairing over SSH
 
-    /// What `obid pair-computer` will do, the program SSH runs on the other computer on the
-    /// owner's click (placed there with obid, never installed over SSH): it reads the Mac's name
-    /// and its device key from stdin, one line each, names the key in obid's `home/pairing`
-    /// (which obid accepts within 2 minutes, once), registers it with obid's own API there, and
-    /// makes a one-time invitation the Mac redeems through the tunnel for its device token. obid's
-    /// API token never leaves that computer; the invitation's secret goes back over SSH only. Its
-    /// output is one JSON line, `{"device": …, "invite": …}`. Nothing else runs: anything else on
-    /// stdin is refused, so a key whose only command is this can do nothing but pair.
-    pub fn pair_computer_script(
-        home: &str,
-        api: &str,
-        gateway_url: &str,
-    ) -> Result<String, String> {
+    /// The pairing program SSH runs on the other computer on the owner's click: obid's own
+    /// `obid pair-computer` (core/crates/obid/src/remote/pair.rs, docs/api/remote.md, COMPUTERS-7),
+    /// placed with obid, never installed over SSH. It reads the Mac's name and its device key
+    /// from stdin, names the key in obid's `home/pairing`, registers it with obid's own API there
+    /// and makes a one-time invitation the Mac redeems through the tunnel for its device token,
+    /// answering one JSON line, `{"device": …, "invite": …}`. This file is only its one plain
+    /// path, so an `authorized_keys` line can make it a key's forced command and the other
+    /// computer's login shell (fish, on a Mac proven) parses nothing of ours.
+    pub fn pair_computer_script(obid: &str, config: &str) -> Result<String, String> {
         let plain = |s: &str| {
-            !s.is_empty()
+            s.starts_with('/')
                 && s.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "/._-:".contains(c))
+                    .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
         };
-        if !plain(home) || !plain(api) || !gateway_url.starts_with("http://") || !plain(gateway_url)
-        {
-            return Err("the other obid's home, API and gateway are plain paths".into());
+        if !plain(obid) || !plain(config) {
+            return Err("the other obid's program and configuration are plain paths".into());
         }
         Ok(format!(
-            r#"#!/bin/bash
-# obid-spec's stand-in for `obid pair-computer` (tools/obid-spec/src/lab/remote.rs).
-set -eu
-umask 077
-home='{home}'
-IFS= read -r name || name=''
-IFS= read -r key || key=''
-case "$key" in
-  ''|*[!A-Za-z0-9+/=]*) echo "That isn't a device key." >&2; exit 2 ;;
-esac
-[ "${{#key}}" -le 200 ] || {{ echo "That isn't a device key." >&2; exit 2; }}
-name=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-100)
-dir=$(mktemp -d)
-trap 'rm -rf "$dir"' EXIT
-printf 'Authorization: Bearer %s\n' "$(cat "$home/api-token")" > "$dir/auth"
-printf '%s\n' "$key" > "$home/pairing"
-printf '{{"name":"%s","publicKey":"%s"}}' "$name" "$key" > "$dir/device"
-printf '{{"url":"%s","name":"%s"}}' '{gateway_url}' "$name" > "$dir/invite"
-curl -sS --max-time 20 -H @"$dir/auth" -H 'Content-Type: application/json' -X POST 'http://{api}/v1/devices' --data-binary @"$dir/device" > "$dir/device.out"
-curl -sS --max-time 20 -H @"$dir/auth" -H 'Content-Type: application/json' -X POST 'http://{api}/v1/pairing/invite' --data-binary @"$dir/invite" > "$dir/invite.out"
-printf '{{"device":%s,"invite":%s}}\n' "$(cat "$dir/device.out")" "$(cat "$dir/invite.out")"
-"#
+            "#!/bin/sh\n# obid's own pairing for another computer (docs/api/remote.md).\nexec '{obid}' pair-computer --config '{config}'\n"
         ))
     }
 
@@ -1190,18 +1164,15 @@ printf '{{"device":%s,"invite":%s}}\n' "$(cat "$dir/device.out")" "$(cat "$dir/i
         }
 
         #[test]
-        fn the_pairing_helper_takes_only_plain_paths_and_reads_the_key_from_stdin() {
-            let script = pair_computer_script(
-                "/home/oby/.oby/home",
-                "127.0.0.1:7811",
-                "http://127.0.0.1:8810",
-            )
-            .unwrap();
-            assert!(script.contains("> \"$home/pairing\""));
-            assert!(script.contains("IFS= read -r key"));
-            assert!(script.contains("That isn't a device key."));
-            assert!(pair_computer_script("/h'; rm -rf /", "a", "http://b").is_err());
-            assert!(pair_computer_script("/h", "a", "http://b' x").is_err());
+        fn the_pairing_program_is_obids_own_by_plain_paths() {
+            let script =
+                pair_computer_script("/home/oby/.oby/bin/obid", "/home/oby/.oby/config.json")
+                    .unwrap();
+            assert!(script.ends_with(
+                "exec '/home/oby/.oby/bin/obid' pair-computer --config '/home/oby/.oby/config.json'\n"
+            ));
+            assert!(pair_computer_script("/h'; rm -rf /", "/c").is_err());
+            assert!(pair_computer_script("/o", "c.json").is_err());
         }
 
         #[test]
@@ -2189,7 +2160,11 @@ async fn mac_computer(run: &Run, input: &Value) -> Result<Value> {
     let helper = folder.join("pair-computer");
     std::fs::write(
         &helper,
-        computers::pair_computer_script(home, api, gateway_base).map_err(anyhow::Error::msg)?,
+        computers::pair_computer_script(
+            &run.obid.display().to_string(),
+            &folder.join("config.json").display().to_string(),
+        )
+        .map_err(anyhow::Error::msg)?,
     )?;
     std::fs::set_permissions(&helper, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     // This Mac's host key, as the person would check it: the system's own file.
@@ -2544,13 +2519,9 @@ cat "$d/obid.out"
     let helper = format!("{dir}/pair-computer");
     admin_put(
         &helper,
-        computers::pair_computer_script(
-            &home,
-            &format!("127.0.0.1:{api_port}"),
-            &format!("http://127.0.0.1:{gateway_port}"),
-        )
-        .map_err(anyhow::Error::msg)?
-        .as_bytes(),
+        computers::pair_computer_script(&format!("{dir}/bin/obid"), &format!("{dir}/config.json"))
+            .map_err(anyhow::Error::msg)?
+            .as_bytes(),
         "700",
     )
     .await?;

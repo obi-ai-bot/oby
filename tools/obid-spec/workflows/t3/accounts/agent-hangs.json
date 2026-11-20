@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: an agent that goes quiet never hangs the task",
+  "version": "1.0.0",
+  "description": "T3 Code's stuck turns (turns stuck in provider retries running forever, crashed handlers that hang silently): with stallAfter at 2 seconds, a Claude Code that keeps talking for 5 seconds is never cut and ends done, while one that says and writes nothing is continued in its session and then stalled: the task ends interrupted with the stall's words and Try again, never left running (RECOVERY-3).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "stallAfter": 2
+        }
+      }
+    },
+    {
+      "id": "a-chatty-task",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "CHATTY: 5000"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "talking-is-progress-it-ends-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a-chatty-task.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "stalled": null
+          }
+        }
+      }
+    },
+    {
+      "id": "a-quiet-task",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "QUIET"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "recovery-3-it-stalls-with-try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a-quiet-task.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "reason": "Stalled: no progress for 2 seconds.",
+            "stalled": {
+              "why": "quiet",
+              "session": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-3"
+        ]
+      }
+    }
+  ]
+}

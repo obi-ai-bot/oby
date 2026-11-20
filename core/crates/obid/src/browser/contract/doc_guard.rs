@@ -174,6 +174,13 @@ fn samples() -> Vec<Value> {
             filled: true,
         })
         .unwrap(),
+        serde_json::to_value(DialogBody {
+            accept: true,
+            prompt_text: Some("p".into()),
+        })
+        .unwrap(),
+        serde_json::to_value(ReloadBody {}).unwrap(),
+        serde_json::to_value(BackBody {}).unwrap(),
         // The secret's body is only ever read: its keys as the route takes them.
         json!({"field": "#pw", "value": "v"}),
         serde_json::to_value(StreamFrame {

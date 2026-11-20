@@ -2789,7 +2789,7 @@ static FLAKY: Mutex<Option<(u16, Option<tokio::task::JoinHandle<()>>)>> = Mutex:
 
 /// `up: false` keeps a port nobody listens on (a navigation there is refused); `up: true` starts
 /// the fixture site on that very port, so the same address now loads.
-async fn flaky(input: &Value) -> Result<Value> {
+pub(crate) async fn flaky(input: &Value) -> Result<Value> {
     let port = {
         let held = FLAKY.lock().unwrap().as_ref().map(|(p, _)| *p);
         match held {
@@ -2987,7 +2987,7 @@ async fn serve_https(
 /// Starts the HTTPS fixture `site` (default `main`) showing the certificate `certificate`
 /// (default `first`, made the first time it's named), or, when it's up, swaps to that certificate
 /// behind the same port: the same origin with another certificate.
-async fn https(input: &Value) -> Result<Value> {
+pub(crate) async fn https(input: &Value) -> Result<Value> {
     let site = input["site"].as_str().unwrap_or("main").to_string();
     let cert_name = input["certificate"].as_str().unwrap_or("first").to_string();
     let make = || -> Result<(String, Arc<rustls::ServerConfig>)> {

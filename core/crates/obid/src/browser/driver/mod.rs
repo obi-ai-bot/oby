@@ -1,8 +1,8 @@
 //! The browser's engine driver (BROWSER-23 to 25, and the engine side of BROWSER-10 to 13): one
-//! agent-browser daemon and its Chrome for Testing per job, started on the job's first browser call
-//! once [`crate::browser::install`] has put the engine in place, at most four live at once, each
-//! closing itself after 10 minutes idle, killed when its job ends and reaped when obid starts. It
-//! runs what the core's [`crate::browser::engine::Ticket`] says, right before checking it may
+//! agent-browser daemon and its chrome-headless-shell per job, started on the job's first browser
+//! call once [`crate::browser::install`] has put the engine in place, at most four live at once,
+//! each closing itself after 10 minutes idle, killed when its job ends and reaped when obid starts.
+//! It runs what the core's [`crate::browser::engine::Ticket`] says, right before checking it may
 //! start, under its deadline, never replaying one that timed out, and tells the core what the page
 //! is now.
 //!
@@ -23,6 +23,7 @@ mod live;
 mod live_file;
 mod options;
 mod person;
+mod person_page;
 mod procs;
 mod reap;
 mod run;
