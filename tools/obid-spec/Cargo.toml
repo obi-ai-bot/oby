@@ -48,7 +48,7 @@ regex = { version = "1", default-features = false, features = ["std", "unicode-p
 # home, its browser engine's hundreds of MB included, searched for each secret in well under a second.
 memchr = "2"
 # Oby Artifacts in the lab (src/lab/artifacts.rs): Claude Design's project zip, out and in.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Oby Artifacts' views in the lab (src/lab/artifactview.rs): chrome-headless-shell over the DevTools
 # protocol, and its pictures compared pixel by pixel.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
