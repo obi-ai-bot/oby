@@ -44,6 +44,8 @@ use obi_protocol::identity::takes_card_runtime;
 
 mod asking;
 pub use asking::{AskMember, Picked, pick};
+mod calling_off;
+pub use calling_off::NotCalledOff;
 mod follower;
 mod handoffs;
 mod inbox_actions;
@@ -1173,6 +1175,7 @@ impl Link {
             self.settle_on_revoke();
         }
         self.watch_handoffs();
+        self.watch_work_ending();
         self.reconcile();
         if membership.as_deref() == Some("joined") {
             self.follow();

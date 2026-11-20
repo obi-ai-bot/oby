@@ -286,6 +286,13 @@ impl Turns {
         any
     }
 
+    /// When the earliest turn under way in `conversation` began, if one is.
+    pub fn begun_in(&self, conversation: &str) -> Option<i64> {
+        let underway = self.lock();
+        let turns = underway.iter().filter(|c| c.conversation == conversation);
+        turns.map(|c| c.begun).min()
+    }
+
     /// Whether a turn is under way in `conversation`.
     pub fn underway_in(&self, conversation: &str) -> bool {
         self.lock().iter().any(|c| c.conversation == conversation)

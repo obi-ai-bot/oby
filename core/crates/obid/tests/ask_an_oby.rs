@@ -1786,3 +1786,57 @@ async fn ask_42_a_question_asked_while_the_obysphere_is_away_goes_once_it_is_bac
     tokio::task::block_in_place(|| told(&obid, &conversation, "never got this question"));
     assert_eq!(questions_recorded(&sphere), 0, "nothing went");
 }
+
+/// OBIREQ-4 (docs/contracts/obi-requests.md): the owner stops a turn that asked another Oby a
+/// question and is still under way: obid calls the question off, with one `cancel` in reply to it,
+/// and the conversation's card for it reads `cancelled` (the app's `Called off`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_4_a_stopped_turn_calls_off_its_question() {
+    let folder = Folder::new("obireq-4");
+    let (_sphere, obid, ernesto) = setup(&folder).await;
+    let asks = json!({"to": "ernesto", "question": QUESTION});
+    let words = format!("REPEAT 1 OBY oby_ask {asks} THEN LINGER 8000");
+    let (conversation, cid) = tokio::task::block_in_place(|| {
+        std::thread::scope(|turns| {
+            let turn = turns.spawn(|| {
+                call_typed(
+                    &obid,
+                    "POST",
+                    "/v1/plans",
+                    &json!({"said": words, "new": true}),
+                )
+            });
+            let cid = within(30, "the question asked", || {
+                let all = call(&obid, "GET", "/v1/obid/sphere/exchanges", None).body;
+                all.as_array()?
+                    .iter()
+                    .find(|e| {
+                        e["type"] == "question"
+                            && e["messages"].as_array().is_some_and(|m| m.len() == 1)
+                    })
+                    .and_then(|e| e["correlationId"].as_str())
+                    .map(str::to_owned)
+            });
+            let stopped = call(&obid, "POST", "/v1/conversation/stop", None);
+            assert_eq!(stopped.status, 200, "{}", stopped.text);
+            let answer = turn.join().unwrap();
+            assert_eq!(answer.status, 200, "{}", answer.text);
+            let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+            (conversation, cid)
+        })
+    });
+    let got = ernesto.receive(2, 30).await;
+    assert_eq!(got[0]["type"], "question");
+    assert_eq!(got[1]["type"], "cancel");
+    assert_eq!(got[1]["in_reply_to"], cid.as_str());
+    let x = call(
+        &obid,
+        "GET",
+        &format!("/v1/obid/sphere/exchanges/{cid}"),
+        None,
+    )
+    .body;
+    assert_eq!(x["state"], "cancelled");
+    let cards = tokio::task::block_in_place(|| card_says(&obid, &conversation, "cancelled"));
+    assert_eq!(cards.len(), 1, "{cards:?}");
+}

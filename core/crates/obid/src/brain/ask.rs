@@ -496,6 +496,8 @@ fn telling(exchange: &Exchange, name: &str, now: i64) -> Option<Telling> {
         ),
         // It waited for the Obysphere and never went (ASK-42).
         "failed" => said("end", never_went(name), false),
+        // The owner called it off (obi-requests.md, OBIREQ-4): its card says so, nothing more.
+        "cancelled" => None,
         // Waiting for the Obysphere: its card says so, and nobody is quiet yet.
         _ if exchange.unsent() => None,
         _ if told("unsent") && !told("went") => said(

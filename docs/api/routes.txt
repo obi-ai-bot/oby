@@ -101,6 +101,7 @@ GET /v1/obid/sphere/audit
 POST /v1/obid/sphere/card
 GET /v1/obid/sphere/exchanges
 GET /v1/obid/sphere/exchanges/{id}
+POST /v1/obid/sphere/exchanges/{id}/cancel
 POST /v1/obid/sphere/join
 POST /v1/obid/sphere/key
 GET /v1/obid/sphere/members

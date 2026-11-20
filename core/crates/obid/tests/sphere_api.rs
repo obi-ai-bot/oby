@@ -4346,3 +4346,269 @@ async fn sphere_24_a_rebound_join_takes_the_membership_the_sphere_lists() {
         assert_eq!(members.status, 200, "{}", members.text);
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Calling off what obid asked (docs/contracts/obi-requests.md, OBIREQ-1 to 6)
+
+/// The fixture's pull request 12, which the jobs below published to.
+const PR_12: &str = "https://github.com/obi-e2e/fixture-app/pull/12";
+
+/// A job of the owner's that published to [`PR_12`]: `task` is what its agent does.
+fn job_at_pr_12(id: &str, task: &str, status: obid::job::Status) -> obid::job::Job {
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "fix".into(),
+        task.into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.branch = format!("oby/fix-{id}");
+    job.status = status;
+    job.published = Some(PR_12.into());
+    job
+}
+
+/// Keeps `job` in obid's home, as obid keeps it: obid reads it when it starts.
+fn keep_job(home: &Path, job: &obid::job::Job) {
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    let text = serde_json::to_vec(job).unwrap();
+    std::fs::write(home.join(format!("jobs/{}.json", job.id)), text).unwrap();
+}
+
+/// [`setup`] with `jobs` kept before obid starts, its account signed in, and obid allowed to send
+/// Ernesto's Obi words in the clear: also the configuration to start it again with.
+async fn setup_with_jobs(
+    folder: &Folder,
+    agent: &Path,
+    jobs: &[obid::job::Job],
+) -> (FakeSphere, Obid, TestObi, Value) {
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, agent);
+    signed_in(&config);
+    for job in jobs {
+        keep_job(&folder.0.join("home"), job);
+    }
+    let obid = start(&folder.0, &config, None);
+    let joined = tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join(&sphere, "obi-ernesto", "ernesto").await;
+    unsealed(&obid, "ernesto");
+    (sphere, obid, ernesto, config)
+}
+
+/// The owner's Oby asks Ernesto's to review and approve [`PR_12`] at the brief's head, as the merge
+/// step does: the exchange's id.
+fn ask_to_review_pr_12(obid: &Obid) -> String {
+    let mut body = brief();
+    body["pr"] = json!(12);
+    body["approve_on_host"] = json!(true);
+    let ask =
+        json!({"to": "obi-ernesto", "type": "review_request", "body": body, "expiresIn": 3600});
+    let sent =
+        tokio::task::block_in_place(|| call(obid, "POST", "/v1/obid/sphere/requests", Some(&ask)));
+    assert_eq!(sent.status, 202, "{}", sent.text);
+    sent.body["correlationId"].as_str().unwrap().to_owned()
+}
+
+/// How many `cancel`s obid sent that the Sphere took.
+fn cancels_taken(sphere: &FakeSphere) -> usize {
+    sends_of(sphere, "obi-wellington")
+        .iter()
+        .filter(|(kind, status)| kind == "cancel" && *status < 300)
+        .count()
+}
+
+/// Waits for exchange `cid` to read `cancelled` with its `cancel` sent: the exchange.
+fn called_off(obid: &Obid, cid: &str) -> Value {
+    within(40, "the exchange called off, its cancel sent", || {
+        let e = tokio::task::block_in_place(|| exchange(obid, cid));
+        (e["state"] == "cancelled" && kinds(&e).len() == 2).then_some(e)
+    })
+}
+
+/// OBIREQ-1: the owner stops a job that asked a teammate's Oby to review its pull request: obid
+/// sends one `cancel` in reply to the request, and the exchange reads `cancelled`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_1_a_stopped_job_calls_off_its_review() {
+    let folder = Folder::new("obireq-1");
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let running = job_at_pr_12("0b1e0001", "SLEEP", obid::job::Status::Queued);
+    let (sphere, obid, ernesto, _) = setup_with_jobs(&folder, &agent, &[running]).await;
+    within(30, "the job running", || {
+        let job = tokio::task::block_in_place(|| get(&obid, "/v1/jobs/0b1e0001"));
+        (job["status"] == "running").then_some(())
+    });
+    let cid = ask_to_review_pr_12(&obid);
+    let request = ernesto.receive(1, 20).await.remove(0);
+    assert_eq!(request["type"], "review_request");
+    let stopped =
+        tokio::task::block_in_place(|| call(&obid, "POST", "/v1/jobs/0b1e0001/stop", None));
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
+    let cancel = ernesto.receive_reply_to(&request, 30).await;
+    assert_eq!(cancel["type"], "cancel");
+    assert_eq!(cancel["body"], json!({}));
+    let x = called_off(&obid, &cid);
+    assert_eq!(
+        kinds(&x),
+        [
+            ("sent".into(), "review_request".into()),
+            ("sent".into(), "cancel".into())
+        ]
+    );
+    assert_eq!(cancels_taken(&sphere), 1);
+}
+
+/// OBIREQ-3: GitHub reads the pull request merged after the request went, while obid was down:
+/// at its next start obid calls the request off, once, and a later start sends nothing more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_3_a_merged_pull_request_calls_off() {
+    let folder = Folder::new("obireq-3");
+    let done = job_at_pr_12("0b1e0003", "Fix it", obid::job::Status::Done);
+    let (sphere, mut obid, ernesto, config) =
+        setup_with_jobs(&folder, &stub_agent(), std::slice::from_ref(&done)).await;
+    let cid = ask_to_review_pr_12(&obid);
+    let request = ernesto.receive(1, 20).await.remove(0);
+    assert!(obid.stop().success());
+    assert_eq!(
+        cancels_taken(&sphere),
+        0,
+        "an open pull request calls nothing off"
+    );
+    let mut merged = done;
+    merged.pull_request = Some(obid::github::PullRequest {
+        state: "MERGED".into(),
+        review_decision: None,
+        base: "main".into(),
+        merged_at: Some(obi_protocol::time::now()),
+        checked_at: obi_protocol::time::now(),
+        head: request["body"]["head_sha"].as_str().map(str::to_owned),
+    });
+    keep_job(&folder.0.join("home"), &merged);
+    let mut obid = start(&folder.0, &config, None);
+    let cancel = ernesto.receive_reply_to(&request, 40).await;
+    assert_eq!(cancel["type"], "cancel");
+    called_off(&obid, &cid);
+    assert_eq!(cancels_taken(&sphere), 1);
+    // Once: a start after it calls off nothing more, and what it sends next goes.
+    assert!(obid.stop().success());
+    let obid = start(&folder.0, &config, None);
+    let next = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/requests",
+            Some(
+                &json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600}),
+            ),
+        )
+    });
+    assert_eq!(next.status, 202, "{}", next.text);
+    let came = ernesto.receive(1, 20).await;
+    assert_eq!(came[0]["type"], "review_request");
+    assert_eq!(cancels_taken(&sphere), 1);
+    assert_eq!(
+        kinds(&tokio::task::block_in_place(|| exchange(&obid, &cid))).len(),
+        2
+    );
+}
+
+/// OBIREQ-5: the owner's call-off route: `404` for an exchange obid doesn't have, `409` for one
+/// another Oby sent and for one that already ended, and nothing sent for either; a job stopped
+/// after its request ended sends nothing either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_5_an_ended_exchange_sends_nothing() {
+    let folder = Folder::new("obireq-5");
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let running = job_at_pr_12("0b1e0005", "SLEEP", obid::job::Status::Queued);
+    let (sphere, obid, ernesto, _) = setup_with_jobs(&folder, &agent, &[running]).await;
+    let call_off = |cid: &str| {
+        tokio::task::block_in_place(|| {
+            call(
+                &obid,
+                "POST",
+                &format!("/v1/obid/sphere/exchanges/{cid}/cancel"),
+                None,
+            )
+        })
+    };
+    let unknown = call_off("0b1e0000-0000-4000-8000-000000000000");
+    assert_eq!(unknown.status, 404, "{}", unknown.text);
+
+    // Ernesto's request to this Oby: only its sender calls it off.
+    let theirs = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    ernesto.send(&theirs).await;
+    wait_item(&obid);
+    let incoming = call_off(theirs["id"].as_str().unwrap());
+    assert_eq!(incoming.status, 409, "{}", incoming.text);
+
+    // A request Ernesto's Oby already answered: it ended.
+    let cid = ask_to_review_pr_12(&obid);
+    let request = ernesto.receive(1, 20).await.remove(0);
+    ernesto
+        .send(&ernesto.reply(&request, "decline", json!({"reason": "busy"})))
+        .await;
+    within(20, "the request declined", || {
+        let e = tokio::task::block_in_place(|| exchange(&obid, &cid));
+        (e["state"] == "declined").then_some(())
+    });
+    let ended = call_off(&cid);
+    assert_eq!(ended.status, 409, "{}", ended.text);
+    within(30, "the job running", || {
+        let job = tokio::task::block_in_place(|| get(&obid, "/v1/jobs/0b1e0005"));
+        (job["status"] == "running").then_some(())
+    });
+    let stopped =
+        tokio::task::block_in_place(|| call(&obid, "POST", "/v1/jobs/0b1e0005/stop", None));
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
+    within(20, "the job stopped", || {
+        let job = tokio::task::block_in_place(|| get(&obid, "/v1/jobs/0b1e0005"));
+        (job["status"] == "stopped").then_some(())
+    });
+
+    // The owner calls off one still open: 200, and calling it off again is 409.
+    let open = ask_to_review_pr_12(&obid);
+    let first = call_off(&open);
+    assert_eq!(first.status, 200, "{}", first.text);
+    assert_eq!(first.body["state"], "cancelled");
+    called_off(&obid, &open);
+    let again = call_off(&open);
+    assert_eq!(again.status, 409, "{}", again.text);
+    assert_eq!(cancels_taken(&sphere), 1, "only the open one's");
+    let declined = tokio::task::block_in_place(|| exchange(&obid, &cid));
+    assert_eq!(declined["state"], "declined");
+    assert_eq!(kinds(&declined).len(), 2, "nothing more sent for it");
+}
+
+/// OBIREQ-6: the Sphere away, a call-off waits in the exchange's outbox, across a restart of obid,
+/// and goes once when the Sphere is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_6_a_call_off_waits_in_the_outbox() {
+    let folder = Folder::new("obireq-6");
+    let (sphere, mut obid, ernesto, config) = setup_with_jobs(&folder, &stub_agent(), &[]).await;
+    let cid = ask_to_review_pr_12(&obid);
+    let request = ernesto.receive(1, 20).await.remove(0);
+    sphere.lock().down = true;
+    let called = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/obid/sphere/exchanges/{cid}/cancel"),
+            None,
+        )
+    });
+    assert_eq!(called.status, 200, "{}", called.text);
+    assert_eq!(called.body["state"], "cancelled");
+    assert!(obid.stop().success());
+    assert_eq!(cancels_taken(&sphere), 0);
+    let obid = start(&folder.0, &config, None);
+    let waiting = tokio::task::block_in_place(|| exchange(&obid, &cid));
+    assert_eq!(waiting["state"], "cancelled");
+    assert_eq!(kinds(&waiting).len(), 1, "not sent yet");
+    sphere.lock().down = false;
+    let cancel = ernesto.receive_reply_to(&request, 60).await;
+    assert_eq!(cancel["type"], "cancel");
+    called_off(&obid, &cid);
+    assert_eq!(cancels_taken(&sphere), 1);
+}

@@ -453,7 +453,8 @@ impl Link {
             .values()
             .filter(|e| {
                 let told = |what: &str| e.told.iter().any(|t| t == what);
-                (e.asked_in.is_some() && !told("end"))
+                // One the owner called off has nothing to tell: its card reads Called off.
+                (e.asked_in.is_some() && !told("end") && e.state != "cancelled")
                     || (e.direction == "incoming"
                         && e.kind == "question"
                         && ((e.state == "inbox" && !told("owner"))

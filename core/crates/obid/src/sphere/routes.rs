@@ -124,6 +124,16 @@ pub async fn exchange(
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no such exchange."))
 }
 
+/// `POST /v1/obid/sphere/exchanges/{correlationId}/cancel`: the owner calls off a request of
+/// theirs (docs/contracts/obi-requests.md, OBIREQ-5). obid's token alone: it only withdraws what
+/// the owner asked, and shares nothing.
+pub async fn call_off(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    Ok(json(StatusCode::OK, shared.link.call_off_by_owner(&id)?))
+}
+
 /// `GET /v1/obid/sphere/peers/{owner}?limit=50`: that member's thread
 /// (docs/contracts/peer-thread.md).
 pub async fn peer_thread(
