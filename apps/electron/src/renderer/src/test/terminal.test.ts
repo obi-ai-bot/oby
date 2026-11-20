@@ -39,7 +39,7 @@ vi.mock('../../../main/obid', () => ({
 }));
 vi.mock('../../../main/live', () => ({ obidState: () => the.state, onLive: (f: () => void) => { the.live.push(f); } }));
 
-const { Terminals, cleanEnv, cwdOf, ownersShell, shellOf, shellArgs, terminals, nodePty, jobGroups, MAX_TERMINALS, KILL_GRACE_MS } = await import('../../../main/terminal');
+const { Terminals, cleanEnv, cwdOf, ownersShell, shellOf, shellArgs, terminals, nodePty, jobGroups, killJobs, MAX_TERMINALS, KILL_GRACE_MS } = await import('../../../main/terminal');
 type Spawn = import('../../../main/terminal').Spawn;
 
 // A pty that does what it's told and records it; it ends on the signal named in `endsOn`
@@ -456,21 +456,32 @@ describe('TERMINAL-7: output', () => {
 // node-pty's own pty and a real shell: the rules above, as a person at the terminal sees them
 describe('TERMINAL-8: a real shell', () => {
   const bash = '/bin/bash';
+  // what Oby did to each shell and when, from its start: the signals close() sent, the jobs it
+  // killed, and the shell's exit as node-pty reported it (a failure says which path it took)
   const real = () => {
-    const out: string[] = [], exits: unknown[] = [];
-    const t = new Terminals(nodePty, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); else exits.push(channel); }, () => {
+    const out: string[] = [], exits: unknown[] = [], did: string[] = [];
+    const t0 = Date.now(), at = (what: string) => did.push(`${Date.now() - t0}ms ${what}`);
+    const spawn = () => { const start = nodePty(); return ((file, args, opts) => {
+      const pty = start(file, args, opts), kill = pty.kill.bind(pty);
+      pty.kill = (sig?: string) => { at(`sent ${sig ?? 'SIGHUP'}`); kill(sig); };
+      pty.onExit(({ exitCode, signal }) => at(`exit reported (code ${exitCode}, signal ${signal ?? 'none'})`));
+      return pty;
+    }) as Spawn; };
+    const t = new Terminals(spawn, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); else exits.push(channel); }, () => {
       const who = userInfo();
       return { shell: bash, env: cleanEnv({ ...process.env, OBY_TERMINAL_TEST_SECRET: 'vault-secret-value' }, { home: who.homedir, user: who.username, shell: bash }, '1.2.3') };
-    }, 300);
-    return { t, text: () => out.join(''), exits };
+    }, 300, (shell, done, now) => { at(`killing the jobs of ${shell}`); killJobs(shell, () => { at('jobs killed'); done(); }, now); });
+    return { t, text: () => out.join(''), exits, did };
   };
+  // a process as ps has it (pid ppid pgid stat started command), or that it's gone
+  const row = (pid: number) => spawnSync('/bin/ps', ['-o', 'pid=,ppid=,pgid=,stat=,lstart=,comm=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim() || 'gone';
   const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
   // running, not gone or a zombie waiting to be reaped
   const alive = (pid: number) => { const st = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim(); return !!st && !st.startsWith('Z'); };
 
   it('terminal_8_a_real_shell_runs_in_the_folder_with_a_clean_environment_utf8_whole_and_ends_with_its_jobs', async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-real-')));
-    const { t, text } = real();
+    const { t, text, did } = real();
     const opened = t.start(null, 'task', 'j1', dir, 80, 24);
     expect('term' in opened).toBe(true);
     const term = (opened as { term: string }).term;
@@ -489,7 +500,10 @@ describe('TERMINAL-8: a real shell', () => {
     const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
     expect(alive(job)).toBe(true);
     t.close(term);
-    await until(() => !alive(shellPid) && !alive(job));
+    // a failure here says which way it went: what Oby sent the shell and when, and where each is now
+    await until(() => !alive(shellPid) && !alive(job)).catch(() => {
+      throw new Error(`the shell or its job outlived the close: shell [${row(shellPid)}], job [${row(job)}]; ${did.join('; ')}`);
+    });
     t.killLeft();
   });
 
