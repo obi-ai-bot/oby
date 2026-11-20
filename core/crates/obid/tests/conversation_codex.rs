@@ -1234,8 +1234,24 @@ fn lanes_13_an_ask_codex_conversation_runs_own_on_read_only() {
     );
     assert!(recorded[0]["sandbox"].is_null(), "{recorded:?}");
     assert_eq!(recorded[0]["approvalPolicy"], "on-request");
-    assert_eq!(recorded[0]["permissions"], ":read-only");
+    assert_eq!(recorded[0]["permissions"], "oby");
     let set = settings(&recorded[0]);
+    // LANES-27: Ask's built-in profile, its commands never reading obid's secret places, every
+    // conversation's login among them.
+    assert!(
+        set.contains(&r#"permissions.oby.extends=":read-only""#.to_owned()),
+        "{set:?}"
+    );
+    let files = (set.iter()).find_map(|s| s.strip_prefix("permissions.oby.filesystem="));
+    for denied in [
+        "/vault\" = \"none\"",
+        "/conversations/*/login/**\" = \"none\"",
+    ] {
+        assert!(
+            files.is_some_and(|f| f.contains(denied)),
+            "{denied}: {set:?}"
+        );
+    }
     assert!(
         !set.contains(&"features.shell_tool=false".to_owned()),
         "{set:?}"
@@ -1316,5 +1332,5 @@ fn lanes_13_a_narrower_mode_ends_an_own_codex_turn() {
     assert_eq!(recorded.len(), 2, "{recorded:?}");
     assert!(recorded[1]["sandbox"].is_null(), "{recorded:?}");
     assert_eq!(recorded[1]["approvalPolicy"], "on-request");
-    assert_eq!(recorded[1]["permissions"], ":read-only");
+    assert_eq!(recorded[1]["permissions"], "oby");
 }
