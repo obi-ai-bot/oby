@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Page states</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#0b0b0b}
+.bone{display:block;height:9px;margin:10px 22px 0;border-radius:5px;background:#eef0f4}
+.told{margin:0;color:var(--muted);font-size:12px;line-height:17px}</style>
+</helmet>
+<div class="oby sheet {{theme}}" style="width: 1280px; height: 880px">
+<h1 class="sheet-title">When a page doesn’t simply load</h1>
+<p class="sheet-sub">Each in the browser panel, with the line the agent’s log shows under it. The agent is told every time; a page’s question waits for you.</p>
+<div class="sheet-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr))">
+
+<div class="cell"><span class="cell-name">Loading</span>
+<div class="mini"><div class="br">
+<div class="br-nav" style="position: relative">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Stop loading"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+<div class="br-address"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg><span class="br-path"><b>localhost:3000</b>/dashboard</span></div>
+<span class="br-loading" style="left: 8px"></span>
+</div>
+<div class="br-control"><span class="br-control-text"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="14" height="14" alt=""><span><b>Codex</b> · <span class="sheen">Waiting for the page</span></span></span></div>
+<div class="br-view" style="background: #fff"><span class="bone" style="width: 40%; margin-top: 22px; height: 14px"></span><span class="bone" style="width: 70%"></span><span class="bone" style="width: 60%"></span><span class="bone" style="width: 66%"></span></div>
+</div></div>
+<p class="told">Log: <span class="sheen">Opening localhost:3000/dashboard</span></p>
+</div>
+
+<div class="cell"><span class="cell-name">Failed to load</span>
+<div class="mini"><div class="br">
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg><span class="br-path"><b>localhost:3000</b>/dashboard</span></div>
+</div>
+<div class="br-view is-blank"><div class="br-state">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h.01"></path><path d="M8.5 16.429a5 5 0 0 1 7 0"></path><path d="M5 12.859a10 10 0 0 1 5.17-2.69"></path><path d="M19 12.859a10 10 0 0 0-2.007-1.523"></path><path d="M2 8.82a15 15 0 0 1 4.177-2.643"></path><path d="M22 8.82a15 15 0 0 0-11.288-3.764"></path><path d="m2 2 20 20"></path></svg>
+<span class="br-state-title">This page didn’t load</span>
+<span class="br-state-text">localhost:3000 refused to connect. Is the app running?</span>
+<div class="tc-options"><button class="tc-option is-sm">Try again</button></div>
+</div></div>
+</div></div>
+<p class="told">Log: ✕ Open localhost:3000/dashboard · <span style="color: var(--danger)">refused to connect</span></p>
+</div>
+
+<div class="cell"><span class="cell-name">Timed out</span>
+<div class="mini"><div class="br">
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span class="br-path"><b>api.acme.dev</b>/health</span></div>
+</div>
+<div class="br-view is-blank"><div class="br-state">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v6l4 2"></path><path d="M20 12v5"></path><path d="M20 21h.01"></path><path d="M21.25 8.2A10 10 0 1 0 16 21.16"></path></svg>
+<span class="br-state-title">The page took too long</span>
+<span class="br-state-text">Nothing came back from api.acme.dev in 30 seconds.</span>
+<div class="tc-options"><button class="tc-option is-sm">Try again</button></div>
+</div></div>
+</div></div>
+<p class="told">Log: ✕ Open api.acme.dev/health · <span style="color: var(--danger)">timed out after 30s</span></p>
+</div>
+
+<div class="cell"><span class="cell-name">The page asks something <em>· a JavaScript dialog</em></span>
+<div class="mini"><div class="br">
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg><span class="br-path"><b>localhost:3000</b>/settings</span></div>
+</div>
+<div class="br-view">
+<div class="site"><div class="site-top"><span class="site-logo"><i></i>Acme</span></div><span class="bone" style="width: 50%; margin-top: 20px; height: 14px"></span><span class="bone" style="width: 70%"></span><span class="bone" style="width: 64%"></span></div>
+<div class="br-over" role="dialog" aria-label="The page asks">
+<span class="br-over-kind">localhost:3000 asks</span>
+<p class="br-over-text">Leave this page? Changes you made may not be saved.</p>
+<div class="tc-options" style="margin-top: 10px"><button class="tc-option is-sm" disabled style="opacity: 0.4">Leave</button><button class="tc-option is-sm" disabled style="opacity: 0.4">Stay</button><button class="tc-option is-sm is-primary" style="margin-left: auto">Take control to answer</button></div>
+</div>
+</div>
+</div></div>
+<p class="told">Log: <span style="color: var(--needs)">●</span> The page asked “Leave this page?”, waiting for you</p>
+</div>
+
+<div class="cell"><span class="cell-name">Certificate warning</span>
+<div class="mini"><div class="br">
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address is-warn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="M12 8v4"></path><path d="M12 16h.01"></path></svg><span class="br-path"><b>staging.acme.dev</b>/admin</span></div>
+</div>
+<div class="br-view is-blank"><div class="br-state">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--over)"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="M12 8v4"></path><path d="M12 16h.01"></path></svg>
+<span class="br-state-title">This connection isn’t private</span>
+<span class="br-state-text">The certificate for staging.acme.dev isn’t trusted. Codex stopped here and won’t go on by itself.</span>
+<div class="tc-options"><button class="tc-option is-sm is-primary">Go back</button><button class="tc-option is-sm is-quiet" style="color: var(--danger)">Go on anyway</button></div>
+</div></div>
+</div></div>
+<p class="told">Log: <span style="color: var(--needs)">●</span> Stopped at an untrusted certificate, waiting for you</p>
+</div>
+
+<div class="cell"><span class="cell-name">The page crashed</span>
+<div class="mini"><div class="br">
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg><span class="br-path"><b>localhost:5173</b>/reports</span></div>
+</div>
+<div class="br-view is-blank"><div class="br-state">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20v-9"></path><path d="M14 7a4 4 0 0 1 4 4v3a6 6 0 0 1-12 0v-3a4 4 0 0 1 4-4z"></path><path d="M14.12 3.88 16 2"></path><path d="M21 21a4 4 0 0 0-3.81-4"></path><path d="M21 5a4 4 0 0 1-3.55 3.97"></path><path d="M22 13h-4"></path><path d="M3 21a4 4 0 0 1 3.81-4"></path><path d="M3 5a4 4 0 0 0 3.55 3.97"></path><path d="M6 13H2"></path><path d="m8 2 1.88 1.88"></path><path d="M9 7.13V6a3 3 0 1 1 6 0v1.13"></path></svg>
+<span class="br-state-title">This page stopped working</span>
+<span class="br-state-text">Its tab crashed, out of memory. Cursor was told and can open it again.</span>
+<div class="tc-options"><button class="tc-option is-sm">Reload</button></div>
+</div></div>
+</div></div>
+<p class="told">Log: ✕ localhost:5173/reports · <span style="color: var(--danger)">the tab crashed</span></p>
+</div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"light":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":880}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.light ? 'is-light' : '' };
+  }
+}
+</script>
+</body>
+</html>

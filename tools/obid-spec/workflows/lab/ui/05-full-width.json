@@ -1,0 +1,247 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 5: full width, the conversation folds to one line and comes back",
+  "version": "1.0.0",
+  "description": "Board 5 (Full.dc.html): the page across the whole 1280px window, the conversation folded to one line at its foot (Show the conversation); Back beside the conversation, or Show the conversation, puts the conversation back beside it at 640px.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 5
+      }
+    },
+    {
+      "id": "full",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br.is-full"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 1280,
+            "box.x": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-5"
+        ]
+      }
+    },
+    {
+      "id": "no-conversation",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".home"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "one-line",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".peek"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Sign-up flow works end to end · Signed up and in; now inviting a teammate Show the conversation"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-5"
+        ]
+      }
+    },
+    {
+      "id": "back-pressed",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Back beside the conversation"
+        },
+        "expect": {
+          "paths": {
+            "attributes.aria-pressed": "true"
+          }
+        },
+        "attributes": [
+          "aria-pressed"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Full",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-5"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-05"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Full",
+        "name": "lab-ui-05-beside-board",
+        "label": "board 5"
+      }
+    },
+    {
+      "id": "show-conversation",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Show the conversation"
+        }
+      }
+    },
+    {
+      "id": "beside-again",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640,
+            "box.x": 640
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-5"
+        ]
+      }
+    },
+    {
+      "id": "conversation-back",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".home"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640
+          }
+        }
+      }
+    },
+    {
+      "id": "full-again",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Full width"
+        }
+      }
+    },
+    {
+      "id": "full-again-1280",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br.is-full"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 1280
+          }
+        }
+      }
+    },
+    {
+      "id": "back-beside",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Back beside the conversation"
+        }
+      }
+    },
+    {
+      "id": "beside-once-more",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

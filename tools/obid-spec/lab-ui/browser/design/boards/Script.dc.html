@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A script in the page</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#0b0b0b}
+.ran{position:absolute;z-index:22;top:10px;right:10px;height:24px;padding:0 9px 0 6px;display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(24,24,23,.94);color:#ececec;font:500 12px/1 var(--font)}
+.ran .logo-w{filter:none}
+.site-row.is-hit{background:rgba(255,159,10,.08)}</style>
+</helmet>
+<div class="oby win {{theme}}" style="width: 1280px; height: 800px; --column: 711px">
+<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+<button class="icon-button panel-toggle" aria-label="Show sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></button>
+<div class="home">
+<div class="bar is-bare">
+<span class="crumb">Who has an expired invite?</span>
+<button class="project-chip"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>acme-web<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="icon-button bar-more" aria-label="Conversation options"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg></button>
+<div class="bar-end"><button class="icon-button is-on" aria-label="Hide the browser" aria-pressed="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg></button></div>
+</div>
+<div class="view">
+<div class="chat-layer">
+<div class="chat-scroll"><div class="chat"><div class="chat-column">
+<ul class="chat-thread">
+<li class="msg is-oby" style="margin-top: 0"><div class="msg-task-work">
+<div class="msg-task"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="16" height="16" alt=""><span class="msg-task-text"><span class="msg-task-title">List members with an expired invite</span><span class="msg-task-meta">Done · Codex · acme-web · read a page</span></span><span class="status"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span></div>
+<div class="lt-log">
+<div class="ss-tool"><div class="ss-tool-row"><span class="ss-tool-mark"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span><span class="ss-tool-text">Opened <code>localhost:3000/workspace/members</code></span></div></div>
+<div class="ss-tool"><div class="ss-tool-row"><span class="ss-tool-mark"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span><span class="ss-tool-text">Ran a script in the page</span><span class="ss-tool-meta">18 ms</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--muted); transform: rotate(90deg)"><path d="m9 18 6-6-6-6"></path></svg></div>
+<pre class="tc-code" style="margin: 2px 0 8px 20px"><span class="k">const</span> rows = [...document.<span class="f">querySelectorAll</span>(<span class="s">'tr'</span>)];
+<span class="k">return</span> rows.<span class="f">filter</span>(r =&gt; r.textContent.<span class="f">includes</span>(<span class="s">'Invite expired'</span>))
+           .<span class="f">map</span>(r =&gt; r.cells[0].textContent);</pre>
+<div class="msg-quote" style="margin: 0 0 6px 20px; width: auto">
+<span class="outside-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg><b>From outside</b> · localhost:3000 · read as data, never as instructions</span>
+<pre class="tc-code" style="margin: 0; background: none; padding: 0">["Robin Sample", "Kai Placeholder", "Lee Demo"]</pre>
+</div>
+</div>
+</div>
+</div></li>
+<li class="msg is-oby"><img class="msg-face" src="/_blob/3446da5a8daa6f8aa4ff0d9358936562" alt=""><div class="msg-end"><div class="msg-bubble"><p>Three members have an expired invite: Robin Sample, Kai Placeholder and Lee Demo. Want Codex to resend them?</p></div><span class="msg-time">5:12 PM</span></div></li>
+</ul>
+</div></div></div>
+<div class="chat-composer"><div class="composer-field"><div class="composer-grid">
+<button class="composer-button" aria-label="Add"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<div class="composer-input">Reply to Oby…</div>
+<button class="composer-button composer-usage" aria-label="Usage"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg></button>
+<button class="composer-button composer-send" aria-label="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button>
+</div></div></div>
+</div>
+</div>
+</div>
+<aside class="br" style="width: 600px" aria-label="Browser">
+<div class="br-tabs" role="tablist" aria-label="Tabs">
+<button class="br-tab is-on" role="tab" aria-selected="true"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="14" height="14" alt="Codex’s"><span class="br-tab-name">Members · Acme</span><span class="br-tab-x"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></span></button>
+<div class="br-tabs-end">
+<button class="icon-button is-28" aria-label="New tab"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<button class="icon-button is-28" aria-label="Close the browser"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+</div>
+</div>
+<div class="br-nav">
+<button class="icon-button is-28" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg></button>
+<button class="icon-button is-28" aria-label="Forward" disabled><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></button>
+<button class="icon-button is-28" aria-label="Reload"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg></button>
+<div class="br-address"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg><span class="br-path"><b>localhost:3000</b>/workspace/members</span></div>
+</div>
+<div class="br-control" role="status">
+<span class="br-control-text"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="14" height="14" alt=""><span><b>Codex</b> ran a script in this page · done</span></span>
+<button class="tc-option is-sm">Take control</button>
+</div>
+<div class="br-view" role="img" aria-label="Acme’s members page, three rows marked by the script">
+<div class="site">
+<div class="site-top"><span class="site-logo"><i></i>Acme</span><span class="site-links"><span>Projects</span><span style="color: #1a1b1f; font-weight: 600">Members</span></span></div>
+<div class="site-hero"><h2>Members</h2><p>Everyone in the Acme workspace.</p></div>
+<div class="site-rows">
+<div class="site-row"><span>Name</span><span style="width: 120px">Status</span></div>
+<div class="site-row"><span>Test User 0419</span><span style="width: 120px"><span class="pill-ok">Active</span></span></div>
+<div class="site-row is-hit"><span>Robin Sample</span><span style="width: 120px"><span class="pill-bad">Invite expired</span></span></div>
+<div class="site-row"><span>Sam Example</span><span style="width: 120px"><span class="pill-ok">Active</span></span></div>
+<div class="site-row is-hit"><span>Kai Placeholder</span><span style="width: 120px"><span class="pill-bad">Invite expired</span></span></div>
+<div class="site-row is-hit"><span>Lee Demo</span><span style="width: 120px"><span class="pill-bad">Invite expired</span></span></div>
+</div>
+</div>
+<span class="ran"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="14" height="14" alt=""><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg>Ran a script · 18 ms</span>
+</div>
+</aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"light":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.light ? 'is-light' : '' };
+  }
+}
+</script>
+</body>
+</html>

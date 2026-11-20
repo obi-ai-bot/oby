@@ -1,0 +1,82 @@
+/* The boards' own pieces (each board's <style>, design/boards/*.dc.html), as they are: PROPOSALS
+   from the approved design, or a demo page's own look. Grouped by the board that defines them. */
+
+/* Closed */
+.tip-under{position:absolute;top:44px;right:8px;padding:4px 8px;border:1px solid var(--surface-edge);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;white-space:nowrap}
+.tip-under kbd{margin-left:8px;color:var(--muted);font:inherit}
+
+/* Together */
+.docs{position:absolute;inset:0;display:flex;font:14px/1.5 -apple-system,system-ui,Inter,sans-serif;color:#1a1b1f;background:#fff}
+.docs-nav{width:150px;flex:none;padding:18px 14px;border-right:1px solid #eceef2;display:flex;flex-direction:column;gap:9px;color:#5b5f6b;font-size:12px}
+.docs-nav b{color:#1a1b1f;font-size:12px}
+.docs-main{flex:1;padding:22px 24px;min-width:0}
+.docs-main h2{margin:0 0 6px;font-size:22px;letter-spacing:-.02em}
+.plans{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:18px}
+.plan{padding:14px;border:1px solid #e6e8ee;border-radius:12px}
+.plan b{display:block;font-size:13px}
+.plan .price{display:block;margin:6px 0 10px;font-size:20px;font-weight:700;letter-spacing:-.02em}
+.plan i{display:block;height:7px;margin-top:7px;border-radius:4px;background:#eef0f4}
+.plan.is-read{outline:2px solid rgba(217,119,87,.55);outline-offset:2px}
+
+/* Full */
+.peek{position:absolute;z-index:30;left:50%;bottom:20px;transform:translateX(-50%);width:560px;padding:6px 6px 6px 14px;display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:23px;background:var(--chip);box-shadow:var(--menu-shadow);color:var(--muted);font-size:13px}
+.peek-text{flex:1;min-width:0;white-space:nowrap;overflow:hidden;-webkit-mask-image:var(--fade-out);mask-image:var(--fade-out)}
+.peek-text b{font-weight:500;color:var(--ink)}
+
+/* Hold */
+.you-pointer{position:absolute;z-index:20;pointer-events:none}
+
+/* AsksYou */
+.sso{height:38px;margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid #d7dae2;border-radius:8px;font-size:13px;font-weight:600;color:#1a1b1f}
+.or{margin:14px 0 2px;text-align:center;color:#9a9ea9;font-size:11px}
+
+/* Asks */
+.strip-box{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.strip-box .br-control{border-top:0}
+.strip-box .br-control:last-child{border-bottom:0}
+
+/* PageStates */
+.bone{display:block;height:9px;margin:10px 22px 0;border-radius:5px;background:#eef0f4}
+.told{margin:0;color:var(--muted);font-size:12px;line-height:17px}
+
+/* Script */
+.ran{position:absolute;z-index:22;top:10px;right:10px;height:24px;padding:0 9px 0 6px;display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(24,24,23,.94);color:#ececec;font:500 12px/1 var(--font)}
+.ran .logo-w{filter:none}
+.site-row.is-hit{background:rgba(255,159,10,.08)}
+
+/* OtherComputer */
+.dash{position:absolute;inset:0;background:#0f1115;color:#e6e8ee;font:14px/1.45 -apple-system,system-ui,Inter,sans-serif}
+.dash-top{height:48px;padding:0 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #1f232b;font-weight:600}
+.dash-top i{width:18px;height:18px;border-radius:5px;background:#22c55e}
+.dash-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:18px 20px}
+.kpi{padding:14px;border:1px solid #1f232b;border-radius:12px;background:#141821}
+.kpi span{display:block;color:#8b93a3;font-size:12px}
+.kpi b{display:block;margin-top:6px;font-size:22px;letter-spacing:-.02em}
+.chart{margin:0 20px;height:150px;border:1px solid #1f232b;border-radius:12px;background:linear-gradient(180deg,#141821,#11141b);position:relative;overflow:hidden}
+.chart svg{position:absolute;inset:0}
+.where-bar{flex:none;height:30px;padding:0 14px;display:flex;align-items:center;gap:7px;border-bottom:1px solid var(--divider);color:var(--muted);font-size:12px}
+.where-bar b{font-weight:500;color:var(--text)}
+
+/* SettingsBrowser */
+.is-new-group .set-card{box-shadow:0 0 0 2px rgba(10,132,255,.35)}
+.new-tag{margin-left:8px;padding:1px 6px;border-radius:999px;background:var(--fill-2);color:var(--muted);font-size:11px;font-weight:400}
+
+/* Desktop */
+.doc{background:#fff;color:#1d1d1f;font:14px/1.6 -apple-system,system-ui,Inter,sans-serif}
+.doc-bar{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid #e5e5e7;background:#f6f6f6;font-size:13px;font-weight:600;color:#4a4a4f}
+.doc-bar i{width:12px;height:12px;border-radius:50%;background:#ff5f57}
+.doc-bar i:nth-child(2){background:#febc2e}.doc-bar i:nth-child(3){background:#28c840}
+.doc-bar span{margin:0 auto;transform:translateX(-30px)}
+.doc-body{padding:22px 28px}
+.doc-body p{margin:0 0 8px}
+.caret-doc{display:inline-block;width:1.5px;height:16px;background:#1d1d1f;vertical-align:-3px}
+.mini-oby .bar{height:40px}
+.pill-sep{width:1px;height:20px;background:var(--line)}
+
+/* DesktopPermission */
+.primary-btn{height:32px;padding:0 14px;border-radius:8px;background:var(--ink);color:var(--on-primary);font-size:14px;font-weight:500}
+.steps{margin:16px 0 0;padding:12px 14px;border:1px solid var(--surface-edge);border-radius:12px;background:var(--fill-1);color:var(--text);font-size:13px;line-height:1.5}
+.steps b{font-weight:500;color:var(--ink)}
+
+/* Empty */
+.empty-words{position:absolute;left:16px;right:16px;top:50%;transform:translateY(-50%);margin:0;color:var(--dim);font-size:14px;white-space:pre-line;text-align:center;line-height:1.5}

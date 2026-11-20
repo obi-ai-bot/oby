@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings, General, with the browser</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#0b0b0b}
+.is-new-group .set-card{box-shadow:0 0 0 2px rgba(10,132,255,.35)}
+.new-tag{margin-left:8px;padding:1px 6px;border-radius:999px;background:var(--fill-2);color:var(--muted);font-size:11px;font-weight:400}</style>
+</helmet>
+<div class="oby win {{theme}}" style="width: 1200px; height: 860px">
+<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+<button class="icon-button panel-toggle" aria-label="Hide sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path></svg></button>
+<div class="sidebar-slot">
+<nav class="rail" aria-label="Sections">
+<button class="rail-button" aria-label="Chats"><svg width="17" height="17" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M232.07,186.76a80,80,0,0,0-62.5-114.17A80,80,0,1,0,23.93,138.76l-7.27,24.71a16,16,0,0,0,19.87,19.87l24.71-7.27a80.39,80.39,0,0,0,25.18,7.35,80,80,0,0,0,108.34,40.65l24.71,7.27a16,16,0,0,0,19.87-19.86ZM62,159.5a8.28,8.28,0,0,0-2.26.32L32,168l8.17-27.76a8,8,0,0,0-.63-6,64,64,0,1,1,26.26,26.26A8,8,0,0,0,62,159.5Zm153.79,28.73L224,216l-27.76-8.17a8,8,0,0,0-6,.63,64.05,64.05,0,0,1-85.87-24.88A79.930,79.930,0,0,0,174.7,89.71a64,64,0,0,1,41.75,92.48A8,8,0,0,0,215.82,188.23Z"></path></svg></button>
+<span class="rail-sep" role="separator"></span>
+<button class="rail-button" aria-label="Acme, an Obysphere"><span class="sphere-tile">A</span></button>
+<button class="rail-button" aria-label="Create an Obysphere"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button>
+<button class="rail-button rail-settings is-on" aria-label="Settings" aria-pressed="true"><svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M237.94,107.21a8,8,0,0,0-3.89-5.4l-29.83-17-.12-33.62a8,8,0,0,0-2.83-6.08,111.91,111.91,0,0,0-36.72-20.67,8,8,0,0,0-6.46.59L128,41.85,97.88,25a8,8,0,0,0-6.47-.6A111.92,111.92,0,0,0,54.73,45.15a8,8,0,0,0-2.83,6.07l-.15,33.65-29.83,17a8,8,0,0,0-3.89,5.4,106.47,106.47,0,0,0,0,41.56,8,8,0,0,0,3.89,5.4l29.83,17,.12,33.63a8,8,0,0,0,2.83,6.08,111.91,111.91,0,0,0,36.72,20.67,8,8,0,0,0,6.46-.59L128,214.15,158.12,231a7.91,7.91,0,0,0,3.9,1,8.09,8.09,0,0,0,2.57-.42,112.1,112.1,0,0,0,36.68-20.73,8,8,0,0,0,2.83-6.07l.15-33.65,29.83-17a8,8,0,0,0,3.89-5.4A106.47,106.47,0,0,0,237.94,107.21ZM128,168a40,40,0,1,1,40-40A40,40,0,0,1,128,168Z"></path></svg></button>
+</nav>
+<div class="sidebar-content">
+<div class="sidebar-title-row"><h2 class="sidebar-title">Settings</h2></div>
+<button class="sidebar-item is-active">General</button>
+<button class="sidebar-item">Accounts</button>
+<button class="sidebar-item">Obysphere</button>
+<button class="sidebar-item">Connectors</button>
+<button class="sidebar-item">Repositories</button>
+<button class="sidebar-item">Routines</button>
+<button class="sidebar-item">About</button>
+</div>
+</div>
+<div class="home">
+<div class="bar"><span class="crumb">General</span></div>
+<div class="view"><div class="group"><div class="set-column">
+<h1 class="group-title">General</h1>
+<section class="set-group">
+<div class="set-card"><div class="set-row"><span class="set-label">Open at login</span><button class="set-switch" role="switch" aria-checked="true" aria-label="Open at login"></button></div></div>
+</section>
+<section class="set-group">
+<h2 class="set-head">Permissions on this Mac</h2>
+<div class="set-card">
+<div class="set-row"><span class="set-label">Default mode<span class="set-about">Asks nothing</span></span><span class="set-select" style="width: 130px">Bypass<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span></div>
+<div class="set-row"><span class="set-label"><span class="tok-code">Bash(npm test:*)</span><span class="set-about">Allowed · acme/web</span></span><button class="set-button is-danger">Remove</button></div>
+</div>
+<p class="set-foot">Default mode sets how often your agents check with you before they edit files or run commands. To change it for one task, use that task’s Mode menu. Always allow adds a rule here; remove it to be asked again.</p>
+</section>
+<section class="set-group is-new-group">
+<h2 class="set-head">Browser<span class="new-tag">New</span></h2>
+<div class="set-card">
+<div class="set-row"><span class="set-label">Agents can use the browser<span class="set-about">They open pages, click and type; you watch beside the conversation and take control any time.</span></span><button class="set-switch" role="switch" aria-checked="true" aria-label="Agents can use the browser"></button></div>
+<div class="set-row"><span class="set-label">Agents can use this Mac<span class="set-about">Other apps too, through agent-desktop. macOS asks you once.</span></span><button class="set-switch" role="switch" aria-checked="true" aria-label="Agents can use this Mac"></button></div>
+</div>
+<p class="set-foot">A password you type in Oby goes straight to the page. No agent sees it.</p>
+</section>
+</div></div></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"light":{"editor":"boolean","default":false},"$preview":{"width":1200,"height":860}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.light ? 'is-light' : '' };
+  }
+}
+</script>
+</body>
+</html>

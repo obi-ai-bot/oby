@@ -1,0 +1,25 @@
+/* The lab's window: what Electron and macOS draw around the app (the window's size, the traffic
+   lights), so a board's screen can sit in a plain browser page at the board's own size. Not Oby's
+   look: the app draws none of this itself. */
+html, body { background: #050505; }
+#root { height: auto; }
+.lab-win { position: relative; overflow: hidden; background: var(--bg); }
+.lab-lights { position: absolute; z-index: 60; top: 18px; left: 20px; display: flex; gap: 8px; pointer-events: none; }
+.lab-lights i { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.2); }
+.lab-lights i:nth-child(2) { background: #febc2e; }
+.lab-lights i:nth-child(3) { background: #28c840; }
+
+/* The boards keep a short conversation at the foot of the thread, over the message box (the app
+   today starts it at the top: listed in the README's "not matched"). */
+.lab-win .chat { display: flex; flex-direction: column; }
+.lab-win .chat > .chat-column { width: 100%; margin-top: auto; }
+
+/* The lab's own index and the bar of a board's page (outside the window) */
+.lab-index { padding: 32px; color: #a3a3a8; font: 14px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; user-select: text; }
+.lab-index h1 { margin: 0 0 4px; color: #ececec; font-size: 22px; }
+.lab-index ol { padding-left: 22px; }
+.lab-index li { margin: 4px 0; }
+.lab-index a { color: #64a8ff; text-decoration: none; }
+.lab-index code { color: #ececec; }
+.lab-stage { display: block; }
+.lab-problem { margin: 8px 16px; color: #ff8a70; font: 12px/1.4 ui-monospace, Menlo, monospace; }

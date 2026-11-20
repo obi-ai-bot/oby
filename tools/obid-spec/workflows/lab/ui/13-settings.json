@@ -1,0 +1,220 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 13: Settings › General: two switches, on by default",
+  "version": "1.0.0",
+  "description": "Board 13 (SettingsBrowser.dc.html): a Browser group on Settings › General (no page of its own) with Agents can use the browser and Agents can use this Mac, both on by default; each turns off and on.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 13
+      }
+    },
+    {
+      "id": "browser-on",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "true"
+          }
+        },
+        "attributes": [
+          "aria-checked"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-13"
+        ]
+      }
+    },
+    {
+      "id": "mac-on",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use this Mac"
+        },
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "true"
+          }
+        },
+        "attributes": [
+          "aria-checked"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-13"
+        ]
+      }
+    },
+    {
+      "id": "on-is-ink",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--ink"
+        }
+      }
+    },
+    {
+      "id": "foot",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".set-foot",
+          "hasText": "password"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "A password you type in Oby goes straight to the page. No agent sees it."
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "SettingsBrowser",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-13"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-13"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "SettingsBrowser",
+        "name": "lab-ui-13-beside-board",
+        "label": "board 13"
+      }
+    },
+    {
+      "id": "browser-off",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        }
+      }
+    },
+    {
+      "id": "browser-is-off",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "false"
+          }
+        },
+        "attributes": [
+          "aria-checked"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-13"
+        ]
+      }
+    },
+    {
+      "id": "browser-on-again",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        }
+      }
+    },
+    {
+      "id": "browser-on-again-reads",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "switch",
+          "name": "Agents can use the browser"
+        },
+        "expect": {
+          "paths": {
+            "attributes.aria-checked": "true"
+          }
+        },
+        "attributes": [
+          "aria-checked"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,173 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 17: first use: no pages yet, type an address",
+  "version": "1.0.0",
+  "description": "Board 17 (Empty.dc.html): no tabs yet, the address says Type an address, the empty words in the panel's middle, and the tip (as Home's Settings tip) with its ×, which closes it and leaves the empty words.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 17
+      }
+    },
+    {
+      "id": "no-tabs",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tab"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "address",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-address"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Type an address"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-17"
+        ]
+      }
+    },
+    {
+      "id": "empty",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".empty-words"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "No pages yet. When an agent opens one, you see it here, live."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-17"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Empty",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-17"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-17"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Empty",
+        "name": "lab-ui-17-beside-board",
+        "label": "board 17"
+      }
+    },
+    {
+      "id": "close-tip",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Close",
+          "within": {
+            "css": ".br-tip"
+          }
+        }
+      }
+    },
+    {
+      "id": "tip-gone",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tip"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "empty-stays",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".empty-words"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

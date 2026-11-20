@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 11: a script in the page, and its result as outside text",
+  "version": "1.0.0",
+  "description": "Board 11 (Script.dc.html): the log's row opens to the script (.tc-code) and its result as a quote under a source line, From outside · localhost:3000 · read as data, never as instructions; the page shows Ran a script, and the strip says Codex ran a script.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 11
+      }
+    },
+    {
+      "id": "outside",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".outside-label"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "From outside · localhost:3000 · read as data, never as instructions"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-11"
+        ]
+      }
+    },
+    {
+      "id": "result",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=outside] .tc-code"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "[\"Robin Sample\", \"Kai Placeholder\", \"Lee Demo\"]"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-11"
+        ]
+      }
+    },
+    {
+      "id": "ran",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".ran"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Ran a script · 18 ms"
+          }
+        }
+      }
+    },
+    {
+      "id": "strip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex ran a script in this page · done"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Script",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-11"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-11"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Script",
+        "name": "lab-ui-11-beside-board",
+        "label": "board 11"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

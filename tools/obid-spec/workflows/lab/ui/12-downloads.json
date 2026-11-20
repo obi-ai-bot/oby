@@ -1,0 +1,173 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 12: downloads: the agent's stay in its browser, yours come to your Mac; Save a copy",
+  "version": "1.0.0",
+  "description": "Board 12 (Downloads.dc.html): a shelf at the panel's foot: Codex's CSV kept in its browser, not on your Mac, with Save a copy; your PDF in Downloads with Show in Finder. Save a copy brings the agent's file to Downloads.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 12
+      }
+    },
+    {
+      "id": "agents-file",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=file-csv] .br-file-about"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex downloaded it · kept in its browser, not on your Mac"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-12"
+        ]
+      }
+    },
+    {
+      "id": "your-file",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=file-pdf] .br-file-about"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "You downloaded it · in Downloads"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Downloads",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-12"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-12"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Downloads",
+        "name": "lab-ui-12-beside-board",
+        "label": "board 12"
+      }
+    },
+    {
+      "id": "save-a-copy",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Save a copy"
+        }
+      }
+    },
+    {
+      "id": "saved",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=file-csv] .br-file-about"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex downloaded it · in Downloads"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-12"
+        ]
+      }
+    },
+    {
+      "id": "finder-twice",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Show in Finder"
+        },
+        "expect": {
+          "paths": {
+            "count": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "no-save-left",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Save a copy"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

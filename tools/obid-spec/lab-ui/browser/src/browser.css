@@ -1,0 +1,199 @@
+/* The browser's own pieces, for the lab (lane B of the browser plan). Everything here is a
+   PROPOSAL from the approved design (design/oby.css, the canvas "Oby's browser"), copied as it is:
+   the app's own pieces come from apps/electron's tokens.css, app.css and liveTask.css, imported
+   read-only (main.tsx). Nothing here restyles an app class but where the design's rule for that
+   class is the only one (the app has none yet), listed under "Not in the app's CSS yet". */
+
+/* Tokens the app writes as literal whites (app.css), named as the design names them, plus the
+   held tab's blue (new). Same values as the app's literals. */
+:root {
+  --fill-1: rgba(255, 255, 255, 0.06);
+  --fill-2: rgba(255, 255, 255, 0.08);
+  --fill-3: rgba(255, 255, 255, 0.12);
+  --fill-4: rgba(255, 255, 255, 0.14);
+  --bar-on: rgba(255, 255, 255, 0.55);
+  --dim: rgba(255, 255, 255, 0.4);
+  --edge: rgba(255, 255, 255, 0.08);
+  --code-well: rgba(0, 0, 0, 0.3);
+  --on-primary: #111;
+  --menu-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  --modal-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --scrim: rgba(0, 0, 0, 0.35);
+  --held: rgba(10, 132, 255, 0.12);
+  --ok: #30d158;
+  --mono: ui-monospace, "SF Mono", Menlo, "JetBrains Mono", monospace;
+}
+.logo { display: block; flex: none; }
+.logo > svg { display: block; }
+
+/* Not in the app's CSS yet: the design's rule, as it is */
+.icon-button.is-28 { width: 28px; height: 28px; border-radius: 6px; }
+.icon-button:disabled { opacity: 0.35; cursor: default; }
+.status-dot.is-held { background: var(--unread); }
+.project-chip.is-machine { margin-left: 8px; }
+.project-chip.is-machine b { font-weight: 500; color: var(--ink); }
+.bar-end .icon-button .badge { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--unread); box-shadow: 0 0 0 2px var(--bg); }
+.bar-end .icon-button .badge.is-needs { background: var(--needs); }
+.tc-code .k { color: #c792ea; }
+.tc-code .s { color: #c3e88d; }
+.tc-code .f { color: #82aaff; }
+.outside-label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: var(--text-sm); }
+.outside-label b { font-weight: 500; color: var(--text); }
+.talk-chip { height: 32px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; border-radius: var(--radius-pill); color: var(--muted); font-size: var(--text-md); white-space: nowrap; }
+.talk-chip.is-ink { color: var(--item); }
+.tc-ask-kind.is-blue { color: var(--unread); }
+.tc-option.is-sm { height: 26px; padding: 0 11px; font-size: var(--text-sm); }
+.scrim { position: absolute; z-index: 50; inset: 0; background: var(--scrim); display: grid; place-items: center; }
+.modal-title { margin: 0; color: var(--ink); font-size: 17px; font-weight: 600; line-height: 1.3; }
+.modal-text { margin: 10px 0 0; color: var(--text); font-size: var(--text-base); line-height: 1.5; }
+.modal-list { margin: 14px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.modal-list li { display: flex; gap: 10px; align-items: flex-start; color: var(--text); font-size: var(--text-md); line-height: 1.45; }
+.modal-list li svg { margin-top: 2px; color: var(--muted); }
+.modal-list b { font-weight: 500; color: var(--ink); }
+
+/* ===================================================================
+   NEW — the browser panel (proposal). Built from the Changes panel
+   (changes.css: fixed at the window's right under the title bar,
+   --bg, a --divider line on its left) and T3 Code's control bar.
+   =================================================================== */
+.br { position: relative; z-index: 6; flex: none; height: 100%; display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--edge); font-size: var(--text-md); color: var(--text); }
+.br.is-full { flex: 1; border-left: 0; }
+.br-resize { position: absolute; z-index: 3; top: 0; bottom: 0; left: -4px; width: 8px; }
+/* tabs: one row, the owner's logo first */
+/* the panel runs the window's full height, as the side panel does; its tabs sit in the title bar's row
+   (the window drags from the empty part of it), as the panes of the Claude app do */
+.br-tabs { flex: none; height: var(--bar); padding: 0 8px; display: flex; align-items: center; gap: 2px; }
+.br.is-full .br-tabs { padding-left: calc(var(--after-lights) + 40px); }
+.br-tab { position: relative; text-align: left; height: 30px; min-width: 0; max-width: 190px; flex: 0 1 190px; padding: 0 6px 0 9px; display: flex; align-items: center; gap: 7px; border-radius: 8px; color: var(--muted); font-size: var(--text-sm); }
+.br-tab.is-on { background: var(--active); color: var(--ink); }
+.br-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; -webkit-mask-image: var(--fade-out); mask-image: var(--fade-out); }
+.br-tab-x { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; color: var(--muted); opacity: 0; }
+.br-tab.is-on .br-tab-x { opacity: 1; }
+.br-tab .status { width: 10px; height: 10px; }
+.br-tab .status-dot { width: 6px; height: 6px; }
+.br-tabs-end { margin-left: auto; display: flex; align-items: center; gap: 2px; padding-left: 4px; }
+.you-mark { flex: none; width: 14px; height: 14px; display: grid; place-items: center; border-radius: 50%; background: #5e5ce6; color: #fff; font-size: 8px; font-weight: 600; }
+/* address: back, forward, reload, the address, its menu */
+.br-nav { flex: none; height: 44px; padding: 0 8px; display: flex; align-items: center; gap: 2px; }
+.br-address { flex: 1; min-width: 0; height: 30px; margin: 0 4px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--muted); font-size: var(--text-md); white-space: nowrap; overflow: hidden; }
+.br-address b { font-weight: 400; color: var(--ink); }
+.br-address .br-path { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: var(--fade-out); mask-image: var(--fade-out); }
+.br-address .br-where { margin-left: auto; flex: none; height: 20px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; border-radius: var(--radius-pill); background: var(--fill-2); color: var(--text); font-size: 11px; }
+.br-address .br-where b { font-weight: 500; }
+.br-address.is-warn { border-color: rgba(255, 69, 58, 0.5); }
+.br-address.is-warn > svg:first-child { color: var(--over); }
+.br-loading { position: absolute; left: 0; bottom: -1px; height: 2px; width: 42%; border-radius: 1px; background: var(--bar-on); }
+/* who has the tab: T3 Code's control bar, in Oby's words */
+.br-control { position: relative; flex: none; min-height: 40px; padding: 4px 8px 4px 14px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--divider); border-bottom: 1px solid var(--divider); color: var(--text); font-size: var(--text-md); }
+.br-control-text { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; white-space: nowrap; overflow: hidden; }
+.br-control-text > span:last-child { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: var(--fade-out); mask-image: var(--fade-out); }
+.br-control-text b { font-weight: 500; color: var(--ink); }
+.br-control.is-held { background: var(--held); }
+.br-control.is-held .br-control-text b { color: var(--unread); }
+.br-control.is-needs { background: rgba(255, 159, 10, 0.08); }
+/* the page */
+.br-view { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #fff; }
+.br-view.is-held { box-shadow: inset 0 0 0 2px var(--unread); }
+.br-view.is-dark-page { background: #0f1115; }
+.br-view.is-blank { background: var(--bg); }
+/* the agent's pointer: T3 Code's (lucide mouse-pointer-2), with what it's doing beside it */
+.agent-pointer { position: absolute; z-index: 20; pointer-events: none; }
+.agent-pointer > svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); }
+.agent-ring { position: absolute; left: -9px; top: -9px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(10, 132, 255, 0.55); background: rgba(10, 132, 255, 0.12); }
+.agent-label { position: absolute; left: 16px; top: 18px; height: 24px; padding: 0 9px 0 5px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius-pill); background: rgba(24, 24, 23, 0.94); color: #ececec; font: 500 12px/1 var(--font); white-space: nowrap; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3); }
+.agent-label .logo-w { filter: none; }
+/* a card over the page (a JavaScript dialog, a file chooser): T3 Code's, as Oby's surface */
+.br-over { position: absolute; z-index: 25; left: 12px; right: 12px; top: 12px; padding: 14px 16px 12px; border: 1px solid var(--surface-edge); border-radius: 16px; background: var(--surface); box-shadow: var(--menu-shadow); color: var(--text); }
+.br-over-kind { color: var(--muted); font-size: var(--text-sm); }
+.br-over-text { margin: 4px 0 0; color: var(--ink); font-size: var(--text-base); line-height: 20px; }
+.br-over-hint { margin: 10px 0 0; color: var(--muted); font-size: var(--text-sm); }
+/* a page that didn't come: in the middle, the app's empty words */
+.br-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; background: var(--bg); text-align: center; }
+.br-state > svg { color: var(--muted); }
+.br-state-title { color: var(--ink); font-size: var(--text-base); font-weight: 500; }
+.br-state-text { max-width: 320px; color: var(--muted); font-size: var(--text-md); line-height: 1.5; }
+.br-state .tc-options { justify-content: center; margin-top: 4px; }
+/* downloads, at the panel's foot */
+.br-shelf { flex: none; padding: 8px; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--divider); }
+.br-file { min-height: 44px; padding: 6px 8px 6px 10px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--fill-1); }
+.br-file-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.br-file-name { color: var(--ink); font-size: var(--text-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.br-file-about { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the first time: a note like Home's Settings tip */
+.br-tip { margin: 12px 12px 0; min-height: 42px; padding: 10px 8px 10px 14px; display: flex; align-items: flex-start; gap: 10px; border-radius: 16px; background: var(--fill-1); color: var(--text); font-size: var(--text-md); line-height: 19px; }
+.br-tip > svg { margin-top: 2px; color: var(--muted); }
+.br-tip p { flex: 1; }
+/* the secret card's field: the password goes from here into the page */
+.secret-row { margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+.secret-field { flex: 1; min-width: 0; height: 32px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--field-edge-on); border-radius: 8px; background: var(--field); color: var(--ink); font-size: 15px; letter-spacing: 2px; }
+.secret-field .caret { width: 1.5px; height: 16px; background: var(--ink); }
+.secret-field > svg { color: var(--muted); }
+.code-boxes { display: flex; gap: 6px; }
+.code-boxes span { width: 34px; height: 40px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); font: 500 18px/1 var(--font); }
+.code-boxes span.is-on { border-color: var(--field-edge-on); }
+.secret-note { margin-top: 8px; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-sm); }
+
+/* a board of pieces (a sheet), not a window */
+.sheet { padding: 40px; display: flex; flex-direction: column; gap: 20px; }
+.sheet-title { color: var(--ink); font-size: 20px; font-weight: 600; }
+.sheet-sub { margin-top: -12px; color: var(--muted); font-size: var(--text-md); }
+.sheet-grid { display: grid; gap: 20px; }
+.cell { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cell-name { color: var(--item); font-size: var(--text-md); font-weight: 500; }
+.cell-name em { font-style: normal; color: var(--muted); font-weight: 400; }
+.mini { position: relative; height: 300px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.mini .br { border-left: 0; width: 100%; }
+
+/* the demo web pages (outside Oby's look: a site's own) */
+.site { position: absolute; inset: 0; font: 14px/1.45 -apple-system, system-ui, "Inter", sans-serif; color: #1a1b1f; background: #fff; }
+.site-top { height: 52px; padding: 0 22px; display: flex; align-items: center; gap: 18px; border-bottom: 1px solid #eceef2; }
+.site-logo { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -0.01em; }
+.site-logo i { width: 20px; height: 20px; border-radius: 6px; background: #4f46e5; }
+.site-links { display: flex; gap: 16px; color: #5b5f6b; font-size: 13px; }
+.site-signin { margin-left: auto; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 8px; background: #111318; color: #fff; font-size: 13px; font-weight: 600; }
+.site-card { width: 300px; margin: 40px auto 0; padding: 24px; border: 1px solid #e6e8ee; border-radius: 14px; box-shadow: 0 8px 30px rgba(17, 19, 24, 0.06); }
+.site-card h3 { margin: 0 0 4px; font-size: 18px; letter-spacing: -0.01em; }
+.site-card p { margin: 0 0 16px; color: #6b6f7b; font-size: 13px; }
+.site-label { display: block; margin: 10px 0 5px; color: #3b3e47; font-size: 12px; font-weight: 600; }
+.site-input { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 1px solid #d7dae2; border-radius: 8px; color: #1a1b1f; font-size: 13px; background: #fff; }
+.site-input.is-empty { color: #9a9ea9; }
+.site-input.is-focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18); }
+.site-input.is-oby { border-color: var(--unread); box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.2); }
+.site-input .fill-badge { margin-left: auto; height: 18px; padding: 0 6px; display: inline-flex; align-items: center; gap: 4px; border-radius: 9px; background: rgba(10, 132, 255, 0.12); color: #0a6ad6; font-size: 10px; font-weight: 600; }
+.site-button { height: 38px; margin-top: 16px; display: grid; place-items: center; border-radius: 8px; background: #4f46e5; color: #fff; font-size: 13px; font-weight: 600; }
+.site-muted { margin-top: 12px; text-align: center; color: #8a8e99; font-size: 12px; }
+.site-hero { padding: 28px 22px 0; }
+.site-hero h2 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+.site-hero p { margin: 6px 0 0; color: #6b6f7b; font-size: 13px; }
+.site-rows { margin: 18px 22px 0; border: 1px solid #eceef2; border-radius: 12px; overflow: hidden; }
+.site-row { height: 42px; padding: 0 14px; display: flex; align-items: center; gap: 12px; border-top: 1px solid #f0f1f4; font-size: 13px; }
+.site-row:first-child { border-top: 0; background: #fafbfc; color: #6b6f7b; font-size: 12px; font-weight: 600; }
+.site-row span:first-child { flex: 1; }
+.pill-ok { padding: 2px 8px; border-radius: 10px; background: #e7f7ee; color: #157f3d; font-size: 11px; font-weight: 600; }
+.pill-bad { padding: 2px 8px; border-radius: 10px; background: #fdecec; color: #b42318; font-size: 11px; font-weight: 600; }
+.captcha { width: 300px; margin: 18px auto 0; padding: 14px; display: flex; align-items: center; gap: 12px; border: 1px solid #d7dae2; border-radius: 6px; background: #f9f9fb; font-size: 13px; }
+.captcha i { width: 24px; height: 24px; border: 2px solid #c1c5cf; border-radius: 3px; background: #fff; }
+.captcha span { flex: 1; }
+.captcha small { color: #9a9ea9; font-size: 10px; text-align: right; line-height: 1.2; }
+
+/* the Mac's own screen, for desktop control */
+.mac { position: relative; overflow: hidden; background: #2b2d31; }
+.mac-menu { position: absolute; z-index: 40; top: 0; left: 0; right: 0; height: 26px; padding: 0 14px; display: flex; align-items: center; gap: 18px; background: rgba(30, 30, 32, 0.72); color: #f2f2f2; font: 13px/1 var(--font); }
+.mac-menu b { font-weight: 700; }
+.mac-menu .mac-right { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+.mac-app { position: absolute; border-radius: 12px; overflow: hidden; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(255, 255, 255, 0.18); }
+.mac-glow { position: absolute; z-index: 30; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 3px rgba(255, 159, 10, 0.85), inset 0 0 40px rgba(255, 159, 10, 0.25); }
+.control-pill { position: absolute; z-index: 45; top: 38px; left: 50%; transform: translateX(-50%); height: 44px; padding: 0 6px 0 14px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--surface-edge); border-radius: 22px; background: var(--surface); box-shadow: var(--modal-shadow); color: var(--text); font-size: var(--text-md); white-space: nowrap; }
+.control-pill b { color: var(--ink); font-weight: 500; }
+.kbd { height: 20px; padding: 0 6px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-size: 11px; }
+/* light (proposal): Oby's white face drawn dark, so it still reads */
+.ss-tool.is-refused .ss-tool-mark { color: var(--danger); }
+.ss-tool.is-refused .ss-tool-meta { color: var(--danger); }
+
+/* New with the browser (proposals): a button with an icon before its words (Take control), and the
+   pointers' arrows drawn as blocks, as the design draws every icon */
+.tc-option.has-icon { display: inline-flex; align-items: center; gap: 6px; }
+.agent-pointer > svg, .you-pointer > svg { display: block; }
+.tc-option.has-icon { display: inline-flex; }
+/* The design's reset (oby.css), only inside the browser's new pieces: no default margins */
+:where(.br, .sheet, .mac, .scrim, .decision-card) :where(p, h1, h2, h3, ul, ol) { margin: 0; }

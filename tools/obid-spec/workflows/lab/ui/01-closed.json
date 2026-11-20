@@ -1,0 +1,271 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 1: closed, the globe lights while an agent uses a tab, Watch opens it",
+  "version": "1.0.0",
+  "description": "Board 1 (Closed.dc.html): the browser hidden, the conversation alone; the globe at the title bar's end carries a blue dot (--unread) while Codex uses a tab, its tooltip says Show the browser ⇧⌘B, and the log's running line has Watch. Watch opens the browser beside the conversation (board 2); the globe hides it again and shows it.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 1
+      }
+    },
+    {
+      "id": "no-browser",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "globe-dot-unread",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".bar-end .badge"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--unread"
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-1"
+        ]
+      }
+    },
+    {
+      "id": "watch-on-running-line",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".ss-tool-row",
+          "hasText": "Clicking Sign in"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Clicking Sign in Watch"
+          }
+        }
+      }
+    },
+    {
+      "id": "hover-globe",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Show the browser, 2 tabs, Codex is using one"
+        },
+        "hover": true
+      }
+    },
+    {
+      "id": "tooltip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "tooltip"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Show the browser⇧⌘B"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Closed",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-1"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-01"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Closed",
+        "name": "lab-ui-01-beside-board",
+        "label": "board 1"
+      }
+    },
+    {
+      "id": "watch",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Watch"
+        }
+      }
+    },
+    {
+      "id": "opens-beside",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640,
+            "box.x": 640
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-1"
+        ]
+      }
+    },
+    {
+      "id": "watch-goes",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Watch"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "now-board-2",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Main",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      }
+    },
+    {
+      "id": "hide",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Hide the browser"
+        }
+      }
+    },
+    {
+      "id": "hidden",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "globe-shows",
+      "use": "runtime.rust:lab.ui.click",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "Show the browser, 2 tabs, Codex is using one"
+        }
+      }
+    },
+    {
+      "id": "shown-again",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

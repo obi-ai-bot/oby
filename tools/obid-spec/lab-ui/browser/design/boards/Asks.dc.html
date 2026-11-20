@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Every ask the browser makes</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="oby.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#0b0b0b}
+.strip-box{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.strip-box .br-control{border-top:0}
+.strip-box .br-control:last-child{border-bottom:0}</style>
+</helmet>
+<div class="oby sheet {{theme}}" style="width: 1280px; height: 800px">
+<h1 class="sheet-title">What the agent asks, over the message box</h1>
+<p class="sheet-sub">The decision bar’s card (DecisionBar), one at a time. The orange kind word is the app’s; each card’s words are proposals.</p>
+<div class="sheet-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr))">
+<div class="cell"><span class="cell-name">A CAPTCHA <em>· only a person answers it</em></span>
+<div class="decision-card"><div class="tc-ask-line"><span class="tc-ask-kind">Check</span><p class="tc-ask-head">The page wants to know you’re a person <span class="tc-ask-from">· Codex</span></p></div><p class="tc-ask-text">Codex can’t answer this. Take control and solve it; Codex goes on when you give the tab back.</p><div class="tc-options"><button class="tc-option is-primary">Take control</button><button class="tc-option is-quiet">Skip this page</button></div></div></div>
+<div class="cell"><span class="cell-name">A choice <em>· the agent asks, you pick</em></span>
+<div class="decision-card"><div class="tc-ask-line"><span class="tc-ask-kind">Question</span><p class="tc-ask-head">Which plan should I pick at checkout? <span class="tc-ask-from">· Claude Code</span></p></div><p class="tc-ask-text">The test card works with both. Business adds SSO, which the next step checks.</p><div class="tc-options"><button class="tc-option is-primary">Team · $12</button><button class="tc-option">Business · $29</button><button class="tc-option is-quiet">I’ll choose in the page</button></div></div></div>
+<div class="cell"><span class="cell-name">A one-time code <em>· typed straight into the page</em></span>
+<div class="decision-card"><div class="tc-ask-line"><span class="tc-ask-kind is-blue">Code</span><p class="tc-ask-head">The code sent to your phone, for <b style="font-weight: 500">staging.acme.dev</b></p></div>
+<div class="secret-row"><span class="code-boxes" aria-label="Six-digit code"><span>4</span><span>8</span><span>1</span><span class="is-on"></span><span></span><span></span></span><button class="tc-option is-primary" style="margin-left: auto">Fill in</button><button class="tc-option is-quiet">Cancel</button></div>
+<p class="secret-note"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>It goes straight into the page. Codex never sees it.</p></div></div>
+<div class="cell"><span class="cell-name">A passkey or a card check <em>· yours alone</em></span>
+<div class="decision-card"><div class="tc-ask-line"><span class="tc-ask-kind">Passkey</span><p class="tc-ask-head">staging.acme.dev asks for your passkey <span class="tc-ask-from">· Codex</span></p></div><p class="tc-ask-text">Only you can do this. Take control; your Mac asks for Touch ID.</p><div class="tc-options"><button class="tc-option is-primary">Take control</button><button class="tc-option is-quiet">Skip</button></div></div></div>
+</div>
+<div class="sheet-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 4px">
+<div class="cell"><span class="cell-name">Who has the tab <em>· the strip under the address</em></span>
+<div class="strip-box">
+<div class="br-control"><span class="br-control-text"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="14" height="14" alt=""><span><b>Codex</b> is using this tab · <span class="sheen">Clicking Sign in</span></span></span><button class="tc-option is-sm">Take control</button></div>
+<div class="br-control is-needs"><span class="br-control-text"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="14" height="14" alt=""><span><b>Codex</b> asks you to sign in here</span></span><button class="tc-option is-sm">Take control</button></div>
+<div class="br-control is-held"><span class="br-control-text"><span class="you-mark" aria-hidden="true">Y</span><span><b>You have this tab.</b> Codex waits until you give it back.</span></span><button class="tc-option is-sm is-primary">Give back</button></div>
+<div class="br-control"><span class="br-control-text"><span class="you-mark" aria-hidden="true">Y</span><span><b>Your tab.</b> No agent uses it unless you ask.</span></span></div>
+<div class="br-control"><span class="br-control-text"><img class="logo" src="/_blob/b9591b423efbb6b607314ffefffd24be" width="14" height="14" alt=""><span><b>Claude Code</b> opened this tab · idle</span></span><button class="tc-option is-sm">Take control</button></div>
+</div></div>
+<div class="cell"><span class="cell-name">In the side panel <em>· the row’s line, as today’s asks</em></span>
+<div class="strip-box" style="padding: 8px; background: var(--bg)">
+<div class="convo-row"><span class="convo-twist"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span><span class="connector-text"><span class="connector-name">Invite emails on staging</span><span class="connector-about">Codex asks you to sign in</span></span><span class="sidebar-item-ago">1m</span><span class="status"><span class="status-dot is-needs"></span></span></div>
+<div class="convo-kids"><div class="convo-kid"><img class="logo logo-w" src="/_blob/b6a520d0d66c6d8e93fb0c106328e021" width="16" height="16" alt=""><span class="convo-kid-text">Check the invite mail log <em>· asks you to sign in</em></span><span class="status"><span class="status-dot is-needs"></span></span></div></div>
+<div class="convo-row"><span class="convo-twist"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span><span class="connector-text"><span class="connector-name">Sign-up flow on staging</span><span class="connector-about">You have Codex’s tab</span></span><span class="sidebar-item-ago">now</span><span class="status"><span class="status-dot is-held"></span></span></div>
+</div>
+<p class="set-foot" style="padding: 0 4px">A Mac notification says the same line when the window isn’t in front, as today’s asks do.</p>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"light":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.light ? 'is-light' : '' };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 4: a narrow window, the conversation keeps 420px",
+  "version": "1.0.0",
+  "description": "Board 4 (Narrow.dc.html): the app's own 994×670 window with the browser open: the conversation keeps --view-min (420px) and the browser takes the rest (574px); the title fades rather than pushing the bar.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 4
+      }
+    },
+    {
+      "id": "window",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab-window]"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 994,
+            "box.height": 670
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-420",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".home"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 420,
+            "box.x": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-4"
+        ]
+      }
+    },
+    {
+      "id": "browser-rest",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 574,
+            "box.x": 420
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-4"
+        ]
+      }
+    },
+    {
+      "id": "tabs-48",
+      "use": "runtime.rust:lab.ui.measure",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-tabs"
+        },
+        "expect": {
+          "paths": {
+            "box.height": 48
+          }
+        }
+      }
+    },
+    {
+      "id": "strip-words",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Typing in Email"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Narrow",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-4"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-04"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "Narrow",
+        "name": "lab-ui-04-beside-board",
+        "label": "board 4"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}

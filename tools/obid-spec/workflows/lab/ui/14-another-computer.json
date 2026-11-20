@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser screens 14: another computer: the browser shows that computer's localhost",
+  "version": "1.0.0",
+  "description": "Board 14 (OtherComputer.dc.html): a computer chip beside the project chip (devbox · Linux), a line under the tabs saying the browser runs on devbox and its localhost is devbox's, and an on devbox badge in the address.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "serve",
+      "use": "runtime.rust:lab.ui.serve",
+      "inputs": {}
+    },
+    {
+      "id": "screen",
+      "use": "runtime.rust:lab.ui.open",
+      "inputs": {
+        "server": "${state.serve}",
+        "board": 14
+      }
+    },
+    {
+      "id": "chip",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".project-chip.is-machine"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "devbox · Linux"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-14"
+        ]
+      }
+    },
+    {
+      "id": "where",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": "[data-lab=where]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "This browser runs on devbox. Its localhost is devbox’s, not this Mac’s."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-14"
+        ]
+      }
+    },
+    {
+      "id": "badge",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "css": ".br-where"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "on devbox"
+          }
+        }
+      }
+    },
+    {
+      "id": "new-tab-there",
+      "use": "runtime.rust:lab.ui.read",
+      "inputs": {
+        "screen": "${state.screen}",
+        "target": {
+          "role": "button",
+          "name": "New tab on devbox"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:lab.ui.compare",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "OtherComputer",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-UI-14"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:lab.ui.screenshot",
+      "inputs": {
+        "screen": "${state.screen}",
+        "name": "lab-ui-14"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:lab.ui.sidebyside",
+      "inputs": {
+        "screen": "${state.screen}",
+        "board": "OtherComputer",
+        "name": "lab-ui-14-beside-board",
+        "label": "board 14"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.ui.close",
+      "inputs": {
+        "screen": "${state.screen}"
+      }
+    }
+  ]
+}
