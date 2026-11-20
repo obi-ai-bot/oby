@@ -1,9 +1,9 @@
 # Oby's browser: agent-browser for every agent, on by default, the person in control
 
 - **Date:** 2026-11-19
-- **Status:** In force for the lab (`tools/obid-spec`, #2593, #2599, #2600, #2602) and for obid's port ([browser.md](../contracts/browser.md)); how the browser reaches a Mac and where it runs wait for the owner (browser.md, BROWSER-23 and 24)
+- **Status:** In force
 - **Replaced:** "Follow OpenBot" for B00-69
-- **Changed by:** Nothing
+- **Changed by:** [2026-11-20-browser-install-and-limits.md](2026-11-20-browser-install-and-limits.md) (adds how the browser reaches a Mac and where it runs)
 - **Contracts and scenarios:** [browser.md](../contracts/browser.md), BROWSER-1 to 25
 
 ## The owner's words
