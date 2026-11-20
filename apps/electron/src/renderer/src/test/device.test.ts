@@ -270,3 +270,24 @@ describe('obid-undo', () => {
     expect(posted()[0].body).toMatchObject({ device: 'd1', action: the.undo, signedAt: expect.any(String), signature: expect.any(String) });
   });
 });
+
+// The owner's mouse and keys on a browser tab they hold (docs/contracts/browser-app.md, BROWSERAPP-10):
+// main signs a `…/input` only right after the very input it saw itself, never on the page's say.
+describe('BROWSERAPP-10: main signs browser input only right after the input it saw', () => {
+  const path = '/v1/browser/tabs/t1/input';
+  const press = { type: 'mouse', eventType: 'mousePressed', x: 4, y: 5, button: 'left', clickCount: 1 };
+  const words = async (body: unknown) => { await ownersWords('POST', path, body, false); return the.calls.at(-1)?.words; };
+
+  it('browserapp_10_input_is_signed_once_per_real_input_and_never_without_one', async () => {
+    const { sawInput } = await import('../../../main/browserInput');
+    expect(await words(press)).toBeUndefined();
+    sawInput('mouseDown');
+    const signed = await words(press);
+    expect(signed).toMatch(/^d1 \S+ \S+$/);
+    expect(await words(press)).toBeUndefined();
+    // a take or give back is the owner's words, never an input's: no real input, no signature
+    sawInput('mouseDown');
+    await ownersWords('POST', '/v1/browser/tabs/t1/take', {}, false);
+    expect(the.calls.at(-1)?.words).toBeUndefined();
+  });
+});
