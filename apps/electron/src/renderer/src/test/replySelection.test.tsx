@@ -121,10 +121,11 @@ describe('T3: words picked in a reply', () => {
 
   // "does not attribute an empty starting endpoint to the previous response"
   // known bug obi-ai-bot/oby#2728: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_reply_a_pick_that_starts_at_the_very_end_of_the_reply_before_is_the_next_ones (known bug #2728)', async () => {
+  it.fails('t3_reply_a_pick_that_starts_at_the_very_end_of_the_words_before_is_the_replys (known bug #2728)', async () => {
     const t = await thread();
-    const oby = document.getElementById('oby')!.firstChild as Text, oby2 = document.getElementById('oby2')!.firstChild as Text;
-    await pick([oby, oby.length], [oby2, 8]);
+    // from the very end of the owner's words before it (none of them picked) into the reply
+    const you = document.getElementById('you')!.firstChild as Text, oby2 = document.getElementById('oby2')!.firstChild as Text;
+    await pick([you, you.length], [oby2, 8]);
     expect(t.button()?.textContent).toBe('Reply about this');
   });
 });

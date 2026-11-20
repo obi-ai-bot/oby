@@ -571,7 +571,8 @@ describe('T3: a real shell', () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-int-')));
     const { t, text } = real();
     const term = started(t, dir);
-    t.write(term, 'sleep 30; echo SL""EPT\r');
+    // `&&`, not `;`: macOS's bash 3.2 runs the rest of a `;` list after its foreground job dies of SIGINT
+    t.write(term, 'sleep 30 && echo SL""EPT\r');
     await new Promise((r) => setTimeout(r, 300));
     t.write(term, '\x03');
     t.write(term, 'echo AF""TER\r');
