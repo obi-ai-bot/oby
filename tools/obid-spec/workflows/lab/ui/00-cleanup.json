@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "Lab browser screens: every process the screens started is gone at the cleanup",
   "version": "1.0.0",
-  "description": "What lab.ui starts it stops (src/lab/ui.rs, cleanup): the screens' server, two screens' helpers and their Chrome for Testing (with its own helper processes) are alive while they work, found by PID and by the workflow's folder in their command lines, and none is left after lab.ui.down, the same code the suite's cleanup runs whatever a workflow ended in.",
+  "description": "What lab.ui starts it stops (src/lab/ui.rs, cleanup): the screens' server, two screens' helpers and their chrome-headless-shell (with its own helper processes) are alive while they work, found by PID and by the workflow's folder in their command lines, and none is left after lab.ui.down, the same code the suite's cleanup runs whatever a workflow ended in.",
   "trigger": {
     "manual": {}
   },
