@@ -285,11 +285,11 @@ async fn peer_1_thread_lists_every_exchange_with_that_member() {
     assert_eq!(bad.status, 422);
     // Compared with them: the thread says so, and so does each of their posts.
     let compared = tokio::task::block_in_place(|| {
-        let accepted = call(
+        let accepted = call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": ernesto.owner.key.key_id()})),
+            &json!({"fingerprint": ernesto.owner.key.key_id()}),
         );
         assert_eq!(accepted.status, 200, "{}", accepted.text);
         thread_of(&obid, "ernesto")

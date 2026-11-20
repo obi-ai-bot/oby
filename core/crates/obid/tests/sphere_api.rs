@@ -1969,20 +1969,20 @@ async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_i
     assert_eq!(changed["changedTo"], mallory.key_id());
     // A wrong fingerprint isn't taken; the one the owner compared is, and the member is trusted again.
     let wrong = tokio::task::block_in_place(|| {
-        call(
+        call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": ernesto.owner.key.key_id()})),
+            &json!({"fingerprint": ernesto.owner.key.key_id()}),
         )
     });
     assert_eq!(wrong.status, 422);
     let accepted = tokio::task::block_in_place(|| {
-        call(
+        call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": mallory.key_id()})),
+            &json!({"fingerprint": mallory.key_id()}),
         )
     });
     assert_eq!(accepted.status, 200, "{}", accepted.text);
@@ -2304,6 +2304,63 @@ async fn sphere_9_a_signed_confirm_trusts_the_new_key() {
     assert_eq!(ask().status, 202);
 }
 
+/// SPHERE-25: trusting a member's changed key through `POST /v1/obid/sphere/pins/{owner}` takes the
+/// owner's signed words, as the `trust_key` Confirm does (SPHERE-9): with obid's token alone, or a
+/// signature for another body, it's `403`, nothing is pinned and the card stays open; signed, the
+/// new key is pinned verified and the card closes; signed with any other fingerprint, `422`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_25_trusting_a_members_key_takes_the_owners_signature() {
+    let folder = Folder::new("sphere-25");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| read_members(&obid));
+    let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
+    serve_owner_key(&sphere, &ernesto, &mallory, 2);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        assert_eq!(trust_cards(&obid, "").len(), 1);
+        let target = "/v1/obid/sphere/pins/ernesto";
+        let body = json!({"fingerprint": mallory.key_id()});
+        let left_as_it_was = |why: &str| {
+            let pin = ernestos_pin(&obid);
+            assert_eq!(pin["fingerprint"], ernesto.owner.key.key_id(), "{why}");
+            assert_eq!(pin["verified"], false, "{why}");
+            assert_eq!(pin["changedTo"], mallory.key_id(), "{why}");
+            assert_eq!(
+                trust_cards(&obid, "").len(),
+                1,
+                "{why}: the card stays open"
+            );
+        };
+
+        let token_only = call(&obid, "POST", target, Some(&body));
+        assert_eq!(token_only.status, 403, "{}", token_only.text);
+        left_as_it_was("obid's token alone");
+
+        let other = json!({"fingerprint": ernesto.owner.key.key_id()});
+        let header = words_header(&obid, "POST", target, Some(&other));
+        let elsewhere = call_with_headers(
+            &obid,
+            TOKEN,
+            "POST",
+            target,
+            Some(&body),
+            &[("X-Oby-Words", &header)],
+        );
+        assert_eq!(elsewhere.status, 403, "{}", elsewhere.text);
+        left_as_it_was("a signature for another body");
+
+        let wrong = call_typed(&obid, "POST", target, &other);
+        assert_eq!(wrong.status, 422, "{}", wrong.text);
+
+        let signed = call_typed(&obid, "POST", target, &body);
+        assert_eq!(signed.status, 200, "{}", signed.text);
+        let pin = ernestos_pin(&obid);
+        assert_eq!(pin["fingerprint"], mallory.key_id());
+        assert_eq!(pin["verified"], true);
+        assert!(trust_cards(&obid, "").is_empty());
+    });
+}
+
 /// SPHERE-10: the card closes, with no answer and an `inbox` event, when the owner accepts the key
 /// through `POST /v1/obid/sphere/pins/{owner}`, when the member leaves the Sphere, and when obid
 /// leaves it.
@@ -2341,11 +2398,11 @@ async fn sphere_10_the_card_closes_when_settled_elsewhere() {
     let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
     let id = card_for(&mallory, 2);
     let accepted = tokio::task::block_in_place(|| {
-        call(
+        call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": mallory.key_id()})),
+            &json!({"fingerprint": mallory.key_id()}),
         )
     });
     assert_eq!(accepted.status, 200, "{}", accepted.text);
