@@ -598,8 +598,14 @@ mod work_feed {
 
     #[test]
     fn github_recorded_work_feed() {
-        let (_folder, recording, obid, _) =
-            crate::recorder::recorded_obid("work-feed", "work_feed");
+        // The quick model sorts with a signed-in account only: with none, the items stay `pending`
+        // and say why (TRIAGE-ANY-2, crate::brain::calls::thinker). The stand-in's account is signed
+        // in, as an owner's whose items get sorted is.
+        let (folder, recording, config) =
+            crate::recorder::recorded_config("work-feed", "work_feed");
+        signed_in(&config);
+        let obid = start(&folder.0, &config, Some(&crate::recorder::bin()));
+        recording.started(&obid);
         let mut answers = Vec::new();
 
         // obid's own read at its start ends first: the feed then has a next check.

@@ -1,0 +1,346 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: a task whose worktree was deleted goes on",
+  "version": "1.0.0",
+  "description": "T3 Code's worktree-left-behind kind: a task's worktree folder deleted from under it (the owner's Finder, a disk cleanup, a crash) while git still lists it. Try again on the stopped task runs the same task in its next round (JOBSTATE-10) in a worktree made again; a task cut by obid going down whose worktree went meanwhile goes on after the restart (RECOVERY-2).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-worktree",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "s-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-worktree-deleted",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "remove",
+        "path": "worktrees/${state.s.body.id}"
+      }
+    },
+    {
+      "id": "s-git-still-lists-it",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "worktree",
+          "list",
+          "--porcelain"
+        ]
+      }
+    },
+    {
+      "id": "s-git-lists-the-missing-worktree",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.s-git-still-lists-it}",
+        "expect": {
+          "paths": {
+            "out": {
+              "$contains": "${state.s.body.id}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-10-try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.s.body.id}",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-10"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-10-runs-in-a-worktree-made-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-10"
+        ],
+        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+      }
+    },
+    {
+      "id": "jobstate-10-its-worktree-is-back",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-10"
+        ],
+        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+      }
+    },
+    {
+      "id": "s-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "k",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "k-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.k.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "k-worktree",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.k.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "k-worktree-deleted",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "remove",
+        "path": "worktrees/${state.k.body.id}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "recovery-2-goes-on-after-the-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.k.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ],
+        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+      }
+    },
+    {
+      "id": "recovery-2-its-worktree-is-back",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "worktrees/${state.k.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ],
+        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+      }
+    },
+    {
+      "id": "k-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.k.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

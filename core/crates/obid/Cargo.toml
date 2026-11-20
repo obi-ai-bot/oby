@@ -48,6 +48,11 @@ tracing-subscriber.workspace = true
 # tree, through `url`, their compiled data only.
 icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+# Other computers' direct addresses (src/remote/): the gateway over HTTPS with this computer's
+# own certificate, and the window's client that trusts only a pinned one. Already in the tree,
+# through reqwest, with the same aws-lc-rs.
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 # The gateway calls obid's own router in process (src/gateway.rs).
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 uuid.workspace = true

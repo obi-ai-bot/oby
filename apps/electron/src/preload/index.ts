@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { WITHIN_MS, owners } from '../shared/words';
+import { FILL_IN, WITHIN_MS, owners } from '../shared/words';
 import type { AdminsAnswer, InvitesAnswer, PolicyAnswer, SigninStatus } from '../shared/sphere';
 import type { HandoffAsk } from '../shared/handoff';
 import type { Joined } from '../shared/invite';
@@ -25,10 +25,12 @@ function textOf(el: Element | null): string | null {
   const box = el.isContentEditable ? el.closest('[contenteditable="true"]') : null;
   return box instanceof HTMLElement ? box.innerText : null;
 }
-// a button's own label, never a whole card's text
+// a button's own label, never a whole card's text; a switch, which has no words of its own, by its
+// aria-label (Settings › General's browser switches, BROWSERAPP-18)
 const labelOf = (el: Element | null) => {
   const b = el?.closest('button');
-  return b && seen(b) && !b.querySelector('button, input, textarea, [contenteditable="true"]') ? b.innerText : null;
+  if (!b || !seen(b) || b.querySelector('button, input, textarea, [contenteditable="true"]')) return null;
+  return b.innerText.trim() ? b.innerText : b.getAttribute('role') === 'switch' ? b.getAttribute('aria-label') : null;
 };
 function hold(e: Event) {
   if (!e.isTrusted || (e instanceof KeyboardEvent && ((e.key !== 'Enter' && e.key !== ' ') || e.isComposing))) return;
@@ -40,6 +42,10 @@ function hold(e: Event) {
     }
     return;
   }
+  // Enter in a browser card's password or code box presses its Fill in (BROWSERAPP-12); the box's
+  // value is never read here
+  if (e instanceof KeyboardEvent && e.key === 'Enter' && target instanceof HTMLInputElement && seen(target)
+    && (target.type === 'password' || target.autocomplete === 'one-time-code') && target.closest('[data-browser="card"]')) keep(held, { text: FILL_IN, at });
   // the keys that press a focused button hold its label; Enter holds the box it was pressed in
   const texts = e.type === 'keydown' ? [...(e instanceof KeyboardEvent && e.key === ' ' ? [] : [textOf(target)]), labelOf(target)]
     : [labelOf(target), ...[...(target?.closest('form')?.querySelectorAll('textarea, input, [contenteditable="true"]') ?? [])].map(textOf)];
@@ -60,13 +66,14 @@ function signs(method: string, path: string, body: unknown) {
   return true;
 }
 
-// Whether the owner's own event just pressed a button labelled Confirm (each press once)
-function pressedConfirm() {
+// Whether the owner's own event just pressed a button with this label (each press once)
+function pressed(label: string) {
   const now = Date.now();
-  const at = held.findIndex((h) => now - h.at < WITHIN_MS && h.text.trim() === 'Confirm');
+  const at = held.findIndex((h) => now - h.at < WITHIN_MS && h.text.trim() === label);
   if (at >= 0) held.splice(at, 1);
   return at >= 0;
 }
+const pressedConfirm = () => pressed('Confirm');
 
 contextBridge.exposeInMainWorld('app', {
   // where macOS put the traffic lights, in CSS px (null without the native
@@ -193,6 +200,11 @@ contextBridge.exposeInMainWorld('app', {
       void ipcRenderer.invoke('browser-follow');
       return () => { ipcRenderer.off('browser-event', listener); };
     },
+    // a password or code into the page's field, filled by main on the owner's press of Fill in (or
+    // Enter in the card's box): main checks it saw that input itself; null once filled, else why not
+    fill: (tab: string, field: string, value: string, ask?: string) => ipcRenderer.invoke('browser-fill', tab, field, value, ask ?? '', pressed(FILL_IN)) as Promise<string | null>,
+    // Show in Finder for a download in Downloads, by its name (main/browser.ts): true once shown
+    reveal: (name: string) => ipcRenderer.invoke('browser-reveal', name) as Promise<boolean>,
     watch(tab: string, fn: (data: string) => void) {
       const listener = (_: unknown, m: { tab: string; data: string }) => { if (m.tab === tab) fn(m.data); };
       ipcRenderer.on('browser-frame', listener);

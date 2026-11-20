@@ -4,7 +4,7 @@
 // screens (tools/obid-spec/lab-ui/browser/src/scenes.tsx), whose conversations were the boards'
 // own: here the conversation is the app's.
 import { useLayoutEffect, useRef, useState } from 'react';
-import { Globe, Server, X } from 'lucide-react';
+import { CodeXml, Globe, Server, X } from 'lucide-react';
 import { Control, FileRow, Nav, Panel, Pointer, Tabs, View, YouPointer } from './Panel';
 import { Globe17, Logo, agentName } from './pieces';
 import { useBrowser } from './store';
@@ -79,10 +79,13 @@ export function BrowserPane({ width }: { width: number }) {
         {where && <div className="where-bar" data-browser="where"><Server size={13} strokeWidth={1.6} /><span>This browser runs on <b>{where.name}</b>. Its localhost is {where.name}’s, not this Mac’s.</span></div>}
         {active.state === 'loading'
           ? <Nav tab={active} set="loading"><span className="br-loading" style={{ left: 8 }} /></Nav>
-          : <Nav tab={active} />}
+          : <Nav tab={active} warn={active.state === 'certificate'} />}
         <Control tab={active} />
         <View tab={active} label={label} page={page} className={where ? 'is-dark-page' : ''}>
           {held ? mode === 'demo' && <YouPointer x={380} y={268} /> : pointer}
+          {!held && active.ran && active.owner.kind === 'agent' && (
+            <span className="ran"><Logo agent={active.owner.agent} size={14} /><CodeXml size={13} strokeWidth={1.6} />Ran a script{active.ran.ms !== undefined ? ` · ${active.ran.ms} ms` : ''}</span>
+          )}
           {ui.full && peek && (
             <div className="peek" role="group" aria-label="The conversation, while the browser is full width">
               {peek.agent.kind === 'agent' && <Logo agent={peek.agent.agent} size={16} />}
@@ -91,8 +94,7 @@ export function BrowserPane({ width }: { width: number }) {
             </div>
           )}
         </View>
-        {/* on obid, the shelf comes with Save a copy, signed (BROWSERAPP-16) */}
-        {mode === 'demo' && s.downloads.length > 0 && <div className="br-shelf" aria-label="Downloads">{s.downloads.map((d) => <FileRow key={d.id} id={d.id} />)}</div>}
+        {s.downloads.length > 0 && <div className="br-shelf" aria-label="Downloads">{s.downloads.map((d) => <FileRow key={d.id} id={d.id} />)}</div>}
       </Panel>
     </div>
   );

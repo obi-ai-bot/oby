@@ -620,10 +620,13 @@ pub async fn worktree_dirs(worktree: &Path) -> Result<(PathBuf, PathBuf), GitErr
 }
 
 /// Whether a branch this name would read as another ref in a job's or a review's `git diff
-/// origin/dev...HEAD`: a local `origin/dev` hides the remote's, and blinds the review.
+/// origin/dev...HEAD`: a local `origin/dev` hides the remote's, and blinds the review. Or it is
+/// `oby`, in any case, where Oby's own branches live (`oby/build-<id>`): git can't make one of
+/// those beside a branch named `oby`, so every later task would fail (PUBLISHING-44).
 pub fn is_ref_shaped(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "head"
+        || lower == "oby"
         || ["refs/", "heads/", "remotes/", "tags/", "origin/"]
             .iter()
             .any(|prefix| lower.starts_with(prefix))

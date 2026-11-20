@@ -489,7 +489,8 @@
             "DELIVERY-7",
             "DELIVERY-8",
             "DELIVERY-9",
-            "DELIVERY-10"
+            "DELIVERY-10",
+            "DELIVERY-11"
           ],
           "elsewhere": {
             "DELIVERY-6": "delivery.rs state machine unit (no route asks an arbitrary move)."
@@ -554,7 +555,8 @@
             "JOBSTATE-15",
             "JOBSTATE-16",
             "JOBSTATE-17",
-            "JOBSTATE-18"
+            "JOBSTATE-18",
+            "JOBSTATE-20"
           ],
           "elsewhere": {
             "JOBSTATE-8": "internal worker race, unit test jobs::tests.",
@@ -711,7 +713,8 @@
             "PUBLISHING-40",
             "PUBLISHING-41",
             "PUBLISHING-42",
-            "PUBLISHING-43"
+            "PUBLISHING-43",
+            "PUBLISHING-44"
           ],
           "elsewhere": {
             "PUBLISHING-14": "Electron Publish dialog (obid side = canPublish/canPublishAnyway keys).",
@@ -1177,7 +1180,8 @@
             "LANES-17": "unit test.",
             "LANES-20": "real network/listen behaviour.",
             "LANES-22": "unit (process::tests).",
-            "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see."
+            "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see.",
+            "LANES-26": "unit test (jobs::lanes::tests::lanes_26_an_own_run_reaches_obid_on_loopback) and LANES-12's harness tests on Linux; on a real Linux obid, the lab workflow workflows/lab/lanes/own-conversation-linux.json, which coverage doesn't count (OBIDSPEC-16)."
           }
         },
         "agent-mcp.md": {
@@ -1449,7 +1453,8 @@
             "CLEANUP-3",
             "CLEANUP-4",
             "CLEANUP-5",
-            "CLEANUP-6"
+            "CLEANUP-6",
+            "CLEANUP-7"
           ],
           "elsewhere": {
             "CLEANUP-2": "needs a disk under 20 GB free; a unit test."
@@ -1482,7 +1487,9 @@
             "ALERTS-14",
             "ALERTS-15",
             "ALERTS-16",
-            "ALERTS-17"
+            "ALERTS-17",
+            "ALERTS-22",
+            "ALERTS-23"
           ],
           "elsewhere": {
             "ALERTS-2": "Electron notify memory; opening the app with open -g -j.",
@@ -1494,7 +1501,8 @@
             "ALERTS-18": "Electron banners and Settings.",
             "ALERTS-19": "Electron banners and Settings.",
             "ALERTS-20": "Electron banners and Settings.",
-            "ALERTS-21": "Electron banners and Settings."
+            "ALERTS-21": "Electron banners and Settings.",
+            "ALERTS-24": "Electron banners: a settled item's click sends nothing more (notify.ts pressed)."
           }
         },
         "connectors.md": {
@@ -2106,16 +2114,35 @@
             "BROWSERAPP-8": "the Electron app's browser on obid, through main (main/browser.ts, main/browserInput.ts): browserLive.test.ts and device.test.ts; in the real app on a scratch obid workflows/app/browser-101-live-on-obid.json and browser-102-live-take-control.json, board 6 on the demo data browser-06-hold.json; no obid API of its own",
             "BROWSERAPP-9": "the Electron app's browser on obid, through main (main/browser.ts, main/browserInput.ts): browserLive.test.ts and device.test.ts; in the real app on a scratch obid workflows/app/browser-101-live-on-obid.json and browser-102-live-take-control.json, board 6 on the demo data browser-06-hold.json; no obid API of its own",
             "BROWSERAPP-10": "the Electron app's browser on obid, through main (main/browser.ts, main/browserInput.ts): browserLive.test.ts and device.test.ts; in the real app on a scratch obid workflows/app/browser-101-live-on-obid.json and browser-102-live-take-control.json, board 6 on the demo data browser-06-hold.json; no obid API of its own",
-            "BROWSERAPP-11": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-12": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-13": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-14": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-15": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-16": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-17": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
-            "BROWSERAPP-18": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-11": "the Electron app's browser asks and password card (browser/Asks.tsx; main fills on the owner's click, main/device.ts fillSecret): browserApp.test.tsx, browserLive.test.ts, device.test.ts; in the real app workflows/app/browser-07-asks-sign-in.json, browser-08-password.json, browser-09-every-ask.json; no obid API of its own",
+            "BROWSERAPP-12": "the Electron app's browser asks and password card (browser/Asks.tsx; main fills on the owner's click, main/device.ts fillSecret): browserApp.test.tsx, browserLive.test.ts, device.test.ts; in the real app workflows/app/browser-07-asks-sign-in.json, browser-08-password.json, browser-09-every-ask.json; no obid API of its own",
+            "BROWSERAPP-13": "the Electron app's browser asks and password card (browser/Asks.tsx; main fills on the owner's click, main/device.ts fillSecret): browserApp.test.tsx, browserLive.test.ts, device.test.ts; in the real app workflows/app/browser-07-asks-sign-in.json, browser-08-password.json, browser-09-every-ask.json; no obid API of its own",
+            "BROWSERAPP-14": "the Electron app's page states in the panel (browser/Panel.tsx PageState): browserApp.test.tsx; in the real app workflows/app/browser-10-page-states.json; no obid API of its own",
+            "BROWSERAPP-15": "the Electron app's script mark (scriptRun, browser/live.ts): browserLive.test.ts; in the real app workflows/app/browser-11-script.json; no obid API of its own",
+            "BROWSERAPP-16": "the Electron app's downloads shelf, Save a copy signed (shared/words.ts) and Show in Finder (main/browser.ts browser-reveal): browserLive.test.ts, ipc.test.ts; in the real app workflows/app/browser-12-downloads.json; no obid API of its own",
+            "BROWSERAPP-17": "the Electron app's browser on another computer (browser/BrowserPane.tsx): in the real app workflows/app/browser-14-another-computer.json; no obid API of its own",
+            "BROWSERAPP-18": "the Electron app's Settings › General Browser group (browser/Settings.tsx), switches signed by their labels (shared/words.ts, the preload's switch label): browserLive.test.ts, preload.test.ts; in the real app workflows/app/browser-13-settings.json; no obid API of its own",
             "BROWSERAPP-19": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
             "BROWSERAPP-20": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/"
+          }
+        },
+        "computers-app.md": {
+          "obid": [],
+          "elsewhere": {
+            "COMPUTERSAPP-1": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-2": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-3": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-4": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-5": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-6": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-7": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-8": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-9": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-10": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-11": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-12": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-13": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
+            "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)"
           }
         }
       }
@@ -2154,6 +2181,7 @@
             "BROWSER-25",
             "BROWSER-26",
             "BROWSER-27",
+            "BROWSER-28",
             "BROWSER-29"
           ],
           "elsewhere": {}
@@ -2208,6 +2236,12 @@
       "area": "everything-else",
       "workflows": [
         "cleanup.json"
+      ]
+    },
+    "the pull request follower: publish, Oby's review and merge": {
+      "area": "jobs",
+      "workflows": [
+        "publish-review-merge.json"
       ]
     },
     "routines": {

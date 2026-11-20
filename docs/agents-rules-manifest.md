@@ -72,10 +72,10 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `AGENTS.md`: So work runs in two lanes, step by step in [docs/contracts/lanes.md](docs/contracts/lanes.md) (LANES-1 to 18, some still proposed) and run by run in "Logins and secrets".
 
 ### L45
-- `AGENTS.md`: In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code job of the owner's own; on macOS, their Claude Code conversations and, in Bypass, their Codex jobs (CODEX-1, LANES-18) and conversations (CODEX-2, LANES-13).
+- `AGENTS.md`: In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code job and conversation of the owner's own (LANES-26: on Linux too); on macOS, in Bypass, their Codex jobs (CODEX-1, LANES-18) and conversations (CODEX-2, LANES-13).
 
 ### L46
-- `AGENTS.md`: In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work in any other mode or on a ChatGPT login, a Codex job off macOS or that builds, every Cursor job and conversation, and an owner's conversation off macOS.
+- `AGENTS.md`: In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work in any other mode or on a ChatGPT login, a Codex job off macOS or that builds, every Cursor job and conversation, and an owner's Codex conversation off macOS.
 
 ### L47
 - `AGENTS.md`: `claudeOwnSandbox` is accepted and ignored (LANE-9). Each step changes those rules in the same pull request.
@@ -354,7 +354,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `core/AGENTS.md`: obid answers only what Claude Code asks it about, by the job's mode and its refusal of paths outside the worktree; an allow rule, a skill's `allowed-tools` or a hook of the owner's lets a call through without asking, as in their terminal. A command the owner's settings leave unsandboxed reaches what the owner's user can, obid's home included: the owner's decision, for their own work only.
 
 ### L176
-- `core/AGENTS.md`: On macOS, an owner's own Claude Code conversation runs the same way (LANES-12): on their own Claude Code login with no copy, its file tools denied obid's secret places, the stored threads and its room's `repos/`. Reading something untrusted keeps it in the own lane and marks it (CONVO-1); elsewhere it stays boxed until the own lane is proven there.
+- `core/AGENTS.md`: On macOS and Linux, an owner's own Claude Code conversation runs the same way (LANES-12, LANES-26): on their own Claude Code login with no copy, its file tools denied obid's secret places, the stored threads and its room's `repos/`. Reading something untrusted keeps it in the own lane and marks it (CONVO-1).
 
 ### L177
 - `core/AGENTS.md`: Another Oby's conversation, Codex's and Cursor's (no shell, CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy.

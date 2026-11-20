@@ -25,7 +25,16 @@ const signUp = t('signup', { title: 'Sign up · Acme', url: 'localhost:3000/sign
 const admin = t('admin', { title: 'Sign in · Acme Admin', url: 'staging.acme.dev/admin/login', secure: true, holder: 'agent' });
 // the conversation folded to one line while the page is full width: its task, and what it's at (5)
 const signupPeek = { agent: codex, title: 'Sign-up flow works end to end', line: 'Signed up and in; now inviting a teammate' };
-const askSignIn = { asks: [{ id: 'ask-1', tab: 'admin', kind: 'signIn' as const, agent: 'codex' as const, host: 'staging.acme.dev' }] };
+const askSignIn = { asks: [{ id: 'ask-1', tab: 'admin', kind: 'signIn' as const, agent: 'codex' as const, host: 'staging.acme.dev', field: 'Password', reason: 'Sign in to the staging admin. The mail log is behind a sign-in.' }] };
+// 9: one ask of each other kind, one at a time over the message box
+const everyAsk = {
+  asks: [
+    { id: 'ask-captcha', tab: 'admin', kind: 'captcha' as const, agent: 'codex' as const, host: 'staging.acme.dev' },
+    { id: 'ask-choice', tab: 'pricing', kind: 'choice' as const, agent: 'claude' as const, host: 'staging.acme.dev', reason: 'Which plan should I pick at checkout? The test card works with both. Business adds SSO, which the next step checks.', choices: ['Team · $12', 'Business · $29'] },
+    { id: 'ask-code', tab: 'admin', kind: 'code' as const, agent: 'codex' as const, host: 'staging.acme.dev', field: '#otp' },
+    { id: 'ask-passkey', tab: 'admin', kind: 'passkey' as const, agent: 'codex' as const, host: 'staging.acme.dev' },
+  ],
+};
 
 const BOARDS: Record<number, Demo> = {
   1: { state: state([signIn, signUp]), ui: { open: false }, peek: signupPeek },
@@ -48,6 +57,7 @@ const BOARDS: Record<number, Demo> = {
   6: { state: state([{ ...signIn, holder: 'you', hold: 1 }]), peek: signupPeek },
   7: { state: state([admin], askSignIn) },
   8: { state: state([admin], askSignIn), ui: { card: 'password', typed: 10 } },
+  9: { state: state([admin, t('pricing', { owner: claude, title: 'Pricing · Acme', url: 'staging.acme.dev/pricing', secure: true })], everyAsk) },
   10: {
     state: state([
       t('loading', { title: 'Dashboard', url: 'localhost:3000/dashboard', state: 'loading' }),
@@ -58,7 +68,7 @@ const BOARDS: Record<number, Demo> = {
       t('crashed', { owner: cursor, title: 'Reports', url: 'localhost:5173/reports', state: 'crashed' }),
     ]),
   },
-  11: { state: state([t('members', { title: 'Members · Acme', url: 'localhost:3000/workspace/members', holder: null })]), ui: { width: 600 } },
+  11: { state: state([t('members', { title: 'Members · Acme', url: 'localhost:3000/workspace/members', holder: null, ran: { ms: 18 } })]), ui: { width: 600 } },
   12: {
     state: state([t('invoices', { title: 'Invoices · Billing', url: 'billing.acme.dev/invoices', secure: true, holder: null })], {
       downloads: [
@@ -68,6 +78,7 @@ const BOARDS: Record<number, Demo> = {
     }),
     ui: { width: 600 },
   },
+  13: { state: state([]), ui: { open: false } },
   14: { state: state([t('dash', { owner: claude, title: 'Dashboard · Acme', url: 'localhost:3000/dashboard', action: 'Reading the dashboard', computer: { name: 'devbox', os: 'Linux' } })]), ui: { width: 620 } },
   17: { state: state([]), ui: { width: 600 } },
 };
@@ -88,6 +99,7 @@ export function demoPage(tab: Tab): { page: ReactNode; label: string } {
     case 'invoices': return { page: <Site.Invoices />, label: 'Acme Billing’s invoices page' };
     case 'dash': return { page: <Site.Dashboard />, label: 'The dashboard running on devbox' };
     case 'dialog': return { page: <Site.Settings />, label: 'Acme’s settings page' };
+    case 'loading': return { page: <><Site.Bone w="40%" top={22} h={14} /><Site.Bone w="70%" /><Site.Bone w="60%" /><Site.Bone w="66%" /></>, label: 'The dashboard, loading' };
     default: return { page: null, label: tab.title };
   }
 }
