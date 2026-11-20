@@ -65,7 +65,8 @@ class Safe extends Component<{ text: string; children: ReactNode }, { text: stri
 // after one, so a ** b stays as it is; an _ inside a word (snake_case) and marks in an address
 // are neither
 export function closed(text: string) {
-  if ((text.match(/^ {0,3}(?:```|~~~)/gm) ?? []).length % 2) return text;
+  // a ``` fence's info string holds no `, so a line like ```npm ci``` … is inline code, not a fence
+  if ((text.match(/^ {0,3}(?:`{3,}(?![^`\n]*`)|~{3,})/gm) ?? []).length % 2) return text;
   const start = text.lastIndexOf('\n') + 1;
   let line = text.slice(start).trimEnd().replace(/\[([^\]]*)(?:\]\([^)]*)?$/, '$1');
   // a mark inside a code span still open is code

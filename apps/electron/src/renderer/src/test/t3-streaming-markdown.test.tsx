@@ -43,12 +43,9 @@ describe('a reply while it streams (T3: streaming render)', () => {
     expect(words(now)).not.toContain('**');
   });
 
-  // Known bug #2644: Said.tsx `closed()` counts any line starting with ``` as a code
-  // fence (`/^ {0,3}(?:```|~~~)/gm`), so a line that opens with inline code (```x``` …, which marked reads
-  // as inline code, not a fence) makes it think a code block is open: from then until the reply ends,
-  // marks not closed yet show as typed (`**`), against Said.tsx's own rule ("show as they will once
-  // they're closed, never as typed so far").
-  it.fails('t3_stream_after_a_line_of_inline_triple_backtick_code_bold_still_shows_bold (known bug #2644)', () => {
+  // #2644: a line that opens with inline code (```x``` …, which marked reads as inline code, not a
+  // fence) never makes closed() think a code block is open
+  it('t3_stream_after_a_line_of_inline_triple_backtick_code_bold_still_shows_bold', () => {
     const done = html('```npm ci``` installs it\n\nthen **run the tests**');
     // marked reads the first line as inline code, no block
     expect(done).not.toContain('class="ss-code"');
