@@ -182,10 +182,16 @@ impl Service {
     }
 
     /// obid is stopping: every live browser stops with it (BROWSER-25), rather than waiting for the
-    /// next start to reap it.
+    /// next start to reap it, each killed after [`driver::STOP_GRACE`] so that all of it fits in
+    /// obid's own stop.
     pub async fn end_all(&self) {
         let jobs = self.driver.live_jobs();
-        futures_util::future::join_all(jobs.iter().map(|job| self.end_job(job))).await;
+        futures_util::future::join_all(jobs.iter().map(|job| async move {
+            self.driver.end_within(job, driver::STOP_GRACE).await;
+            self.api(|a| a.end_job(job));
+        }))
+        .await;
+        self.flush();
     }
 
     /// Browsers that closed themselves: each job's is `notStarted` again and its tabs go.
