@@ -21,7 +21,7 @@ import { usePrompt } from './prompts';
 import { leave, useGlide } from './glide';
 import { folderName, folderPlace, foldersOf, pickFolders, setFolders, useFolders, usedFolders, useRecentFolders } from './folders';
 import { everything } from './lean';
-import { dataOf, fileOf, hold, keeper, leftInBox, type KeptTag } from './drafts';
+import { dataOf, draft as keptDraft, fileOf, hold, keep, keeper, leftInBox, type KeptTag } from './drafts';
 import TalkPill from './TalkPill';
 import { useChats, type Chat } from './chats';
 import { useProjects, useProjectsOn } from './projects';
@@ -321,7 +321,10 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   drafts.current ??= keeper();
   // which box the tags shown are of: none kept for a box until its own are put back
   const [tagsOf, setTagsOf] = useState<string>();
+  // the box shown now: a send that settles after another shows leaves that one alone
+  const showing = useRef(draft);
   useLayoutEffect(() => {
+    showing.current = draft;
     const d = drafts.current!, b = box.current;
     const text = d.show(draft ?? null);
     if (b && draft !== undefined && (text || b.text())) b.setText(text);
@@ -391,7 +394,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         if (!left) { setFilled(false); setStacked(false); }
         return;
       }
-      const went = onSend?.(b.text(), {
+      const sent = b.text(), from = draft;
+      const went = onSend?.(sent, {
         files,
         obys: mentioned(b.text()),
         jobs: attached.flatMap((a) => (a.kind === 'task' ? [a.id] : [])),
@@ -413,10 +417,19 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         if (taken === false) return;
       }
       if (folders.length && !inProject) usedFolders(folders);
+      // another box shows now (DRAFTS-1, DRAFTS-4): its words and tags are its own, and the box the
+      // words went from keeps only what was typed after them
+      if (showing.current !== from) {
+        if (from !== undefined) { keep(from, leftInBox(sent, keptDraft(from), true), localStorage, Date.now(), {}); hold(from, []); }
+        return;
+      }
       // Home's go with the conversation they start; a conversation keeps its own
       if (!conversation) { setHomeFolders([]); setWorkspace('folder'); }
-      b.clear();
-      setFilled(false);
+      // what was typed while the words went stays (DRAFTS-1)
+      const left = leftInBox(sent, b.text(), true);
+      if (left) b.setText(left);
+      else b.clear();
+      setFilled(!!left.trim());
       setStacked(false);
       setAttached([]);
       // the skill was for these words only (the mode chip stays)
