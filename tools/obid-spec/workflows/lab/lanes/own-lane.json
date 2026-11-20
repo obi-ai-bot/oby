@@ -1,0 +1,433 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab: the owner's own work runs as T3 Code runs the CLIs, the same on Linux and macOS",
+  "version": "1.0.0",
+  "description": "The lanes feature (src/lab/lanes.rs), compiled into a lanes program on an isolated Ubuntu machine and on this computer. LAB-LANES-1: each Oby mode gives the pinned codex-cli 0.163.0 T3's sandbox (room, outside it, network). LAB-LANES-2: an own Claude Code launch, with Claude Code 2.1.325 installed, adds no sandbox, settings or MCP restriction of obid's and runs with the owner's environment and folder. LAB-LANES-3: a run's setsid and nohup leftovers end with it, another run's and the person's own don't. LAB-LANES-4: the same launches, and the same Codex outcomes, on macOS as on Linux. LAB-LANES-5: an own (unboxed) run reaches a stand-in for Oby's MCP server at the loopback address obid's rewrite gives it, and not at 10.0.2.2, the box's host address it has today. No model call, no login. Skipped without OrbStack.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "box",
+      "use": "runtime.rust:lab.machine.up",
+      "inputs": {
+        "name": "lanes"
+      }
+    },
+    {
+      "id": "setup",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq curl ca-certificates bubblewrap build-essential python3 >/dev/null && echo ready",
+        "root": true,
+        "limit": 1200,
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "ready\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "rust",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null 2>&1 && ~/.cargo/bin/rustc --version",
+        "limit": 900,
+        "expect": {
+          "paths": {
+            "status": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "install",
+      "use": "runtime.rust:lab.lanes.install",
+      "inputs": {}
+    },
+    {
+      "id": "helper",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "${state.install.command}",
+        "limit": 600,
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "lanes 1 on linux\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "codex",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "A=$(uname -m); curl -fsSL -o /tmp/codex.tgz \"https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$A-unknown-linux-musl.tar.gz\" && tar xzf /tmp/codex.tgz -C /tmp && install -m 755 \"/tmp/codex-$A-unknown-linux-musl\" ~/bin/codex && ~/bin/codex --version",
+        "limit": 600,
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "codex-cli 0.163.0\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "claude",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.325 >/dev/null 2>&1; ~/.local/bin/claude --version",
+        "limit": 600,
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": {
+              "$contains": "2.1.325"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "codexModesLinux",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "set -e; for M in ask acceptEdits plan sandbox bypass; do R=\"$HOME/lab/room-$M\"; O=\"$HOME/outside-$M\"; mkdir -p \"$R\" \"$HOME/lab/cx\"; rm -f \"$O\"; CODEX_HOME=\"$HOME/lab/cx\" ~/bin/codex sandbox -c \"$(~/bin/lanes codex-approvals $M)\" -P \"$(~/bin/lanes codex-profile $M)\" -C \"$R\" -- bash -c 'touch \"$1/in\" 2>/dev/null && r=written || r=refused; touch \"$3\" 2>/dev/null && o=written || o=refused; curl -sS -m 5 -o /dev/null https://example.com 2>/dev/null && n=reached || n=refused; printf \"{\\\"mode\\\":\\\"%s\\\",\\\"room\\\":\\\"%s\\\",\\\"outside\\\":\\\"%s\\\",\\\"network\\\":\\\"%s\\\"}\\n\" \"$2\" $r $o $n' probe \"$R\" \"$M\" \"$O\"; rm -f \"$O\"; done",
+        "limit": 300,
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "{\"mode\":\"ask\",\"room\":\"refused\",\"outside\":\"refused\",\"network\":\"refused\"}\n{\"mode\":\"acceptEdits\",\"room\":\"written\",\"outside\":\"refused\",\"network\":\"refused\"}\n{\"mode\":\"plan\",\"room\":\"refused\",\"outside\":\"refused\",\"network\":\"refused\"}\n{\"mode\":\"sandbox\",\"room\":\"written\",\"outside\":\"refused\",\"network\":\"refused\"}\n{\"mode\":\"bypass\",\"room\":\"written\",\"outside\":\"written\",\"network\":\"reached\"}\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-1"
+        ]
+      }
+    },
+    {
+      "id": "ownersShell",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "printf 'export ANTHROPIC_BASE_URL=https://gateway.example\\nexport LAB_OWNER_SETTING=kept\\nexport GH_TOKEN=not-a-token\\nexport OBY_SECRET=x\\n' >> ~/.profile; mkdir -p ~/room; echo ok",
+        "expect": {
+          "paths": {
+            "status": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "claudeLaunch",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "L=$(~/bin/lanes launch claude bypass \"$HOME\" \"$HOME/room\" --owners-env); for w in '--permission-mode\",\"bypassPermissions\"' '\"ANTHROPIC_BASE_URL\":\"https://gateway.example\"' '\"LAB_OWNER_SETTING\":\"kept\"' '\"HOME\":\"/home/oby\"' '\"cwd\":\"/home/oby/room\"' '--settings' '--setting-sources' '--strict-mcp-config' 'sandbox' 'GH_TOKEN' 'OBY_SECRET' 'CLAUDE_CONFIG_DIR'; do case \"$L\" in *\"$w\"*) echo \"has $w\";; *) echo \"lacks $w\";; esac; done",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "has --permission-mode\",\"bypassPermissions\"\nhas \"ANTHROPIC_BASE_URL\":\"https://gateway.example\"\nhas \"LAB_OWNER_SETTING\":\"kept\"\nhas \"HOME\":\"/home/oby\"\nhas \"cwd\":\"/home/oby/room\"\nlacks --settings\nlacks --setting-sources\nlacks --strict-mcp-config\nlacks sandbox\nlacks GH_TOKEN\nlacks OBY_SECRET\nlacks CLAUDE_CONFIG_DIR\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "claudeStandIn",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "~/bin/lanes exec claude bypass \"$HOME\" \"$HOME/room\" --owners-env -- bash -c 'echo cwd=$PWD; echo home=$HOME; echo gateway=$ANTHROPIC_BASE_URL; echo owner=$LAB_OWNER_SETTING; echo gh=$(printenv GH_TOKEN || echo none); echo oby=$(printenv OBY_SECRET || echo none); echo tag=$OBY_RUN_TAG'",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "cwd=/home/oby/room\nhome=/home/oby\ngateway=https://gateway.example\nowner=kept\ngh=none\noby=none\ntag=run\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "claudeStandInControl",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "~/bin/lanes exec claude bypass \"$HOME\" \"$HOME/room\" -- bash -c 'echo cwd=$PWD; echo home=$HOME; echo gateway=$ANTHROPIC_BASE_URL; echo owner=$LAB_OWNER_SETTING; echo gh=$(printenv GH_TOKEN || echo none); echo oby=$(printenv OBY_SECRET || echo none); echo tag=$OBY_RUN_TAG'",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": {
+              "$contains": "gateway=\nowner=\n"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "realClaude",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "~/bin/lanes exec claude bypass \"$HOME\" \"$HOME/room\" --owners-env -- \"$HOME/.local/bin/claude\" --version",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": {
+              "$contains": "2.1.325 (Claude Code)"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-2"
+        ]
+      }
+    },
+    {
+      "id": "others",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "nohup setsid sleep 602 >/dev/null 2>&1 </dev/null & OBY_RUN_TAG=b nohup setsid sleep 603 >/dev/null 2>&1 </dev/null & sleep 0.5; echo left=$(pgrep -a -x sleep | grep -cE \" 60[01]$\") others=$(pgrep -a -x sleep | grep -cE \" 60[23]$\")",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "left=0 others=2\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "sweepControl",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "~/bin/lanes run a --no-sweep -- bash -c 'setsid sleep 600 >/dev/null 2>&1 </dev/null & nohup sleep 601 >/dev/null 2>&1 </dev/null & echo started'; sleep 0.5; echo left=$(pgrep -a -x sleep | grep -cE \" 60[01]$\") others=$(pgrep -a -x sleep | grep -cE \" 60[23]$\"); pkill -f \"^sleep 60[01]$\"; true",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "started\n{\"exit\":0,\"subreaper\":true,\"swept\":null}\nleft=2 others=2\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-3"
+        ]
+      }
+    },
+    {
+      "id": "sweep",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "~/bin/lanes run a -- bash -c 'setsid sleep 600 >/dev/null 2>&1 </dev/null & nohup sleep 601 >/dev/null 2>&1 </dev/null & echo started'; sleep 0.5; echo left=$(pgrep -a -x sleep | grep -cE \" 60[01]$\") others=$(pgrep -a -x sleep | grep -cE \" 60[23]$\")",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "started\n{\"exit\":0,\"subreaper\":true,\"swept\":2}\nleft=0 others=2\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-3"
+        ]
+      }
+    },
+    {
+      "id": "sweepNoEnv",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "~/bin/lanes run c -- bash -c 'env -i /usr/bin/setsid /usr/bin/sleep 600 >/dev/null 2>&1 </dev/null & echo started'; sleep 0.5; echo left=$(pgrep -a -x sleep | grep -cE \" 60[01]$\") others=$(pgrep -a -x sleep | grep -cE \" 60[23]$\"); pkill -f \"^sleep 60[0-3]$\"; true",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "started\n{\"exit\":0,\"subreaper\":true,\"swept\":1}\nleft=0 others=2\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-3"
+        ]
+      }
+    },
+    {
+      "id": "mcpServer",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "nohup setsid python3 -m http.server 18080 --bind 127.0.0.1 >/dev/null 2>&1 </dev/null & for i in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.1; done; echo listening",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "listening\n"
+          }
+        }
+      }
+    },
+    {
+      "id": "mcpOwn",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "U=$(~/bin/lanes mcp-url http://10.0.2.2:18080 own); echo url=$U; ~/bin/lanes exec claude bypass \"$HOME\" \"$HOME/room\" --owners-env -- curl -sS -m 5 -o /dev/null -w \"%{http_code}\\n\" \"$U/\"",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "url=http://127.0.0.1:18080\n200\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-5"
+        ]
+      }
+    },
+    {
+      "id": "mcpBoxedAddressControl",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "U=$(~/bin/lanes mcp-url http://10.0.2.2:18080 boxed); echo url=$U; ~/bin/lanes exec claude bypass \"$HOME\" \"$HOME/room\" --owners-env -- curl -sS -m 5 -o /dev/null \"$U/\" 2>/dev/null && echo reached || echo unreachable; pkill -f \"^python3 -m http.server 18080\"; true",
+        "expect": {
+          "paths": {
+            "status": 0,
+            "stdout": "url=http://10.0.2.2:18080\nunreachable\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-5"
+        ]
+      }
+    },
+    {
+      "id": "launchLinux",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "L=~/bin/lanes; for T in claude codex; do for M in ask acceptEdits plan sandbox bypass; do \"$L\" launch $T $M /h /h/room --account /h/account --tag t1 --env PATH=/usr/bin:/bin --env ANTHROPIC_BASE_URL=https://gateway.example --env GH_TOKEN=not-a-token --env SSH_AUTH_SOCK=/s --env OBY_SECRET=x --env GIT_DIR=/elsewhere --env LAB_OWNER_SETTING=kept; done; done; \"$L\" modes",
+        "expect": {
+          "paths": {
+            "status": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "launchMac",
+      "use": "runtime.rust:lab.lanes.local",
+      "inputs": {
+        "command": "L=\"$LANES\"; for T in claude codex; do for M in ask acceptEdits plan sandbox bypass; do \"$L\" launch $T $M /h /h/room --account /h/account --tag t1 --env PATH=/usr/bin:/bin --env ANTHROPIC_BASE_URL=https://gateway.example --env GH_TOKEN=not-a-token --env SSH_AUTH_SOCK=/s --env OBY_SECRET=x --env GIT_DIR=/elsewhere --env LAB_OWNER_SETTING=kept; done; done; \"$L\" modes",
+        "expect": {
+          "paths": {
+            "status": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "sameLaunch",
+      "use": "runtime.rust:lab.lanes.same",
+      "inputs": {
+        "a": "${state.launchLinux}",
+        "b": "${state.launchMac}",
+        "expect": {
+          "paths": {
+            "same": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-4"
+        ]
+      }
+    },
+    {
+      "id": "codexLinux",
+      "use": "runtime.rust:lab.machine.run",
+      "inputs": {
+        "machine": "${state.box}",
+        "command": "set -e; for M in ask acceptEdits plan sandbox bypass; do R=\"$HOME/lab4/room-$M\"; mkdir -p \"$R\" \"$HOME/lab4/cx\"; CODEX_HOME=\"$HOME/lab4/cx\" ~/bin/codex sandbox -c \"$(~/bin/lanes codex-approvals $M)\" -P \"$(~/bin/lanes codex-profile $M)\" -C \"$R\" -- bash -c 'touch \"$1/in\" 2>/dev/null && r=written || r=refused; curl -sS -m 5 -o /dev/null https://example.com 2>/dev/null && n=reached || n=refused; printf \"{\\\"mode\\\":\\\"%s\\\",\\\"room\\\":\\\"%s\\\",\\\"network\\\":\\\"%s\\\"}\\n\" \"$2\" $r $n' probe \"$R\" \"$M\"; done",
+        "limit": 300,
+        "expect": {
+          "paths": {
+            "status": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "codexMac",
+      "use": "runtime.rust:lab.lanes.local",
+      "inputs": {
+        "command": "set -e; for M in ask acceptEdits plan sandbox bypass; do R=\"\"$LAB_SCRATCH\"/room-$M\"; mkdir -p \"$R\" \"\"$LAB_SCRATCH\"/cx\"; CODEX_HOME=\"\"$LAB_SCRATCH\"/cx\" codex sandbox -c \"$(\"$LANES\" codex-approvals $M)\" -P \"$(\"$LANES\" codex-profile $M)\" -C \"$R\" -- bash -c 'touch \"$1/in\" 2>/dev/null && r=written || r=refused; curl -sS -m 5 -o /dev/null https://example.com 2>/dev/null && n=reached || n=refused; printf \"{\\\"mode\\\":\\\"%s\\\",\\\"room\\\":\\\"%s\\\",\\\"network\\\":\\\"%s\\\"}\\n\" \"$2\" $r $n' probe \"$R\" \"$M\"; done",
+        "expect": {
+          "paths": {
+            "status": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "sameCodex",
+      "use": "runtime.rust:lab.lanes.same",
+      "inputs": {
+        "a": "${state.codexLinux}",
+        "b": "${state.codexMac}",
+        "expect": {
+          "paths": {
+            "same": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-LANES-4"
+        ]
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.machine.down",
+      "inputs": {
+        "machine": "${state.box}"
+      }
+    }
+  ]
+}
