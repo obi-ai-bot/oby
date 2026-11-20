@@ -1,0 +1,164 @@
+{
+  "schemaVersion": "2",
+  "name": "App: another computer, the browser shows that computer's localhost (board 14)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 14 (BROWSERAPP-17): under the tabs the panel says the browser runs on devbox and whose localhost it shows; the address says on devbox; New tab opens one there.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=14",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "where",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=where]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "This browser runs on devbox. Its localhost is devbox’s, not this Mac’s."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-17"
+        ]
+      }
+    },
+    {
+      "id": "badge",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-where"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "on devbox"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-17"
+        ]
+      }
+    },
+    {
+      "id": "new-tab-there",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "New tab on devbox"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "where-under-the-tabs",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=where]"
+        },
+        "against": {
+          "tabs": {
+            "css": ".br-tabs"
+          }
+        },
+        "expect": {
+          "paths": {
+            "tabs.overlap": false,
+            "tabs.gap": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-17"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "OtherComputer",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10,
+        "skip": [
+          ".br-tabs-end .icon-button",
+          ".br-address",
+          ".br-control-text",
+          ".br-control .tc-option"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-17"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-14"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "OtherComputer",
+        "name": "browser-14-beside-board",
+        "label": "board 14"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

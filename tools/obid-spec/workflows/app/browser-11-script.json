@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "2",
+  "name": "App: a script the agent ran in the page (board 11)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 11 (BROWSERAPP-15): the page carries the agent's mark, Ran a script and how long it took, and the strip says the agent ran a script in this page and is done. Its result as outside text is the agent's log, under its card in the conversation (TaskLog), not the panel's.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=11",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "strip",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex ran a script in this page · done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-15"
+        ]
+      }
+    },
+    {
+      "id": "ran",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".ran"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Ran a script · 18 ms"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-15"
+        ]
+      }
+    },
+    {
+      "id": "mark-on-the-page",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".ran"
+        },
+        "against": {
+          "view": {
+            "css": ".br-view"
+          }
+        },
+        "expect": {
+          "paths": {
+            "view.overlap": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-15"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Script",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10,
+        "skip": [
+          ".br-tabs-end .icon-button",
+          ".br-address",
+          ".br-control-text",
+          ".br-control .tc-option"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-15"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-11"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Script",
+        "name": "browser-11-beside-board",
+        "label": "board 11"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}
