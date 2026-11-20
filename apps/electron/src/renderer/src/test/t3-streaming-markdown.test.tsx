@@ -48,7 +48,7 @@ describe('a reply while it streams (T3: streaming render)', () => {
   // as inline code, not a fence) makes it think a code block is open: from then until the reply ends,
   // marks not closed yet show as typed (`**`), against Said.tsx's own rule ("show as they will once
   // they're closed, never as typed so far").
-  it.skip('t3_stream_after_a_line_of_inline_triple_backtick_code_bold_still_shows_bold (known bug #2644)', () => {
+  it.fails('t3_stream_after_a_line_of_inline_triple_backtick_code_bold_still_shows_bold (known bug #2644)', () => {
     const done = html('```npm ci``` installs it\n\nthen **run the tests**');
     // marked reads the first line as inline code, no block
     expect(done).not.toContain('class="ss-code"');

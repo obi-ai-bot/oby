@@ -64,7 +64,7 @@ describe('drafts while a send is on its way (T3: drafts lost)', () => {
   // Known bug #2640: Composer.tsx's onSubmit clears the whole box once the send settles
   // (`b.clear()`), words typed after the send began included; the room's box (`say`) keeps them with
   // leftInBox, the others don't. DRAFTS-1: a box keeps its words until they're sent.
-  it.skip('t3_drafts_words_typed_while_the_send_goes_stay_in_the_box (known bug #2640)', async () => {
+  it.fails('t3_drafts_words_typed_while_the_send_goes_stay_in_the_box (known bug #2640)', async () => {
     const s = slowSend();
     const { form } = await box({ onSend: s.onSend });
     await type('fix the login test');
@@ -80,7 +80,7 @@ describe('drafts while a send is on its way (T3: drafts lost)', () => {
   // renders one Composer and changes its `draft`), so a send that settles after the owner opened
   // another conversation clears that conversation's draft and its tags (Composer.tsx onSubmit:
   // `b.clear()`, `setAttached([])`). DRAFTS-1 and DRAFTS-4: another box keeps its own words and tags.
-  it.skip('t3_drafts_a_send_that_settles_after_another_box_shows_leaves_that_box_alone (known bug #2641)', async () => {
+  it.fails('t3_drafts_a_send_that_settles_after_another_box_shows_leaves_that_box_alone (known bug #2641)', async () => {
     localStorage.setItem(KEY, JSON.stringify({ 'conversation:c2': { text: 'my half-written plan for c2', at: Date.now() } }));
     const s = slowSend();
     const { form, render } = await box({ onSend: s.onSend, draft: 'conversation:c1' });
@@ -149,7 +149,7 @@ describe('+ › Attach tasks search (T3: IME Enter in a picker)', () => {
   // isComposing check, so the Enter that confirms an IME candidate attaches the first task and closes
   // the panel. The same handler shape is in TalkPill.tsx (Search models), the rename fields (Sidebar.tsx,
   // Home.tsx), EmailField.tsx, JoinLink.tsx, TetrixAddress.tsx and FindBar.tsx.
-  it.skip('t3_ime_the_enter_that_confirms_a_word_in_the_task_search_picks_nothing (known bug #2642)', async () => {
+  it.fails('t3_ime_the_enter_that_confirms_a_word_in_the_task_search_picks_nothing (known bug #2642)', async () => {
     const s = await searching();
     await s.enter({ isComposing: true, keyCode: 229 } as KeyboardEventInit);
     expect(s.picked()).toBe(false);

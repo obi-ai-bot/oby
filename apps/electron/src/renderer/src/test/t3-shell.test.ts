@@ -74,7 +74,7 @@ vi.mock('electron', async () => {
   let go!: () => void;
   the.ready = { promise: new Promise<void>((r) => { go = r; }), go: () => go() };
   the.app = Object.assign(new EventEmitter(), {
-    isPackaged: true, commandLine: { hasSwitch: () => false, appendSwitch() {} },
+    isPackaged: true, isInApplicationsFolder: () => false, commandLine: { hasSwitch: () => false, appendSwitch() {} },
     enableSandbox() {}, whenReady: () => the.ready.promise, setAsDefaultProtocolClient() {}, quit() {},
   });
   return {

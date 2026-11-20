@@ -69,7 +69,7 @@ describe('the thread while a reply streams (T3: scroll jumps)', () => {
   // keyed on the last message's text length) scrolls to the end on every word that comes in, without
   // asking whether the owner is there (`atEnd`, which only the ResizeObserver beside it asks): scrolled up
   // to read, they're pulled back down each tenth of a second while Oby answers.
-  it.skip('t3_scroll_scrolled_up_to_read_the_words_coming_in_leave_the_reader_where_they_are (known bug #2643)', async () => {
+  it.fails('t3_scroll_scrolled_up_to_read_the_words_coming_in_leave_the_reader_where_they_are (known bug #2643)', async () => {
     const c = await open();
     await c.scrollBy(2500);
     // the owner scrolls up to read what was said before
