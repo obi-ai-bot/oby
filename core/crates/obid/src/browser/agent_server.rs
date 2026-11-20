@@ -163,7 +163,10 @@ mod tests {
             .reached_at("http://127.0.0.1:7777/v1/browser/mcp".into());
         assert_eq!(server.url(), "http://127.0.0.1:7777/v1/browser/mcp");
         assert_eq!(server.token(), "tok");
-        assert_eq!(server.claude()["url"], "http://127.0.0.1:7777/v1/browser/mcp");
+        assert_eq!(
+            server.claude()["url"],
+            "http://127.0.0.1:7777/v1/browser/mcp"
+        );
     }
 
     #[test]

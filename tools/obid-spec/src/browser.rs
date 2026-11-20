@@ -214,7 +214,8 @@ async fn agent_job(input: &Value) -> Result<Value> {
     if let Some(mode) = input["mode"].as_str() {
         job["mode"] = json!(mode);
     }
-    let made = crate::sphere::obid_call(obid, "POST", "/v1/jobs", Some(&json!({"job": job}))).await?;
+    let made =
+        crate::sphere::obid_call(obid, "POST", "/v1/jobs", Some(&json!({"job": job}))).await?;
     anyhow::ensure!(made.status == 201, "the job: {} {}", made.status, made.text);
     let id = made.body["id"]
         .as_str()
@@ -223,7 +224,9 @@ async fn agent_job(input: &Value) -> Result<Value> {
     let file = home.join("worktrees").join(&id).join(".obi/browsed.json");
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
-        if let Ok(browsed) = serde_json::from_str::<Value>(&std::fs::read_to_string(&file).unwrap_or_default()) {
+        if let Ok(browsed) =
+            serde_json::from_str::<Value>(&std::fs::read_to_string(&file).unwrap_or_default())
+        {
             let j = crate::sphere::obid_call(obid, "GET", &format!("/v1/jobs/{id}"), None).await?;
             return Ok(json!({"job": id, "status": j.body["status"], "browsed": browsed}));
         }

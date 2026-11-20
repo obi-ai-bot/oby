@@ -876,7 +876,8 @@ impl Jobs {
                 if browser.is_some() {
                     mcp_rules.extend(crate::browser::AgentServer::rules());
                 }
-                if (broker.is_some() || tetrix.is_some() || browser.is_some()) && tool == Tool::Claude
+                if (broker.is_some() || tetrix.is_some() || browser.is_some())
+                    && tool == Tool::Claude
                 {
                     let file = mcp_config_path(own, &spec.temp, &self.login_path(id))?;
                     let mut config = json!({"mcpServers": {}});
