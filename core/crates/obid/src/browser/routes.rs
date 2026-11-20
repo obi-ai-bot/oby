@@ -53,6 +53,7 @@ pub fn router() -> Router<Arc<Shared>> {
         .route("/v1/browser/tabs/{id}/reload", post(reload))
         .route("/v1/browser/tabs/{id}/back", post(back))
         .route("/v1/browser/tabs/{id}/dialog", post(dialog))
+        .route("/v1/browser/tabs/{id}/proceed", post(proceed))
         .route("/v1/browser/mcp", post(mcp))
 }
 
@@ -613,6 +614,59 @@ async fn way_out(
             service.api(|a| a.failed(&tab, &r.message()));
             service.flush();
         }
+        return refused(Refused::engine(r.code(), &r.message()));
+    }
+    match service.api(|a| a.tab(&tab).cloned()) {
+        Some(t) => ok(&t),
+        None => refused(Refused::new(
+            404,
+            "no_such_tab",
+            format!("There is no tab {tab}."),
+        )),
+    }
+}
+
+/// The person's Go on anyway (BROWSER-28), in the lab's order (`browserapi.rs`, `way_out` with
+/// `proceed`): the device's signed words, the body naming the certificate's fingerprint, the tab
+/// held by that device and stopped at a certificate obid read, then the driver's restart trusting
+/// that certificate's key. Answers the tab as it is after; the job's other tabs leave the list.
+async fn proceed(
+    State(shared): State<Arc<Shared>>,
+    Path(tab): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let device = match signed(&shared, &method, &uri, &headers, &body) {
+        Ok(d) => d,
+        Err(e) => return refused(e),
+    };
+    let named = match parse::<c::ProceedBody>(&body) {
+        Ok(b) => b.fingerprint,
+        Err(e) => return refused(e),
+    };
+    let service = &shared.browser;
+    let job = match service.api(|a| a.way_out(&device, &tab, c::VERB_PROCEED)) {
+        Ok(j) => j,
+        Err(e) => return refused(e),
+    };
+    let holds = service
+        .driver()
+        .core()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .person_may_act(&device, &tab)
+        .map(|_| ());
+    if let Err(r) = holds {
+        return refused(Refused::engine(r.code(), &r.message()));
+    }
+    let moved = service.driver().person_proceed(&job, &tab, &named).await;
+    if moved.is_ok() {
+        service.api(|a| a.loaded(&tab));
+    }
+    service.sync(&job);
+    if let Err(r) = moved {
         return refused(Refused::engine(r.code(), &r.message()));
     }
     match service.api(|a| a.tab(&tab).cloned()) {

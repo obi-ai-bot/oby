@@ -21,6 +21,7 @@ pub enum Route {
     Reload(String),
     Back(String),
     Dialog(String),
+    Proceed(String),
     Answer(String),
     Mcp,
     Preflight,
@@ -69,6 +70,7 @@ pub fn route(method: &str, path: &str) -> Route {
                 ("POST", v) if v == c::VERB_RELOAD => Route::Reload(tab),
                 ("POST", v) if v == c::VERB_BACK => Route::Back(tab),
                 ("POST", v) if v == c::VERB_DIALOG => Route::Dialog(tab),
+                ("POST", v) if v == c::VERB_PROCEED => Route::Proceed(tab),
                 _ => Route::NotFound,
             }
         }
@@ -89,6 +91,7 @@ impl Route {
                 | Route::Reload(_)
                 | Route::Back(_)
                 | Route::Dialog(_)
+                | Route::Proceed(_)
                 | Route::Answer(_)
         )
     }

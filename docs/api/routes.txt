@@ -37,6 +37,7 @@ POST /v1/browser/tabs/{id}/back
 POST /v1/browser/tabs/{id}/dialog
 POST /v1/browser/tabs/{id}/giveBack
 POST /v1/browser/tabs/{id}/input
+POST /v1/browser/tabs/{id}/proceed
 POST /v1/browser/tabs/{id}/reload
 POST /v1/browser/tabs/{id}/secret
 GET /v1/browser/tabs/{id}/stream

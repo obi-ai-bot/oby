@@ -1,0 +1,689 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: Go on anyway trusts that certificate's key for that host, only on the person's signed click",
+  "version": "1.0.0",
+  "description": "BROWSER-28, the owner's \"B: headless, trust key\", ported from the lab's LAB-BROWSERAPI-10 (workflows/lab/browserapi/go-on-anyway.json) onto obid (core/crates/obid/src/browser/routes.rs, proceed; driver/person_proceed.rs; driver/certificate.rs reads the server's certificate). On chrome-headless-shell, which draws no certificate page of its own. The agent has two tabs; its navigate to an HTTPS fixture with a self-signed certificate made at run time stops there, and GET /v1/browser shows the tab `certificate` with the certificate obid read (host, fingerprint). The agent can't go on. `POST …/proceed` on no tab, unsigned, with the job's token, signed on a tab nobody holds or by another device is refused (no_such_tab, unsigned, bad_token, not_held, not_holder); held, a body without a fingerprint is bad_request, and another fingerprint than the one seen is certificate_changed. With the fingerprint seen, the job's browser restarts trusting that key (--ignore-certificate-errors-spki-list) and opens the address: the tab is ready there, the agent's other tab is gone (tabClosed: the restart closes it), the agent acts there again, and a second Go on anyway has nothing to go past (no_certificate). The same key on another host (https://localhost, the same server) is stopped as a certificate page: Chrome would load it, trusting the key on every host. With the fixture's certificate swapped behind the same origin, the trusted host's other certificate stops at the certificate page again, its new fingerprint shown.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/tabs/{id}/proceed"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "d2",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d2"
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "cert",
+      "use": "runtime.rust:browser-https-site",
+      "inputs": {
+        "certificate": "first",
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "https://127.0.0.1:"
+            },
+            "fingerprint": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        },
+        "within": 300
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/second",
+          "newTab": true
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "bad",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "tab": "${state.second.structured.result.tab}",
+          "url": "${state.cert.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.message": {
+              "$contains": "ERR_CERT"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "seen",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$any": {
+                "id": "${state.second.structured.result.tab}",
+                "state": "certificate",
+                "certificate": {
+                  "host": "127.0.0.1",
+                  "fingerprint": "${state.cert.fingerprint}"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "two-tabs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_list_tabs",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "agent-cannot",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "tab": "${state.second.structured.result.tab}",
+          "expression": "1"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "certificate_page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "no-such-tab",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/tab-999/proceed",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "fingerprint": "${state.cert.fingerprint}"
+        },
+        "expect": {
+          "status": 404,
+          "paths": {
+            "reason": "no_such_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "proceed-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "body": {
+          "fingerprint": "${state.cert.fingerprint}"
+        },
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "proceed-as-agent",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "as": "token",
+        "token": "${state.j1.token}",
+        "body": {
+          "fingerprint": "${state.cert.fingerprint}"
+        },
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "proceed-not-held",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "fingerprint": "${state.cert.fingerprint}"
+        },
+        "expect": {
+          "status": 409,
+          "paths": {
+            "reason": "not_held"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "heldBy": "${state.d1.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "proceed-other-device",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "as": "device",
+        "device": "${state.d2}",
+        "body": {
+          "fingerprint": "${state.cert.fingerprint}"
+        },
+        "expect": {
+          "status": 403,
+          "paths": {
+            "reason": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "proceed-bad-body",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {},
+        "expect": {
+          "status": 400,
+          "paths": {
+            "reason": "bad_request"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "proceed-other-certificate",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "expect": {
+          "status": 409,
+          "paths": {
+            "reason": "certificate_changed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "proceed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "fingerprint": "${state.cert.fingerprint}"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "id": "${state.second.structured.result.tab}",
+            "state": "ready",
+            "url": {
+              "$contains": "${state.cert.url}"
+            },
+            "heldBy": "${state.d1.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "closed-event",
+      "use": "runtime.rust:browser-events",
+      "inputs": {
+        "obid": "${state.o}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.tabClosed": {
+              "$any": {
+                "tabId": "${state.first.structured.result.tab}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "restart-closed-the-other-tab",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 1
+            },
+            "tabs.0.id": "${state.second.structured.result.tab}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "no-certificate-now",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/proceed",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "fingerprint": "${state.cert.fingerprint}"
+        },
+        "expect": {
+          "status": 409,
+          "paths": {
+            "reason": "no_certificate"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "give-back",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.second.structured.result.tab}/giveBack",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200,
+          "paths": {}
+        }
+      }
+    },
+    {
+      "id": "agent-acts-there",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "location.protocol"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "same-key-other-host",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "https://localhost:${state.cert.port}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "certificate_page",
+            "structured.error.message": {
+              "$contains": "only for 127.0.0.1"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "stopped-there",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "1"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "certificate_page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "back-to-trusted",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.cert.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "swap",
+      "use": "runtime.rust:browser-https-site",
+      "inputs": {
+        "certificate": "second",
+        "expect": {
+          "paths": {
+            "url": "${state.cert.url}",
+            "certificate": "second"
+          }
+        }
+      }
+    },
+    {
+      "id": "other-certificate-same-host",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.cert.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.message": {
+              "$contains": "ERR_CERT"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    },
+    {
+      "id": "other-certificate-seen",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$any": {
+                "id": "${state.second.structured.result.tab}",
+                "state": "certificate",
+                "certificate": {
+                  "host": "127.0.0.1",
+                  "fingerprint": "${state.swap.fingerprint}"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-28"
+        ]
+      }
+    }
+  ]
+}

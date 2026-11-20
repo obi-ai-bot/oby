@@ -32,6 +32,7 @@ mod ask;
 mod ask_kind;
 mod back_body;
 mod browser_state;
+mod certificate;
 mod computer;
 mod dialog_body;
 #[cfg(test)]
@@ -50,6 +51,7 @@ mod outside;
 mod owner;
 mod place;
 mod point;
+mod proceed_body;
 mod reload_body;
 mod save_copy_answer;
 mod secret_answer;
@@ -69,6 +71,7 @@ pub use ask::Ask;
 pub use ask_kind::AskKind;
 pub use back_body::BackBody;
 pub use browser_state::BrowserState;
+pub use certificate::Certificate;
 pub use computer::Computer;
 pub use dialog_body::DialogBody;
 pub use download::Download;
@@ -85,6 +88,7 @@ pub use outside::Outside;
 pub use owner::Owner;
 pub use place::Place;
 pub use point::Point;
+pub use proceed_body::ProceedBody;
 pub use reload_body::ReloadBody;
 pub use save_copy_answer::SaveCopyAnswer;
 pub use secret_answer::SecretAnswer;
@@ -134,6 +138,14 @@ pub const VERB_BACK: &str = "back";
 /// `POST` a [`DialogBody`]: the page's own dialog answered, Leave (`accept`) or Stay; with no
 /// dialog on the tab, refused `no_dialog`.
 pub const VERB_DIALOG: &str = "dialog";
+/// `POST` a [`ProceedBody`]: Go on anyway, past a certificate the browser doesn't trust
+/// (BROWSER-28, the owner's "B: headless, trust key"). Only on a tab stopped at a certificate
+/// problem whose certificate obid read (else `no_certificate`), and only for that exact
+/// certificate: obid reads it again and refuses `certificate_changed` when it isn't the one seen
+/// there and named in the body. The job's browser starts again trusting that certificate's key,
+/// then opens the tab's address again: its other tabs close, and so do sign-ins kept only for the
+/// browser's session.
+pub const VERB_PROCEED: &str = "proceed";
 /// `POST` an [`AnswerBody`], signed: the person's answer to an agent's ask.
 pub const PATH_ASKS: &str = "/v1/browser/asks";
 pub const VERB_ANSWER: &str = "answer";
@@ -175,6 +187,7 @@ pub const ROUTES: &[&str] = &[
     "POST /v1/browser/tabs/{id}/reload",
     "POST /v1/browser/tabs/{id}/back",
     "POST /v1/browser/tabs/{id}/dialog",
+    "POST /v1/browser/tabs/{id}/proceed",
     "POST /v1/browser/asks/{id}/answer",
     "POST /v1/browser/mcp",
 ];
@@ -249,6 +262,8 @@ pub const REASONS: &[&str] = &[
     "bad_request",
     "browser_starting",
     "no_dialog",
+    "no_certificate",
+    "certificate_changed",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────
@@ -394,6 +409,10 @@ mod tests {
                 choice: None,
             }),
             dialog: None,
+            certificate: Some(Box::new(Certificate {
+                host: "h".into(),
+                fingerprint: "f".into(),
+            })),
         }
     }
 

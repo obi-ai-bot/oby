@@ -16,6 +16,7 @@ mod may_act;
 mod outside;
 mod refs;
 mod refusal;
+mod seen_certificate;
 mod ticket;
 mod tool;
 
@@ -33,5 +34,6 @@ pub use may_act::may_act;
 pub use outside::{OUTSIDE_NOTE, outside};
 pub use refs::Refs;
 pub use refusal::Refusal;
+pub use seen_certificate::SeenCertificate;
 pub use ticket::Ticket;
 pub use tool::{TOOLS, Tool, tool};

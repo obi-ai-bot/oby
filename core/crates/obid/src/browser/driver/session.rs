@@ -38,6 +38,10 @@ pub struct Session {
     pub downloads: PathBuf,
     pub socket_dir: PathBuf,
     pub idle_timeout: String,
+    /// The keys the person's Go on anyway trusted (BROWSER-28), each with the host it was for:
+    /// the browser runs with them in `--ignore-certificate-errors-spki-list`, and agent-browser
+    /// starts it again by itself when they change. Empty for a browser started afresh.
+    pub trusted: Vec<(String, String)>,
 }
 
 /// A job's id becomes a folder's name: letters, digits, `-` and `_` only.
@@ -113,6 +117,7 @@ impl Session {
             profile,
             socket_dir: Self::socket_dir_of(home, job),
             idle_timeout: idle_timeout.into(),
+            trusted: vec![],
         })
     }
 
@@ -140,7 +145,7 @@ impl Session {
     /// agent-browser's global flags for this session.
     pub fn flags(&self) -> Vec<String> {
         let p = |p: &Path| p.to_string_lossy().into_owned();
-        vec![
+        let mut flags: Vec<String> = vec![
             "--json".into(),
             "--session".into(),
             self.name.clone(),
@@ -153,7 +158,20 @@ impl Session {
             self.idle_timeout.clone(),
             "--executable-path".into(),
             p(&self.chrome),
-        ]
+        ];
+        if let Some(list) = self.spki_list() {
+            flags.extend(["--args".into(), list]);
+        }
+        flags
+    }
+
+    /// The launch argument that trusts each key the person's Go on anyway trusted, or None.
+    pub fn spki_list(&self) -> Option<String> {
+        let mut keys: Vec<&str> = self.trusted.iter().map(|(_, k)| k.as_str()).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        (!keys.is_empty())
+            .then(|| format!("--ignore-certificate-errors-spki-list={}", keys.join(",")))
     }
 
     /// One agent-browser call in this session, killed when `limit` passes.
