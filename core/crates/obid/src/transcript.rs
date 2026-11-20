@@ -228,6 +228,9 @@ struct Live {
     session: Option<String>,
     /// The commands running, by call, with their output so far (LIVETASK-34).
     running: HashMap<String, Running>,
+    /// Entries the file left running that obid going down cut ([`Transcripts::load`]), ended in
+    /// memory and written, ended, with the next write (LIVETASK-10).
+    cut: Vec<Entry>,
 }
 
 pub struct Transcripts {
@@ -669,6 +672,30 @@ impl Transcripts {
         for entry in lines(&path) {
             live.take(entry);
         }
+        // A call or a thought the file still has running was cut by obid going down (a crash,
+        // SIGKILL): a job's transcript is loaded only while no turn of this obid's runs it, since
+        // a turn's end forgets it, so nothing runs it now. It ends as `end_turn` ends one, a call
+        // `failed` and a thought `done`, here for every read, and in the file with the next write,
+        // under its `n` (LIVETASK-10).
+        let cut: Vec<Entry> = (live.now.values())
+            .filter(|e| e.state.as_deref() == Some("running"))
+            .map(|e| Entry {
+                state: Some(
+                    if e.kind == "thought" {
+                        "done"
+                    } else {
+                        "failed"
+                    }
+                    .into(),
+                ),
+                ..e.clone()
+            })
+            .collect();
+        for entry in &cut {
+            live.activity.take(entry);
+            live.now.insert(entry.n, entry.clone());
+        }
+        live.cut = cut;
         let detail = self.detail_path(job);
         live.detail_bytes = std::fs::metadata(&detail).map_or(0, |m| m.len());
         live.detail_full = live.detail_bytes + 4096 > MOST_DETAIL_BYTES;
@@ -697,6 +724,11 @@ impl Transcripts {
 
     /// Keeps `entries` in the file and in memory, unless the file is full; the ones kept.
     fn write(&self, job: &str, live: &mut Live, all: Vec<Entry>) -> Vec<Entry> {
+        // What a restart cut goes first, ended (LIVETASK-10).
+        let all: Vec<Entry> = std::mem::take(&mut live.cut)
+            .into_iter()
+            .chain(all)
+            .collect();
         let mut text = String::new();
         let mut entries = Vec::new();
         let mut dropped = false;
@@ -1291,6 +1323,45 @@ mod tests {
         Transcripts::new(&home)
     }
 
+    /// LIVETASK-38: a call obid going down (a crash, SIGKILL) cut stays `running` in the file. Once
+    /// obid starts again it reads as ended, `failed`, for every read, and the next write puts that
+    /// end in the file under its `n` and sends it again, so a task that ended never shows a step at
+    /// work.
+    #[test]
+    fn livetask_38_a_call_cut_by_obid_going_down_ends_when_it_starts_again() {
+        let before = transcripts("cut-call");
+        before.rec(
+            "j",
+            &tool_event("c1", "Bash", json!({"command": "sleep 60"})),
+        );
+        let home = before.home.clone();
+        let file = before.path("j");
+        drop(before);
+        let running = |path: &Path| {
+            let mut last: HashMap<u64, Entry> = HashMap::new();
+            for entry in lines(path) {
+                last.insert(entry.n, entry);
+            }
+            last.into_values()
+                .filter(|e| e.state.as_deref() == Some("running"))
+                .count()
+        };
+        assert_eq!(running(&file), 1, "the cut call is running in the file");
+
+        let after = Transcripts::new(&home);
+        let (read, _) = after.read("j", 0, 100);
+        let call = read.iter().find(|e| e.kind == "tool").unwrap().clone();
+        assert_eq!(call.state.as_deref(), Some("failed"), "{read:?}");
+        let sent = after.start("j", "Round 2");
+        assert!(
+            sent.iter()
+                .any(|e| e.n == call.n && e.state.as_deref() == Some("failed")),
+            "sent again under its n: {sent:?}"
+        );
+        assert_eq!(running(&file), 0, "the file has its end");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     fn tool_event(id: &str, name: &str, input: Value) -> Event {
         Event::Tool {
             id: id.into(),
@@ -1376,9 +1447,21 @@ mod tests {
             [(1, Some("done".into())), (3, Some("running".into()))]
         );
         assert!(t.read("j", 99, PAGE).0.is_empty());
-        // Another obid reading the same file numbers on.
+        // Another obid reading the same file numbers on, after ending the calls the first left
+        // running (LIVETASK-38).
         let again = Transcripts::new(&t.home);
-        assert_eq!(again.start("j", "Round 2 on Claude Code")[0].n, 4);
+        let sent: Vec<(u64, String, Option<String>)> = (again.start("j", "Round 2 on Claude Code"))
+            .into_iter()
+            .map(|e| (e.n, e.kind, e.state))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (2, "tool".into(), Some("failed".into())),
+                (3, "tool".into(), Some("failed".into())),
+                (4, "start".into(), None)
+            ]
+        );
     }
 
     #[test]
