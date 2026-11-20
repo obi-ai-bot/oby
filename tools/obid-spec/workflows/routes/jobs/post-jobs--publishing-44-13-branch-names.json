@@ -1,0 +1,288 @@
+{
+  "schemaVersion": "2",
+  "name": "A task's branch name: oby refused, a named one made (PUBLISHING-13, 44)",
+  "version": "1.0.0",
+  "description": "A task naming the branch oby, in any letter case, is refused before anything starts with 422; a task naming a branch neither the clone nor the remote has gets it made from its base, and Oby's own branches still start beside it.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "publishing-44-0-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around",
+            "branch": "oby"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "That isn't a branch name obid can create."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
+      }
+    },
+    {
+      "id": "publishing-44-1-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around",
+            "branch": "OBY"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "That isn't a branch name obid can create."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
+      }
+    },
+    {
+      "id": "publishing-44-2-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around",
+            "branch": "Oby"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "That isn't a branch name obid can create."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
+      }
+    },
+    {
+      "id": "publishing-44-3-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around",
+            "branch": " oby "
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "That isn't a branch name obid can create."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
+      }
+    },
+    {
+      "id": "publishing-44-nothing-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
+      }
+    },
+    {
+      "id": "named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "branch": "codex/7-x"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "branch": "codex/7-x"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-13"
+        ]
+      }
+    },
+    {
+      "id": "named-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1,
+            "branch": "codex/7-x"
+          }
+        }
+      }
+    },
+    {
+      "id": "pushed",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/codex/7-x"
+        ]
+      }
+    },
+    {
+      "id": "publishing-13-its-branch-went-out-made-from-the-base",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.pushed.out}",
+        "expect": {
+          "body": {
+            "$matches": "^[0-9a-f]{40}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-13"
+        ]
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: b.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "branch": {
+              "$matches": "^oby/build-"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
+      }
+    },
+    {
+      "id": "own-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    }
+  ]
+}

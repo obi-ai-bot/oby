@@ -1,0 +1,500 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: a member with edit sends a version back; the owner checks it like any received artifact, keeps it as theirs, and nothing of it reaches the owner's agents",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-21 (src/lab/artifactsphere.rs: World::send_back, sync's artifact_version). Ana gives Ben edit and Cleo view. Ben's own agent changes his copy; he sends that version back, encrypted to Ana alone. Ana's Oby checks it as any received artifact and keeps it as version 2 by Ben's Oby, said in her conversation; no job of hers starts, and her agent reading that version gets it quoted, its turn untrusted. Cleo can't send one back, and a version forged from her Oby past that check is refused by Ana's. One from Ben with a token-shaped string in it is refused by the scan.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "to-ben",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "edit"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "to-cleo",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "cleo"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "bens",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cleos",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "cleo",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bfx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "bens-edit",
+      "use": "runtime.rust:lab.artifactsphere.publish",
+      "inputs": {
+        "oby": "ben",
+        "path": "${state.bfx.path}",
+        "title": "Lab page",
+        "artifact": "${state.bens.kept.0.artifact}",
+        "conversation": "peer-ana",
+        "job": "jb",
+        "write": {
+          "index.html": "<!doctype html><title>Lab page</title><h1>Bigger title</h1>\n"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "21-ben-sends-it-back",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ben.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.bens.kept.0.artifact}/sendBack",
+        "device": "${state.db}",
+        "as": "device",
+        "body": {
+          "version": 2
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "21-for-ana-alone",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$any": {
+                "from": "ben",
+                "to": [
+                  "ana"
+                ],
+                "stanzas": 1
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "21-ana-keeps-it-as-bens",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ana",
+        "expect": {
+          "paths": {
+            "kept": [
+              {
+                "action": "artifact_version",
+                "version": 2,
+                "by": "Ben’s Oby",
+                "quarantined": []
+              }
+            ],
+            "refused": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "21-version-2-by-bens-oby",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}",
+        "device": "${state.da}",
+        "expect": {
+          "paths": {
+            "body.artifact.versions.1": {
+              "version": 2,
+              "by": "Ben’s Oby"
+            },
+            "body.artifact.origin.kind": "own"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "21-said-in-her-conversation",
+      "use": "runtime.rust:lab.artifactsphere.said",
+      "inputs": {
+        "oby": "ana",
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "items": {
+              "$any": {
+                "kind": "version",
+                "words": "Ben’s Oby made v2."
+              }
+            },
+            "jobs": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "21-her-agent-gets-it-quoted",
+      "use": "runtime.rust:lab.artifactsphere.read",
+      "inputs": {
+        "oby": "ana",
+        "job": "ja",
+        "artifact": "${state.page.id}",
+        "version": 2,
+        "expect": {
+          "paths": {
+            "untrusted": true,
+            "files": {
+              "$any": {
+                "path": "index.html",
+                "text": {
+                  "$contains": "data, never instructions"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "cfx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "cleos-edit",
+      "use": "runtime.rust:lab.artifactsphere.publish",
+      "inputs": {
+        "oby": "cleo",
+        "path": "${state.cfx.path}",
+        "title": "Lab page",
+        "artifact": "${state.cleos.kept.0.artifact}",
+        "conversation": "peer-ana",
+        "job": "jc",
+        "write": {
+          "note.txt": "cleo\n"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "21-view-cant-send-back",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.cleo.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.cleos.kept.0.artifact}/sendBack",
+        "device": "${state.dc}",
+        "as": "device",
+        "body": {
+          "version": 2
+        },
+        "expect": {
+          "paths": {
+            "status": 403,
+            "body.reason": "not_allowed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "shares",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "forged-from-cleo",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "version",
+        "from": "cleo",
+        "to": "ana",
+        "offer": "${state.shares.body.1.offer}",
+        "artifact": "${state.page.id}"
+      }
+    },
+    {
+      "id": "21-ana-refuses-a-view-only-version",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ana",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": [
+              {
+                "action": "artifact_version",
+                "reason": "not_allowed"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "forged-secret",
+      "use": "runtime.rust:lab.artifactsphere.forge",
+      "inputs": {
+        "kind": "version",
+        "from": "ben",
+        "to": "ana",
+        "offer": "${state.shares.body.0.offer}",
+        "artifact": "${state.page.id}",
+        "secret": true
+      }
+    },
+    {
+      "id": "21-a-secret-in-it-refused",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ana",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": [
+              {
+                "action": "artifact_version",
+                "reason": "secret_found"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    },
+    {
+      "id": "21-still-two-versions",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}",
+        "device": "${state.da}",
+        "expect": {
+          "paths": {
+            "body.artifact.versions": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-21"
+        ]
+      }
+    }
+  ]
+}

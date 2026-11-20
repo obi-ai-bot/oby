@@ -1,0 +1,434 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: what a new session is handed",
+  "version": "1.0.0",
+  "description": "A new session is handed the earlier turns, but a job's own words and a line naming a job off obid's allowlist stay out: it hears there was one, and oby_job reads the rest; a clean conversation stays the owner's word on a new session; one that read something isn't, whatever signed it, though the session that read it is gone (TASKCONV-20).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "ended": true
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "anew",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLONG RESUMED",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "new session: with the earlier turns"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-20-the-earlier-turns",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "earlier turns[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-20-it-hears-there-was-one",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "Job ${state.said.body.jobs.0.id} ended: done\\.[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-20-oby-job-reads-the-rest",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "left out: oby_job reads it[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-20-not-its-line",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "\\n(?:[^w\\n]|w(?:w|iw|itw|ithw|ith\\ w|ith\\ nw|ith\\ now|ith\\ notw|ith\\ nothw|ith\\ nothiw|ith\\ nothinw|ith\\ nothingw|ith\\ nothing\\ w|ith\\ nothing\\ dw|ith\\ nothing\\ dow|ith\\ nothing\\ donw)*(?:[^iw\\n]|i[^tw\\n]|it[^hw\\n]|ith[^ w\\n]|ith\\ [^nw\\n]|ith\\ n[^ow\\n]|ith\\ no[^tw\\n]|ith\\ not[^hw\\n]|ith\\ noth[^iw\\n]|ith\\ nothi[^nw\\n]|ith\\ nothin[^gw\\n]|ith\\ nothing[^ w\\n]|ith\\ nothing\\ [^dw\\n]|ith\\ nothing\\ d[^ow\\n]|ith\\ nothing\\ do[^nw\\n]|ith\\ nothing\\ don[^ew\\n]))*(?:w(?:w|iw|itw|ithw|ith\\ w|ith\\ nw|ith\\ now|ith\\ notw|ith\\ nothw|ith\\ nothiw|ith\\ nothinw|ith\\ nothingw|ith\\ nothing\\ w|ith\\ nothing\\ dw|ith\\ nothing\\ dow|ith\\ nothing\\ donw)*(?:|i|it|ith|ith\\ |ith\\ n|ith\\ no|ith\\ not|ith\\ noth|ith\\ nothi|ith\\ nothin|ith\\ nothing|ith\\ nothing\\ |ith\\ nothing\\ d|ith\\ nothing\\ do|ith\\ nothing\\ don))?\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-20-nor-its-words",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "\\n(?:[^N\\n]|N(?:N|oN|otN|othN|othiN|othinN|othingN|othing\\ N|othing\\ tN|othing\\ toN|othing\\ to\\ N|othing\\ to\\ dN|othing\\ to\\ doN)*(?:[^oN\\n]|o[^tN\\n]|ot[^hN\\n]|oth[^iN\\n]|othi[^nN\\n]|othin[^gN\\n]|othing[^ N\\n]|othing\\ [^tN\\n]|othing\\ t[^oN\\n]|othing\\ to[^ N\\n]|othing\\ to\\ [^dN\\n]|othing\\ to\\ d[^oN\\n]|othing\\ to\\ do[^.N\\n]))*(?:N(?:N|oN|otN|othN|othiN|othinN|othingN|othing\\ N|othing\\ tN|othing\\ toN|othing\\ to\\ N|othing\\ to\\ dN|othing\\ to\\ doN)*(?:|o|ot|oth|othi|othin|othing|othing\\ |othing\\ t|othing\\ to|othing\\ to\\ |othing\\ to\\ d|othing\\ to\\ do))?\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "clean",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\"}",
+          "new": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "clean-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.clean.body.jobs.0.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "clean-told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.clean.body.conversation}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "ended": true
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "clean-anew",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLONG RESUMED",
+          "conversation": "${state.clean.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-20-a-clean-one-hears-obids-line",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.clean.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "ended with nothing done[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "clean-next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\"}",
+          "conversation": "${state.clean.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-20-a-clean-one-stays-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.clean-next.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "untrusted": {
+              "$ne": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "WEB Read it.",
+          "new": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "session-gone",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "remove",
+        "path": "conversations/${state.read.body.conversation}/session.json"
+      }
+    },
+    {
+      "id": "read-next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\"}",
+          "conversation": "${state.read.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-20-one-that-read-something-isnt-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.read-next.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "untrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-20-the-mark-stays-with-the-conversation",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.read.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "web": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-20"
+        ]
+      }
+    }
+  ]
+}

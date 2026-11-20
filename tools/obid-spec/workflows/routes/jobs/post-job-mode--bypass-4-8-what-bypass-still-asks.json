@@ -1,0 +1,440 @@
+{
+  "schemaVersion": "2",
+  "name": "What Bypass still asks, and background helpers (BYPASS-2, 4, 8)",
+  "version": "1.0.0",
+  "description": "A job that reads .env asks, and changing its mode, to Bypass too, doesn't settle that card; a background helper runs in Bypass and is refused in any other mode, and one run remotely is refused in every mode; a saved Sandbox default makes a job ask before npm install.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/mode"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "e",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASK: {\"tool\": \"Read\", \"input\": {\"file_path\": \".env\"}}",
+            "mode": "sandbox"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bypass-4-reading-env-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.e.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.tool": "Read",
+            "permission.why": "It touches secrets or the vault."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-4"
+        ]
+      }
+    },
+    {
+      "id": "to-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.e.body.id}/mode",
+        "body": {
+          "mode": "ask"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "bypass-4-the-card-stays-in-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.e.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.id": "${state.bypass-4-reading-env-asks.body.permission.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-4"
+        ]
+      }
+    },
+    {
+      "id": "to-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.e.body.id}/mode",
+        "body": {
+          "mode": "bypass"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      }
+    },
+    {
+      "id": "bypass-4-the-card-stays-in-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.e.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.id": "${state.bypass-4-reading-env-asks.body.permission.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-4"
+        ]
+      }
+    },
+    {
+      "id": "e-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.e.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "h-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Agent\", \"input\": {\"description\": \"Build it\", \"prompt\": \"Build it\", \"subagent_type\": \"general-purpose\", \"run_in_background\": true}}, {\"tool\": \"Agent\", \"input\": {\"description\": \"Build it\", \"prompt\": \"Build it\", \"subagent_type\": \"general-purpose\", \"run_in_background\": true, \"isolation\": \"remote\"}}]",
+            "mode": "bypass"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "h-bypass-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.h-bypass.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "bypass-8-bypass-a-background-helper",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.h-bypass.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "^answers: allow, "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-8"
+        ]
+      }
+    },
+    {
+      "id": "bypass-8-bypass-a-remote-one-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.h-bypass.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "^answers: (allow|deny: [^,]*), deny: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-8"
+        ]
+      }
+    },
+    {
+      "id": "h-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Agent\", \"input\": {\"description\": \"Build it\", \"prompt\": \"Build it\", \"subagent_type\": \"general-purpose\", \"run_in_background\": true}}, {\"tool\": \"Agent\", \"input\": {\"description\": \"Build it\", \"prompt\": \"Build it\", \"subagent_type\": \"general-purpose\", \"run_in_background\": true, \"isolation\": \"remote\"}}]",
+            "mode": "ask"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "h-ask-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.h-ask.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "bypass-8-ask-a-background-helper",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.h-ask.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "^answers: deny: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-8"
+        ]
+      }
+    },
+    {
+      "id": "bypass-8-ask-a-remote-one-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.h-ask.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "^answers: (allow|deny: [^,]*), deny: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-8"
+        ]
+      }
+    },
+    {
+      "id": "saved-sandbox",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "sandbox"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "n",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASK: {\"tool\": \"Bash\", \"input\": {\"command\": \"npm install\"}}"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "mode": "sandbox"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-2"
+        ]
+      }
+    },
+    {
+      "id": "bypass-2-npm-install-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "npm install"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BYPASS-2"
+        ]
+      }
+    },
+    {
+      "id": "n-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.n.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

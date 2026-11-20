@@ -180,4 +180,5 @@ DELETE /v1/tetrix/sign-in
 POST /v1/tetrix/sign-in
 
 # The gateway's own listener (gateway.rs, `router`), not the API's router:
+DELETE /v1/pairing
 POST /v1/pairing

@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "2",
+  "name": "KEYCHAIN-4: no launch of Claude Code is bare",
+  "version": "1.0.0",
+  "description": "obid passes no --bare and no CLAUDE_CODE_SIMPLE or ANTHROPIC_* variable to Claude Code: an own job's turn, a boxed job's turn, and a sign-in (whose stand-in refuses to run with any Claude Code or Anthropic variable, and keeps what it saw).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "REPORT"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "own-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "keychain-4-an-own-jobs-turn-never-runs-bare",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$not": {
+                  "$contains": "--bare"
+                }
+              },
+              "env.CLAUDE_CODE_SIMPLE": {
+                "$exists": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-4"
+        ]
+      }
+    },
+    {
+      "id": "keychain-4-and-gets-no-anthropic-variable",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.keychain-4-an-own-jobs-turn-never-runs-bare.json.env}",
+        "expect": {
+          "paths": {
+            "ANTHROPIC_API_KEY": {
+              "$exists": false
+            },
+            "ANTHROPIC_BASE_URL": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-4"
+        ]
+      }
+    },
+    {
+      "id": "marked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"REPORT\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "foreign-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.marked.body.jobs.0.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "keychain-4-a-boxed-jobs-turn-never-runs-bare",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.marked.body.jobs.0.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$not": {
+                  "$contains": "--bare"
+                }
+              },
+              "env.CLAUDE_CODE_SIMPLE": {
+                "$exists": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-4"
+        ]
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Mine"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "sign-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "keychain-4-a-sign-in-never-runs-bare",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.added.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "signedIn": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-4"
+        ]
+      }
+    },
+    {
+      "id": "keychain-4-what-the-sign-in-saw",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.p}",
+        "path": "accounts/${state.added.body.id}/.credentials.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "saw.argv": {
+                "$not": {
+                  "$contains": "--bare"
+                }
+              },
+              "saw.names": {
+                "$not": {
+                  "$contains": "CLAUDE_CODE_SIMPLE"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-4"
+        ]
+      }
+    }
+  ]
+}

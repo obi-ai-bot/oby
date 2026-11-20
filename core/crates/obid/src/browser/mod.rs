@@ -25,9 +25,11 @@
 //! [`install`] and [`driver`] are where files and processes are. [`Service`] serves them: the API
 //! core, the driver and the events stream, created at obid's start, told when a job ends; its
 //! [`routes`] are the contract's paths under `/v1/browser` and the agents' MCP server
-//! (`POST /v1/browser/mcp`), and its tools run the agents' calls over the driver. Giving every
-//! agent that server in its configuration comes in a later pull request (BROWSER-17).
+//! (`POST /v1/browser/mcp`), and its tools run the agents' calls over the driver.
+//! [`AgentServer`] is that server as each agent's configuration names it, with its permission
+//! rules (BROWSER-17): Cursor's jobs are given it; Claude Code's and Codex's come next.
 
+pub mod agent_server;
 pub mod api;
 pub mod contract;
 pub mod driver;
@@ -38,4 +40,5 @@ pub mod send_buffer;
 mod service;
 mod tools;
 
+pub use agent_server::AgentServer;
 pub use service::{SWEEP_EVERY, Service};

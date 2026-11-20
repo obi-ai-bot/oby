@@ -1,0 +1,518 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: a new version reaches every latest share; a revoke deletes the blob and the recipient's copy says it was taken back",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-15, with LAB-ARTIFACTS-5's second half (src/lab/artifactsphere.rs: World::sync, revoke, delete). Ana shares her page with Ben (following the latest) and Cleo (that version only). Her new version goes to Ben alone, in one new blob, the old one deleted; Ben's copy has both versions, Cleo's still one. She takes Ben's share back: his blob is deleted, his Oby is told and his copy says Ana took it back. She makes a public link, then deletes the page: Cleo's share and the link go first, the Sphere keeps nothing of it, and Cleo's copy says it was deleted.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "to-ben",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "comment"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "to-cleo",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "cleo"
+          ],
+          "access": "view",
+          "latest": false
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "bens",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cleos",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "cleo",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "v2",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j2",
+        "artifact": "${state.page.id}",
+        "write": {
+          "note.txt": "version two\n"
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "version": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "15-the-new-version-goes-to-the-latest",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ana",
+        "expect": {
+          "paths": {
+            "sent": [
+              {
+                "to": "ben",
+                "version": 2
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-one-new-blob",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-the-old-one-gone",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$count": [
+                {
+                  "to": [
+                    "ben"
+                  ]
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-ben-takes-it",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": [
+              {
+                "action": "artifact_update",
+                "version": 2
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-bens-copy-has-both",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ben.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.bens.kept.0.artifact}",
+        "device": "${state.db}",
+        "expect": {
+          "paths": {
+            "body.artifact.versions": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-cleo-gets-nothing-new",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "cleo",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-taken-back",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}/shares/ben",
+        "device": "${state.da}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 204
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-bens-blob-deleted",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$len": 1
+            },
+            "blobs.0.to": [
+              "cleo"
+            ],
+            "sent": {
+              "$any": {
+                "action": "artifact_revoke",
+                "to": "ben"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "ben-told",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "said": [
+              {
+                "action": "artifact_revoke"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "15-bens-copy-says-so",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ben.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.bens.kept.0.artifact}",
+        "device": "${state.db}",
+        "expect": {
+          "paths": {
+            "body.received.state": "takenBack"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "15-bens-thread-says-so",
+      "use": "runtime.rust:lab.artifactsphere.said",
+      "inputs": {
+        "oby": "ben",
+        "member": "ana",
+        "expect": {
+          "paths": {
+            "items": {
+              "$any": {
+                "kind": "takenBack",
+                "words": "Ana took it back."
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15"
+        ]
+      }
+    },
+    {
+      "id": "public",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/public",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "acknowledged": "anyone-with-the-link"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "5-a-delete-revokes-first",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}",
+        "device": "${state.da}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 204
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15",
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-nothing-left-on-the-sphere",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$len": 0
+            },
+            "public": {
+              "$len": 0
+            },
+            "sent": {
+              "$any": {
+                "action": "artifact_deleted",
+                "to": "cleo"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15",
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "cleo-told",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "cleo",
+        "expect": {
+          "paths": {
+            "said": [
+              {
+                "action": "artifact_deleted"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "5-cleos-copy-says-so",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.cleo.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.cleos.kept.0.artifact}",
+        "device": "${state.dc}",
+        "expect": {
+          "paths": {
+            "body.received.state": "deleted"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-15",
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    }
+  ]
+}

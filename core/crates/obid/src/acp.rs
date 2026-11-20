@@ -45,9 +45,22 @@ pub struct Options {
     /// The MCP servers `session/new` (or `session/load`) gives it, when it takes HTTP ones: Oby's
     /// Tetrix server only (crate::tetrix).
     pub mcp: Vec<Value>,
+    /// obid's browser server, given beside them (docs/contracts/browser.md, BROWSER-17).
+    pub browser: Option<crate::browser::AgentServer>,
     /// What a loaded session replays isn't reported: a conversation's agent, whose words stream
     /// to the owner, who has them already.
     pub quiet_load: bool,
+}
+
+impl Options {
+    /// Every MCP server the agent is given: [`Options::mcp`], then obid's browser server.
+    pub fn servers(&self) -> Vec<Value> {
+        self.mcp
+            .iter()
+            .cloned()
+            .chain(self.browser.as_ref().map(crate::browser::AgentServer::acp))
+            .collect()
+    }
 }
 
 /// Runs one turn: starts the agent, sends `prompt`, answers its requests with `decide`, reports with
@@ -641,7 +654,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         // Only the servers obid gives (as its Claude Code runs with --strict-mcp-config), and those
         // only when the tool takes HTTP servers.
         let servers = if init["agentCapabilities"]["mcpCapabilities"]["http"] == json!(true) {
-            json!(self.options.mcp)
+            json!(self.options.servers())
         } else {
             json!([])
         };
@@ -1659,5 +1672,70 @@ mod tests {
         );
         assert_eq!(found.len(), 4);
         let _ = std::fs::remove_dir_all(&w);
+    }
+}
+
+#[cfg(test)]
+mod browser_server_tests {
+    use super::*;
+    use crate::browser::AgentServer;
+    use std::path::Path;
+
+    fn tetrix() -> Value {
+        json!({"type": "http", "name": "tetrix", "url": "http://127.0.0.1:7777/v1/agent/tetrix/job1",
+               "headers": [{"name": "Authorization", "value": "Bearer tok"}]})
+    }
+
+    // BROWSER-17: Cursor's `session/new` and `session/load` give obid's browser server beside
+    // Oby's others, with the job's token, and none when the job has none.
+    #[test]
+    fn browser_17_cursor_is_given_the_browser_server_beside_the_others() {
+        let browser = AgentServer::new("http://127.0.0.1:7777", "tok");
+        let given = Options {
+            mcp: vec![tetrix()],
+            browser: Some(browser.clone()),
+            ..Options::default()
+        };
+        assert_eq!(given.servers(), vec![tetrix(), browser.acp()]);
+        assert_eq!(
+            given.servers()[1],
+            json!({"type": "http", "name": "browser", "url": "http://127.0.0.1:7777/v1/browser/mcp",
+                   "headers": [{"name": "Authorization", "value": "Bearer tok"}]})
+        );
+        let none = Options {
+            mcp: vec![tetrix()],
+            ..Options::default()
+        };
+        assert_eq!(none.servers(), vec![tetrix()]);
+        assert!(Options::default().servers().is_empty());
+    }
+
+    // BROWSER-17: Cursor's title for one of the browser's tools is its rule, which obid's policy
+    // lets through by the job's rules; a tool of that name it doesn't serve, never.
+    #[test]
+    fn browser_17_cursors_browser_calls_meet_the_browsers_rules() {
+        let worktree = Path::new("/tmp/work");
+        let mut rules: Vec<String> = AgentServer::rules().collect();
+        for tool in crate::browser::contract::MCP_TOOLS {
+            let mut call = ToolCall::default();
+            call.merge(&json!({"kind": "other", "title": format!("browser-{tool}: {tool}")}));
+            let calls = call.calls().expect("a call obid decides on");
+            assert_eq!(calls, vec![(format!("mcp__browser__{tool}"), json!({}))]);
+            assert_eq!(
+                crate::policy::decide(&calls[0].0, &calls[0].1, worktree, false, &rules),
+                Answer::Allow,
+                "{tool}"
+            );
+        }
+        rules.push("mcp__browser__oby_browser_steal".into());
+        let mut call = ToolCall::default();
+        call.merge(
+            &json!({"kind": "other", "title": "browser-oby_browser_steal: oby_browser_steal"}),
+        );
+        let calls = call.calls().expect("a call obid decides on");
+        assert!(matches!(
+            crate::policy::decide(&calls[0].0, &calls[0].1, worktree, false, &rules),
+            Answer::Deny(_)
+        ));
     }
 }

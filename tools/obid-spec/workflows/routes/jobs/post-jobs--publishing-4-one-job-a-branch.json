@@ -1,0 +1,241 @@
+{
+  "schemaVersion": "2",
+  "name": "One job works a branch at a time (PUBLISHING-4)",
+  "version": "1.0.0",
+  "description": "A task naming a branch another job works on, in any letter case, is refused with 422 naming that job; another branch starts; once the first stopped, the branch starts again, and then the first takes no Try again.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "branch": "oby/fix-34"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-4-0-refused-naming-the-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Fix issue 34",
+            "branch": "oby/fix-34"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "SLEEP"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-4"
+        ]
+      }
+    },
+    {
+      "id": "publishing-4-1-refused-naming-the-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Fix issue 34",
+            "branch": "oby/Fix-34"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "SLEEP"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-4"
+        ]
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "branch": "oby/fix-35"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-4"
+        ]
+      }
+    },
+    {
+      "id": "a-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "branch": "oby/fix-34"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "branch": "oby/fix-34"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-4"
+        ]
+      }
+    },
+    {
+      "id": "publishing-4-the-first-takes-no-try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-4"
+        ]
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

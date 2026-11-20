@@ -1,0 +1,183 @@
+{
+  "schemaVersion": "2",
+  "name": "Always saves something narrow, and only the owner says it (PERMISSIONS-12, 15, 25)",
+  "version": "1.0.0",
+  "description": "A command that asks offers Always saving that very command, a tool's subcommand saving its subcommand, a commit never its message; Allow without the owner's signed words is 403 and leaves the ask; signed, it runs.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/permission"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Bash\", \"input\": {\"command\": \"rm -rf build\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"git -c commit.gpgsign=false commit -m 'Add a thing'\"}}]",
+            "mode": "ask"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "permissions-12-that-very-command",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "rm -rf build",
+            "permission.rule": "Bash(rm -rf build)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-12"
+        ]
+      }
+    },
+    {
+      "id": "permissions-15-unsigned-allow-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/permission",
+        "body": {
+          "id": "${state.permissions-12-that-very-command.body.permission.id}",
+          "decision": "allow"
+        },
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-15"
+        ]
+      }
+    },
+    {
+      "id": "permissions-15-the-ask-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.id": "${state.permissions-12-that-very-command.body.permission.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-15"
+        ]
+      }
+    },
+    {
+      "id": "signed-allow",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/permission",
+        "body": {
+          "id": "${state.permissions-12-that-very-command.body.permission.id}",
+          "decision": "allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-15"
+        ]
+      }
+    },
+    {
+      "id": "permissions-25-a-commit-saves-git-commit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.rule": "Bash(git commit:*)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-25"
+        ]
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

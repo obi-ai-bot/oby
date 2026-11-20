@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "2",
+  "name": "A research job never runs a check (PUBLISHING-28)",
+  "version": "1.0.0",
+  "description": "A research job that commits its report ends done with its commits on its branch, unpushed, with no check run and its pipeline's check stage skipped.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "COMMIT: report.md"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-28-done-unpushed-unchecked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1,
+            "pushed": null,
+            "published": null
+          },
+          "paths": {
+            "checks": {
+              "$oneOf": [
+                null,
+                []
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-28"
+        ]
+      }
+    },
+    {
+      "id": "publishing-28-its-check-stage-skipped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "pipeline.stages": {
+              "$any": {
+                "id": "check",
+                "state": "skipped"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-28"
+        ]
+      }
+    },
+    {
+      "id": "not-on-the-remote",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "branch",
+          "--list",
+          "${state.r.body.branch}"
+        ]
+      }
+    },
+    {
+      "id": "publishing-28-nothing-went-out",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.not-on-the-remote.out}",
+        "expect": {
+          "body": ""
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-28"
+        ]
+      }
+    }
+  ]
+}

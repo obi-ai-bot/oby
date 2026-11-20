@@ -279,7 +279,8 @@ impl Link {
     /// The question's post; a refusal is in [`crate::brain::ask::refusal`]'s words, with nothing of
     /// what the Sphere wrote but its code.
     pub async fn ask_peer(&self, owner: &str, body: &[u8]) -> Result<Value, ApiError> {
-        let map = object(body, &["text"])?;
+        // `operationId` is the route's request key (OBIREQ-9), read there.
+        let map = object(body, &["text", "operationId"])?;
         let action = json!({"text": text_field(&map, "text")?});
         self.joined()?;
         if action["text"].as_str().is_none_or(|t| t.trim().is_empty())
@@ -335,10 +336,15 @@ impl Link {
                 api(e.status, rules.unwrap_or(&words))
             })?;
         let cid = sent["correlationId"].as_str().unwrap_or_default();
-        let exchange = self.lock().exchanges.get(cid).cloned();
+        Ok(self.asked_post(owner, cid).unwrap_or(Value::Null))
+    }
+
+    /// The post of the question `cid` asked of `owner` from their thread, as it is now: the first
+    /// of its exchange's posts.
+    pub fn asked_post(&self, owner: &str, cid: &str) -> Option<Value> {
+        let exchange = self.lock().exchanges.get(cid).cloned()?;
         let verified = self.pins.verified(owner);
-        let post = exchange.and_then(|e| e.posts(&self.owner(), verified).into_iter().next());
-        Ok(post.unwrap_or(Value::Null))
+        exchange.posts(&self.owner(), verified).into_iter().next()
     }
 
     /// Whether the question `cid` waits for the Sphere to take it ([`Exchange::unsent`]).

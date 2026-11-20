@@ -1,0 +1,455 @@
+{
+  "schemaVersion": "2",
+  "name": "A task's rounds, and undoing the last (CHANGES-1, 2, 8, 10, 12, 13)",
+  "version": "1.0.0",
+  "description": "A task of two rounds lists both on its follow-up's changes, each answered on its own; Undo this round names its branch, the commit it goes back to and the force-push, and the owner's signed Undo force-pushes the oby/ branch back, leaving nothing more to undo and saying so in the summary; a round pushed to a branch the owner named isn't force-pushed.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs/{id}/undo"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/messages",
+        "body": {
+          "text": "COMMIT: second.txt"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "followUpOf": "${state.t.body.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "f-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "addedTo": 7
+          }
+        }
+      }
+    },
+    {
+      "id": "changes-1-both-rounds-on-the-follow-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "rounds": {
+              "$len": 2
+            },
+            "rounds.0.round": 1,
+            "rounds.0.job": "${state.t.body.id}",
+            "rounds.1.round": 2,
+            "rounds.1.job": "${state.f.body.id}",
+            "rounds.0.from": {
+              "$matches": "^[0-9a-f]{40}$"
+            },
+            "rounds.1.to": {
+              "$matches": "^[0-9a-f]{40}$"
+            },
+            "rounds.1.at": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-1"
+        ]
+      }
+    },
+    {
+      "id": "changes-1-the-first-lists-only-its-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "rounds": {
+              "$len": 1
+            },
+            "rounds.0.job": "${state.t.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-1"
+        ]
+      }
+    },
+    {
+      "id": "changes-2-round-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/changes?round=1",
+        "expect": {
+          "status": 200,
+          "body": {
+            "round": 1,
+            "files": [
+              {
+                "path": "hello.txt"
+              }
+            ]
+          },
+          "paths": {
+            "diff": {
+              "$contains": "hello.txt"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-2"
+        ]
+      }
+    },
+    {
+      "id": "changes-2-round-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/changes?round=2",
+        "expect": {
+          "status": 200,
+          "body": {
+            "round": 2,
+            "files": [
+              {
+                "path": "second.txt"
+              }
+            ]
+          },
+          "paths": {
+            "diff": {
+              "$not": {
+                "$contains": "hello.txt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-2"
+        ]
+      }
+    },
+    {
+      "id": "changes-2-no-such-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/changes?round=3",
+        "expect": {
+          "status": 200,
+          "body": {
+            "files": [],
+            "diff": ""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-2"
+        ]
+      }
+    },
+    {
+      "id": "changes-8-the-sentence",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/undo",
+        "expect": {
+          "status": 200,
+          "body": {
+            "branch": "${state.t-published.body.branch}",
+            "push": true,
+            "from": "${state.changes-1-both-rounds-on-the-follow-up.body.rounds.1.from}",
+            "to": "${state.changes-1-both-rounds-on-the-follow-up.body.rounds.1.to}"
+          },
+          "paths": {
+            "action": {
+              "$matches": "goes back to .*force-push"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-8"
+        ]
+      }
+    },
+    {
+      "id": "sig",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "lines": [
+          "oby-undo",
+          "${state.f.body.id}",
+          "${state.changes-8-the-sentence.body.action}"
+        ]
+      }
+    },
+    {
+      "id": "undone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.f.body.id}/undo",
+        "body": {
+          "device": "${state.sig.approval.device}",
+          "action": "${state.changes-8-the-sentence.body.action}",
+          "signedAt": "${state.sig.approval.signedAt}",
+          "signature": "${state.sig.approval.signature}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "branch-now",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/${state.t-published.body.branch}"
+        ]
+      }
+    },
+    {
+      "id": "changes-10-force-pushed-back",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.branch-now.out}",
+        "expect": {
+          "body": "${state.changes-8-the-sentence.body.from}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-10"
+        ]
+      }
+    },
+    {
+      "id": "changes-10-nothing-more-to-undo",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/undo",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "Nothing this task did is left to undo."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-10"
+        ]
+      }
+    },
+    {
+      "id": "changes-12-its-summary-says-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "^The owner undid one of its rounds: its branch is back at "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-12"
+        ]
+      }
+    },
+    {
+      "id": "n",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: named.txt",
+            "branch": "feature-x"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "n-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "changes-13-a-named-branch-isnt-force-pushed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}/undo",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": {
+              "$contains": "Oby force-pushes only its own oby/ branches"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-13"
+        ]
+      }
+    }
+  ]
+}

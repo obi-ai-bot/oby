@@ -96,10 +96,15 @@ pub async fn run(config: &Path, input: impl Read) -> Result<String, Refused> {
         })?;
     crate::store::write_private(&home.join("pairing"), format!("{key}\n").as_bytes())
         .map_err(|e| refused(1, format!("can't name the key in obid's home: {e}")))?;
-    let answer = register_and_invite(api, gateway, &token, &name, &key).await;
+    // Being at this computer over SSH is the owner's presence (as `obid invite-computer` is): the
+    // invitation names the key just registered, which the pairing takes as its own (COMPUTERS-15).
+    let presence = super::invite::presence_write(home)
+        .map_err(|e| refused(1, format!("can't write obid's presence file: {e}")))?;
+    let answer = register_and_invite(api, gateway, &token, &name, &key, &presence).await;
     if answer.is_err() {
-        // Used up by a registration that went through; a refused one leaves nothing to take.
+        // Used up by a request that went through; a refused one leaves nothing to take.
         let _ = std::fs::remove_file(home.join("pairing"));
+        let _ = std::fs::remove_file(home.join("invite-computer"));
     }
     answer
 }
@@ -110,6 +115,7 @@ async fn register_and_invite(
     token: &str,
     name: &str,
     key: &str,
+    presence: &str,
 ) -> Result<String, Refused> {
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -138,7 +144,8 @@ async fn register_and_invite(
     let device = call("/v1/devices", json!({"name": name, "publicKey": key})).await?;
     let invite = call(
         "/v1/pairing/invite",
-        json!({"url": format!("http://{gateway}"), "name": name, "computer": true}),
+        json!({"url": format!("http://{gateway}"), "name": name, "computer": true,
+               "presence": presence, "device": device["id"]}),
     )
     .await?;
     Ok(json!({"device": device, "invite": invite}).to_string())

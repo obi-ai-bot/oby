@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/skills: a Codex account's own skills",
+  "version": "1.0.0",
+  "description": "A Codex account's skills are Codex's own listing (skills/list): those on, their description, by scope (SKILLS-4).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/skills"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "conversation": {
+            "agent": "codex"
+          },
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}",
+          "accounts/codex/skills/pdf/SKILL.md": "---\nname: pdf\ndescription: Reads PDFs.\n---\n"
+        }
+      }
+    },
+    {
+      "id": "skills-4-codexs-own-listing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/skills?account=codex",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tool": "codex",
+            "skills": {
+              "$any": {
+                "name": "pdf",
+                "description": "Reads PDFs."
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-4"
+        ]
+      }
+    }
+  ]
+}

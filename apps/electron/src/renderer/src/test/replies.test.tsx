@@ -153,3 +153,26 @@ describe('CHATFIRST-41: a picture shows full size', () => {
     }
   });
 });
+
+// T3 Code's MessageCopyButton test "explains a denied clipboard write and lets the same message be copied
+// again", held to CHATFIRST-37: a clipboard that refuses changes nothing
+describe('T3: copy a reply', () => {
+  it('t3_copy_a_refused_clipboard_claims_nothing_and_the_next_press_copies', async () => {
+    const kept = navigator.clipboard;
+    let refuse = true;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (t: string) => { if (refuse) throw new DOMException('Write permission denied.', 'NotAllowedError'); the.copied.push(t); } } });
+    try {
+      await render(<Reply.CopyButton text="the words" className="msg-copy" />);
+      const button = host.querySelector('button.reply-copy')!;
+      await click(button);
+      expect(button.getAttribute('aria-label')).toBe('Copy');
+      expect(button.classList.contains('is-copied')).toBe(false);
+      refuse = false;
+      await click(button);
+      expect(the.copied).toEqual(['the words']);
+      expect(button.getAttribute('aria-label')).toBe('Copied');
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: kept });
+    }
+  });
+});

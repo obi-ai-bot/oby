@@ -58,9 +58,10 @@ that one build; with the build cached the Linux three take about 90 s and the Ma
 | LAB-REMOTE-2 | Adding a computer over SSH: the Mac's device key is named in that obid's `home/pairing` and registered there, a one-time invitation comes back over SSH and is redeemed through the tunnel for a device token; a wider setting goes through only with the Mac's key's signature (no token: 401; unsigned or signed by a key never registered: 403). | `ssh-pair.json` |
 | LAB-REMOTE-3 | Adding a computer with a code: the other computer's owner makes a six-digit code and a link carrying its direct address with its certificate pinned; a wrong code and a used one pair nothing; the right one gives a token, and the Mac's key added through it signs the owner's words; another machine answering at the same address gets no code and no call. | `code-pair.json` |
 | LAB-REMOTE-4 | Two routes to one computer (LAN direct, SSH): the best is used, the next takes over when it's cut, the window moves up again once the better one answers twice, and with both cut the answer names each route tried and why. | `routes.json` |
-| LAB-REMOTE-5 | After a revoke on that computer, the Mac's token is refused, its signed words too. | `ssh-pair.json` |
+| LAB-REMOTE-5 | After "Remove this computer" (`DELETE /v1/pairing` through the route, with the Mac's own token), the Mac's token is refused, its signed words too. | `ssh-pair.json` |
 | LAB-REMOTE-6 | A job the window starts runs on the Linux obid with obid's stand-in agents, in that machine's folder, and its result reaches the Mac through the tunnel. | `ssh-pair.json` |
 | LAB-REMOTE-7 | A direct address is HTTPS with the certificate pinned: the pinned one connects; another machine's certificate at the same address, or a new certificate on the same machine, is refused. | `code-pair.json` |
+| LAB-REMOTE-8 | A computer's token reaches the gateway's list and nothing kept on loopback: not the vault, not pairing. | `ssh-pair.json` |
 | LAB-REMOTE-MAC-1 | The other computer is a Mac: the workflow's key in `~/.ssh/authorized_keys` is restricted, runs nothing but that obid's pairing program (`id -un` gets "That isn't a device key."), tunnels to that obid's gateway and to no other port; a host key never accepted is refused. | `mac-ssh-pair.json` |
 | LAB-REMOTE-MAC-2 | Pairing that Mac over SSH: its pairing file used up, a device token through the tunnel, and a wider setting only with the window's key's signature. | `mac-ssh-pair.json` |
 | LAB-REMOTE-MAC-3 | A job the window starts runs in that obid's own worktree (`worktrees/<job>/`), and its result reaches the window. | `mac-ssh-pair.json` |
@@ -115,23 +116,19 @@ Each item is something the lab does in obid's place today.
    own (`lab.remote.direct`); `lab.remote.front` (python3) is left only for the impostor machine.
 2. **`obid pair-computer`.** Ported (COMPUTERS-7): `pair_computer_script` is now only obid's own
    command's path, so it can be a key's forced command.
-3. **A computer's token reaches the window's routes.** A paired device's token goes through the
-   iPhone's allowlist (gateway.rs: 68 of the 156 routes in docs/api/routes.txt), which leaves out routes the window uses (connections,
-   the vault, adding folders, a member's unsealed setting…). A paired computer needs the window's
-   route set (still never the pairing endpoints), as a kind of pairing of its own.
-4. **Signed words bound to the token's own key.** Through the gateway, `X-Oby-Words` is checked
-   against any registered key, whatever token carried it. A computer's token should carry only its
-   own key's words; a key registered through `home/pairing` over SSH has no `paired` binding today.
-5. **Revoking from the Mac, and forgetting its key.** Revoking is `DELETE /v1/pairing/devices/{id}` on
-   the other computer's loopback only (the gateway refuses pairing endpoints), and it leaves the
-   Mac's key in `devices.json`. "Remove this computer" in the window needs a revoke over the
-   computer's own token that also forgets its key.
-6. **The link in the invitation.** `POST /v1/pairing/invite` answers a `link` with a name and a
-   hostname; it needs the direct routes and the certificate pin (`Link` v1, `oby-computer:` and
-   base64url JSON). A six-digit code alone can't carry a pin: it travels with the link (pasted or a
-   QR code), never instead of it.
-7. **One invitation at a time.** obid keeps one open invitation (`pending`): a second replaces the
-   first. Fine for a person adding one computer; two at once (a phone and a computer) would race.
+3. **A computer's token reaches the window's routes.** Partly ported (COMPUTERS-14): a computer's
+   pairing is its own kind, and reaches the gateway's list, as a phone's. The routes the window uses
+   past it (connections, the vault, adding folders, a member's unsealed setting…) are each kept on
+   loopback by obid's docs today: adding them is the owner's call, route by route.
+4. **Signed words bound to the token's own key.** Ported (COMPUTERS-15): through a computer's token
+   only the key bound to its pairing signs the owner's words; `obid pair-computer` names the key it
+   registered in its invitation, and redeeming binds it.
+5. **Revoking from the Mac, and forgetting its key.** Ported (COMPUTERS-16): `DELETE /v1/pairing` on
+   the gateway, with the computer's own token, ends its pairing and forgets its key there.
+6. **The link in the invitation.** Ported (COMPUTERS-13): a computer's invitation answers
+   `computerLink`, its direct routes each with its certificate pin; the code travels with it.
+7. **One invitation at a time.** Ported (COMPUTERS-13): a computer's invitation has a slot of its
+   own beside the phone's, and lasts 10 minutes.
 8. **Where the window's computers live.** The supervisor, tunnels and tokens belong to the Mac's side
    (the dispatcher's: which computer, which route). Proposed: the Mac's obid keeps them
    (`home/computers.json`, tokens in the vault, never in an answer) and the window switches by

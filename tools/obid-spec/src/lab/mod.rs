@@ -15,7 +15,8 @@
 //! agents' tools, with `browser_contract`), `ui` (its screens, driven) and `browsersphere` (the
 //! Obysphere around it); and for Oby Artifacts, `artifacts` (the store, export and import, and the
 //! turn's artifact, with `artifacts_contract`) and `artifactview` (Oby's runtime of Claude Design's
-//! boards, the canvas host, the artifact tab and `oby_artifact_check`).
+//! boards, the canvas host, the artifact tab and `oby_artifact_check`) and `artifactsphere`
+//! (sharing over the Obysphere, edits back and public links encrypted end to end).
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -24,6 +25,7 @@ use crate::obid::Run;
 
 pub mod artifacts;
 pub mod artifacts_contract;
+pub mod artifactsphere;
 pub mod artifactview;
 pub mod browser;
 pub mod browser_cert;
@@ -42,7 +44,7 @@ pub const AREA_PREFIX: &str = "lab-";
 /// The tag every lab workflow carries.
 pub const TAG: &str = "lab";
 
-const FEATURES: [&[(&str, &str)]; 11] = [
+const FEATURES: [&[(&str, &str)]; 12] = [
     machine::NODES,
     remote::NODES,
     browser::NODES,
@@ -54,6 +56,7 @@ const FEATURES: [&[(&str, &str)]; 11] = [
     browsersphere::NODES,
     artifacts::NODES,
     artifactview::NODES,
+    artifactsphere::NODES,
 ];
 
 /// Every lab node: its name, what it does.
@@ -89,6 +92,8 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         artifacts::run_node(run, name, input).await
     } else if owns(artifactview::NODES) {
         artifactview::run_node(run, name, input).await
+    } else if owns(artifactsphere::NODES) {
+        artifactsphere::run_node(run, name, input).await
     } else {
         bail!("{name} isn't a lab node")
     }
@@ -98,6 +103,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
 /// in: the screens and the servers behind them first, then the browsers, then the machines.
 pub async fn cleanup() -> Value {
     let ui = ui::cleanup().await;
+    let artifactsphere = artifactsphere::cleanup().await;
     let artifactview = artifactview::cleanup().await;
     let artifacts = artifacts::cleanup().await;
     let browsersphere = browsersphere::cleanup().await;
@@ -105,6 +111,7 @@ pub async fn cleanup() -> Value {
     // Browsers before machines: one running on a lab machine is closed before its machine goes.
     json!({
         "ui": ui,
+        "artifactsphere": artifactsphere,
         "artifactview": artifactview,
         "artifacts": artifacts,
         "browsersphere": browsersphere,

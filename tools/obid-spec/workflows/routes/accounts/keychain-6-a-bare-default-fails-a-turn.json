@@ -1,0 +1,99 @@
+{
+  "schemaVersion": "2",
+  "name": "KEYCHAIN-6: a bare default fails a conversation's turn",
+  "version": "1.0.0",
+  "description": "What's true today (#1867's gap): a conversation's turn on a bare-default Claude Code launches twice and answers `I couldn't answer: its agent session failed twice.`; Claude Code's words reach only obid's log, and the account stays signed in.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude-bare-default"
+      }
+    },
+    {
+      "id": "keychain-6-a-turn-fails-without-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hi",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "I couldn't answer: its agent session failed twice."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-6"
+        ]
+      }
+    },
+    {
+      "id": "log",
+      "use": "runtime.rust:accounts.log",
+      "inputs": {
+        "obid": "${state.o}",
+        "has": "Not logged in · Please run /login"
+      }
+    },
+    {
+      "id": "keychain-6-claude-codes-words-reach-only-obids-log",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.log.with}",
+        "expect": {
+          "paths": {
+            "0": {
+              "$contains": "Not logged in · Please run /login"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-6"
+        ]
+      }
+    },
+    {
+      "id": "keychain-6-the-account-stays-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-6"
+        ]
+      }
+    }
+  ]
+}

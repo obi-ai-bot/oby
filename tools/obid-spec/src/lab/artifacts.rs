@@ -1092,6 +1092,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("lab.artifacts.events", "The `artifact` events the API sent so far: {events, count}; with expect."),
     ("lab.artifacts.alive", "Whether the API still answers on its port: {answers}; with expect."),
     ("lab.artifacts.down", "Stops the API now rather than at the cleanup: {stopped}."),
+    ("lab.artifacts.claude_headless", "The Claude Code headless spike (plan §3.8), informational, never red: the owner's own `claude` on PATH, on its own login, asked whether its Artifact tool is offered headless (`system/init`, with and without --allowedTools Artifact), then to make a design from Oby's guide alone (lab-ui/artifacts/scripts/claude-headless.mjs): {claude, init, initWithArtifact, make: {seconds, turns, tokens, costUsd, toolUses, toolErrors, files}, design}. OBID_SPEC_LAB_CLAUDE_HEADLESS_FROM replays a run made on another computer (its out-folder); without either, skipped."),
 ];
 
 fn rules_here() -> Rules {
@@ -1110,30 +1111,45 @@ fn is_id(id: &str) -> bool {
 }
 
 /// What to keep: a version's files, read from an agent's folder or a zip, and who made it.
-struct Keep {
-    files: Files,
-    folder: bool,
-    title: String,
-    kind: Option<Kind>,
-    conversation: Option<String>,
-    job: Option<String>,
-    artifact: Option<String>,
-    origin: Origin,
+pub(crate) struct Keep {
+    pub(crate) files: Files,
+    pub(crate) folder: bool,
+    pub(crate) title: String,
+    pub(crate) kind: Option<Kind>,
+    pub(crate) conversation: Option<String>,
+    pub(crate) job: Option<String>,
+    pub(crate) artifact: Option<String>,
+    pub(crate) origin: Origin,
+    /// Another Oby's version (an edit sent back, or the owner's on a recipient's copy): the
+    /// sharing's own rules let it in (src/lab/artifactsphere.rs), not the conversation's.
+    pub(crate) by: Option<String>,
 }
 
 /// The lab's store: obid's `home/artifacts/<id>/{artifact.json,<version>/…}` under the scratch
 /// folder, the owner's devices, the events sent and the conversations the turns made.
-struct Store {
-    dir: PathBuf,
+pub(crate) struct Store {
+    pub(crate) dir: PathBuf,
     rules: Rules,
     token: String,
     words: Words,
-    events: Vec<Value>,
+    pub(crate) events: Vec<Value>,
     turns: Vec<Value>,
 }
 
 impl Store {
-    fn get(&self, id: &str) -> Option<Artifact> {
+    /// A store of its own on `dir` (another Oby's, in the sharing lab).
+    pub(crate) fn at(dir: PathBuf) -> Store {
+        Store {
+            dir,
+            rules: rules_here(),
+            token: String::new(),
+            words: Words::default(),
+            events: vec![],
+            turns: vec![],
+        }
+    }
+
+    pub(crate) fn get(&self, id: &str) -> Option<Artifact> {
         if !is_id(id) {
             return None;
         }
@@ -1141,7 +1157,7 @@ impl Store {
         serde_json::from_slice(&text).ok()
     }
 
-    fn list(&self, conversation: Option<&str>, job: Option<&str>) -> Vec<Artifact> {
+    pub(crate) fn list(&self, conversation: Option<&str>, job: Option<&str>) -> Vec<Artifact> {
         let mut all: Vec<Artifact> = std::fs::read_dir(&self.dir)
             .into_iter()
             .flatten()
@@ -1154,7 +1170,7 @@ impl Store {
         all
     }
 
-    fn save(&self, a: &Artifact) -> std::io::Result<()> {
+    pub(crate) fn save(&self, a: &Artifact) -> std::io::Result<()> {
         let folder = self.dir.join(&a.id);
         std::fs::create_dir_all(&folder)?;
         let tmp = folder.join(".artifact.json.tmp");
@@ -1162,7 +1178,7 @@ impl Store {
         std::fs::rename(tmp, folder.join("artifact.json"))
     }
 
-    fn version_files(&self, a: &Artifact, version: u32) -> Option<Files> {
+    pub(crate) fn version_files(&self, a: &Artifact, version: u32) -> Option<Files> {
         let v = a.versions.iter().find(|v| v.version == version)?;
         let folder = self.dir.join(&a.id).join(version.to_string());
         v.files
@@ -1186,7 +1202,7 @@ impl Store {
     }
 
     /// The store's half of a publish or an import: checked, then kept as a new version.
-    fn keep(&mut self, mut what: Keep) -> Result<(String, u32), Refused> {
+    pub(crate) fn keep(&mut self, mut what: Keep) -> Result<(String, u32), Refused> {
         let rules = self.rules;
         let title = clean_title(&what.title).ok_or_else(|| {
             Refused::new(
@@ -1204,12 +1220,14 @@ impl Store {
                         "Not published: there's no artifact by that id.",
                     )
                 })?;
-                may_version(
-                    &a,
-                    what.conversation.as_deref(),
-                    what.job.as_deref(),
-                    &rules,
-                )?;
+                if what.by.is_none() {
+                    may_version(
+                        &a,
+                        what.conversation.as_deref(),
+                        what.job.as_deref(),
+                        &rules,
+                    )?;
+                }
                 if a.versions.len() >= c::MAX_VERSIONS as usize {
                     return Err(Refused::not_published(
                         "full",
@@ -1324,6 +1342,7 @@ impl Store {
             bytes,
             blobs,
             job: what.job.clone(),
+            by: what.by.clone(),
         });
         self.save(&artifact).map_err(|e| {
             Refused::not_published("not_published", format!("obid couldn't keep it ({e})."))
@@ -1852,6 +1871,7 @@ fn handle(store: &Mutex<Store>, req: &Request) -> Answer {
                 job: None,
                 artifact: None,
                 origin: Origin::Import { from: from.into() },
+                by: None,
             });
             match kept.map(|(id, _)| s.get(&id)) {
                 Ok(Some(a)) => Answer::json(200, &serde_json::to_value(a).unwrap_or_default()),
@@ -2333,6 +2353,7 @@ async fn publish(input: &Value) -> Result<Value> {
             job: input["job"].as_str().map(str::to_string),
             artifact,
             origin: Origin::Own,
+            by: None,
         })
     };
     let mut result = once(input["artifact"].as_str().map(str::to_string));
@@ -2613,6 +2634,76 @@ fn fixture(run: &Run, input: &Value) -> Result<Value> {
     Ok(out)
 }
 
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if e.file_type()?.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if e.file_type()?.is_file() {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// The Claude Code headless spike: what the owner's own Claude Code offers and makes headless.
+/// It reports and never fails a run; a computer with no Claude Code (and no run to replay) skips.
+async fn claude_headless(run: &Run) -> Result<Value> {
+    let out = run.scratch.join("claude-headless");
+    let replayed = std::env::var_os("OBID_SPEC_LAB_CLAUDE_HEADLESS_FROM");
+    match &replayed {
+        Some(from) => copy_tree(Path::new(from), &out).with_context(|| {
+            format!(
+                "can't copy the run to replay from {}",
+                Path::new(from).display()
+            )
+        })?,
+        None => {
+            let found = tokio::process::Command::new("claude")
+                .arg("--version")
+                .output()
+                .await
+                .is_ok_and(|o| o.status.success());
+            if !found {
+                return Ok(
+                    json!({"skipped": "Claude Code isn't on this computer (OBID_SPEC_LAB_CLAUDE_HEADLESS_FROM replays a run made on another)"}),
+                );
+            }
+            let script = run
+                .root
+                .join("tools/obid-spec/lab-ui/artifacts/scripts/claude-headless.mjs");
+            let done = tokio::time::timeout(
+                Duration::from_secs(1200),
+                tokio::process::Command::new("node")
+                    .arg(&script)
+                    .arg(&out)
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await;
+            match done {
+                Ok(Ok(o)) if o.status.success() => {}
+                Ok(Ok(o)) => {
+                    return Ok(
+                        json!({"skipped": format!("the spike stopped: {}", String::from_utf8_lossy(&o.stderr).trim())}),
+                    )
+                }
+                Ok(Err(e)) => return Ok(json!({"skipped": format!("node didn't start: {e}")})),
+                Err(_) => return Ok(json!({"skipped": "the spike took more than 20 minutes"})),
+            }
+        }
+    }
+    let mut v: Value = serde_json::from_slice(&std::fs::read(out.join("result.json"))?)?;
+    if v.get("skipped").is_some() {
+        return Ok(json!({"skipped": v["skipped"]}));
+    }
+    v["design"] = json!(out.join("work").join("design"));
+    v["replayed"] = json!(replayed.is_some());
+    Ok(v)
+}
+
 async fn alive(input: &Value) -> Result<Value> {
     let port = port_of(input)?;
     let answers = tokio::time::timeout(
@@ -2652,6 +2743,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         }
         "lab.artifacts.alive" => alive(input).await,
         "lab.artifacts.down" => Ok(cleanup().await),
+        "lab.artifacts.claude_headless" => claude_headless(run).await,
         _ => bail!("{name} isn't a lab.artifacts node"),
     }
 }
@@ -2752,6 +2844,7 @@ mod tests {
             bytes: 0,
             blobs: BTreeMap::from([("abc".into(), "assets/x.png".into())]),
             job: None,
+            by: None,
         };
         assert_eq!(
             resolve(&v, "_blob/abc", &Rules::ALL).as_deref(),

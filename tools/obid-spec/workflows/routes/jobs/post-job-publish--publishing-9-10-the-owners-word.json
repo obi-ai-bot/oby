@@ -1,0 +1,177 @@
+{
+  "schemaVersion": "2",
+  "name": "The owner's signed Publish anyway, to the branch they name (PUBLISHING-9, 10)",
+  "version": "1.0.0",
+  "description": "A job whose check never passed publishes nothing by itself; the owner's signed Publish anyway sends the head it names; to another branch it lands there.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/publish"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "check": "echo the check failed; false",
+            "rounds": 1
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "f-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "commits": 1,
+            "pushed": null
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-9-refused-without-anyway",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/publish",
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-9"
+        ]
+      }
+    },
+    {
+      "id": "publishing-9-anyway-names-the-head",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}/publish?anyway=true",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "head": {
+              "$matches": "^[0-9a-f]{40}$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-9"
+        ]
+      }
+    },
+    {
+      "id": "sig",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "lines": [
+          "oby-publish",
+          "${state.f.body.id}",
+          "${state.publishing-9-anyway-names-the-head.body.action}"
+        ]
+      }
+    },
+    {
+      "id": "published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.f.body.id}/publish",
+        "body": {
+          "anyway": true,
+          "head": "${state.publishing-9-anyway-names-the-head.body.head}",
+          "device": "${state.sig.approval.device}",
+          "action": "${state.publishing-9-anyway-names-the-head.body.action}",
+          "signedAt": "${state.sig.approval.signedAt}",
+          "signature": "${state.sig.approval.signature}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "on-the-remote",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/${state.f-ended.body.branch}"
+        ]
+      }
+    },
+    {
+      "id": "publishing-9-the-head-it-named-went-out",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.on-the-remote.out}",
+        "expect": {
+          "body": "${state.publishing-9-anyway-names-the-head.body.head}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-9"
+        ]
+      }
+    }
+  ]
+}

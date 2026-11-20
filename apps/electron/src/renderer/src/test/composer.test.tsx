@@ -11,10 +11,11 @@ import { liveBridge } from './liveBridge';
 vi.mock('react-dom', async (original) => ({ ...await original<typeof import('react-dom')>(), createPortal: (node: unknown) => node }));
 // the box's words: a plain field holding them, as the real editor's handle gives them, telling of an
 // @ being typed as the real one does
-const editor = vi.hoisted(() => ({ mention: [] as string[], set: [] as string[] }));
+const editor = vi.hoisted(() => ({ mention: [] as string[], set: [] as string[], key: null as null | ((k: 'up' | 'down' | 'pick' | 'close') => boolean) }));
 vi.mock('../MessageEditor', () => ({
-  default: function Field({ label, onText, onMention, handle }: { label: string; onText: (t: string) => void; onMention?: (q: string | null) => void; handle: React.Ref<unknown> }) {
+  default: function Field({ label, onText, onMention, onMentionKey, handle }: { label: string; onText: (t: string) => void; onMention?: (q: string | null) => void; onMentionKey?: (k: 'up' | 'down' | 'pick' | 'close') => boolean; handle: React.Ref<unknown> }) {
     const field = useRef<HTMLTextAreaElement>(null);
+    editor.key = onMentionKey ?? null;
     useImperativeHandle(handle, () => ({
       text: () => field.current?.value ?? '', clear: () => { if (field.current) field.current.value = ''; },
       setText: (t: string) => { editor.set.push(t); if (field.current) field.current.value = t; }, focus: () => {}, blur: () => {},
@@ -222,5 +223,55 @@ describe('drop, @ and /', () => {
     expect(document.querySelector('.slash-panel')?.textContent).toContain('Claude Code’s own commands can’t be listed here yet');
     await type('/review this');
     expect(document.querySelector('.slash-panel')).toBeNull();
+  });
+});
+
+// T3 Code's own composer tests (queuedMessageEdit, ComposerPrimaryActions, composerMenuHighlight), held to Oby's contract
+describe('T3: the message box', () => {
+  // queuedMessageEdit.test "keeps file-only edits when another client starts the queued run"; T3 cebdf39984, ceed427d79
+  // known bug obi-ai-bot/oby#2726: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_queue_edit_brings_back_the_files_of_the_waiting_words_too (known bug #2726)', async () => {
+    const queued = [{ id: 't2', text: 'Also this', files: ['shot.png'] }];
+    await box({ queued, onCancelQueued: vi.fn(async () => true) });
+    await click(button('Edit “Also this”'));
+    expect(editor.set).toEqual(['Also this']);
+    expect([...document.querySelectorAll('.composer-tag-text')].map((t) => t.textContent)).toContain('shot.png');
+  });
+
+  // known bug obi-ai-bot/oby#2726: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_queue_edit_of_files_alone_never_leaves_blank_lines_before_the_words_typed (known bug #2726)', async () => {
+    const queued = [{ id: 't3', text: '', files: ['a.pdf'] }];
+    await box({ queued, onCancelQueued: vi.fn(async () => true) });
+    await type('and the footer');
+    await click(button(/^Edit/));
+    expect(editor.set.every((t) => !t.startsWith('\n'))).toBe(true);
+  });
+
+  // ComposerPrimaryActions.browser "allows retry after ten seconds and protects a late stop"; T3 cbc68c9dc1; COMPOSER-12
+  it('t3_stop_stopping_gives_way_to_stop_after_ten_seconds_with_no_end', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false, toFake: ['setTimeout', 'clearTimeout'] });
+    const onStop = vi.fn();
+    await box({ onStop });
+    await click(button('Stop'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_999); });
+    expect(button('Stopping…')?.disabled).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(button('Stopping…')).toBeUndefined();
+    await click(button('Stop'));
+    expect(onStop).toHaveBeenCalledTimes(2);
+  });
+
+  // composerMenuHighlight.test "clears the active result while async results are empty and resolves against restored results"
+  // known bug obi-ai-bot/oby#2727: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_at_list_never_picks_from_the_answer_to_what_was_typed_before (known bug #2727)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await box({ conversation: 'c1' });
+    await type('look at @ap');
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    await vi.waitFor(() => expect(document.querySelector('.mention-file')).toBeTruthy());
+    await type('look at @apz');
+    // Tab before obid answered for "apz": the "ap" list is no answer to it
+    await act(async () => { editor.key?.('pick'); });
+    expect(editor.mention).toEqual([]);
   });
 });
