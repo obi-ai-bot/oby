@@ -1,0 +1,212 @@
+{
+  "schemaVersion": "2",
+  "name": "Oby's review that ends with no verdict tells the owner (RECOVERY-15)",
+  "version": "1.0.0",
+  "description": "Oby's review of a published task fails with no other reviewer to take it: its author's reviewError says why, reviewNeedsYou is true, and one item named for the job and its review offers Try again, which runs the review again.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-15-its-author-says-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "reviewNeedsYou": true
+          },
+          "paths": {
+            "reviewError": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-15"
+        ]
+      }
+    },
+    {
+      "id": "the-review",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "pick": {
+          "where": {
+            "reviewOf": "${state.t.body.id}"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "recovery-15-one-item-with-try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "job": "${state.t.body.id}",
+            "kind": "failed"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "job": "${state.t.body.id}",
+                  "kind": "failed",
+                  "options": [
+                    "Try again"
+                  ],
+                  "id": "${state.t.body.id}-review-${state.the-review.picked.id}"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-15"
+        ]
+      }
+    },
+    {
+      "id": "try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.recovery-15-one-item-with-try-again.picked.id}/answer",
+        "body": {
+          "answer": "Try again"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "recovery-15-try-again-runs-it-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "reviewOf": "${state.t.body.id}"
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-15"
+        ]
+      }
+    }
+  ]
+}
