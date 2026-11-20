@@ -28,7 +28,8 @@ impl Jobs {
         let browser = self.browser.get()?;
         browser.api(|api| api.tools_allowed()).ok()?;
         let server = self.connections.get()?.open_browser(&job.id);
-        let own = matches!(self.job_account(job), Ok((tool, a)) if lanes::launches_own(job, tool, &a));
+        let own =
+            matches!(self.job_account(job), Ok((tool, a)) if lanes::launches_own(job, tool, &a));
         let url = Self::agent_api(server.url(), own);
         Some(server.reached_at(url))
     }
