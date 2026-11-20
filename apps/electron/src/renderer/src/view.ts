@@ -209,7 +209,9 @@ export type Attachments = { files?: { name: string; preview?: string; file?: Fil
   // the box's chips (docs/contracts/composer.md, COMPOSER-3): the jobs these words start, never the account's
   defaults?: { mode?: string; agent?: string; model?: string; effort?: string };
   // the skill picked in the box (docs/contracts/composer.md, COMPOSER-27): beside the words, never in them
-  skill?: string };
+  skill?: string;
+  // where the conversation these words start works (WORKSPACE-3): "This folder" or "A new worktree"
+  workspace?: 'folder' | 'worktree' };
 // (a skill picked is something to send, words or none: COMPOSER-27)
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length || a?.skill);
 

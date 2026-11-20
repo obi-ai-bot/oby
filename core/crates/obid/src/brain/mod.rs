@@ -85,6 +85,9 @@ struct Request {
     /// The skill the owner picked in the box for these words (docs/api/skills.md, SKILLS-6 to 8):
     /// given to the agent in its own form, only where it has it. Add-only (`skills-v1`).
     skill: Option<String>,
+    /// Where a new conversation works (docs/contracts/folders.md, WORKSPACE-3): `folder` (the
+    /// default) or `worktree`; only with `new`, never changed after.
+    workspace: Option<crate::workspace::Workspace>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,6 +163,12 @@ pub async fn plan(
     };
     if req.project.is_some() && (paired.is_some() || relayed.is_some()) {
         return Err(crate::projects::chosen_on_the_mac());
+    }
+    if req.workspace.is_some() && req.new != Some(true) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Where a conversation works is chosen when it starts: send workspace with new.",
+        ));
     }
     if req.project.is_some() && req.new != Some(true) {
         return Err(ApiError::new(
@@ -276,6 +285,29 @@ pub async fn plan(
         )?
     };
     drop_uploads(&shared, begun.forgotten.clone()).await;
+    // The new conversation's workspace, kept before its first turn runs (WORKSPACE-3). One that
+    // can't be kept would read as "This folder": the conversation goes again, and nothing runs.
+    if let Some(workspace) = req.workspace.filter(|_| begun.started && !begun.repeated)
+        && let Err(why) = crate::workspace::chose(&shared, &begun.conversation, workspace).await
+    {
+        tracing::warn!(
+            "conversation {}: its workspace isn't kept, so it doesn't start: {why}",
+            begun.conversation
+        );
+        if let Err(e) = crate::conversation::forget(&shared, &begun.conversation, false).await {
+            tracing::warn!("conversation {} stays: {e:?}", begun.conversation);
+            shared.conversations.mark(
+                &begun.conversation,
+                "a workspace that couldn't be kept".into(),
+            );
+        }
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "Not started: Oby couldn't keep where this conversation works ({why}). Nothing ran."
+            ),
+        ));
+    }
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
     // brings that conversation's words here.
     if let Some((question, option)) = &question

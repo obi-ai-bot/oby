@@ -76,7 +76,8 @@
               "project-jobs-v1",
               "projects-v1",
               "revisions-v1",
-              "skills-v1"
+              "skills-v1",
+              "workspace-v1"
             ]
           }
         }

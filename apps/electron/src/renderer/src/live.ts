@@ -868,7 +868,7 @@ export async function openConversation(shown: string) {
 // (POST /v1/attachments), and the words carry an id of their own: sent again while obid doesn't
 // answer, obid takes them once, files and tasks included.
 let made = 0;
-export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys' | 'skill'>): string | undefined {
+export function ask(said: string, shown?: string, repo?: string, folders?: string[], att?: Pick<Attachments, 'files' | 'jobs' | 'project' | 'defaults' | 'obys' | 'skill' | 'workspace'>): string | undefined {
   const files = att?.files?.filter((f) => f.path) ?? [], jobs = att?.jobs ?? [];
   // a skill picked goes alone too, to an obid that takes it (COMPOSER-27)
   const skill = has(state.status, 'skills-v1') ? att?.skill : undefined;
@@ -902,7 +902,9 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
           // question asks no one
           ...(has(state.status, 'ask-mentions-v1') && !q ? { ask: att?.obys } : {}),
           // the skill picked in the box, beside the words (COMPOSER-27); an answer to Oby's question is only the answer
-          ...(skill && !q ? { skill } : {}) }));
+          ...(skill && !q ? { skill } : {}),
+          // where the conversation it starts works, once obid takes it (WORKSPACE-3)
+          ...(has(state.status, 'workspace-v1') && !c && att?.workspace ? { workspace: att.workspace } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
@@ -992,6 +994,8 @@ export async function moveToProject(shown: string, project: string | null) {
 }
 // whether obid has projects (projects-v1): with none, nothing names one (projects.ts)
 export const takesProjects = (s: Pick<Live, 'status'> = state) => has(s.status, 'projects-v1');
+// obid takes a new conversation's workspace and answers its finishing actions (WORKSPACE-2 to 6)
+export const takesWorkspace = (s: Pick<Live, 'status'> = state) => has(s.status, 'workspace-v1');
 export async function pinConversation(shown: string, pinned: boolean) {
   try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }

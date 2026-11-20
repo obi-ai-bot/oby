@@ -244,6 +244,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .merge(crate::tetrix::router())
         .merge(crate::chatgpt_relay::router())
         .merge(crate::vault::router())
+        .merge(crate::workspace::router())
         .route(
             "/v1/settings/jobs",
             get(crate::routes::job_settings).put(crate::routes::set_job_settings),
@@ -739,6 +740,7 @@ pub const CAPABILITIES: &[&str] = &[
     "projects-v1",
     "revisions-v1",
     "skills-v1",
+    "workspace-v1",
 ];
 
 #[derive(Serialize)]

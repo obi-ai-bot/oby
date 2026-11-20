@@ -1039,6 +1039,87 @@ pub fn is_sha(text: &str) -> bool {
         && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// What a folder's git says of it, for its finishing actions (crate::folders::finishing,
+/// WORKSPACE-4, WORKSPACE-5): read with git alone, never gh or the network.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct State {
+    /// It's in a git repository.
+    pub repo: bool,
+    /// Its `HEAD` has a commit.
+    pub committed: bool,
+    /// The branch it's on; none when detached or not a repository.
+    pub branch: Option<String>,
+    /// The remote it pushes to (`origin`, else the first); none when it has no remote.
+    pub remote: Option<String>,
+    /// The remote's default branch, as last fetched (`refs/remotes/<remote>/HEAD`).
+    pub default_branch: Option<String>,
+    /// Its branch has an upstream.
+    pub upstream: bool,
+    /// Uncommitted changes, untracked files too.
+    pub changes: bool,
+    /// Commits on it its upstream hasn't (with none, that no remote branch has).
+    pub ahead: u32,
+    /// Commits its upstream has that it hasn't.
+    pub behind: u32,
+    /// Commits on it the remote's default branch hasn't.
+    pub ahead_of_default: u32,
+}
+
+/// `dir`'s [`State`]. A folder git can't read as a repository is none.
+pub async fn state(dir: &Path) -> State {
+    let ok = |args: &'static [&'static str]| async move { git(dir, args).await.ok() };
+    if ok(&["rev-parse", "--is-inside-work-tree"]).await.as_deref() != Some("true") {
+        return State::default();
+    }
+    let count = |range: String| async move {
+        (git(dir, &["rev-list", "--count", &range, "--"]).await.ok())
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    let committed = ok(&["rev-parse", "--verify", "-q", "HEAD"]).await.is_some();
+    let branch = ok(&["symbolic-ref", "--short", "-q", "HEAD"])
+        .await
+        .filter(|b| !b.is_empty());
+    let remotes = ok(&["remote"]).await.unwrap_or_default();
+    let remotes: Vec<&str> = remotes.lines().filter(|r| !r.is_empty()).collect();
+    let remote =
+        (remotes.iter().find(|r| **r == "origin").or(remotes.first())).map(|r| (*r).to_owned());
+    let changes = ok(&["status", "--porcelain", "--untracked-files=normal"])
+        .await
+        .is_some_and(|s| !s.is_empty());
+    let mut state = State {
+        repo: true,
+        committed,
+        branch,
+        changes,
+        ..State::default()
+    };
+    if let Some(remote) = &remote {
+        let default = format!("refs/remotes/{remote}/HEAD");
+        state.default_branch = git(dir, &["symbolic-ref", "--short", "-q", &default])
+            .await
+            .ok()
+            .and_then(|b| b.strip_prefix(&format!("{remote}/")).map(str::to_owned));
+        if committed {
+            let upstream = git(dir, &["rev-parse", "--verify", "-q", "@{upstream}"]).await;
+            state.upstream = upstream.is_ok();
+            if state.upstream {
+                state.ahead = count("@{upstream}..HEAD".into()).await;
+                state.behind = count("HEAD..@{upstream}".into()).await;
+            } else {
+                let off = git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await;
+                state.ahead = off.ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+            }
+            state.ahead_of_default = match &state.default_branch {
+                Some(default) => count(format!("{remote}/{default}..HEAD")).await,
+                None => state.ahead,
+            };
+        }
+    }
+    state.remote = remote;
+    state
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
