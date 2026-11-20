@@ -1,0 +1,394 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-23: taking the yes back stops work nobody's watching on the login, saying why; the owner's goes on",
+  "version": "1.0.0",
+  "description": "With the yes given, a routine's job and the owner's own run on the login. The no, with no signature, answers backgroundConsent false: the routine's job stops saying the owner turned it off, the owner's keeps running, and the next routine's job waits.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/background"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        },
+        "config": {
+          "agents": {
+            "claude": {
+              "accounts": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "backgroundConsent": true
+          }
+        }
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Running",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "research",
+          "task": "SLEEP",
+          "agent": "codex",
+          "account": "${state.a.body.id}",
+          "schedule": {
+            "every": "weekdays",
+            "at": "09:00"
+          },
+          "zone": "America/Sao_Paulo",
+          "createdBy": "mac"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "bg",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.r.body.id}/run",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "job.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bg-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.bg.body.job.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "mine",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "SLEEP"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "mine-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.mine.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-23-a-no-needs-no-signature",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": false
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "backgroundConsent": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-23"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-23-the-routines-job-stops-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.bg.body.job.id}",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "stopped",
+            "reason": {
+              "$contains": "turned off"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-23"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-23-the-owners-goes-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.mine.body.id}",
+        "within": 1,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "running"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-23"
+        ]
+      }
+    },
+    {
+      "id": "stop-mine",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.mine.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "r2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Next",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "research",
+          "task": "RELAY",
+          "agent": "codex",
+          "account": "${state.a.body.id}",
+          "schedule": {
+            "every": "weekdays",
+            "at": "09:00"
+          },
+          "zone": "America/Sao_Paulo",
+          "createdBy": "mac"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.r2.body.id}/run",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "job.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-23-the-next-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.next.body.job.id}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "waiting.reserved": {
+              "$type": "array"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-23"
+        ]
+      }
+    }
+  ]
+}

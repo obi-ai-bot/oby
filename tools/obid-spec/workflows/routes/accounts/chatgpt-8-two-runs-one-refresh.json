@@ -1,0 +1,311 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-8: two runs on an expiring token refresh once, and a 401 on a token already replaced goes on with the new one",
+  "version": "1.0.0",
+  "description": "Two jobs on one login near its token's end each call the relay as Codex does while OpenAI refuses the old token, one held a moment: both answers are 200, on one refresh between them.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/agent/chatgpt/{run}/responses"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "near",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expiresIn": 400
+      }
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "tokens": {
+              "$len": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ja",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY HOLD"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ja-env",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.ja.body.id}/.obi/env-seen.json",
+        "within": 60,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "jb",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY HOLD"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "jb-env",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.jb.body.id}/.obi/env-seen.json",
+        "within": 60,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "refuse",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "refuse": "first-access",
+        "expiresIn": 3600,
+        "responseHoldsMs": [
+          1500,
+          0
+        ]
+      }
+    },
+    {
+      "id": "b-sent",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/chatgpt/${state.jb.body.id}/responses",
+        "body": {},
+        "as": "token",
+        "token": "${state.jb-env.json.OBY_MCP_TOKEN}",
+        "background": true
+      }
+    },
+    {
+      "id": "chatgpt-8-one-run-goes-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/chatgpt/${state.ja.body.id}/responses",
+        "body": {},
+        "as": "token",
+        "token": "${state.ja-env.json.OBY_MCP_TOKEN}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-8"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-8-the-other-run-goes-on-with-the-new-token",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.b-sent}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-8"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-8-one-refresh",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "refreshes": {
+              "$len": 1
+            },
+            "bearers": {
+              "$count": [
+                {
+                  "method": "POST",
+                  "path": "/v1/responses",
+                  "token": "${state.t.firstAccess}"
+                },
+                2
+              ]
+            },
+            "posts": 4
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-8"
+        ]
+      }
+    }
+  ]
+}

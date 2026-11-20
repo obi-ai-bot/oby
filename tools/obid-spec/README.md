@@ -112,6 +112,13 @@ nodes, `src/coverage_accounts.rs`, only act or read: `accounts.exec` (an executa
 with another version, one that fails or hangs, a `cursor-agent` with a known model list),
 `accounts.link` (a login file that is a link) and `accounts.log` (the scratch obid's own log, so a
 `check` proves a login's secret never reached it, or counts the lines that say something).
+Continue with ChatGPT runs against a stand-in OpenAI on loopback, as obid's own tests do
+(`src/coverage_accounts_openai.rs`): `accounts.openai` starts it (its origin is what a scratch obid
+is given as `OBID_TEST_CHATGPT_ORIGIN`, which only a debug build reads), `accounts.openai-set`
+scripts it (who signs in, a forged id token, a refused consent, token and revoke errors, what
+`/v1/responses` answers), `accounts.openai-saw` reads what it was asked, `accounts.visit` is the
+person's browser (consent, obid's callback) and `accounts.tokens` says where its tokens ended up.
+Its tokens and its RSA keys are made at run time; none is real.
 
 ## How it runs
 

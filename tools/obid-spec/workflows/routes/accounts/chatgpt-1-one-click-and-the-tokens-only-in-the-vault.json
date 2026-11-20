@@ -1,0 +1,326 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-1: one click and consent, no auth.json, and the tokens only in the vault",
+  "version": "1.0.0",
+  "description": "With no Codex login, Continue with ChatGPT and the person's consent (the stand-in OpenAI's redirect) sign a new Codex account in: signedIn, its login and email, no auth.json, both tokens only in obid's vault, the first registration as OpenAI's page asks. A job on it runs through obid's relay, OpenAI seeing the access token, on the first model the account lists. The seeded account of the Mac's own login answers ownLogin.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            },
+            "userCode": {
+              "$exists": false
+            },
+            "pasteCode": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "chatgpt-1-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "signedIn": true,
+                "login": "chatgpt",
+                "loginEmail": "person@example.com",
+                "email": "person@example.com",
+                "label": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-1-no-auth-json",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.a.body.id}/auth.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-1-tokens-only-in-the-vault",
+      "use": "runtime.rust:accounts.tokens",
+      "inputs": {
+        "obid": "${state.o}",
+        "openai": "${state.openai}",
+        "expect": {
+          "body": {
+            "files": [
+              "home/vault/secrets.json"
+            ],
+            "tokens": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-1-the-first-registration",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "authorized": {
+              "$len": 1
+            },
+            "authorized.0.client_id": "dynamic_agent_client",
+            "authorized.0.agent_name_hint": "Oby",
+            "authorized.0.ext_agent_host_id": {
+              "$matches": "^urn:uuid:[0-9a-f-]{36}$"
+            },
+            "authorized.0.code_challenge_method": "S256",
+            "authorized.0.redirect_uri": {
+              "$matches": "^http://127\\.0\\.0\\.1:[0-9]+/auth/callback$"
+            },
+            "authorized.0.resource": "${state.openai.origin}/v1",
+            "authorized.0.scope": {
+              "$contains": "chatgpt.tokens.use.direct"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-1-the-job-runs-on-the-accounts-model",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "done",
+            "summary": {
+              "$contains": "From the stand-in."
+            },
+            "model": "gpt-stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-1-openai-saw-the-access-token",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "bearers": {
+              "$any": {
+                "token": "${state.chatgpt-1-the-first-registration.firstAccess}",
+                "method": "POST",
+                "path": "/v1/responses"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    },
+    {
+      "id": "seeded",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "seeded",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        },
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-1-the-seeded-account-is-own-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.seeded}",
+        "method": "GET",
+        "path": "/v1/accounts/codex/sign-in?with=chatgpt",
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "ownLogin"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-1"
+        ]
+      }
+    }
+  ]
+}

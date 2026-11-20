@@ -43,6 +43,9 @@ libc = "0.2"
 # The lab's pinned-certificate check (src/lab/remote.rs): TLS to another computer's direct address, its certificate pinned by SHA-256.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# The stand-in OpenAI's id tokens (src/coverage_accounts_openai.rs): RS256 over a key openssl makes at
+# its start. Already built for rustls's own use.
+ring = "0.17"
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 # The browser's secret scan (src/browser.rs, `browser-scan`): every file under a scratch obid's
 # home, its browser engine's hundreds of MB included, searched for each secret in well under a second.
