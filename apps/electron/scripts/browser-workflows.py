@@ -85,7 +85,7 @@ def workflow(file, name, description, steps):
         "version": "1.0.0",
         "description": description,
         "trigger": {"manual": {}},
-        "tags": ["launch", "browser"],
+        "tags": ["browser"],
         "steps": steps,
     }
     (OUT / file).write_text(json.dumps(w, indent=2, ensure_ascii=False) + "\n")
@@ -239,6 +239,7 @@ def board_17():
         "asks for one, and its first-time note says what the browser is for; closed, the note goes and the empty words stay.",
         [
             launch(17, 1280, 800),
+            measure("panel-beside", {"css": "aside.br"}, "BROWSERAPP-6", **{"box.width": 600, "box.x": 680, "box.y": 0}),
             read("no-tabs", {"css": ".br-tab"}, None, count=0),
             read("address", {"css": ".br-address"}, "BROWSERAPP-6", count=1, text="Type an address"),
             read("empty", {"css": ".empty-words"}, "BROWSERAPP-6", count=1, text="No pages yet.\nWhen an agent opens one, you see it here, live."),

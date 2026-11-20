@@ -7,7 +7,6 @@
     "manual": {}
   },
   "tags": [
-    "launch",
     "browser"
   ],
   "steps": [
@@ -24,6 +23,28 @@
         "storage": {
           "oby.chatPanelOpen": "0"
         }
+      }
+    },
+    {
+      "id": "panel-beside",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 600,
+            "box.x": 680,
+            "box.y": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-6"
+        ]
       }
     },
     {
