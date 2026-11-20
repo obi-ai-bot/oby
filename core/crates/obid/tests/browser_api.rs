@@ -1,8 +1,8 @@
 //! The browser's API on the real obid (docs/contracts/browser.md), for what its workflows can't
 //! easily show: the person's input from a device that doesn't hold the tab never reaching the page
 //! (BROWSER-7), the agents' server refusing a missing, made-up or ended job's token (BROWSER-16),
-//! a secret in no file under obid's home (BROWSER-8), and the switches kept across a restart
-//! (BROWSER-15). obid runs the tests' stand-in agent-browser (`OBID_TEST_BROWSER_STAND_IN`, a debug
+//! a secret in no file under obid's home (BROWSER-8), the switches kept across a restart
+//! (BROWSER-15), and a refused call reading its whole 401, never a reset (BROWSER-28). obid runs the tests' stand-in agent-browser (`OBID_TEST_BROWSER_STAND_IN`, a debug
 //! build's only), whose live stream is a WebSocket server of the test's own; a Codex job sleeping as
 //! its agent hands back its broker token (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
 mod support;
@@ -328,6 +328,96 @@ fn browser_16_no_token_a_made_up_one_the_owners_or_an_ended_jobs_is_refused() {
         let (status, body) = mcp(&obid, Some(&token), "tools/list", json!({}));
         (status == 401 && body["reason"] == "bad_token").then_some(())
     });
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// One request as obid-spec's client sends it: its head, then its body in a write of its own,
+/// then everything obid answers until it closes. A reset, while writing or reading, is an error.
+fn refused_whole(
+    obid: &Obid,
+    path: &str,
+    token: Option<&str>,
+    body: &[u8],
+) -> Result<(u16, Value), String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    // A small send buffer, so a large body is surely still being written when obid answers.
+    rustix::net::sockopt::set_socket_send_buffer_size(&stream, 4096).unwrap();
+    let mut head = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    if let Some(token) = token {
+        head.push_str(&format!("Authorization: Bearer {token}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream
+        .write_all(head.as_bytes())
+        .map_err(|e| format!("writing the head: {e}"))?;
+    stream
+        .write_all(body)
+        .map_err(|e| format!("writing the body: {e}"))?;
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("reading the answer: {e}"))?;
+    let raw = String::from_utf8_lossy(&raw);
+    let (head, rest) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| format!("no whole answer: {raw:?}"))?;
+    let status = head.split(' ').nth(1).and_then(|s| s.parse().ok());
+    let status = status.ok_or_else(|| format!("no status: {head:?}"))?;
+    Ok((
+        status,
+        serde_json::from_str(rest.trim()).unwrap_or(Value::Null),
+    ))
+}
+
+#[test]
+fn browser_28_a_refused_call_reads_its_whole_401_never_a_reset() {
+    let folder = Folder::new("browser-26");
+    let mut obid = browser_obid(&folder);
+    let made_up = "0".repeat(64);
+    let small = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        .to_string()
+        .into_bytes();
+    // A body bigger than the sockets' buffers: still being written when obid answers.
+    let large = {
+        let mut b = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"pad":""#.to_vec();
+        b.resize(1024 * 1024, b'x');
+        b.extend_from_slice(br#""}}"#);
+        b
+    };
+    // The browser's server (a made-up token), an agent's own MCP route (a made-up token) and the
+    // app's API (no token): each refused by the API's gate before any handler reads the body.
+    let routes: [(&str, Option<&str>, Option<&str>); 3] = [
+        ("/v1/browser/mcp", Some(&made_up), Some("bad_token")),
+        ("/v1/agent/mcp/no-such-job", Some(&made_up), None),
+        ("/v1/jobs", None, None),
+    ];
+    let mut failures = Vec::new();
+    for (path, token, reason) in routes {
+        for (round, body) in std::iter::repeat_n(&small, 40).chain([&large]).enumerate() {
+            match refused_whole(&obid, path, token, body) {
+                Ok((401, answer)) if reason.is_none_or(|r| answer["reason"] == r) => {}
+                Ok((status, answer)) => {
+                    failures.push(format!("{path} #{round}: {status} {answer}"))
+                }
+                Err(e) => failures.push(format!("{path} #{round} ({} bytes): {e}", body.len())),
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} refused calls didn't read their 401:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    // obid still answers a call with its token.
+    let status = call(&obid, "GET", "/v1/status", None);
+    assert_eq!(status.status, 200, "{}", status.text);
     stop_with_no_browser_left(&mut obid);
 }
 
