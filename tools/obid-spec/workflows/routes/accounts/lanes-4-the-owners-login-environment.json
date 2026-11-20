@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-4: an own job gets the owner's login environment",
+  "version": "1.0.0",
+  "description": "The owner's login shell exports a Bedrock gateway, its model, CLAUDE_CODE_USE_BEDROCK and other CLAUDE_* names: an own Claude Code job gets each as written and obid passes no --model; what pushes (SSH_AUTH_SOCK, GH_TOKEN, GIT_CONFIG_*) stays out. A job marked untrusted gets none of them and obid's model.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "shell",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/login-shell",
+        "text": "#!/bin/sh\n# The owner's login shell: the scratch obid's own PATH, and what their ~/.zprofile exports.\nPATH=$(sed -n \"s/^PATH='\\(.*\\)'$/\\1/p\" '${state.o.folder}/login-shell')\nexport PATH ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_MODEL=us.anthropic.claude-sonnet-5-5-v1:0 SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=not-a-token GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=store LANES_4=kept CLAUDE_CODE_LANES_21=kept\nexec /usr/bin/env -0\n"
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_LOGIN_SHELL": "${state.shell.path}"
+        }
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "SHOW_ENV"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "lanes-4-an-own-job-gets-the-owners-login-environment",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$contains": "ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_MODEL=us.anthropic.claude-sonnet-5-5-v1:0 SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none LANES_4=kept CLAUDE_CODE_LANES_21=kept model=none"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-4"
+        ]
+      }
+    },
+    {
+      "id": "marked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SHOW_ENV\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-4-a-foreign-job-gets-none-of-it-and-obids-model",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.marked.body.jobs.0.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "untrusted": true,
+            "summary": {
+              "$contains": "ANTHROPIC_BASE_URL=none CLAUDE_CODE_USE_BEDROCK=none ANTHROPIC_MODEL=none SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none LANES_4=none CLAUDE_CODE_LANES_21=none model=claude-"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-4"
+        ]
+      }
+    }
+  ]
+}

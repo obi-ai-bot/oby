@@ -1,0 +1,353 @@
+{
+  "schemaVersion": "2",
+  "name": "PROFILES-15 and 16: what a profile changes, and a registry that doesn't read",
+  "version": "1.0.0",
+  "description": "Renaming the default keeps its id, colour and default; recolouring one changes only its colour; `default`, `id` and an empty body are 400 and an unknown id 404, each leaving the registry as it was, with exactly one default. With profiles.json holding `not json`, GET answers one first profile, creating and renaming are 409, and the file still reads `not json`.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/profiles/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "profiles-15-renaming-the-default-keeps-its-id-colour-and-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.first.body.0.id}",
+        "body": {
+          "name": "Home"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": "Home",
+            "id": "${state.first.body.0.id}",
+            "color": "${state.first.body.0.color}",
+            "default": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "name": "Acme",
+            "default": false
+          }
+        }
+      }
+    },
+    {
+      "id": "profiles-15-recolouring-changes-only-its-colour",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.b.body.id}",
+        "body": {
+          "color": "#112233"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.b.body.id}",
+            "name": "Acme",
+            "color": "#112233",
+            "default": false,
+            "waiting": false
+          },
+          "paths": {
+            "$": {
+              "$len": 5
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "registry",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles.json",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "profiles-15-refused-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.b.body.id}",
+        "body": {
+          "default": true
+        },
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "profiles-15-refused-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.b.body.id}",
+        "body": {
+          "id": "x"
+        },
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "profiles-15-refused-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.b.body.id}",
+        "body": {},
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "profiles-15-an-unknown-id-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/profiles/00000000-0000-4000-8000-000000000000",
+        "body": {
+          "name": "Gone"
+        },
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "profiles-15-each-left-the-registry-as-it-was",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles.json",
+        "expect": {
+          "text": "${state.registry.text}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "profiles-15-exactly-one-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "default": true
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-15"
+        ]
+      }
+    },
+    {
+      "id": "u",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "u",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "files": {
+          "profiles.json": "not json"
+        }
+      }
+    },
+    {
+      "id": "profiles-16-get-answers-one-first-profile",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.u}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0.default": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-16"
+        ]
+      }
+    },
+    {
+      "id": "profiles-16-creating-is-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.u}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-16"
+        ]
+      }
+    },
+    {
+      "id": "profiles-16-renaming-is-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.u}",
+        "method": "PATCH",
+        "path": "/v1/profiles/${state.profiles-16-get-answers-one-first-profile.body.0.id}",
+        "body": {
+          "name": "Home"
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-16"
+        ]
+      }
+    },
+    {
+      "id": "profiles-16-the-file-still-reads-not-json",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.u}",
+        "path": "profiles.json",
+        "expect": {
+          "text": "not json"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-16"
+        ]
+      }
+    },
+    {
+      "id": "profiles-16-and-no-profiles-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.u}",
+        "path": "profiles",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-16"
+        ]
+      }
+    }
+  ]
+}
