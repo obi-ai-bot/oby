@@ -14,6 +14,7 @@
 
 mod binaries;
 mod call;
+mod chrome_said;
 mod download_file;
 mod downloads;
 mod drive;

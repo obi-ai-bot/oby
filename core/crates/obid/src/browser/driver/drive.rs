@@ -206,6 +206,12 @@ impl Driver {
             .await
         {
             Call::Ok(_) => {}
+            // agent-browser says only that Chrome stopped: ask Chrome itself why.
+            Call::Failed(e) if e.contains("exited early") => {
+                let said =
+                    super::chrome_said::chrome_said(&installed.chrome, &session.socket_dir).await;
+                return Err(format!("{e}. Chrome itself said: {said}"));
+            }
             Call::Failed(e) => return Err(e),
             Call::TimedOut(ms) => {
                 return Err(format!(
