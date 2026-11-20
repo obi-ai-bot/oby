@@ -1,0 +1,325 @@
+{
+  "schemaVersion": "2",
+  "name": "A passing error is the agent's (RECOVERY-7, 19)",
+  "version": "1.0.0",
+  "description": "An overloaded API's error or a 429 that still ends a turn isn't sent again: the job is interrupted at once with the tool's words and Try again, no wait shown, no account marked full; the agent's own words naming a limit hold nothing.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "TRANSIENT KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-19-interrupted-at-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "accountLimit": null,
+            "stalled": null,
+            "resumesAt": null
+          },
+          "paths": {
+            "reason": {
+              "$matches": "^API Error: 529"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-19"
+        ]
+      }
+    },
+    {
+      "id": "recovery-19-not-sent-again",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.t.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-19"
+        ]
+      }
+    },
+    {
+      "id": "recovery-19-no-try-taken",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.t.body.id}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.errors": 0,
+              "recovery.tries": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-19"
+        ]
+      }
+    },
+    {
+      "id": "recovery-19-no-wait-shown",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 1,
+        "expect": {
+          "paths": {
+            "id": "${state.t.body.id}",
+            "step": {
+              "$matches": "^Trying again"
+            }
+          }
+        },
+        "none": true
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "REJECTED 429 KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-7-a-429-is-a-passing-error",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "accountLimit": null,
+            "resumesAt": null
+          },
+          "paths": {
+            "reason": {
+              "$matches": "^API Error: Request rejected \\(429\\)"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-7",
+          "RECOVERY-19"
+        ]
+      }
+    },
+    {
+      "id": "recovery-7-the-429-not-sent-again",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.r.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "l",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LAST WORDS LIMIT KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-7-the-agents-words-are-no-limit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.l.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "accountLimit": null,
+            "resumesAt": null
+          },
+          "paths": {
+            "reason": {
+              "$matches": "^API Error: 529"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "recovery-7-a-strangers-words-arent-the-reason",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.l.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "reason": {
+              "$not": {
+                "$contains": "stranger"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-7"
+        ]
+      }
+    },
+    {
+      "id": "recovery-19-no-account-marked-full",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts.0.fullUntil": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-7",
+          "RECOVERY-19"
+        ]
+      }
+    }
+  ]
+}

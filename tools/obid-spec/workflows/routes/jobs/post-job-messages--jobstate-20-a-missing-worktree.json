@@ -1,0 +1,324 @@
+{
+  "schemaVersion": "2",
+  "name": "Try again makes a missing worktree again (JOBSTATE-20)",
+  "version": "1.0.0",
+  "description": "A stopped job whose worktree folder went while git still lists it, and one whose git folder in obid's clone went: Try again makes the worktree again and the job runs to done; the folder whose git folder went moves aside as .orphaned with what it held.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1-beats",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j1.body.id}/.obi/beat",
+        "within": 60,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "j1-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j1.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "folder-gone",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "remove",
+        "path": "worktrees/${state.j1.body.id}"
+      }
+    },
+    {
+      "id": "git-still-lists-it",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "clones/obi-e2e/fixture-app/.git/worktrees/${state.j1.body.id}",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "j1-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j1.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "jobstate-20-folder-runs-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j1.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "round": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-20"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-20-folder-worktree-made-again",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j1.body.id}/.git",
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-20"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-20-folder-listed-in-the-clone",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "clones/obi-e2e/fixture-app/.git/worktrees/${state.j1.body.id}",
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-20"
+        ]
+      }
+    },
+    {
+      "id": "j2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j2-beats",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j2.body.id}/.obi/beat",
+        "within": 60,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "j2-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j2.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "mine",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.j2.body.id}/notes.md",
+        "text": "mine"
+      }
+    },
+    {
+      "id": "admin-gone",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "remove",
+        "path": "clones/obi-e2e/fixture-app/.git/worktrees/${state.j2.body.id}"
+      }
+    },
+    {
+      "id": "j2-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j2.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "jobstate-20-admin-runs-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j2.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "round": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-20"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-20-admin-worktree-made-again",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j2.body.id}/.git",
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-20"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-20-admin-listed-in-the-clone",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "clones/obi-e2e/fixture-app/.git/worktrees/${state.j2.body.id}",
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-20"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-20-the-orphan-kept-aside",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j2.body.id}.orphaned/notes.md",
+        "expect": {
+          "text": "mine"
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-20"
+        ]
+      }
+    }
+  ]
+}

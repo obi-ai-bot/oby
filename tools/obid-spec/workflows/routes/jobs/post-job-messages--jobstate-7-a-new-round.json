@@ -1,0 +1,439 @@
+{
+  "schemaVersion": "2",
+  "name": "A new round sets and clears exactly its fields (JOBSTATE-7)",
+  "version": "1.0.0",
+  "description": "Try again moves a job to queued in its next round: round + 1, rounds + 1 only when it was more than 1, both staying at their maximum instead of wrapping; its ended fields are cleared and its session, branch, summary and commits stay.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "files": {
+          "jobs/aaaa0071.json": {
+            "id": "aaaa0071",
+            "request": "Look around",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-aaaa0071",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "Look around",
+            "title": null,
+            "status": "failed",
+            "step": "",
+            "summary": "What it did.",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999700,
+            "finished": 1794999800,
+            "commits": 1,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": 8,
+            "round": 2,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true,
+            "reason": "It broke.",
+            "nextStep": "Try again"
+          },
+          "jobs/aaaa0072.json": {
+            "id": "aaaa0072",
+            "request": "Look around",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-aaaa0072",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "Look around",
+            "title": null,
+            "status": "failed",
+            "step": "",
+            "summary": "What it did.",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999700,
+            "finished": 1794999800,
+            "commits": 1,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": 1,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true,
+            "reason": "It broke.",
+            "nextStep": "Try again"
+          },
+          "jobs/aaaa0073.json": {
+            "id": "aaaa0073",
+            "request": "Look around",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-aaaa0073",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "Look around",
+            "title": null,
+            "status": "failed",
+            "step": "",
+            "summary": "What it did.",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999700,
+            "finished": 1794999800,
+            "commits": 1,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": 4294967295,
+            "round": 4294967295,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true,
+            "reason": "It broke.",
+            "nextStep": "Try again"
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-7-more-rounds",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0071/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "aaaa0071",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 3,
+            "rounds": 9,
+            "finished": null,
+            "reason": null,
+            "nextStep": null,
+            "stoppedBy": null,
+            "resumesAt": null,
+            "limit": null,
+            "stalled": null,
+            "waiting": null,
+            "session": "00000000-0000-4000-8000-000000000001",
+            "branch": "oby/investigate-aaaa0071"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-7"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-7-more-rounds-keeps-the-rest",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/aaaa0071.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "summary": {
+                "$ne": ""
+              },
+              "commits": 1,
+              "accountLimitBlocked": {
+                "$oneOf": [
+                  false,
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-7"
+        ]
+      }
+    },
+    {
+      "id": "stop-more-rounds",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0071/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "jobstate-7-one-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0072/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "aaaa0072",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 2,
+            "rounds": 1,
+            "finished": null,
+            "reason": null,
+            "nextStep": null,
+            "stoppedBy": null,
+            "resumesAt": null,
+            "limit": null,
+            "stalled": null,
+            "waiting": null,
+            "session": "00000000-0000-4000-8000-000000000001",
+            "branch": "oby/investigate-aaaa0072"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-7"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-7-one-round-keeps-the-rest",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/aaaa0072.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "summary": {
+                "$ne": ""
+              },
+              "commits": 1,
+              "accountLimitBlocked": {
+                "$oneOf": [
+                  false,
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-7"
+        ]
+      }
+    },
+    {
+      "id": "stop-one-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0072/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "jobstate-7-at-the-maximum",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0073/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "aaaa0073",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 4294967295,
+            "rounds": 4294967295,
+            "finished": null,
+            "reason": null,
+            "nextStep": null,
+            "stoppedBy": null,
+            "resumesAt": null,
+            "limit": null,
+            "stalled": null,
+            "waiting": null,
+            "session": "00000000-0000-4000-8000-000000000001",
+            "branch": "oby/investigate-aaaa0073"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-7"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-7-at-the-maximum-keeps-the-rest",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/aaaa0073.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "summary": {
+                "$ne": ""
+              },
+              "commits": 1,
+              "accountLimitBlocked": {
+                "$oneOf": [
+                  false,
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-7"
+        ]
+      }
+    },
+    {
+      "id": "stop-at-the-maximum",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0073/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

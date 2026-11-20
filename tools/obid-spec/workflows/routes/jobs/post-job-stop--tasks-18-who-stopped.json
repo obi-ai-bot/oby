@@ -1,0 +1,280 @@
+{
+  "schemaVersion": "2",
+  "name": "Stop says who stopped it (TASKS-18)",
+  "version": "1.0.0",
+  "description": "A stop through the API, through stop-all, and the owner's stop while the agent's permission waited each write their own stoppedBy, leave reason as it was, and only the last is a failure record.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/stop"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-18-the-apis-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped",
+            "stoppedBy": "Stopped through Oby's API",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-18"
+        ]
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "tasks-18-stop-all-says-the-api",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped",
+            "stoppedBy": "Stopped through Oby's API",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-18"
+        ]
+      }
+    },
+    {
+      "id": "no-record-for-a-plain-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/failures",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-18"
+        ]
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "ASK: {\"tool\": \"AskUserQuestion\", \"input\": {\"questions\": [{\"question\": \"Which store?\", \"header\": \"Store\", \"multiSelect\": false, \"options\": [{\"label\": \"SQLite\"}, {\"label\": \"Files\"}]}]}}"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "q-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission": {
+              "$type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-18-stopped-while-its-question-waited",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.q.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped",
+            "stoppedBy": "Stopped through Oby's API while its question waited",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-18"
+        ]
+      }
+    },
+    {
+      "id": "tasks-18-its-failure-record",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/failures",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0.job": "${state.q.body.id}",
+            "0.trigger": "failed",
+            "0.what": "Stopped through Oby's API while its question waited."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-18"
+        ]
+      }
+    }
+  ]
+}

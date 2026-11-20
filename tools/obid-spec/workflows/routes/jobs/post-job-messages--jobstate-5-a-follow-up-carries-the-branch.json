@@ -1,0 +1,200 @@
+{
+  "schemaVersion": "2",
+  "name": "Try again is refused while a follow-up carries the branch (JOBSTATE-5)",
+  "version": "1.0.0",
+  "description": "A failed job whose follow-up works on its same branch: Try again's words answer 422 naming that follow-up, and the first job's status, round, finished, reason and next step stay as they were.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "jobs/aaaa0005.json": {
+            "id": "aaaa0005",
+            "request": "Look around",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-aaaa0005",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "Look around",
+            "title": null,
+            "status": "failed",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999700,
+            "finished": 1794999800,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true,
+            "reason": "It broke.",
+            "nextStep": "Try again"
+          },
+          "jobs/bbbb0005.json": {
+            "id": "bbbb0005",
+            "request": "Carry it on",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-aaaa0005",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "Carry it on",
+            "title": null,
+            "status": "stopped",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999850,
+            "finished": 1794999900,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true,
+            "followUpOf": "aaaa0005"
+          }
+        }
+      }
+    },
+    {
+      "id": "before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/aaaa0005",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "reason": "It broke.",
+            "nextStep": "Try again"
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-5-refused-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0005/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "Its follow-up Carry it on carries its branch on"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-5"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-5-it-stays-as-it-was",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/aaaa0005",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed",
+            "round": "${state.before.body.round}",
+            "finished": "${state.before.body.finished}",
+            "reason": "It broke.",
+            "nextStep": "Try again"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-5"
+        ]
+      }
+    }
+  ]
+}
