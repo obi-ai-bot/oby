@@ -15,8 +15,8 @@
 //!    latest-frame slot a watch panel reads. Pure Rust with no IO and no clock of its own: obid takes it as it is.
 //! 2. **The lab** (from [`Lab`] down): agent-browser as a pinned binary (`npm install --prefix` the
 //!    workflow's folder, its native binary checked against [`PINNED`]), one `--session` and one
-//!    `--profile` per agent in the workflow's folder, Chrome for Testing (never the person's Chrome,
-//!    never `--auto-connect` or `--cdp`), a fixture site on 127.0.0.1, a WebSocket client for the
+//!    `--profile` per agent in the workflow's folder, chrome-headless-shell pinned and hash-checked
+//!    ([`SHELL_PINNED`]; never the person's Chrome, never `--auto-connect` or `--cdp`), a fixture site on 127.0.0.1, a WebSocket client for the
 //!    live stream, and the `lab.browser.*` nodes, which are thin wrappers over the core.
 //!
 //! Each rule can be switched off, one at a time, only to watch its workflow go red:
@@ -1055,7 +1055,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("lab.browser.site", "Serves the lab's fixture site on 127.0.0.1 (a free port) for this workflow: a form, a link, a download, a slow page (?ms=), an alert and an animated page. Answers its url and, for a machine, the url the machine reaches it at."),
     ("lab.browser.fetch", "GETs a path of the fixture site: status, headers, body and how long it took; with expect."),
     ("lab.browser.hits", "How many times the fixture site served `path` (`hits`), and each of `paths` in order (`counts`); with expect."),
-    ("lab.browser.agent", "Gives a conversation a browser of its own: agent-browser pinned and hash-checked, its own --session and --profile in the workflow's folder, Chrome for Testing; on the Mac, or on a lab machine (`machine`). Skipped when it can't be installed."),
+    ("lab.browser.agent", "Gives a conversation a browser of its own: agent-browser pinned and hash-checked, its own --session and --profile in the workflow's folder, chrome-headless-shell pinned and hash-checked (`OBID_SPEC_CHROME` names another); on the Mac, or on a lab machine (`machine`). Skipped when it can't be installed."),
     ("lab.browser.tool", "Calls one oby_browser_* tool as a conversation, through the core (control, refs, deadline, outside data, downloads): {ok, result} or {ok: false, error: {code, message}}, with elapsedMs. `refFor` {role, name} picks a ref from the conversation's last snapshot; with expect."),
     ("lab.browser.tools", "The tool surface obid serves: each tool's name, kind and whether it only reads."),
     ("lab.browser.take", "The person takes a tab over; with expect."),
@@ -1173,39 +1173,167 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(sha2::Sha256::digest(&bytes)))
 }
 
-/// The folder Chrome for Testing is kept in across runs (190 MB: downloaded once, never per
-/// workflow): agent-browser's own `install`, run with this folder as its home.
-fn chrome_cache() -> Option<PathBuf> {
+/// The browser the lab drives: Google's chrome-headless-shell (the owner's "Let's do the headless
+/// then", docs/decisions/2026-11-20-headless-shell.md), the version agent-browser 0.43.0 installs
+/// as Chrome for Testing, never the person's Chrome.
+pub const SHELL_VERSION: &str = "158.0.8127.36";
+
+/// Each platform's chrome-headless-shell zip, as Google's Chrome for Testing bucket serves it
+/// (`<SHELL_URL>/<SHELL_VERSION>/<p>/chrome-headless-shell-<p>.zip`): its SHA-256 and size, taken
+/// over HTTPS on 2026-11-20 (Google publishes no hashes). A zip that doesn't match isn't unpacked.
+/// There is no linux-arm64 build.
+pub const SHELL_PINNED: &[(&str, &str, u64)] = &[
+    (
+        "mac-arm64",
+        "c24d40a3786322ff3a5e3ac6eed162226cbaf07ebe468715407827226b0f8897",
+        105_057_133,
+    ),
+    (
+        "mac-x64",
+        "e0c5d07d8f5bcc5bdd5ef370e7daf3770856b585fcc9eecf441c7e3bb2e3d1cf",
+        112_306_247,
+    ),
+    (
+        "linux64",
+        "2d3a23017323c54fd457a678e4351f895c4076d8050e39d5aa6247f93448b73a",
+        132_087_165,
+    ),
+];
+
+pub const SHELL_URL: &str = "https://storage.googleapis.com/chrome-for-testing-public";
+
+pub fn shell_pinned(platform: &str) -> Option<&'static str> {
+    SHELL_PINNED
+        .iter()
+        .find(|(p, _, _)| *p == platform)
+        .map(|(_, h, _)| *h)
+}
+
+/// The zip's URL for a platform of Google's (`mac-arm64`, `mac-x64`, `linux64`).
+pub fn shell_url(platform: &str) -> String {
+    format!("{SHELL_URL}/{SHELL_VERSION}/{platform}/chrome-headless-shell-{platform}.zip")
+}
+
+/// This computer's platform, in Google's names, or None (linux-arm64 has no build).
+pub fn shell_platform() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("mac-arm64"),
+        ("macos", "x86_64") => Some("mac-x64"),
+        ("linux", "x86_64") => Some("linux64"),
+        _ => None,
+    }
+}
+
+/// The folder chrome-headless-shell is kept in across runs (about 100 MB: downloaded once, never
+/// per workflow). Chrome for Testing's old folder beside it (`agent-browser-chrome`) is left as
+/// it is.
+pub fn shell_cache() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     Some(if cfg!(target_os = "macos") {
-        home.join("Library/Caches/obid-spec/agent-browser-chrome")
+        home.join("Library/Caches/obid-spec/chrome-headless-shell")
     } else {
-        home.join(".cache/obid-spec/agent-browser-chrome")
+        home.join(".cache/obid-spec/chrome-headless-shell")
     })
 }
 
-fn find_chrome(cache: &Path) -> Option<PathBuf> {
-    let browsers = cache.join(".agent-browser/browsers");
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&browsers)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("chrome-"))
-        })
-        .collect();
-    dirs.sort();
-    let dir = dirs.pop()?;
-    let exe = if cfg!(target_os = "macos") {
-        dir.join("Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
-    } else {
-        dir.join("chrome-linux64/chrome")
-    };
+/// The unpacked executable for `platform` in `cache`, when it's there.
+pub fn find_shell(cache: &Path, platform: &str) -> Option<PathBuf> {
+    let exe = cache.join(SHELL_VERSION).join(format!(
+        "chrome-headless-shell-{platform}/chrome-headless-shell"
+    ));
     exe.is_file().then_some(exe)
 }
 
-/// agent-browser on this Mac for this workflow, hash-checked, and Chrome for Testing, or why not
+/// chrome-headless-shell on this computer: the cache's, else downloaded, hash-checked and
+/// unpacked into it; or why not (a skip). A zip that doesn't match its pin is an error, never a
+/// skip.
+async fn install_shell() -> Result<std::result::Result<PathBuf, String>> {
+    let Some(plat) = shell_platform() else {
+        return Ok(Err(format!(
+            "skipped: chrome-headless-shell has no build for {} {} (Google ships mac-arm64, mac-x64 and linux64 only)",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )));
+    };
+    let cache = shell_cache().context("no HOME")?;
+    if let Some(exe) = find_shell(&cache, plat) {
+        return Ok(Ok(exe));
+    }
+    private_dir(&cache)?;
+    let zip = cache.join(format!(
+        ".chrome-headless-shell-{plat}-{}.zip",
+        std::process::id()
+    ));
+    let got = tokio::time::timeout(
+        Duration::from_secs(600),
+        tokio::process::Command::new("curl")
+            .args(["-fsSL", "--proto", "=https", "-o"])
+            .arg(&zip)
+            .arg(shell_url(plat))
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    match got {
+        Ok(Ok(o)) if o.status.success() => {}
+        Ok(Ok(o)) => {
+            let _ = std::fs::remove_file(&zip);
+            return Ok(Err(format!(
+                "skipped: chrome-headless-shell didn't download ({}: {})",
+                shell_url(plat),
+                String::from_utf8_lossy(&o.stderr).trim()
+            )));
+        }
+        Ok(Err(e)) => return Ok(Err(format!("skipped: curl didn't start: {e}"))),
+        Err(_) => {
+            let _ = std::fs::remove_file(&zip);
+            return Ok(Err(
+                "skipped: chrome-headless-shell didn't download within 600 s".into(),
+            ));
+        }
+    }
+    let sha = sha256_file(&zip)?;
+    let want = shell_pinned(plat).unwrap_or_default();
+    if sha != want {
+        let _ = std::fs::remove_file(&zip);
+        bail!(
+            "{} isn't chrome-headless-shell {SHELL_VERSION} as pinned for {plat}: its SHA-256 is {sha}, not {want}",
+            shell_url(plat)
+        );
+    }
+    // Unpacked beside its final place, then moved in whole: a run never sees half a browser.
+    let partial = cache.join(format!(".{SHELL_VERSION}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&partial);
+    private_dir(&partial)?;
+    let out = tokio::process::Command::new("unzip")
+        .args(["-q", "-o"])
+        .arg(&zip)
+        .arg("-d")
+        .arg(&partial)
+        .output()
+        .await
+        .context("unzip didn't start")?;
+    let _ = std::fs::remove_file(&zip);
+    anyhow::ensure!(
+        out.status.success(),
+        "unzip of chrome-headless-shell failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let target = cache.join(SHELL_VERSION);
+    if std::fs::rename(&partial, &target).is_err() {
+        // Another run put it there first.
+        let _ = std::fs::remove_dir_all(&partial);
+    }
+    match find_shell(&cache, plat) {
+        Some(exe) => Ok(Ok(exe)),
+        None => bail!(
+            "chrome-headless-shell unpacked into {} has no executable",
+            target.display()
+        ),
+    }
+}
+
+/// agent-browser on this Mac for this workflow, hash-checked, and chrome-headless-shell, or why not
 /// (a skip). A binary that doesn't match its pinned hash is an error, never a skip.
 async fn install_here(
     run: &Run,
@@ -1268,42 +1396,10 @@ async fn install_here(
     );
     let chrome = match std::env::var_os("OBID_SPEC_CHROME") {
         Some(c) => PathBuf::from(c),
-        None => {
-            let cache = chrome_cache().context("no HOME")?;
-            match find_chrome(&cache) {
-                Some(c) => c,
-                None => {
-                    private_dir(&cache)?;
-                    let out = tokio::time::timeout(
-                        Duration::from_secs(600),
-                        tokio::process::Command::new(&bin)
-                            .arg("install")
-                            .env("HOME", &cache)
-                            .kill_on_drop(true)
-                            .output(),
-                    )
-                    .await;
-                    match (out, find_chrome(&cache)) {
-                        (_, Some(c)) => c,
-                        (Ok(Ok(o)), None) => {
-                            return Ok(Err(format!(
-                                "skipped: Chrome for Testing isn't installed ({})",
-                                String::from_utf8_lossy(&o.stdout)
-                                    .trim()
-                                    .chars()
-                                    .take(300)
-                                    .collect::<String>()
-                            )))
-                        }
-                        _ => {
-                            return Ok(Err(
-                                "skipped: Chrome for Testing didn't install within 600 s".into(),
-                            ))
-                        }
-                    }
-                }
-            }
-        }
+        None => match install_shell().await? {
+            Ok(c) => c,
+            Err(why) => return Ok(Err(why)),
+        },
     };
     Ok(Ok((bin, chrome, got)))
 }
@@ -1327,9 +1423,16 @@ async fn orb(args: &[&str], limit: Duration) -> Result<(i32, String, String)> {
     ))
 }
 
-/// agent-browser on a lab machine, hash-checked, with Chrome for Testing and the libraries it
-/// needs, or why not (a skip).
-async fn install_on(machine: &str) -> Result<std::result::Result<(String, String), String>> {
+/// The libraries chrome-headless-shell needs on Ubuntu noble, and fonts for its pages' text.
+const SHELL_DEBS: &str = "libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 \
+     libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 \
+     libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 fonts-liberation";
+
+/// agent-browser on a lab machine, hash-checked, with chrome-headless-shell (hash-checked too) and
+/// the libraries it needs, or why not (a skip): the binary, its SHA-256, the browser's path there.
+async fn install_on(
+    machine: &str,
+) -> Result<std::result::Result<(String, String, String), String>> {
     let (_, arch, _) = orb(
         &["run", "-m", machine, "-u", "oby", "uname", "-m"],
         Duration::from_secs(30),
@@ -1337,17 +1440,24 @@ async fn install_on(machine: &str) -> Result<std::result::Result<(String, String
     .await?;
     let plat = match arch.trim() {
         "x86_64" => "linux-x64-gnu",
-        // Chrome for Testing has no Linux arm64 build (agent-browser install says so).
-        other => return Ok(Err(format!("skipped: Chrome for Testing has no Linux {other} build; make the machine with \"arch\": \"amd64\""))),
+        // Google builds chrome-headless-shell for linux64 only: no Linux arm64 build.
+        other => return Ok(Err(format!("skipped: chrome-headless-shell has no Linux {other} build (Google ships linux64 only); make the machine with \"arch\": \"amd64\""))),
     };
     let want = pinned(plat).unwrap_or_default();
+    let shell_want = shell_pinned("linux64").unwrap_or_default();
+    let shell = "/home/oby/hs/chrome-headless-shell-linux64/chrome-headless-shell";
     let fetch = format!(
-        "set -e; apt-get update -qq >/dev/null && apt-get install -y -qq curl ca-certificates >/dev/null; \
-         mkdir -p /home/oby/ab && cd /home/oby/ab && \
+        "set -e; apt-get update -qq >/dev/null && \
+         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends curl ca-certificates unzip {SHELL_DEBS} >/dev/null; \
+         mkdir -p /home/oby/ab /home/oby/hs && cd /home/oby/ab && \
          curl -fsSL https://registry.npmjs.org/@agent-browser/cli-{plat}/-/cli-{plat}-{VERSION}.tgz -o p.tgz && \
          tar xzf p.tgz && echo \"{want}  package/bin/agent-browser\" | sha256sum -c - >/dev/null && \
-         HOME=/home/oby package/bin/agent-browser install --with-deps >/tmp/ab-install.log 2>&1; \
-         chown -R oby:oby /home/oby; echo ok"
+         cd /home/oby/hs && curl -fsSL --proto =https {url} -o hs.zip && \
+         echo \"{shell_want}  hs.zip\" | sha256sum -c - >/dev/null && unzip -q -o hs.zip && rm hs.zip && \
+         missing=$(ldd {shell} | grep 'not found' || true) && \
+         if [ -n \"$missing\" ]; then echo \"missing: $missing\"; exit 1; fi; \
+         chown -R oby:oby /home/oby; echo ok",
+        url = shell_url("linux64"),
     );
     let (status, out, err) = orb(
         &["run", "-m", machine, "-u", "root", "bash", "-lc", &fetch],
@@ -1356,13 +1466,14 @@ async fn install_on(machine: &str) -> Result<std::result::Result<(String, String
     .await?;
     anyhow::ensure!(
         status == 0 && out.contains("ok"),
-        "agent-browser didn't install on {machine} (or its hash isn't {want}): {}{}",
+        "agent-browser or chrome-headless-shell didn't install on {machine} (or a hash isn't {want} / {shell_want}): {}{}",
         out.trim(),
         err.trim()
     );
     Ok(Ok((
         "/home/oby/ab/package/bin/agent-browser".into(),
         want.into(),
+        shell.into(),
     )))
 }
 
@@ -2375,7 +2486,7 @@ async fn new_agent(run: &Run, input: &Value) -> Result<Value> {
         }
         Some(m) => {
             anyhow::ensure!(m.starts_with("obid-lab-"), "{m} isn't a lab machine");
-            let (bin, sha) = match install_on(m).await? {
+            let (bin, sha, shell) = match install_on(m).await? {
                 Ok(x) => x,
                 Err(why) => return Ok(json!({"skipped": why})),
             };
@@ -2401,7 +2512,7 @@ async fn new_agent(run: &Run, input: &Value) -> Result<Value> {
                 session,
                 place: Place::Machine(m.into()),
                 bin,
-                chrome: None,
+                chrome: Some(shell),
                 home: "/home/oby".into(),
                 socket_dir: "/tmp/obyab".into(),
                 profile,

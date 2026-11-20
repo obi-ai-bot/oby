@@ -119,6 +119,8 @@ const ops = {
     app = await launch({ dir: r.scratch, userData: r.userData, env, hidden: r.hidden ?? true, ...(r.main ? { main: resolve(r.main) } : {}) });
     page = await app.firstWindow();
     page.on('pageerror', (e) => errors.push(e.message));
+    // what the page warned of (a refused browser call says why: browser/store.tsx), kept with its errors
+    page.on('console', (m) => { if (m.type() === 'warning' || m.type() === 'error') errors.push(`${m.type()}: ${m.text()}`.slice(0, 400)); });
     await page.waitForLoadState('domcontentloaded');
     if (r.skipFirstRun ?? true) {
       await skipFirstRun(page);
@@ -152,8 +154,19 @@ const ops = {
   },
   async click(r) {
     const el = await one(r.target, r.timeout);
-    if (r.hover) await el.hover({ timeout: r.timeout ?? 10_000 });
-    else await el.click({ timeout: r.timeout ?? 10_000 });
+    // pagePoint: a point of the live page in its own px (the browser panel's frame, BROWSERAPP-10), placed
+    // as the panel draws the frame: from the top left, scaled to fit
+    let position;
+    if (r.pagePoint) {
+      position = await el.evaluate((e, p) => {
+        const img = e.querySelector('img');
+        const r = e.getBoundingClientRect();
+        const scale = img && img.naturalWidth ? Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight) : 1;
+        return { x: p.x * scale, y: p.y * scale };
+      }, r.pagePoint);
+    }
+    if (r.hover) await el.hover({ timeout: r.timeout ?? 10_000, ...(position ? { position } : {}) });
+    else await el.click({ timeout: r.timeout ?? 10_000, ...(position ? { position } : {}) });
     return { clicked: !r.hover, hovered: !!r.hover };
   },
   async type(r) {

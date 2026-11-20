@@ -67,6 +67,21 @@ app; once ported, its workflows become its acceptance tests against obid (OBIDSP
 tools/obid-spec/target/debug/obid-spec run --tag lab
 ```
 
+## T3 Code's bugs, proven against obid
+
+T3 Code's history is the map of the bugs a dispatcher of the owner's CLIs hits. Each kind that
+applies to obid gets workflows here, driving the real obid with its stand-in agents.
+
+- Workflows live in `workflows/t3/<topic>/` (the area `t3-<topic>`), with a manual trigger and the
+  `t3` tag, never `launch`.
+- `obid-spec run --tag t3` (or `--only t3-<topic>`) runs them; any other run leaves them out, and
+  `coverage` doesn't count them.
+- A step that finds a real obid bug keeps its assertion, marked `expectedRed` with the bug's issue.
+
+```bash
+tools/obid-spec/target/debug/obid-spec run --tag t3
+```
+
 ## How it runs
 
 The host, `obid-spec`, reads the workflows and judges each step. The nodes run in a second binary,

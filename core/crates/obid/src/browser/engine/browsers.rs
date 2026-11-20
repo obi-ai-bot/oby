@@ -1,7 +1,8 @@
-//! Oby's browsers (BROWSER-5, 6, 9 to 11): every conversation's tabs, who holds each, and every
-//! command's fate. It owns that state, in memory only; it writes no file, starts no process and
-//! reads no clock (the caller passes `now_ms`). The driver runs what a [`Ticket`] says and reports
-//! back through [`Browsers::finished`], [`Browsers::timed_out`], [`Browsers::observed`] and the like.
+//! Oby's browsers (BROWSER-5, 6, 9 to 11, 26, 27): every conversation's tabs, who holds each, and
+//! every command's fate. It owns that state, in memory only; it writes no file, starts no process
+//! and reads no clock (the caller passes `now_ms`). The driver runs what a [`Ticket`] says and
+//! reports back through [`Browsers::finished`], [`Browsers::timed_out`], [`Browsers::observed`] and
+//! the like.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -9,7 +10,8 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use super::{
-    Actor, CmdState, EngineTab, Entry, Kind, Refs, Refusal, Ticket, in_room, may_act, outside, tool,
+    Actor, CmdState, EngineTab, Entry, Kind, Refs, Refusal, Ticket, Tool, in_room,
+    is_certificate_error, is_error_page, may_act, outside, tool, works_the_page,
 };
 
 /// Oby's browsers: every conversation's tabs, who holds each, and every command's fate.
@@ -132,6 +134,11 @@ impl Browsers {
         } else {
             Some(self.resolve(actor, tab_arg, tool.kind)?.clone())
         };
+        // Before anything the call names is looked at: the browser's certificate page isn't the
+        // agent's to act on (BROWSER-27).
+        if let Some(t) = &tab {
+            self.page_allows(tool, t, None)?;
+        }
         let mut refs = vec![];
         let mut want_ref = |r: &str| -> Result<String, Refusal> {
             let r = ref_name(r);
@@ -330,6 +337,25 @@ impl Browsers {
         })
     }
 
+    /// The certificate rule (BROWSER-27): on a tab that stopped at a certificate problem, or that
+    /// shows the browser's own error page (as Oby knows it, or `url_now` as it is right before the
+    /// call runs), a tool that works the page is refused. Reads, navigating elsewhere and closing
+    /// still work.
+    pub fn page_allows(
+        &self,
+        tool: &Tool,
+        t: &EngineTab,
+        url_now: Option<&str>,
+    ) -> Result<(), Refusal> {
+        if !works_the_page(tool) {
+            return Ok(());
+        }
+        if t.certificate || is_error_page(&t.url) || url_now.is_some_and(is_error_page) {
+            return Err(Refusal::CertificatePage);
+        }
+        Ok(())
+    }
+
     fn ref_alive(&self, t: &EngineTab, r: &str, url_now: Option<&str>) -> Result<(), Refusal> {
         let refs = t
             .refs
@@ -376,6 +402,9 @@ impl Browsers {
             .get(id)
             .ok_or_else(|| Refusal::NoSuchTab(id.clone()))?;
         let kind = tool(ticket.tool).map(|t| t.kind).unwrap_or(Kind::Act);
+        if let Some(the_tool) = tool(ticket.tool) {
+            self.page_allows(the_tool, t, url_now)?;
+        }
         if kind == Kind::Act {
             if t.person.is_some() {
                 return Err(Refusal::HumanControl);
@@ -453,6 +482,7 @@ impl Browsers {
                 settling: None,
                 takeover_asked: None,
                 dialog: None,
+                certificate: false,
             },
         );
         self.current.insert(conversation.into(), id.clone());
@@ -479,12 +509,16 @@ impl Browsers {
             .retain(|_, e| !matches!(&e.actor, Actor::Agent(c) if c == conversation));
     }
 
-    /// What the tab shows now. A different URL is a navigation: its refs die.
+    /// What the tab shows now. A different URL is a navigation: its refs die. A page of the web
+    /// there is no certificate page any more.
     pub fn observed(&mut self, tab: &str, url: &str, title: Option<&str>) {
         if let Some(t) = self.tabs.get_mut(tab) {
             if t.url != url {
                 t.url = url.into();
                 t.page_generation += 1;
+                if !is_error_page(url) {
+                    t.certificate = false;
+                }
             }
             if let Some(title) = title {
                 t.title = title.into();
@@ -497,6 +531,36 @@ impl Browsers {
         if let Some(t) = self.tabs.get_mut(tab) {
             t.url = url.into();
             t.page_generation += 1;
+            t.certificate = is_error_page(url) && t.certificate;
+        }
+    }
+
+    /// A navigation Oby ran failed (`message`, the browser's words): one that stopped at a
+    /// certificate problem leaves the tab on the browser's certificate page, its refs dead.
+    pub fn navigation_failed(&mut self, tab: &str, message: &str) {
+        if !is_certificate_error(message) {
+            return;
+        }
+        if let Some(t) = self.tabs.get_mut(tab) {
+            t.page_generation += 1;
+            t.refs = None;
+            t.certificate = true;
+        }
+    }
+
+    /// The person moved the page themselves (Reload, Go back, a dialog answered: BROWSER-26): what
+    /// it shows now. The agent's refs die.
+    pub fn person_moved(&mut self, tab: &str, url: &str, title: Option<&str>) {
+        if let Some(t) = self.tabs.get_mut(tab) {
+            t.url = url.into();
+            t.page_generation += 1;
+            t.refs = None;
+            if !is_error_page(url) {
+                t.certificate = false;
+            }
+            if let Some(title) = title {
+                t.title = title.into();
+            }
         }
     }
 
@@ -594,6 +658,7 @@ impl Browsers {
                     "current": self.current.get(conv) == Some(&t.id),
                     "takeoverAsked": t.takeover_asked,
                     "dialog": t.dialog.is_some(),
+                    "certificatePage": t.certificate,
                 })
             })
             .collect();
@@ -961,5 +1026,110 @@ mod tests {
                 "{p}"
             );
         }
+    }
+
+    #[test]
+    fn browser_27_the_certificate_page_refuses_what_works_the_page_but_not_reads_or_leaving() {
+        let room = Path::new(ROOM);
+        let mut b = Browsers::new();
+        let tab = opened(&mut b, "c1");
+        snap(&mut b, &tab, "http://127.0.0.1:1/", &["e1"]);
+        b.navigation_failed(&tab, "Navigation failed: net::ERR_CERT_AUTHORITY_INVALID");
+        assert!(b.tab(&tab).unwrap().certificate);
+        assert!(b.tab(&tab).unwrap().refs.is_none(), "its refs died");
+        let code = |b: &mut Browsers, tool: &str, args: Value| {
+            b.begin(&agent("c1"), tool, &args, room, 0)
+                .err()
+                .map(|r| r.code())
+        };
+        for (tool, args) in [
+            (
+                "oby_browser_evaluate",
+                json!({"expression": "certificateErrorPageController.proceed()"}),
+            ),
+            ("oby_browser_act", click("e1")),
+            ("oby_browser_act", click("e999")),
+            (
+                "oby_browser_act",
+                json!({"action": "press", "key": "Enter"}),
+            ),
+            ("oby_browser_dialog", json!({"accept": true})),
+            ("oby_browser_resize", json!({"width": 800, "height": 600})),
+        ] {
+            assert_eq!(code(&mut b, tool, args), Some("certificate_page"), "{tool}");
+        }
+        for (tool, args) in [
+            ("oby_browser_snapshot", json!({})),
+            ("oby_browser_screenshot", json!({})),
+            ("oby_browser_wait_for", json!({"text": "x"})),
+            (
+                "oby_browser_navigate",
+                json!({"url": "http://127.0.0.1:1/"}),
+            ),
+            ("oby_browser_open", json!({"url": "http://127.0.0.1:1/"})),
+            ("oby_browser_close_tab", json!({})),
+        ] {
+            assert_eq!(code(&mut b, tool, args), None, "{tool}");
+        }
+        assert_eq!(
+            b.status(&agent("c1"))["result"]["tabs"][0]["certificatePage"],
+            true
+        );
+        // A failure that isn't a certificate leaves the tab as it was.
+        let other = opened(&mut b, "c2");
+        b.navigation_failed(&other, "Navigation failed: net::ERR_CONNECTION_REFUSED");
+        assert!(!b.tab(&other).unwrap().certificate);
+        // The page as it is right before the call: the browser's error page, however it got there.
+        let t = b
+            .begin(
+                &agent("c2"),
+                "oby_browser_evaluate",
+                &json!({"expression": "1"}),
+                room,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            b.may_start(&t, Some("chrome-error://chromewebdata/"), 1)
+                .unwrap_err()
+                .code(),
+            "certificate_page"
+        );
+        assert!(b.may_start(&t, Some("http://127.0.0.1:1/"), 1).is_ok());
+        // Leaving for a page of the web lifts it.
+        b.navigated(&tab, "http://127.0.0.1:1/second");
+        assert!(!b.tab(&tab).unwrap().certificate);
+        assert_eq!(
+            code(&mut b, "oby_browser_evaluate", json!({"expression": "1"})),
+            None
+        );
+        // Seeing the error page again (a snapshot's URL) keeps it; a page of the web lifts it.
+        b.navigation_failed(&tab, "net::ERR_CERT_DATE_INVALID");
+        b.observed(&tab, "chrome-error://chromewebdata/", None);
+        assert!(b.tab(&tab).unwrap().certificate);
+        b.observed(&tab, "http://127.0.0.1:1/", None);
+        assert!(!b.tab(&tab).unwrap().certificate);
+    }
+
+    #[test]
+    fn browser_26_the_persons_way_out_moves_the_page_and_kills_the_agents_refs() {
+        let mut b = Browsers::new();
+        let tab = opened(&mut b, "c1");
+        snap(&mut b, &tab, "http://127.0.0.1:1/", &["e1"]);
+        let generation = b.tab(&tab).unwrap().page_generation;
+        b.person_moved(&tab, "http://127.0.0.1:1/", Some("Home"));
+        let t = b.tab(&tab).unwrap();
+        assert!(
+            t.refs.is_none(),
+            "the agent's refs died, at the same URL too"
+        );
+        assert!(t.page_generation > generation);
+        assert_eq!(t.title, "Home");
+        // Past a certificate page: to the error page again, it stays; to the web's, it goes.
+        b.navigation_failed(&tab, "net::ERR_CERT_DATE_INVALID");
+        b.person_moved(&tab, "chrome-error://chromewebdata/", None);
+        assert!(b.tab(&tab).unwrap().certificate);
+        b.person_moved(&tab, "https://127.0.0.1:2/", Some("Secure lab page"));
+        assert!(!b.tab(&tab).unwrap().certificate);
     }
 }

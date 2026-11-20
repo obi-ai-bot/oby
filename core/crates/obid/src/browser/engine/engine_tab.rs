@@ -1,7 +1,7 @@
-//! A tab as the engine knows it (BROWSER-5, 10, 11): its conversation, the browser's target, who
-//! holds it, its generations, refs, settling and dialog. A value [`super::Browsers`] owns; it
-//! writes nothing. The lab calls it `Tab`; here it is `EngineTab`, apart from the wire's
-//! [`crate::browser::contract::Tab`].
+//! A tab as the engine knows it (BROWSER-5, 10, 11, 27): its conversation, the browser's target,
+//! who holds it, its generations, refs, settling, dialog and whether it stopped at a certificate.
+//! A value [`super::Browsers`] owns; it writes nothing. The lab calls it `Tab`; here it is
+//! `EngineTab`, apart from the wire's [`crate::browser::contract::Tab`].
 
 use serde_json::Value;
 
@@ -27,4 +27,7 @@ pub struct EngineTab {
     pub settling: Option<String>,
     pub takeover_asked: Option<String>,
     pub dialog: Option<Value>,
+    /// The page stopped at a certificate problem: a navigation Oby ran failed with
+    /// `net::ERR_CERT_*`, and nothing has loaded in the tab since.
+    pub certificate: bool,
 }

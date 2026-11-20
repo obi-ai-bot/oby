@@ -1,8 +1,8 @@
-//! The browser's API state (BROWSER-2 to 7, 11 to 15, 25): every job and its browser, every tab
-//! with its hold and generation, asks, downloads, the settings and the event log with its `seq`.
-//! [`Api`] owns that state, in memory only; it writes no file, starts no process and reads no
-//! clock. The secret's value never enters it. It never decides who calls: the routes check obid's
-//! owner token and the device's signed words (`crate::approval`) and the job's broker token
+//! The browser's API state (BROWSER-2 to 7, 11 to 15, 25 to 27): every job and its browser, every
+//! tab with its hold and generation, asks, downloads, the settings and the event log with its
+//! `seq`. [`Api`] owns that state, in memory only; it writes no file, starts no process and reads
+//! no clock. The secret's value never enters it. It never decides who calls: the routes check
+//! obid's owner token and the device's signed words (`crate::approval`) and the job's broker token
 //! (`crate::connections`) first.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -258,6 +258,21 @@ impl Api {
         }
     }
 
+    /// The person's way out of a page state (board 10, BROWSER-26), `verb` one of the contract's:
+    /// only on a tab the signing device holds, and a dialog's answer only while the page shows one.
+    /// Answers the tab's job.
+    pub fn way_out(&self, device: &str, tab: &str, verb: &str) -> Result<String, Refused> {
+        let job = self.person_holds(Some(device), tab)?;
+        if verb == c::VERB_DIALOG && self.rec(tab)?.tab.dialog.is_none() {
+            return Err(Refused::new(
+                409,
+                "no_dialog",
+                "This tab's page shows no dialog to answer.",
+            ));
+        }
+        Ok(job)
+    }
+
     // ── Tabs, as the engine reports them ───────────────────────────────────────────────────────
 
     /// A job's tabs as the engine's status says (`tabs` and the quoted titles): changes become
@@ -310,6 +325,9 @@ impl Api {
                 c::TabState::TimedOut
             } else if rec.tab.dialog.is_some() || et["dialog"] == true {
                 c::TabState::Dialog
+            } else if et["certificatePage"] == true {
+                // Stopped at a certificate problem, whatever URL the error page shows (BROWSER-27).
+                c::TabState::Certificate
             } else if let Some(s) = rec.last_error {
                 s
             } else {
@@ -871,11 +889,58 @@ mod tests {
             a.lease("j1", "nope").unwrap_err(),
             a.saveable("dl-9").unwrap_err(),
             a.answer("ask-9", c::AnswerBody::default()).unwrap_err(),
+            a.way_out("d1", "tab-1", c::VERB_RELOAD).unwrap_err(),
             browser_off(),
         ];
         for r in rs {
             assert!(c::REASONS.contains(&r.reason), "{}", r.reason);
             assert!(r.body()["error"].is_string());
         }
+    }
+
+    #[test]
+    fn browser_26_a_way_out_needs_the_holding_device_and_a_dialog_answer_needs_a_dialog() {
+        let mut a = api();
+        with_tab(&mut a, "j1", "tab-1");
+        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
+            assert_eq!(
+                a.way_out("d1", "tab-1", verb).unwrap_err().reason,
+                "not_held"
+            );
+        }
+        a.take("d1", "tab-1").unwrap();
+        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
+            assert_eq!(
+                a.way_out("d2", "tab-1", verb).unwrap_err().reason,
+                "not_holder"
+            );
+        }
+        assert_eq!(a.way_out("d1", "tab-1", c::VERB_RELOAD).unwrap(), "j1");
+        assert_eq!(a.way_out("d1", "tab-1", c::VERB_BACK).unwrap(), "j1");
+        let no = a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap_err();
+        assert_eq!((no.status, no.reason), (409, "no_dialog"));
+        a.dialog("tab-1", Some("Leave this page?".into()));
+        assert_eq!(a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap(), "j1");
+        let body: c::DialogBody = serde_json::from_value(json!({"accept": false})).unwrap();
+        assert_eq!((body.accept, body.prompt_text), (false, None));
+        assert!(serde_json::from_value::<c::ReloadBody>(json!({})).is_ok());
+    }
+
+    #[test]
+    fn browser_27_a_tab_the_engine_says_stopped_at_a_certificate_reads_certificate() {
+        let mut a = api();
+        with_tab(&mut a, "j1", "tab-1");
+        a.sync_job(
+            "j1",
+            &[json!({"tab": "tab-1", "url": "chrome-error://chromewebdata/", "current": true, "certificatePage": true})],
+            &json!({"tab-1": ""}),
+        );
+        assert_eq!(a.tab("tab-1").unwrap().state, c::TabState::Certificate);
+        a.sync_job(
+            "j1",
+            &[json!({"tab": "tab-1", "url": "http://x/", "current": true})],
+            &json!({"tab-1": "X"}),
+        );
+        assert_eq!(a.tab("tab-1").unwrap().state, c::TabState::Ready);
     }
 }
