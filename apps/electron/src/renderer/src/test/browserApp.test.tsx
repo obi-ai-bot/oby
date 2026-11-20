@@ -64,6 +64,20 @@ describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser',
     expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Show the browser, 1 tab');
     delete (window as unknown as { app?: unknown }).app;
   });
+  it('browserapp_3: one panel at the window\'s right at a time: a task\'s Changes puts the browser away, and the browser opening closes Changes', async () => {
+    const { openChanges, useChangesOpen } = await import('../ChangesPanel');
+    let changes: string | null = null;
+    const Spy = () => { changes = useChangesOpen(); return null; };
+    act(() => root.render(<BrowserProvider board={1}><BrowserGlobe /><BrowserPane width={640} /><Spy /></BrowserProvider>));
+    act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
+    expect(host.querySelector('aside.br')).not.toBeNull();
+    act(() => openChanges('j1'));
+    expect(host.querySelector('aside.br')).toBeNull();
+    expect(changes).toBe('j1');
+    act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
+    expect(host.querySelector('aside.br')).not.toBeNull();
+    expect(changes).toBeNull();
+  });
   it('browserapp_7: on the demo data at board 2, the globe and the panel show (the check above can fail)', () => {
     draw(2);
     expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Hide the browser');

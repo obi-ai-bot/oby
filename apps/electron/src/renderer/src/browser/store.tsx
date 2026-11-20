@@ -11,6 +11,7 @@ import { everything, onObid } from '../lean';
 import type { BrowserApi, BrowserState, Tab } from './view';
 import { demoBoard } from './demo';
 import { connectLive, type Live } from './live';
+import { closeChanges, useChangesOpen } from '../ChangesPanel';
 
 /** The window's own state: not the browser's, never sent anywhere. */
 export type Ui = {
@@ -73,6 +74,11 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
   const [offered, setOffered] = useState(false);
   const [frames, setFrames] = useState<Record<string, { url: string; width: number; height: number }>>({});
   const conn = useRef<Live | null>(null);
+  // one panel at the window's right at a time (BROWSERAPP-3): a task's Changes opening puts the
+  // browser away, and the browser opening closes Changes
+  const changes = useChangesOpen();
+  useEffect(() => { if (changes) setUiState((o) => (o.open ? { ...o, open: false, full: false } : o)); }, [changes]);
+  useEffect(() => { if (ui.open) closeChanges(); }, [ui.open]);
 
   useEffect(() => {
     const app = window.app;

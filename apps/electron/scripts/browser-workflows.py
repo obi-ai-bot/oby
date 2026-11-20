@@ -282,9 +282,9 @@ def board_06():
 
 
 # obid's browser routes aren't served yet: they come with browser port 1's routes pull request
-# (docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608, its core #2610). Every step that
+# (4b; docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608 and core #2610 merged). Every step that
 # needs them is expected red until then; the pull request that lands them removes these marks.
-PORT_1 = "browser port 1's routes PR (obid's /v1/browser; contract #2608, core #2610)"
+PORT_1 = "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
 
 
 def red(s):

@@ -48,7 +48,7 @@
         "proves": [
           "BROWSERAPP-8"
         ],
-        "expectedRed": "browser port 1's routes PR (obid's /v1/browser; contract #2608, core #2610)"
+        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
       }
     },
     {
@@ -62,7 +62,7 @@
         }
       },
       "ui": {
-        "expectedRed": "browser port 1's routes PR (obid's /v1/browser; contract #2608, core #2610)"
+        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
       }
     },
     {
@@ -84,7 +84,7 @@
         "proves": [
           "BROWSERAPP-8"
         ],
-        "expectedRed": "browser port 1's routes PR (obid's /v1/browser; contract #2608, core #2610)"
+        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
       }
     },
     {
@@ -106,7 +106,7 @@
         "proves": [
           "BROWSERAPP-8"
         ],
-        "expectedRed": "browser port 1's routes PR (obid's /v1/browser; contract #2608, core #2610)"
+        "expectedRed": "browser port 1's routes PR (4b): obid doesn't serve /v1/browser yet (contract #2608, core #2610 merged)"
       }
     },
     {
