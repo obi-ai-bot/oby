@@ -1,0 +1,205 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-5: Cursor's email and org come from userInfo",
+  "version": "1.0.0",
+  "description": "`cursor-agent status --format json`'s `userInfo.email` and `userInfo.teamName` are the account's email and org; with no `userInfo` (cursor-agent 2026.10.01 out of reach) the account signs in with nothing to show.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.a.body.id}/who.json",
+        "content": "{\"email\": \"dev@x.dev\", \"org\": \"Deskree\"}"
+      }
+    },
+    {
+      "id": "a-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-5-email-and-org-from-userinfo",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "email": "dev@x.dev",
+                "org": "Deskree",
+                "plan": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-5"
+        ]
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "b-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.b.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-5-no-userinfo-nothing-to-show-and-it-works",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.b.body.id}",
+                "signedIn": true,
+                "email": {
+                  "$exists": false
+                },
+                "org": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-5"
+        ]
+      }
+    },
+    {
+      "id": "nothing-renames-it-after",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "accounts",
+        "expect": {
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.b.body.id}",
+                "name": {
+                  "$ne": "${state.b.body.name}"
+                }
+              }
+            }
+          }
+        },
+        "none": true,
+        "seconds": 4
+      }
+    },
+    {
+      "id": "accounts-5-it-keeps-obids-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.b.body.id}",
+                "signedIn": true,
+                "name": "${state.b.body.name}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-5"
+        ]
+      }
+    }
+  ]
+}

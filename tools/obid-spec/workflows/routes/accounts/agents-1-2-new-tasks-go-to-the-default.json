@@ -1,0 +1,380 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTS-1 and 2: new tasks go to the default account while it can take them",
+  "version": "1.0.0",
+  "description": "With `defaultAccount` a Codex account, a job naming no agent or account runs there though Claude Code comes first in routing's order; one naming another tool goes to that tool, one naming an account to that account. A default that isn't signed in, or is being signed in, is passed over (routing's own order decides) and stays the default; once signed in it takes the work again.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        }
+      }
+    },
+    {
+      "id": "default-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "cx"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "auto",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello."
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-1"
+        ]
+      }
+    },
+    {
+      "id": "agents-1-auto-runs-on-the-default-whatever-its-tool",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.auto.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-1"
+        ]
+      }
+    },
+    {
+      "id": "agents-1-another-tool-named-goes-to-that-tool",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello.",
+            "agent": "claude"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-1"
+        ]
+      }
+    },
+    {
+      "id": "agents-1-an-account-named-goes-there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello.",
+            "account": "stand-in"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-1"
+        ]
+      }
+    },
+    {
+      "id": "agents-1-the-defaults-tool-named-goes-to-the-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello.",
+            "agent": "codex"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-1"
+        ]
+      }
+    },
+    {
+      "id": "work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Second"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "default-second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "${state.work.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "agents-2-a-signed-out-default-is-passed-over",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello."
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "account": {
+              "$ne": "${state.work.body.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-2"
+        ]
+      }
+    },
+    {
+      "id": "agents-2-and-stays-the-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "defaultAccount": "${state.work.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-2"
+        ]
+      }
+    },
+    {
+      "id": "work-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.work.body.id}/who.json",
+        "content": "{\"email\": \"second@x.dev\", \"plan\": \"plus\"}"
+      }
+    },
+    {
+      "id": "signing-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.work.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "agents-2-one-being-signed-in-is-passed-over",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello."
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "account": {
+              "$ne": "${state.work.body.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-2"
+        ]
+      }
+    },
+    {
+      "id": "signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.work.body.id}",
+                "signedIn": true,
+                "email": "second@x.dev"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agents-1-once-signed-in-it-takes-the-work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello."
+          }
+        },
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex",
+            "account": "${state.work.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-1"
+        ]
+      }
+    }
+  ]
+}

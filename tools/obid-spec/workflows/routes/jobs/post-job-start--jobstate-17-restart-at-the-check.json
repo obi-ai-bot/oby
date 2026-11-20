@@ -1,0 +1,224 @@
+{
+  "schemaVersion": "2",
+  "name": "A restart picks up at the check with no agent turn (JOBSTATE-16, 17)",
+  "version": "1.0.0",
+  "description": "obid killed while a job's check runs: started again, the job picks up at its check with no agent turn and recovery.restarts as it was; killed again before that check ends, the kept cut still picks up at the check, not in its session.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/start"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt KEEP PROMPTS",
+            "check": "sleep 25 && node --test"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c-checking",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.c.body.id}.json",
+        "within": 90,
+        "expect": {
+          "json": {
+            "paths": {
+              "phase": "check",
+              "status": "running"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "jobstate-17-its-cut-is-the-check",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "jobs/${state.c.body.id}.json",
+        "within": 10,
+        "expect": {
+          "json": {
+            "paths": {
+              "cut": "check",
+              "status": {
+                "$oneOf": [
+                  "queued",
+                  "running"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-17"
+        ]
+      }
+    },
+    {
+      "id": "checking-again",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "jobs/${state.c.body.id}.json",
+        "within": 30,
+        "expect": {
+          "json": {
+            "paths": {
+              "phase": "check",
+              "status": "running"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed-again",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.again}",
+        "kill": true
+      }
+    },
+    {
+      "id": "third",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "jobstate-16-the-cut-is-kept",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.third}",
+        "path": "jobs/${state.c.body.id}.json",
+        "within": 10,
+        "expect": {
+          "json": {
+            "paths": {
+              "cut": "check"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-16"
+        ]
+      }
+    },
+    {
+      "id": "done-at-the-check",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.third}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-16-17-no-agent-turn",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.third}",
+        "path": "worktrees/${state.c.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-16",
+          "JOBSTATE-17"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-16-17-restarts-as-they-were",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.third}",
+        "path": "jobs/${state.c.body.id}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.restarts": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-16",
+          "JOBSTATE-17"
+        ]
+      }
+    }
+  ]
+}

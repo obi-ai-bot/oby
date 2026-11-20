@@ -51,6 +51,8 @@ export async function lookAtRoom(sphere: string) {
   }
 }
 export const lookAgain = () => { if (room.sphere) void lookAtRoom(room.sphere); };
+// from its first post: what obid says of posts already shown changed (a member verified, SPHERE-11)
+export const lookAgainWhole = () => { if (room.sphere) { listed = 0; void lookAtRoom(room.sphere); } };
 export const forgetRoom = () => { if (room.sphere) { listed = 0; set(NOWHERE); } };
 
 // obid's roomPost: only a Sphere with a room sends one. Before the Sphere is known, the first look has it.

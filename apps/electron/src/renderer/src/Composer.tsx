@@ -36,6 +36,7 @@ import { onObid } from './lean';
 import { has } from '../../shared/capabilities';
 import type { ConversationFile } from './obid';
 import type { Queued } from './chats';
+import { composing } from './shortcuts';
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,
@@ -759,7 +760,7 @@ function AddPanel({ view, opening, tasks, repos, onView, onBlur, onFiles, onFold
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           // Enter takes the first match
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); pickFirst(); } }}
+          onKeyDown={(e) => { if (!composing(e) && e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); pickFirst(); } }}
           placeholder={hint}
           aria-label={hint}
         />

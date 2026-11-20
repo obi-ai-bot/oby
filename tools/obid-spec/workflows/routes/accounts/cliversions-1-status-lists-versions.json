@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-1: status lists each tool's path and version",
+  "version": "1.0.0",
+  "description": "`GET /v1/status`'s `tools` lists Claude Code, Codex and Cursor, each with the absolute path obid found it at and the version its `--version` printed.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/status"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "cliversions-1-each-tool-with-its-path-and-version",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools.0.agent": "claude",
+            "tools.1.agent": "codex",
+            "tools.2.agent": "cursor",
+            "tools.0.version": "2.1.296",
+            "tools.0.path": {
+              "$matches": "^/.*/fake-claude$"
+            },
+            "tools.1.version": "0.170.0",
+            "tools.1.path": {
+              "$matches": "^/.*/fake-codex$"
+            },
+            "tools.2.version": "2026.10.01-fake"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-1"
+        ]
+      }
+    }
+  ]
+}

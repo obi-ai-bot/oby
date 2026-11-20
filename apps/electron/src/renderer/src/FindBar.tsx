@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, X } from 'lucide-react';
-import { registerCommands } from './shortcuts';
+import { composing, registerCommands } from './shortcuts';
 
 // Every place the words are in what's shown under root, in order: one Range each, matched in any
 // case, never across two pieces of text (a word split by a link or bold is two). Code, inputs and
@@ -72,6 +72,7 @@ export default function FindBar({ root, shown, off = false }: { root: React.RefO
         ref={field} className="find-field" autoFocus value={query} spellCheck={false} placeholder="Find in conversation" aria-label="Find in conversation"
         onChange={(e) => { setQuery(e.target.value); setAt(0); }}
         onKeyDown={(e) => {
+          if (composing(e)) return;
           if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
           else if (e.key === 'Enter') { e.preventDefault(); go(e.shiftKey ? -1 : 1); }
         }}

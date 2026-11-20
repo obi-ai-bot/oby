@@ -1,0 +1,100 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-3: a round stamps the agent's version",
+  "version": "1.0.0",
+  "description": "A job that ran a round on Codex 0.170.0 says `agentVersion` \"0.170.0\" in GET /v1/jobs/{id} and in its file.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        }
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "task": "Say hello."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "cliversions-3-the-job-says-its-version",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "agent": "codex",
+            "agentVersion": "0.170.0"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-3"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-3-and-its-file",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.j.body.id}.json",
+        "expect": {
+          "json": {
+            "agentVersion": "0.170.0"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-3"
+        ]
+      }
+    }
+  ]
+}

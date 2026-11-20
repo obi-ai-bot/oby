@@ -1,0 +1,199 @@
+{
+  "schemaVersion": "2",
+  "name": "SIGN-IN-1: a tool whose CLI isn't on this Mac can't start its sign-in",
+  "version": "1.0.0",
+  "description": "Codex's and Cursor's binaries pointed at a path where nothing is: each one's sign-in answers 503 `notInstalled` and the account stays signed out; Claude Code, whose stand-in is there, starts.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "/nonexistent/obid-spec/bin/codex"
+            },
+            "cursor": {
+              "bin": "/nonexistent/obid-spec/bin/cursor-agent"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cx",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "cu",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor",
+          "name": "Team"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "sign-in-1-codex-isnt-installed-503",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.cx.body.id}/sign-in",
+        "expect": {
+          "status": 503,
+          "body": {
+            "reason": "notInstalled",
+            "error": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-1"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-1-codex-stays-signed-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.cx.body.id}",
+                "signedIn": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-1"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-1-cursor-isnt-installed-503",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.cu.body.id}/sign-in",
+        "expect": {
+          "status": 503,
+          "body": {
+            "reason": "notInstalled",
+            "error": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-1"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-1-cursor-stays-signed-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.cu.body.id}",
+                "signedIn": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-1"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-1-claude-code-installed-starts",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Here"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "sign-in-1-an-installed-tool-starts-its-sign-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.sign-in-1-claude-code-installed-starts.body.id}/sign-in",
+        "expect": {
+          "status": 200,
+          "body": {
+            "url": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-1"
+        ]
+      }
+    }
+  ]
+}

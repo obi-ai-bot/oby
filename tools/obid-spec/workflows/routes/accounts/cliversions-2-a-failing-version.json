@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-2: a version that fails or hangs is null",
+  "version": "1.0.0",
+  "description": "A Codex whose `--version` exits 1 and a Cursor whose `--version` hangs past 5 seconds: status still answers, each with its path and a null version, and Claude Code's is read as before.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/status"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "failing",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/failing-codex",
+        "text": "#!/bin/sh\nexit 1\n"
+      }
+    },
+    {
+      "id": "hanging",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/hanging-cursor",
+        "text": "#!/bin/sh\n[ \"$1\" = --version ] && exec sleep 30\nexit 1\n"
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${state.failing.path}"
+            },
+            "cursor": {
+              "bin": "${state.hanging.path}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cliversions-2-a-failing-and-a-hanging-version-are-null",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 12,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "codex",
+                "path": "${state.failing.path}",
+                "version": null
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-2"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-2-and-status-still-answers-with-the-hanging-ones-path",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "cursor",
+                "path": "${state.hanging.path}",
+                "version": null
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-2"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-2-the-others-are-still-read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "claude",
+                "version": "2.1.296"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-2"
+        ]
+      }
+    }
+  ]
+}
