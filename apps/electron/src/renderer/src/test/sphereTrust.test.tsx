@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OwnerPin, PeerPost, RememberedDecision, RoomPost } from '../obid';
+import { owners } from '../../../shared/words';
 
 // Whom the owner trusts in their Obysphere, and what their Oby does without asking, in Settings ›
 // Obysphere (docs/contracts/obysphere.md, SPHERE-11 to 13), as it really renders, on an obid that
@@ -107,8 +108,11 @@ describe('a member’s key', () => {
     routes['GET /v1/obid/sphere/pins'] = ok([pin({ verified: true })]);
     routes['GET /v1/obid/sphere/peers/dima'] = threadOf(true);
     routes['GET /v1/spheres/deskree/room?after=0'] = ok({ room: 'available', posts: [roomPost(true)] });
-    await click(button('Verify', document.body.querySelector('[role="alertdialog"]')!));
+    const verify = button('Verify', document.body.querySelector('[role="alertdialog"]')!)!;
+    await click(verify);
     expect(posted()).toEqual([{ method: 'POST', path: '/v1/obid/sphere/pins/dima', body: { fingerprint: FP } }]);
+    // that request is the owner's own, signed by the dialog's Verify label alone (WORDS-19, SPHERE-9)
+    expect(owners('POST', '/v1/obid/sphere/pins/dima', { fingerprint: FP }, [verify.textContent!], [])).toEqual([0]);
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
     expect(rowOf('dima')!.textContent).toContain('Verified');
     expect(button('Verify dima')).toBeUndefined();

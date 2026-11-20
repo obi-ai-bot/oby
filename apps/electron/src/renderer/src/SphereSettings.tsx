@@ -11,6 +11,7 @@ import { notThem } from './askable';
 import { plainId } from './peers';
 import { acceptPin, canVerify, decisionWords, decisions as readDecisions, forgetDecision, members as readMembers, pins as readPins, toCompare } from './sphereTrust';
 import { withStarterRule } from '../../shared/policy';
+import { PIN_VERIFY } from '../../shared/words';
 import type { Policy, PolicyAnswer } from '../../shared/sphere';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
@@ -304,7 +305,7 @@ export function MembersKeys() {
 }
 
 // "Did <owner id> read you this?": the fingerprint, whole, then Verify, which tells obid that person
-// read the owner exactly this one. Closed with Esc, Cancel, the x or a click outside, it tells obid nothing.
+// read the owner exactly this one, signed by its label as the owner's own (PIN_VERIFY, signed-words.md). Closed with Esc, Cancel, the x or a click outside, it tells obid nothing.
 export function VerifyModal({ pin, onClose, onVerified }: { pin: OwnerPin; onClose: () => void; onVerified: () => void }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -333,7 +334,7 @@ export function VerifyModal({ pin, onClose, onVerified }: { pin: OwnerPin; onClo
         {problem && <p className="set-problem" role="alert">{problem}</p>}
         <div className="modal-actions">
           <button type="button" className="set-button" autoFocus onClick={onClose}>Cancel</button>
-          <button type="button" className="modal-primary" disabled={busy} onClick={verify}>Verify</button>
+          <button type="button" className="modal-primary" disabled={busy} onClick={verify}>{PIN_VERIFY}</button>
         </div>
       </div>
     </div>,
