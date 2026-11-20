@@ -173,7 +173,7 @@ function Settings({ sphere }: { sphere: Sphere }) {
     {sphere.live && !sphere.revoked && <MembersKeys />}
     {sphere.live && !sphere.revoked && <WithoutAsking />}
     {/* last, set apart: what it does, then its button under it at the left */}
-    <Group i={5}>
+    <Group i={7}>
       <div className="set-row set-danger">
         <span className="set-label">
           {admin ? 'Delete Obysphere' : `Leave ${sphere.name}`}
@@ -284,7 +284,7 @@ export function MembersKeys() {
     .catch((e: Error) => setProblem(e.message));
   useEffect(read, []);
   return (
-    <Group i={4} title="Members’ keys" footer={shown?.pins.length ? 'Compare a fingerprint with its person, in person or on a call, never by a message in the Obysphere.' : undefined}>
+    <Group i={5} title="Members’ keys" footer={shown?.pins.length ? 'Compare a fingerprint with its person, in person or on a call, never by a message in the Obysphere.' : undefined}>
       {shown?.pins.map((p) => {
         const alike = shown.alike.get(p.owner) ?? [];
         return (
@@ -354,7 +354,7 @@ export function WithoutAsking() {
     .catch((e: Error) => { setProblem(e.message); void readDecisions().then(setKept, () => {}); });
   useEffect(() => change(), []);
   return (
-    <Group i={4} title="What your Oby does without asking" footer={kept?.length ? 'Forget one, and the next such request asks you again.' : undefined}>
+    <Group i={6} title="What your Oby does without asking" footer={kept?.length ? 'Forget one, and the next such request asks you again.' : undefined}>
       {kept?.map((d) => {
         const { label, about } = decisionWords(d);
         return (
