@@ -17,11 +17,15 @@ pub mod procs;
 pub mod sphere;
 pub mod workflow;
 
+/// T3 Code's worktree and git bugs (`workflows/t3/tasks/`): the nodes that act on obid's folders.
+pub mod t3_tasks;
+
 /// Every node's name, the internal `cleanup` among them.
 pub fn node_names() -> Vec<&'static str> {
     nodes::NODES
         .iter()
         .map(|(n, _)| *n)
+        .chain(t3_tasks::NODES.iter().map(|(n, _)| *n))
         .chain(lab::nodes().map(|(n, _)| n))
         .chain(["cleanup"])
         .collect()

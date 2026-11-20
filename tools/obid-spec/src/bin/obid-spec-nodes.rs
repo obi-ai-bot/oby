@@ -52,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
     for (name, description) in NODES
         .iter()
         .copied()
+        .chain(obid_spec::t3_tasks::NODES.iter().copied())
         .chain(obid_spec::lab::nodes())
         .chain([("cleanup", "Stops every process this workflow started.")])
     {

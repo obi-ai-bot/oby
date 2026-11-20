@@ -1,0 +1,302 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: a base that moved under a task",
+  "version": "1.0.0",
+  "description": "T3 Code's base-branch kind: main moves on the remote while a task works. A task started after starts from main as it is now; the first task's changes stay what its branch changed since its merge-base with main, never main's new commit read as its deletion (TASKS-23's range, origin/<base>...<head>).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "a-changes-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "files": [
+              {
+                "path": "a.txt",
+                "status": "added"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "m-file",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "m-tree/b.txt",
+        "in": "person",
+        "text": "the teammate's file\n"
+      }
+    },
+    {
+      "id": "m-read",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "--work-tree=${state.o.person}/m-tree",
+          "read-tree",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "m-add",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "--work-tree=${state.o.person}/m-tree",
+          "add",
+          "b.txt"
+        ]
+      }
+    },
+    {
+      "id": "m-commit",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "-c",
+          "user.name=teammate",
+          "-c",
+          "user.email=teammate@example.invalid",
+          "--work-tree=${state.o.person}/m-tree",
+          "commit",
+          "-q",
+          "-m",
+          "The base moved"
+        ]
+      }
+    },
+    {
+      "id": "m-main",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: c.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "b-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "b-starts-from-main-as-it-is-now",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.b.body.id}/b.txt",
+        "within": 30,
+        "expect": {
+          "exists": true,
+          "text": "the teammate's file\n"
+        }
+      }
+    },
+    {
+      "id": "tasks-23-b-changed-c-txt-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "main",
+            "files": [
+              {
+                "path": "c.txt",
+                "status": "added"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "the-clone-saw-main-move",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "rev-parse",
+          "refs/remotes/origin/main"
+        ]
+      }
+    },
+    {
+      "id": "origin-main-is-the-moved-commit",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.the-clone-saw-main-move}",
+        "expect": {
+          "paths": {
+            "out": "${state.m-main.out}"
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-23-a-still-changed-a-txt-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "main",
+            "head": "${state.a-changes-before.body.head}",
+            "files": [
+              {
+                "path": "a.txt",
+                "status": "added",
+                "additions": 1,
+                "deletions": 0
+              }
+            ]
+          },
+          "paths": {
+            "diff": {
+              "$not": {
+                "$contains": "b.txt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

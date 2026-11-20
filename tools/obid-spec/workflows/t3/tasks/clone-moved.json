@@ -1,0 +1,221 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: obid's clone moved or deleted while obid was down",
+  "version": "1.0.0",
+  "description": "T3 Code's repository-moved kind: obid's clone of a repository moved away (or deleted) while obid was down. After the restart a task cut by it goes on (RECOVERY-2) or ends saying why, never a task stuck running on a worktree whose git folder is gone; a new task gets a clone again and works.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "k",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "k-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.k.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "k-worktree",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.k.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "clone-moved-away",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "move",
+        "path": "clones/obi-e2e/fixture-app",
+        "to": "elsewhere/fixture-app"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "n",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: after.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "n-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-23-a-new-task-works-on-a-new-clone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "main",
+            "files": [
+              {
+                "path": "after.txt",
+                "status": "added"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "the-clone-is-back",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "clones/obi-e2e/fixture-app/.git",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "recovery-2-the-cut-task-goes-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.k.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ],
+        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

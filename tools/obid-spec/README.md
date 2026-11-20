@@ -77,6 +77,12 @@ applies to obid gets workflows here, driving the real obid with its stand-in age
 - `obid-spec run --tag t3` (or `--only t3-<topic>`) runs them; any other run leaves them out, and
   `coverage` doesn't count them.
 - A step that finds a real obid bug keeps its assertion, marked `expectedRed` with the bug's issue.
+- `t3/tasks/`: worktrees and git, a worktree gone from under its task, tasks started at once, branch
+  names, edits `git status` hides, a stale lock, a clone moved, a base that moved, binary and large
+  diffs, submodules, and a delete that leaves nothing behind. What a crash or the owner's Finder
+  does to obid's folders between two of its steps, `t3.git` (git in a worktree or obid's clone) and
+  `t3.fs` (remove, move or write a file there) do (`src/t3_tasks.rs`). They only act: what obid
+  answers is asserted with the suite's own nodes.
 
 ```bash
 tools/obid-spec/target/debug/obid-spec run --tag t3

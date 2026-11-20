@@ -1,0 +1,293 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: a deleted task leaves no worktree or branch behind",
+  "version": "1.0.0",
+  "description": "T3 Code's worktree-removal kind (a worktree, its git entry or its branch left behind after a delete): Delete on a stopped task with nothing to lose takes its worktree folder, git's entry for it in obid's clone and its own local branch, as the task menu's Delete says (TASKS, The menu); git's worktree list no longer names it. A task started after it works as before.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-worktree",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "s-branch-made",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "rev-parse",
+          "--verify",
+          "refs/heads/oby/build-${state.s.body.id}"
+        ]
+      }
+    },
+    {
+      "id": "s-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-deleted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/delete",
+        "expect": {
+          "status": 200,
+          "body": {
+            "deleted": true,
+            "ask": null
+          }
+        }
+      }
+    },
+    {
+      "id": "s-gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "its-worktree-folder-went",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}",
+        "within": 30,
+        "expect": {
+          "exists": false
+        }
+      }
+    },
+    {
+      "id": "gits-entry-for-it-went",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "clones/obi-e2e/fixture-app/.git/worktrees/${state.s.body.id}",
+        "within": 30,
+        "expect": {
+          "exists": false
+        }
+      }
+    },
+    {
+      "id": "worktrees-listed",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "worktree",
+          "list",
+          "--porcelain"
+        ]
+      }
+    },
+    {
+      "id": "git-no-longer-lists-it",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.worktrees-listed}",
+        "expect": {
+          "paths": {
+            "out": {
+              "$not": {
+                "$contains": "${state.s.body.id}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "its-branch",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/oby/build-${state.s.body.id}"
+        ]
+      }
+    },
+    {
+      "id": "its-local-branch-went",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.its-branch}",
+        "expect": {
+          "paths": {
+            "out": ""
+          }
+        }
+      }
+    },
+    {
+      "id": "n",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: next.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "n-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-23-the-next-task-works",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "files": [
+              {
+                "path": "next.txt",
+                "status": "added"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "n-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.n.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}
