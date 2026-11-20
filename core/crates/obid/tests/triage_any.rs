@@ -149,8 +149,16 @@ fn triage_any_2_none_says_why() {
         "{why}"
     );
     assert_eq!(said.last().unwrap()["waiting"], 1, "{said:?}");
-    // Past its time to wait, still `pending`: never guessed `needs_you`.
-    assert_eq!(item(&obid, &id)["triage"], "pending");
+    // Past its time to wait, still `pending`: never guessed `needs_you`. The item itself says why.
+    let waiting = item(&obid, &id);
+    assert_eq!(waiting["triage"], "pending");
+    let item_why = waiting["triageWhy"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{waiting}"));
+    assert!(
+        item_why.contains("no Claude Code or Codex account is signed in"),
+        "{item_why}"
+    );
     assert!(calls(&obid, "triage").is_empty(), "nothing was sent");
     // Codex signs in: the item is sorted, and the event says nothing waits for a reason.
     std::fs::write(folder.0.join("home/accounts/codex/auth.json"), "{}").unwrap();
@@ -159,6 +167,7 @@ fn triage_any_2_none_says_why() {
         (item["triage"] == "fyi").then_some(item)
     });
     assert_eq!(sorted["triage"], "fyi");
+    assert!(sorted["triageWhy"].is_null(), "{sorted}");
     let cleared = events_named(&events, "triage", 30, |got| {
         got.iter().any(|e| e["why"].is_null())
     });

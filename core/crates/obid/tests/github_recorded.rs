@@ -623,12 +623,13 @@ mod work_feed {
         answers
             .push(json!({"asked": "POST /v1/github/work/refresh, again", "body": refresh(&obid)}));
         // The quick model sorts an assigned issue (crate::triage): its answer, not GitHub's, so the
-        // items are read once it has, or obid stopped waiting for it.
-        let mut items = within(150, "the new items sorted", || {
+        // items are read once it has, or once each one still waiting says why (`triageWhy`: no
+        // account here can sort it, TRIAGE-ANY-2).
+        let mut items = within(150, "the new items sorted, or saying why they wait", || {
             let items = github_items(&obid, "open");
             items
                 .iter()
-                .all(|i| i["triage"] != "pending")
+                .all(|i| i["triage"] != "pending" || i["triageWhy"].is_string())
                 .then_some(items)
         });
         items.sort_by_key(|i| i["title"].as_str().unwrap_or_default().to_owned());
