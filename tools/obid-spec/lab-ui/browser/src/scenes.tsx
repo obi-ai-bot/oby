@@ -73,7 +73,7 @@ function SignupPage({ tab }: { tab: Tab }) {
 }
 
 export function Signup({ signedUp = true, chips = true }: { signedUp?: boolean; chips?: boolean }) {
-  const { ui, setUi, active } = useLab();
+  const { ui, setUi, active, mode } = useLab();
   if (!active) return null;
   const held = active.holder === 'you';
   const pageLabel = active.title.startsWith('Workspace') ? 'Acme’s members page, Codex clicking Invite' : held ? 'Acme’s sign-in page' : 'The page Codex is on: Acme’s sign-in, filled in';
@@ -111,7 +111,7 @@ export function Signup({ signedUp = true, chips = true }: { signedUp?: boolean; 
           <Nav tab={active} />
           <Control tab={active} />
           <View tab={active} label={pageLabel} page={<SignupPage tab={active} />}>
-            {held ? <YouPointer x={380} y={268} /> : active.pointer && <Pointer tab={active} x={active.pointer.x} y={active.pointer.y} ring={active.pointer.ring} />}
+            {held ? mode === 'fixtures' && <YouPointer x={380} y={268} /> : active.pointer && <Pointer tab={active} x={active.pointer.x} y={active.pointer.y} ring={active.pointer.ring} />}
           </View>
         </Panel>
       )}

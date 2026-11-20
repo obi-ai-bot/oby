@@ -385,7 +385,7 @@ def agent_types(id, snapshot, error=None, job="j1"):
     return api(id, "mcp", {"api": UP, "token": f"${{state.{job}.token}}", "tool": "oby_browser_act", "args": {"action": "type", "text": "agent"}, "refFor": {"role": "textbox", "name": "Name"}, "snapshot": f"${{state.{snapshot}}}", "expect": {"paths": exp}})
 
 lwf(2, "live-take-control", "live: Take control and Give back, the agent refused while you hold the tab",
-    "Live (board 2's screen) on lane A's API: Take control in the strip is the owner's signed take (the screens' server signs it, as the app's main will), so the API holds the tab for this device and refuses the agent's act with human_control while the screen shows the blue strip and the ring; Give back releases it and the agent acts again.",
+    "Live (board 2's screen) on lane A's API: Take control in the strip is the owner's signed take (the screens' server signs it, as the app's main will), so the API holds the tab for this device and refuses the agent's act with human_control while the screen shows the blue strip and the ring; your click and keys on the page reach it (POST …/input: the Name field gets your words); Give back releases it and the agent acts again.",
     live_head(2) + [
      snap("snap"),
      click("take-control", TAKE),
@@ -393,6 +393,9 @@ lwf(2, "live-take-control", "live: Take control and Give back, the agent refused
      get("api-holds", {"status": 200, "body.tabs.0.heldBy": "${state.device.id}"}, proves="LAB-UI-LIVE-2"),
      has("ring", css(".br-view.is-held")),
      agent_types("agent-refused", "snap", "human_control"),
+     step("you-click-the-field", "click", {"screen": S, "target": css("[data-lab=frame-input]"), "position": {"x": 60, "y": 18}}),
+     step("you-type", "type", {"screen": S, "text": "Ada"}),
+     {"id": "your-words-in-the-page", "use": "runtime.rust:lab.browser.read", "inputs": {"conversation": "j1", "selector": "#name", "within": 10, "expect": {"paths": {"value": "Ada"}}}, "ui": {"proves": ["LAB-UI-LIVE-2"]}},
      click("give-back", role("button", "Give back")),
      get("api-free", {"status": 200, "body.tabs.0.heldBy": None}, within=5, proves="LAB-UI-LIVE-2"),
      gone("ring-gone", css(".br-view.is-held")),

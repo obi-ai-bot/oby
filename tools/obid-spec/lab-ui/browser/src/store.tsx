@@ -29,8 +29,9 @@ export type Lab = {
   ui: Ui;
   setUi: (u: Partial<Ui>) => void;
   api: BrowserApi;
-  /** live: the stream's latest frame for a tab, as an image URL */
+  /** live: the stream's latest frame for a tab, as an image URL, and its size in the page's px */
   frame: (tab: string) => string | null;
+  frameSize: (tab: string) => { width: number; height: number } | null;
   /** live: why it isn't live (no API, refused), shown on the page */
   problem: string | null;
   active: Tab | undefined;
@@ -50,7 +51,7 @@ export function LabProvider({ start, ui: ui0, live, children }: { start: Browser
   const [s, setS] = useState<BrowserState>(live ? { tabs: [], active: null, asks: [], downloads: [], settings: start.settings } : start);
   const [ui, setUiState] = useState<Ui>({ ...UI0, ...ui0 });
   const [problem, setProblem] = useState<string | null>(null);
-  const [frames, setFrames] = useState<Record<string, string>>({});
+  const [frames, setFrames] = useState<Record<string, { url: string; width: number; height: number }>>({});
   const conn = useRef<Live | null>(null);
   const setUi = (u: Partial<Ui>) => setUiState((o) => ({ ...o, ...u }));
 
@@ -58,7 +59,7 @@ export function LabProvider({ start, ui: ui0, live, children }: { start: Browser
     if (!live) return;
     const c = connectLive(live, {
       state: (next) => setS(next),
-      frame: (tab, url) => setFrames((f) => ({ ...f, [tab]: url })),
+      frame: (tab, url, size) => setFrames((f) => ({ ...f, [tab]: { url, ...size } })),
       problem: setProblem,
     });
     conn.current = c;
@@ -74,6 +75,7 @@ export function LabProvider({ start, ui: ui0, live, children }: { start: Browser
         saveCopy: (d) => conn.current!.saveCopy(d),
         setSettings: (x) => conn.current!.setSettings(x),
         select: async (t) => setS((o) => ({ ...o, active: t })),
+        input: (t, e) => conn.current!.input(t, e),
       };
     }
     const tab = (id: string, f: (t: Tab) => Tab) => setS((o) => ({ ...o, tabs: o.tabs.map((t) => (t.id === id ? f(t) : t)) }));
@@ -93,7 +95,8 @@ export function LabProvider({ start, ui: ui0, live, children }: { start: Browser
 
   const lab: Lab = {
     mode: live ? 'live' : 'fixtures', s, ui, setUi, api, problem,
-    frame: (t) => frames[t] ?? null,
+    frame: (t) => frames[t]?.url ?? null,
+    frameSize: (t) => (frames[t] ? { width: frames[t].width, height: frames[t].height } : null),
     active: s.tabs.find((t) => t.id === s.active),
   };
   return <Ctx.Provider value={lab}>{children}</Ctx.Provider>;

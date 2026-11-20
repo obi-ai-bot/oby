@@ -22,6 +22,15 @@ let page = null;
 let base = null;
 let size = null;
 const errors = [];
+// the screen's own sends to the browser API (take, give back, a secret, your keys) still on their way:
+// a click, typing or a key press answers once they are answered, so the next step sees their effect
+let sending = 0;
+async function delivered(timeout = 10_000) {
+  const until = Date.now() + timeout;
+  await new Promise((done) => setTimeout(done, 50));
+  while (sending > 0 && Date.now() < until) await new Promise((done) => setTimeout(done, 25));
+  return sending === 0;
+}
 
 function locate(target, root = page) {
   if (!target || typeof target !== 'object') throw new Error('a target is an object: role and name, label, text or css');
@@ -153,6 +162,10 @@ const ops = {
       page = await context.newPage();
       page.on('pageerror', (e) => errors.push(e.message));
       page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+      const sends = (q) => q.method() !== 'GET' && new URL(q.url()).pathname.startsWith('/v1/');
+      page.on('request', (q) => { if (sends(q)) sending++; });
+      page.on('requestfinished', (q) => { if (sends(q)) sending--; });
+      page.on('requestfailed', (q) => { if (sends(q)) sending--; });
     }
     if (!r.url || !/^http:\/\/127\.0\.0\.1:\d+\//.test(r.url)) throw new Error('url: the lab app’s, on 127.0.0.1');
     base = new URL(r.url).origin;
@@ -173,22 +186,24 @@ const ops = {
   },
   async click(r) {
     const el = await one(r.target, r.timeout);
-    if (r.hover) await el.hover({ timeout: r.timeout ?? 10_000 });
-    else await el.click({ timeout: r.timeout ?? 10_000 });
-    return { clicked: !r.hover, hovered: !!r.hover };
+    // position: where in the element, in its own px (a spot on the live page)
+    const at = r.position ? { position: r.position } : {};
+    if (r.hover) await el.hover({ timeout: r.timeout ?? 10_000, ...at });
+    else await el.click({ timeout: r.timeout ?? 10_000, ...at });
+    return { clicked: !r.hover, hovered: !!r.hover, delivered: await delivered() };
   },
   async type(r) {
     if (typeof r.text !== 'string') throw new Error('text: the words to type');
     if (r.target) await (await one(r.target, r.timeout)).click({ timeout: r.timeout ?? 10_000 });
     await page.keyboard.type(r.text);
     // a secret is typed, never answered back: its length only
-    return { typed: r.text.length };
+    return { typed: r.text.length, delivered: await delivered() };
   },
   async press(r) {
     if (typeof r.keys !== 'string') throw new Error('keys: what to press, as Playwright names it (Enter, Escape)');
     if (r.target) await (await one(r.target, r.timeout)).focus();
     for (let i = 0; i < (r.times ?? 1); i++) await page.keyboard.press(r.keys);
-    return { pressed: r.keys, times: r.times ?? 1 };
+    return { pressed: r.keys, times: r.times ?? 1, delivered: await delivered() };
   },
   // an element that goes while it's read (a state changing under the read) is read again
   async read(r) {

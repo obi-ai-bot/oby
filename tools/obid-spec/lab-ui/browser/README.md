@@ -39,7 +39,9 @@ then start this app with `LAB_BROWSER_API`, `LAB_BROWSER_TOKEN` and `LAB_BROWSER
 - `src/store.tsx`: two modes, one interface (`BrowserApi`). Fixtures put every state on screen with
   no server; live (`src/live.ts`) reads lane A's API through `src/contract.ts` (lane A's file,
   never edited here): `GET /v1/browser` and every event after it, the page from agent-browser's
-  stream (`event: frame`, the newest drawn).
+  stream (`event: frame`, the newest drawn), and, while you hold the tab, your mouse and keys on it
+  sent to the page (`POST …/tabs/{id}/input`, in the page's px). In the lab the server adds the
+  token, so the page reads the SSE routes with `EventSource`; in the app, main does that part.
 - `vite.config.ts`: in live mode this app's server stands where the app's main process will: it holds
   the owner token and a device key, so the page never sees either, and signs the owner's acts
   (`X-Oby-Words`, P-256 over the exact body). It also serves the design boards at `/board/`.
@@ -61,7 +63,8 @@ obid). One per board (`01-…` to `17-…`, `LAB-UI-n`): opens its state, checks
 and colours (computed styles against the app's tokens), drives what the board shows, compares the
 screen with the board (every browser piece within 4px, the same words), and saves a screenshot and
 a side-by-side PNG (`OBID_SPEC_SHOTS=<folder>` keeps them). Five run live on lane A's API (`101-` to
-`105-`, `LAB-UI-LIVE-n`): open and drive, Take control and Give back, the password card, page states
+`105-`, `LAB-UI-LIVE-n`): open and drive, Take control and Give back (with your click and typing
+reaching the page's field), the password card, page states
 (failed, a page's alert, timed out), downloads. `00-cleanup` proves the cleanup; `15-the-mac-stop`
 is board 15's Stop on agent-desktop, skipped without its permissions or off a desktop Space.
 

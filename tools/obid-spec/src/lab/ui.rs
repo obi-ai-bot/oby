@@ -29,7 +29,7 @@ use crate::procs;
 pub const NODES: &[(&str, &str)] = &[
     ("lab.ui.serve", "Builds the browser's screens (tools/obid-spec/lab-ui/browser) into the workflow's folder and serves them on 127.0.0.1 on a free port; `api`: lane A's browser API, proxied for live mode. Skipped when the app's node_modules aren't installed."),
     ("lab.ui.open", "Opens a board's screen (`board`: 1 to 17, `live` for lane A's API) in Chrome for Testing, headless, at the board's own size, with a profile in the workflow's folder; one helper per `name`. Skipped without Chrome for Testing."),
-    ("lab.ui.click", "Clicks (or `hover`s) one element of the screen: a target by role and name, label, text or css."),
+    ("lab.ui.click", "Clicks (or `hover`s) one element of the screen, at its middle or at `position` {x, y} in it: a target by role and name, label, text or css."),
     ("lab.ui.type", "Types `text` into the screen (into `target` first, when given); answers only how many characters."),
     ("lab.ui.press", "Presses `keys` (`times` times) on the screen."),
     ("lab.ui.read", "Reads the elements a target finds: their count, words, attributes and computed `styles` (a style's value against a token: `{\"background-color\": \"--held\"}`); with expect, `within` and `hold`."),
@@ -591,7 +591,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
                 "lab.ui.click" => {
                     ask(
                         &h,
-                        &request("click", input, &["target", "hover", "timeout"]),
+                        &request("click", input, &["target", "hover", "position", "timeout"]),
                     )
                     .await
                 }

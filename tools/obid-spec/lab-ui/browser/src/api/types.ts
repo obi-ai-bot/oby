@@ -74,4 +74,6 @@ export interface BrowserApi {
   saveCopy(download: string): Promise<void>;
   setSettings(s: Partial<Settings>): Promise<void>;
   select(tab: string): Promise<void>;
+  /** live only: your mouse and keys on the page while you hold it (the contract's StreamInput) */
+  input?(tab: string, e: import('../contract').StreamInput): Promise<void>;
 }

@@ -4,9 +4,9 @@
 // doing ("Clicking Sign in") from its `action` events; the page itself from agent-browser's live
 // stream, newest frame only (a slow screen drops frames, never queues them).
 import {
-  PATH_BROWSER, PATH_DOWNLOADS, PATH_EVENTS, PATH_SETTINGS, VERB_GIVE_BACK, VERB_SECRET, VERB_STREAM, VERB_TAKE,
+  PATH_BROWSER, PATH_DOWNLOADS, PATH_EVENTS, PATH_SETTINGS, VERB_GIVE_BACK, VERB_INPUT, VERB_SECRET, VERB_STREAM, VERB_TAKE,
   askPath, saveCopyPath, tabPath,
-  type Ask as CAsk, type BrowserEvent, type Download as CDownload, type DownloadsAnswer, type Settings, type StreamFrame, type Tab as CTab, type TabsAnswer,
+  type Ask as CAsk, type BrowserEvent, type Download as CDownload, type DownloadsAnswer, type Settings, type StreamFrame, type StreamInput, type Tab as CTab, type TabsAnswer,
 } from './contract';
 import type { AgentId, BrowserState, Download, Tab } from './api/types';
 
@@ -17,12 +17,14 @@ export type Live = {
   secret(tab: string, field: string, value: string): Promise<void>;
   saveCopy(download: string): Promise<void>;
   setSettings(s: Partial<Settings>): Promise<void>;
+  /** your mouse and keys on the page while you hold the tab (POST …/input), sent in order */
+  input(tab: string, e: StreamInput): Promise<void>;
   close(): void;
 };
 
 type Sinks = {
   state: (s: BrowserState) => void;
-  frame: (tab: string, url: string) => void;
+  frame: (tab: string, url: string, size: { width: number; height: number }) => void;
   problem: (why: string | null) => void;
 };
 
@@ -109,7 +111,7 @@ export function connectLive(_base: string, sinks: Sinks): Live {
     es.addEventListener('frame', (m) => {
       try {
         const f = JSON.parse((m as MessageEvent).data) as StreamFrame;
-        sinks.frame(tab, `data:${f.mime || 'image/jpeg'};base64,${f.data}`);
+        sinks.frame(tab, `data:${f.mime || 'image/jpeg'};base64,${f.data}`, { width: f.width, height: f.height });
       } catch { /* a frame that isn't JSON: dropped */ }
     });
   };
@@ -154,6 +156,8 @@ export function connectLive(_base: string, sinks: Sinks): Live {
   const again = setInterval(() => { void refresh(); }, 2000);
 
   const post = (path: string, body: unknown = {}) => call('POST', path, body);
+  // one at a time, so a press never overtakes the move before it
+  let inputs: Promise<unknown> = Promise.resolve();
   return {
     take: async (t) => { await post(tabPath(t, VERB_TAKE)); await refresh(); },
     giveBack: async (t) => { await post(tabPath(t, VERB_GIVE_BACK)); await refresh(); },
@@ -168,6 +172,10 @@ export function connectLive(_base: string, sinks: Sinks): Live {
     },
     saveCopy: async (d) => { await post(saveCopyPath(d)); saved.add(d); await refresh(); },
     setSettings: async (s) => { await call('PUT', PATH_SETTINGS, s); await refresh(); },
+    input: (t, e) => {
+      inputs = inputs.catch(() => undefined).then(() => post(tabPath(t, VERB_INPUT), e)).catch((err) => { sinks.problem(`live: ${(err as Error).message}`); });
+      return inputs.then(() => undefined);
+    },
     close: () => { closed = true; clearInterval(again); events.close(); for (const es of streams.values()) es.close(); },
   };
 }
