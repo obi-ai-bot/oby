@@ -27,7 +27,7 @@ Every exchange with that owner's Obis since obid joined this Sphere, whichever w
 
 | What happened | What the thread has |
 |---|---|
-| A question went | `kind: question`, `direction: sent`, `exchange.state: sent`, and `exchange.quietAt`, 2 minutes on. `by: owner` when they asked from this thread, else `by: obi` |
+| A question went | `kind: question`, `direction: sent`, `exchange.state: sent`, and `exchange.quietAt`, 20 seconds on (`sphere::exchange::QUIET`). `by: owner` when they asked from this thread, else `by: obi` |
 | No word by `quietAt` | The same post: past that time, it counts as unanswered. The clock decides, so no event says it |
 | Only the person can answer | `kind: status`, `status: waiting_on_owner`, `exchange.waitingOnThem` true, `quietAt` null |
 | Answered | `kind: answer`, `by: obi` or `owner`, the words in `text`, `exchange.state: done` |
