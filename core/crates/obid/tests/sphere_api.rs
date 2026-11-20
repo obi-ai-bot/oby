@@ -2160,7 +2160,7 @@ async fn sphere_8_a_late_read_never_takes_a_newer_key_back() {
         let obid = &obid;
         std::thread::scope(|scope| {
             // This read sees the second key; its answer waits.
-            let late = scope.spawn(|| read_members(&obid));
+            let late = scope.spawn(|| read_members(obid));
             arrived
                 .recv_timeout(std::time::Duration::from_secs(20))
                 .expect("the first read reached the Sphere");
@@ -2168,7 +2168,7 @@ async fn sphere_8_a_late_read_never_takes_a_newer_key_back() {
             serve_owner_key(&sphere, &ernesto, &third, 3);
             let (done, finished) = std::sync::mpsc::channel();
             let fresh = scope.spawn(move || {
-                let members = read_members(&obid);
+                let members = read_members(obid);
                 let _ = done.send(());
                 members
             });
@@ -2178,7 +2178,7 @@ async fn sphere_8_a_late_read_never_takes_a_newer_key_back() {
             late.join().unwrap();
             fresh.join().unwrap();
         });
-        let cards = trust_cards(&obid, "");
+        let cards = trust_cards(obid, "");
         assert_eq!(cards.len(), 1, "{cards:#?}");
         assert_eq!(
             cards[0]["confirm"]["payload"]["fingerprint"],
