@@ -77,7 +77,11 @@
             "PEER-14": "— Electron quote rendering.",
             "PEER-15": "— Electron state words/timers.",
             "PEER-24": "— Electron look-alike display.",
-            "PEER-42": "— Electron Obysphere settings list/Change button."
+            "PEER-42": "— Electron Obysphere settings list/Change button.",
+            "PEER-46": "— Electron review request card on Home and in the thread (apps/electron personCard.test.tsx).",
+            "PEER-47": "— Electron review request Accept and the thread's words (apps/electron personCard.test.tsx).",
+            "PEER-48": "— Electron remembered answer's click (apps/electron personCard.test.tsx); obid's half is sphere_api.rs.",
+            "PEER-49": "— Electron closed review request card (apps/electron personCard.test.tsx)."
           }
         },
         "ask-an-oby.md": {
