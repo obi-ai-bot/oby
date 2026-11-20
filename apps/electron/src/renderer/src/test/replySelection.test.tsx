@@ -95,3 +95,36 @@ describe('a refused task’s fixes', () => {
     expect(host.innerHTML).toBe('');
   });
 });
+
+// T3 Code's assistantTextSelection tests (fix d02e292610), held to COMPOSER-23
+describe('T3: words picked in a reply', () => {
+  const pick = async (start: [Node, number], end: [Node, number]) => {
+    const range = document.createRange();
+    range.setStart(...start);
+    range.setEnd(...end);
+    const s = getSelection()!;
+    s.removeAllRanges();
+    s.addRange(range);
+    await act(async () => { document.dispatchEvent(new Event('selectionchange')); });
+  };
+  // "captures the final paragraph when Chromium extends to the next paragraph boundary": a triple-click
+  // ends the range at the start of the next block, nothing of which is picked
+  // known bug obi-ai-bot/oby#2728: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_reply_a_triple_clicked_paragraph_offers_reply_about_this (known bug #2728)', async () => {
+    const t = await thread();
+    const oby = document.getElementById('oby')!;
+    await pick([oby.firstChild!, 0], [document.getElementById('you')!, 0]);
+    expect(t.button()?.textContent).toBe('Reply about this');
+    await act(async () => t.button()!.click());
+    expect(t.quotes).toEqual(['Use SQLite for the cache, it’s already there.']);
+  });
+
+  // "does not attribute an empty starting endpoint to the previous response"
+  // known bug obi-ai-bot/oby#2728: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_reply_a_pick_that_starts_at_the_very_end_of_the_reply_before_is_the_next_ones (known bug #2728)', async () => {
+    const t = await thread();
+    const oby = document.getElementById('oby')!.firstChild as Text, oby2 = document.getElementById('oby2')!.firstChild as Text;
+    await pick([oby, oby.length], [oby2, 8]);
+    expect(t.button()?.textContent).toBe('Reply about this');
+  });
+});
