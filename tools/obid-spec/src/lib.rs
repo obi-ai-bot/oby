@@ -4,6 +4,7 @@
 pub mod app;
 pub mod browser;
 pub mod coverage;
+pub mod coverage_accounts;
 /// The conversations area's coverage (`workflows/routes/conversations/`): its own nodes.
 pub mod coverage_conversations;
 pub mod desktop;
@@ -31,6 +32,7 @@ pub fn node_names() -> Vec<&'static str> {
         .chain(t3_tasks::NODES.iter().map(|(n, _)| *n))
         .chain(lab::nodes().map(|(n, _)| n))
         .chain(t3_conversations::NODES.iter().map(|(n, _)| *n))
+        .chain(coverage_accounts::NODES.iter().map(|(n, _)| *n))
         .chain(coverage_conversations::NODES.iter().map(|(n, _)| *n))
         .chain(["cleanup"])
         .collect()

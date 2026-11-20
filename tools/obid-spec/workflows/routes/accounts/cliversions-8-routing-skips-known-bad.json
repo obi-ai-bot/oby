@@ -1,0 +1,154 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-8: routing passes over a known-bad tool",
+  "version": "1.0.0",
+  "description": "Claude Code known bad and Codex tested, both signed in, Claude Code's account first in the configuration: a job naming no tool and no account goes to Codex and ends done there.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        }
+      }
+    },
+    {
+      "id": "table",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "cli-versions.json",
+        "content": "{\"claude\": {\"tested\": {\"from\": \"2.1.296\", \"to\": \"2.1.302\"}, \"knownBad\": [{\"version\": \"2.1.296\", \"reason\": \"it breaks\", \"issue\": 1}]}, \"codex\": {\"tested\": {\"from\": \"0.170.0\", \"to\": \"0.170.0\"}, \"knownBad\": []}}"
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}"
+        },
+        "env": {
+          "OBID_TEST_CLI_VERSIONS": "${state.o.home}/cli-versions.json"
+        }
+      }
+    },
+    {
+      "id": "claude-known-bad",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "claude",
+                "versionStatus": "knownBad"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "Say hello."
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-8"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-8-it-runs-on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-8"
+        ]
+      }
+    }
+  ]
+}

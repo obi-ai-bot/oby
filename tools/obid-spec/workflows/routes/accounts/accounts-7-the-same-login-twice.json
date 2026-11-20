@@ -1,0 +1,413 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-7: the same login twice is taken off",
+  "version": "1.0.0",
+  "description": "A new account signed into the email (letter case aside), org and plan of another signed-in account of its tool is taken off with its folder; its sign-in routes answer 409 `sameAccount` with `sameAs` the other's id and `That's <name> again`; the other is untouched. Codex's sign-in, then Claude Code's pasted code.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Personal"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "first-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.first.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"plus\"}"
+      }
+    },
+    {
+      "id": "first-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.first.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "first-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.first.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "again-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.again.body.id}/who.json",
+        "content": "{\"email\": \"ME@x.dev\", \"plan\": \"plus\"}"
+      }
+    },
+    {
+      "id": "again-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.again.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-7-the-same-login-again-is-taken-off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$none": {
+                "id": "${state.again.body.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    },
+    {
+      "id": "accounts-7-its-folder-goes-with-it",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.again.body.id}",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    },
+    {
+      "id": "accounts-7-get-sign-in-says-whose",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.again.body.id}/sign-in",
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "sameAccount",
+            "sameAs": "${state.first.body.id}",
+            "error": {
+              "$contains": "Personal again"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    },
+    {
+      "id": "accounts-7-the-first-is-as-it-was",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.first.body.id}",
+                "signedIn": true,
+                "name": "Personal",
+                "email": "me@x.dev"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    },
+    {
+      "id": "one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Personal"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "one-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.one.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"max\"}"
+      }
+    },
+    {
+      "id": "one-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.one.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "one-in-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.one.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "one-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.one.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "two-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.two.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"max\"}"
+      }
+    },
+    {
+      "id": "two-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.two.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "two-in-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.two.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "sameAccount",
+            "sameAs": "${state.one.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    },
+    {
+      "id": "accounts-7-claude-codes-is-taken-off-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$none": {
+                "id": "${state.two.body.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    },
+    {
+      "id": "accounts-7-and-its-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.two.body.id}",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    },
+    {
+      "id": "accounts-7-post-sign-in-says-whose-until-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.two.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "sameAccount",
+            "sameAs": "${state.one.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-7"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,529 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-8: what isn't the same login twice",
+  "version": "1.0.0",
+  "description": "Two tools' accounts may share an email; a tool that says no email has nothing to compare, so both stay; an account signed in before keeps its place when it signs in again as another account's login; a signed-out account isn't what a new sign-in is the same as.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "codex-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.codex.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"plus\"}"
+      }
+    },
+    {
+      "id": "cursor",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "cursor-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.cursor.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\"}"
+      }
+    },
+    {
+      "id": "codex-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.codex.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "codex-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.codex.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cursor-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.cursor.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-8-two-tools-may-share-an-email",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.cursor.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-8"
+        ]
+      }
+    },
+    {
+      "id": "accounts-8-the-other-tools-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.codex.body.id}",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-8"
+        ]
+      }
+    },
+    {
+      "id": "quiet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "quiet2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "quiet-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.quiet.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "quiet-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.quiet.body.id}",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "quiet2-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.quiet2.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "quiet2-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.quiet2.body.id}",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "nothing-takes-the-second-off",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "accounts",
+        "expect": {
+          "paths": {
+            "$": {
+              "$none": {
+                "id": "${state.quiet2.body.id}"
+              }
+            }
+          }
+        },
+        "none": true,
+        "seconds": 4
+      }
+    },
+    {
+      "id": "accounts-8-a-tool-with-no-email-keeps-both",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$count": [
+                {
+                  "agent": "cursor",
+                  "signedIn": true,
+                  "email": {
+                    "$exists": false
+                  }
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-8"
+        ]
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Other"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "other-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.other.body.id}/who.json",
+        "content": "{\"email\": \"other@x.dev\", \"plan\": \"pro\"}"
+      }
+    },
+    {
+      "id": "other-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.other.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "other-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.other.body.id}",
+                "signedIn": true,
+                "email": "other@x.dev"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "other-is-me-now",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.other.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"plus\"}"
+      }
+    },
+    {
+      "id": "other-again-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.other.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-8-an-account-signed-in-before-keeps-its-place",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.other.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev",
+                "name": "Other"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-8"
+        ]
+      }
+    },
+    {
+      "id": "codex-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.codex.body.id}/sign-out",
+        "expect": {
+          "status": 200,
+          "body": {
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "other-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.other.body.id}/sign-out",
+        "expect": {
+          "status": 200,
+          "body": {
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "new",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "new-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.new.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"plus\"}"
+      }
+    },
+    {
+      "id": "new-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.new.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-8-a-signed-out-account-isnt-what-a-new-one-is-the-same-as",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.new.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev",
+                "plan": "plus"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-8"
+        ]
+      }
+    }
+  ]
+}

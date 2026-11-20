@@ -1,0 +1,290 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-17: one email on another plan or org is another account",
+  "version": "1.0.0",
+  "description": "A personal plan and a team's seat on one email are two accounts, and both stay; the same email, org and plan on a third is the same login and is taken off.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "personal",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "personal-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.personal.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"max\"}"
+      }
+    },
+    {
+      "id": "personal-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.personal.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "personal-in-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.personal.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "personal-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.personal.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "team",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "team-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.team.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"team\", \"org\": \"Deskree\"}"
+      }
+    },
+    {
+      "id": "team-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.team.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "team-in-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.team.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-17-a-team-seat-on-the-same-email-is-another-account",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.team.body.id}",
+                "signedIn": true,
+                "email": "me@x.dev",
+                "org": "Deskree",
+                "plan": "team"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-17"
+        ]
+      }
+    },
+    {
+      "id": "accounts-17-both-stay",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.personal.body.id}",
+                "signedIn": true,
+                "plan": "max"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-17"
+        ]
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "again-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.again.body.id}/who.json",
+        "content": "{\"email\": \"me@x.dev\", \"plan\": \"team\", \"org\": \"Deskree\"}"
+      }
+    },
+    {
+      "id": "again-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.again.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "again-in-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.again.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "sameAccount",
+            "sameAs": "${state.team.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-17"
+        ]
+      }
+    },
+    {
+      "id": "accounts-17-the-same-org-and-plan-is-the-same-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$none": {
+                "id": "${state.again.body.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-17"
+        ]
+      }
+    }
+  ]
+}

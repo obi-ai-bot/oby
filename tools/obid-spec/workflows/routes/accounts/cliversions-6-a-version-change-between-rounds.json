@@ -1,0 +1,239 @@
+{
+  "schemaVersion": "2",
+  "name": "CLIVERSIONS-6: a version change between rounds is said",
+  "version": "1.0.0",
+  "description": "A job whose round 1 ran on Claude Code 2.1.300 runs round 2 on 2.1.310: its transcript has one `start` line naming both versions, and `agentVersion` is 2.1.310 in the API and its file.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "st",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "claude",
+                "version": "2.1.296"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "w1",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/claude",
+        "text": "#!/bin/sh\n[ \"$1\" = --version ] && echo \"2.1.300 (Claude Code)\" && exit 0\nexec ${state.st.body.tools.0.path} \"$@\"\n"
+      }
+    },
+    {
+      "id": "bin-set",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/agents/claude",
+        "body": {
+          "bin": "${state.w1.path}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "check": "false",
+            "rounds": 1,
+            "agent": "claude",
+            "task": "COMMIT: a.txt"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "round-1-on-2-1-300",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "agentVersion": "2.1.300"
+          }
+        }
+      }
+    },
+    {
+      "id": "w2",
+      "use": "runtime.rust:accounts.exec",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "bin/claude",
+        "text": "#!/bin/sh\n[ \"$1\" = --version ] && echo \"2.1.310 (Claude Code)\" && exit 0\nexec ${state.st.body.tools.0.path} \"$@\"\n"
+      }
+    },
+    {
+      "id": "try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "cliversions-6-round-2-runs-on-2-1-310",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "round": 2,
+            "status": {
+              "$oneOf": [
+                "interrupted",
+                "done",
+                "failed"
+              ]
+            },
+            "agentVersion": "2.1.310"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-6-its-file-says-2-1-310",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.j.body.id}.json",
+        "expect": {
+          "json": {
+            "agentVersion": "2.1.310"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-6-one-start-line-names-both",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}/transcript",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "entries": {
+              "$count": [
+                {
+                  "kind": "start",
+                  "summary": {
+                    "$matches": "2\\.1\\.300.*2\\.1\\.310|2\\.1\\.310.*2\\.1\\.300"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "cliversions-6-and-no-other-line-does",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}/transcript",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "entries": {
+              "$count": [
+                {
+                  "summary": {
+                    "$matches": "2\\.1\\.300.*2\\.1\\.310|2\\.1\\.310.*2\\.1\\.300"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-6"
+        ]
+      }
+    }
+  ]
+}
