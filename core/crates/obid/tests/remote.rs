@@ -70,6 +70,18 @@ fn through(
     target: &str,
     body: Option<&Value>,
 ) -> (u16, String) {
+    through_with(obid, token, method, target, body, &[])
+}
+
+/// [`through`], with `headers` too.
+fn through_with(
+    obid: &Obid,
+    token: Option<&str>,
+    method: &str,
+    target: &str,
+    body: Option<&Value>,
+    headers: &[(&str, &str)],
+) -> (u16, String) {
     let body = body.map(Value::to_string).unwrap_or_default();
     let mut stream = TcpStream::connect(("127.0.0.1", obid.gateway.expect("a gateway"))).unwrap();
     stream
@@ -79,6 +91,9 @@ fn through(
         format!("{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
     if let Some(token) = token {
         text.push_str(&format!("Authorization: Bearer {token}\r\n"));
+    }
+    for (name, value) in headers {
+        text.push_str(&format!("{name}: {value}\r\n"));
     }
     if method != "GET" {
         text.push_str(&format!(
@@ -164,6 +179,139 @@ fn computers_7_obid_pair_computer_pairs_the_mac_that_sent_its_key() {
     assert_eq!(status, 200, "{text}");
     let (status, _) = through(&obid, None, "POST", "/v1/pairing", Some(&redeem));
     assert_eq!(status, 410, "once");
+}
+
+/// `X-Oby-Words` signed by the device key `scalar` makes (registered as `device`), as the Mac's
+/// window signs the owner's words.
+fn words_by(scalar: u8, device: &str, method: &str, path: &str, body: &Value) -> String {
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer as _;
+    let key = p256::ecdsa::SigningKey::from_slice(&[scalar; 32]).unwrap();
+    let whole = obi_protocol::time::format(obi_protocol::time::now());
+    let signed_at = format!("{}.123Z", &whole[..19]);
+    let digest = hex::encode(obi_protocol::keys::sha256(body.to_string().as_bytes()));
+    let message = format!("oby-words\n{method}\n{path}\n{digest}\n{signed_at}");
+    let signature: p256::ecdsa::Signature = key.sign(message.as_bytes());
+    let signature = base64::engine::general_purpose::STANDARD.encode(signature.to_der());
+    format!("{device} {signed_at} {signature}")
+}
+
+/// COMPUTERS-14 to 16, on the real obid: a computer paired over SSH reaches the window's routes,
+/// never pairing nor a sign-in, where a phone reaches only its allowlist; the owner's words count
+/// through its token only signed by the key `obid pair-computer` registered for it; and the Mac
+/// removes it with its own token, which ends it and forgets that key there.
+#[test]
+fn computers_14_to_16_a_computers_token_its_own_key_and_removing_it() {
+    let folder = Folder::new("remote-computer-token");
+    let obid = started(&folder);
+    let gateway = obid.gateway.unwrap();
+    let key = device_key(9);
+    let (code, out, err) = pair_computer(&obid, &format!("Studio Mac\n{key}\n"));
+    assert_eq!(code, 0, "{out}{err}");
+    let said: Value = serde_json::from_str(out.trim()).unwrap();
+    let device = said["device"]["id"].as_str().unwrap().to_owned();
+    let redeem = json!({"credential": said["invite"]["secret"], "name": "Studio Mac"});
+    let (status, text) = through(&obid, None, "POST", "/v1/pairing", Some(&redeem));
+    assert_eq!(status, 200, "{text}");
+    let paired: Value = serde_json::from_str(text.trim()).unwrap();
+    let token = paired["token"].as_str().unwrap().to_owned();
+    let pairing = paired["deviceID"].as_str().unwrap().to_owned();
+    assert!(
+        !obid.home.join("invite-computer").exists(),
+        "presence used up"
+    );
+
+    // A phone, paired on the same gateway, for the difference.
+    let phone = call(
+        &obid,
+        "POST",
+        "/v1/pairing/invite",
+        Some(&json!({"url": format!("http://127.0.0.1:{gateway}")})),
+    );
+    assert_eq!(phone.status, 200, "{}", phone.text);
+    let (status, text) = through(
+        &obid,
+        None,
+        "POST",
+        "/v1/pairing",
+        Some(&json!({"credential": phone.body["secret"], "name": "iPhone"})),
+    );
+    assert_eq!(status, 200, "{text}");
+    let phone_token = serde_json::from_str::<Value>(text.trim()).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // COMPUTERS-14: the window's routes, past the phone's allowlist; never pairing or a sign-in.
+    let (status, text) = through(&obid, Some(&token), "GET", "/v1/obid/vault", None);
+    assert_eq!(status, 200, "a window's route: {text}");
+    let (status, _) = through(&obid, Some(&phone_token), "GET", "/v1/obid/vault", None);
+    assert_eq!(status, 404, "not a phone's");
+    for (method, path) in [
+        ("GET", "/v1/pairing/devices"),
+        ("POST", "/v1/pairing/invite"),
+        ("DELETE", "/v1/pairing/devices/x"),
+        ("POST", "/v1/tetrix/sign-in"),
+        ("POST", "/v1/github/sign-in"),
+    ] {
+        let (status, text) = through(&obid, Some(&token), method, path, Some(&json!({})));
+        assert_eq!(status, 404, "{method} {path}: {text}");
+    }
+    let listed = call(&obid, "GET", "/v1/pairing/devices", None);
+    let entry = listed
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == pairing.as_str());
+    assert_eq!(entry.unwrap()["computer"], true, "{}", listed.text);
+
+    // COMPUTERS-15: the owner's words count only signed by this pairing's own key.
+    let wider = json!({"mode": "bypass"});
+    let path = "/v1/settings/permissions";
+    let other = words_header(&obid, "PUT", path, Some(&wider));
+    let (status, text) = through_with(
+        &obid,
+        Some(&token),
+        "PUT",
+        path,
+        Some(&wider),
+        &[("X-Oby-Words", &other)],
+    );
+    assert_eq!(status, 403, "another registered key's words: {text}");
+    assert!(text.contains("this computer's own key"), "{text}");
+    let own = words_by(9, &device, "PUT", path, &wider);
+    let (status, text) = through_with(
+        &obid,
+        Some(&token),
+        "PUT",
+        path,
+        Some(&wider),
+        &[("X-Oby-Words", &own)],
+    );
+    assert_eq!(status, 200, "its own key's words: {text}");
+
+    // COMPUTERS-16: a phone's token ends nothing; the computer's own ends its pairing and key.
+    let (status, _) = through(&obid, Some(&phone_token), "DELETE", "/v1/pairing", None);
+    assert_eq!(status, 404);
+    let (status, _) = through(&obid, None, "DELETE", "/v1/pairing", None);
+    assert_eq!(status, 401);
+    let (status, text) = through(&obid, Some(&token), "DELETE", "/v1/pairing", None);
+    assert_eq!(status, 204, "{text}");
+    let (status, _) = through(&obid, Some(&token), "GET", "/v1/status", None);
+    assert_eq!(status, 401, "its token is gone");
+    let (status, _) = through(&obid, Some(&phone_token), "GET", "/v1/status", None);
+    assert_eq!(status, 200, "the phone stays paired");
+    let listed = call(&obid, "GET", "/v1/pairing/devices", None);
+    assert!(!listed.text.contains(&pairing), "{}", listed.text);
+    // Its key is forgotten: registering it again needs the owner's presence once more.
+    let again = call(
+        &obid,
+        "POST",
+        "/v1/devices",
+        Some(&json!({"name": "Studio Mac", "publicKey": key})),
+    );
+    assert_eq!(again.status, 403, "{}", again.text);
 }
 
 /// COMPUTERS-7: without a gateway no other computer can reach this obid, and it says so.

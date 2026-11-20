@@ -169,6 +169,18 @@ pub fn allows(method: &Method, path: &str) -> bool {
     })
 }
 
+/// Whether another computer of the owner's, paired with its own kind of pairing, may `method`
+/// `path` through the gateway (docs/contracts/remote.md, COMPUTERS-14): the window's routes, every
+/// route of obid's but pairing (`/v1/pairing` and under it: a paired computer never pairs, lists or
+/// revokes others) and the sign-ins, whose loopback redirects only that computer's own browser can
+/// finish (Tetrix's never on the gateway: core/AGENTS.md, "Tetrix").
+pub fn allows_computer(_method: &Method, path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let pairing = segments.len() >= 2 && segments[0] == "v1" && segments[1] == "pairing";
+    let sign_in = segments.last() == Some(&"sign-in");
+    segments.first() == Some(&"v1") && !pairing && !sign_in
+}
+
 /// The open invitation: digests only, never the secret or the code.
 struct Pending {
     secret: String,
@@ -181,6 +193,11 @@ struct Pending {
     relay: Option<String>,
     /// The owner made it on their own device (`approval`): the phone it pairs may add its key.
     owned: bool,
+    /// Another computer's (COMPUTERS-13, 14): it pairs a computer, not a phone.
+    computer: bool,
+    /// The registered key `obid pair-computer` named, owned invitations only: redeeming binds it to
+    /// the pairing it makes (COMPUTERS-15).
+    key: Option<String>,
 }
 
 /// A paired device, kept in `home/gateway-devices.json` under its token's digest.
@@ -199,6 +216,10 @@ struct Device {
     /// redeemed an invitation the owner made on their own device. A pairing from before has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keyable_until: Option<i64>,
+    /// Another computer of the owner's, not a phone (COMPUTERS-14): its token reaches the window's
+    /// routes ([`allows_computer`]), and only its own key's words count through it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    computer: bool,
 }
 
 impl Device {
@@ -258,6 +279,9 @@ pub struct Redeemed {
     pub device_id: String,
     pub expires_at: String,
     pub link: Value,
+    /// The key the invitation named, to bind to this pairing (COMPUTERS-15): never answered.
+    #[serde(skip)]
+    pub key: Option<String>,
 }
 
 /// The paired device a forwarded request came from, as a request extension: only the gateway's
@@ -323,13 +347,13 @@ impl Gateway {
         relay: Option<RelayInvite>,
         owned: bool,
     ) -> Invitation {
-        self.make(url, name, hostname, now, relay, owned, false)
+        self.make(url, name, hostname, now, relay, owned, None)
     }
 
     /// Another computer's invitation (COMPUTERS-13), replacing the computer's one before but not a
     /// phone's: ten minutes, never through the Obysphere. `owned`: the owner made it with their
     /// own device or at this computer (`obid invite-computer`), so the computer it pairs may add
-    /// its publishing key.
+    /// its publishing key. `key`, owned only: the registered key redeeming binds to the pairing.
     pub fn invite_computer(
         &self,
         url: &str,
@@ -337,8 +361,17 @@ impl Gateway {
         hostname: &str,
         now: SystemTime,
         owned: bool,
+        key: Option<String>,
     ) -> Invitation {
-        self.make(url, name, hostname, now, None, owned, true)
+        self.make(
+            url,
+            name,
+            hostname,
+            now,
+            None,
+            owned,
+            Some(key.filter(|_| owned)),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -350,7 +383,7 @@ impl Gateway {
         now: SystemTime,
         relay: Option<RelayInvite>,
         owned: bool,
-        computer: bool,
+        computer: Option<Option<String>>,
     ) -> Invitation {
         let secret = random(32);
         let code = {
@@ -359,12 +392,12 @@ impl Gateway {
             format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000)
         };
         let expires = now
-            + if computer {
+            + if computer.is_some() {
                 COMPUTER_INVITATION
             } else {
                 INVITATION
             };
-        let slot = if computer {
+        let slot = if computer.is_some() {
             &self.computer
         } else {
             &self.pending
@@ -378,6 +411,8 @@ impl Gateway {
             hostname: hostname.to_owned(),
             relay: relay.as_ref().map(|r| digest(&r.token)),
             owned,
+            computer: computer.is_some(),
+            key: computer.flatten(),
         });
         let relay = relay
             .map(|r| json!({"sphere": r.sphere, "id": r.relay, "token": r.token, "key": r.key}));
@@ -454,6 +489,7 @@ impl Gateway {
             expires_at: seconds(now + LIFETIME),
             relay: via.map(str::to_owned),
             keyable_until: open.owned.then(|| seconds(now + KEYABLE)),
+            computer: open.computer,
         };
         let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
         devices.insert(digest(&token), device.clone());
@@ -470,6 +506,7 @@ impl Gateway {
             device_id: device.id,
             expires_at: obi_protocol::time::format(device.expires_at),
             link: json!({"name": open.name, "hostname": open.hostname}),
+            key: open.key,
         })
     }
 
@@ -482,6 +519,12 @@ impl Gateway {
                 && d.until() > seconds(now)
                 && d.keyable_until.is_some_and(|until| until > seconds(now))
         })
+    }
+
+    /// Whether the paired device `id` is another computer of the owner's (COMPUTERS-14).
+    pub fn is_computer(&self, id: &str) -> bool {
+        let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
+        devices.values().any(|d| d.id == id && d.computer)
     }
 
     /// Whether `token` is a paired device's, and still works.
@@ -586,9 +629,13 @@ impl Gateway {
         listed
             .into_iter()
             .map(|d| {
-                json!({"id": d.id, "name": d.name,
+                let mut listed = json!({"id": d.id, "name": d.name,
                        "created": obi_protocol::time::format(d.created),
-                       "expiresAt": obi_protocol::time::format(d.until())})
+                       "expiresAt": obi_protocol::time::format(d.until())});
+                if d.computer {
+                    listed["computer"] = json!(true);
+                }
+                listed
             })
             .collect()
     }
@@ -634,6 +681,9 @@ pub struct InviteRequest {
     /// With `computer`: what `obid invite-computer` wrote in `home/invite-computer` at this machine,
     /// the owner's presence there (crate::remote::invite), so the computer it pairs may add its key.
     presence: Option<String>,
+    /// With `computer`: a registered key bound to nothing yet, which the pairing it makes takes as
+    /// its own (`obid pair-computer`, COMPUTERS-15). Only an owned invitation names one.
+    device: Option<String>,
 }
 
 /// `POST /v1/pairing/invite`. With an Obysphere the phone pairs through it, sealed (crate::relay),
@@ -698,10 +748,25 @@ pub async fn invite(
     };
     let through_relay = relay.is_some();
     if request.computer {
-        let mut invitation =
-            shared
-                .gateway
-                .invite_computer(&url, &name, &hostname, SystemTime::now(), owned);
+        if let Some(device) = &request.device
+            && !(owned && {
+                let paired = shared.gateway.paired(SystemTime::now());
+                shared.devices.bindable(device, |p| paired.contains(p))
+            })
+        {
+            return error(
+                StatusCode::FORBIDDEN,
+                "A computer's invitation names a key only when it's made at that computer, for a key registered there and no pairing's yet.",
+            );
+        }
+        let mut invitation = shared.gateway.invite_computer(
+            &url,
+            &name,
+            &hostname,
+            SystemTime::now(),
+            owned,
+            request.device,
+        );
         invitation.computer_link = shared
             .gateway_state
             .as_ref()
@@ -729,6 +794,13 @@ pub async fn revoke(
     State(shared): State<Arc<Shared>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
+    end(&shared, &id)
+}
+
+/// Ends the pairing `id`: its token, its push tokens, the publishing key it registered, and its
+/// sealed session if it had one.
+fn end(shared: &Shared, id: &str) -> Response {
+    let id = id.to_owned();
     let relay = shared.gateway.relay_of(&id);
     match shared.gateway.revoke(&id) {
         Ok(true) => {
@@ -762,10 +834,11 @@ struct Through {
     api: Router,
 }
 
-/// The gateway's router: redeeming, and every allowed route forwarded to `api`.
+/// The gateway's router: redeeming, a computer ending its own pairing, and every allowed route
+/// forwarded to `api`.
 pub fn router(shared: Arc<Shared>, api: Router) -> Router {
     Router::new()
-        .route("/v1/pairing", post(redeem))
+        .route("/v1/pairing", post(redeem).delete(unpair))
         .fallback(forward)
         .with_state(Through { shared, api })
 }
@@ -813,8 +886,62 @@ async fn redeem(State(through): State<Through>, request: Request) -> Response {
     // The invitation's relay token is a device's now, or no longer wanted.
     through.shared.relay.wake();
     match redeemed {
-        Ok(redeemed) => axum::Json(redeemed).into_response(),
+        Ok(redeemed) => {
+            // The key `obid pair-computer` named is this pairing's own now (COMPUTERS-15).
+            let paired = through.shared.gateway.paired(SystemTime::now());
+            if let Some(key) = &redeemed.key
+                && let Err(e) = through
+                    .shared
+                    .devices
+                    .bind_named(key, &redeemed.device_id, |p| {
+                        p != redeemed.device_id && paired.contains(p)
+                    })
+            {
+                tracing::warn!(
+                    "couldn't bind key {key} to computer {}: {e}",
+                    redeemed.device_id
+                );
+            }
+            axum::Json(redeemed).into_response()
+        }
         Err((status, message)) => error(status, message),
+    }
+}
+
+/// The one `Authorization: Bearer` token a request carries, or none.
+fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let mut values = headers.get_all(header::AUTHORIZATION).iter();
+    match (values.next(), values.next()) {
+        (Some(value), None) => value
+            .to_str()
+            .ok()
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim),
+        _ => None,
+    }
+}
+
+/// `DELETE /v1/pairing`, on the gateway only: another computer's own token ends its pairing, as
+/// "Remove this computer" in the window does (COMPUTERS-16), and forgets the key it registered,
+/// as revoking on that computer does. A phone's token isn't one.
+async fn unpair(State(through): State<Through>, request: Request) -> Response {
+    let via = request.extensions().get::<Relayed>().map(|r| r.0.clone());
+    let device = bearer(request.headers()).and_then(|t| {
+        through
+            .shared
+            .gateway
+            .device_via(t, SystemTime::now(), via.as_deref())
+    });
+    match device {
+        Some(Ok(id)) if through.shared.gateway.is_computer(&id) => end(&through.shared, &id),
+        Some(Ok(_)) => error(
+            StatusCode::NOT_FOUND,
+            "That route isn't available through the gateway.",
+        ),
+        _ => error(
+            StatusCode::UNAUTHORIZED,
+            "Every gateway request needs a device token.",
+        ),
     }
 }
 
@@ -823,27 +950,20 @@ async fn redeem(State(through): State<Through>, request: Request) -> Response {
 /// its content type.
 async fn forward(State(through): State<Through>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    if !allows(&parts.method, parts.uri.path()) {
-        return error(
-            StatusCode::NOT_FOUND,
-            "That route isn't available through the gateway.",
-        );
+    const NOT_HERE: &str = "That route isn't available through the gateway.";
+    if !allows_computer(&parts.method, parts.uri.path()) {
+        return error(StatusCode::NOT_FOUND, NOT_HERE);
     }
-    let mut values = parts.headers.get_all(header::AUTHORIZATION).iter();
-    let token = match (values.next(), values.next()) {
-        (Some(value), None) => value
-            .to_str()
-            .ok()
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .map(str::trim),
-        _ => None,
-    };
+    let token = bearer(&parts.headers);
+    // Without a device token that works here, a route off a phone's list is `404`, as it always was.
+    let listed = allows(&parts.method, parts.uri.path());
     // A phone paired through the Obysphere is reached only sealed, by its own relay token's
     // socket; any other only here, on the listener.
     let via = parts.extensions.get::<Relayed>().map(|r| r.0.as_str());
     let device =
         match token.and_then(|t| through.shared.gateway.device_via(t, SystemTime::now(), via)) {
             Some(Ok(device)) => device,
+            _ if !listed => return error(StatusCode::NOT_FOUND, NOT_HERE),
             Some(Err(())) if via.is_none() => {
                 return error(
                     StatusCode::UNAUTHORIZED,
@@ -863,6 +983,24 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
                 );
             }
         };
+    // A phone reaches its allowlist; another computer the window's routes (COMPUTERS-14), and only
+    // its own key's words count through its token (COMPUTERS-15).
+    if through.shared.gateway.is_computer(&device) {
+        let words = parts
+            .headers
+            .get(crate::approval::WORDS)
+            .map(|v| v.to_str().ok().and_then(|v| v.split(' ').next()));
+        if let Some(signer) = words
+            && !signer.is_some_and(|s| through.shared.devices.belongs_to_pairing(s, &device))
+        {
+            return error(
+                StatusCode::FORBIDDEN,
+                "Those words aren't signed by this computer's own key. Add this computer again.",
+            );
+        }
+    } else if !listed {
+        return error(StatusCode::NOT_FOUND, NOT_HERE);
+    }
     let Ok(body) = axum::body::to_bytes(body, BODY).await else {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "That request is too large.");
     };
@@ -1490,6 +1628,7 @@ mod tests {
             expires_at: seconds(now + 20 * day),
             relay: None,
             keyable_until: None,
+            computer: false,
         };
         std::fs::write(
             home.join("gateway-devices.json"),
@@ -1664,7 +1803,7 @@ mod tests {
         let minute = Duration::from_secs(60);
         let url = "https://10.0.0.2:8443";
         // A phone's invitation made after the computer's leaves it open, and both pair.
-        let computer = gateway.invite_computer(url, "Studio", "10.0.0.2", now, true);
+        let computer = gateway.invite_computer(url, "Studio", "10.0.0.2", now, true, None);
         assert!(computer.relay.is_none());
         let phone = gateway.invite(url, "Mac", "mac", now, None, false);
         assert!(
@@ -1680,15 +1819,15 @@ mod tests {
         let again = gateway.redeem(&computer.code, "again", now + 9 * minute, None);
         assert_eq!(again.unwrap_err().0, StatusCode::GONE, "once");
         // Made without the owner, it pairs one that can't add a key.
-        let plain = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        let plain = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false, None);
         let paired = gateway.redeem(&plain.code, "Laptop", now, None).unwrap();
         assert!(!gateway.may_add_key(&paired.device_id, now));
         // After ten minutes it's gone.
-        let late = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        let late = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false, None);
         let gone = gateway.redeem(&late.code, "x", now + 11 * minute, None);
         assert_eq!(gone.unwrap_err().0, StatusCode::GONE);
         // A wrong try counts against it; the fifth ends it.
-        let tried = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        let tried = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false, None);
         for _ in 0..ATTEMPTS {
             let wrong = gateway.redeem("not-the-code", "x", now, None);
             assert_eq!(wrong.unwrap_err().0, StatusCode::UNAUTHORIZED);
@@ -1698,12 +1837,68 @@ mod tests {
             StatusCode::GONE
         );
         // Never through a relay.
-        let sealed = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false);
+        let sealed = gateway.invite_computer(url, "Studio", "10.0.0.2", now, false, None);
         assert!(
             gateway
                 .redeem(&sealed.code, "x", now, Some("relay"))
                 .is_err()
         );
         assert!(gateway.redeem(&sealed.code, "x", now, None).is_ok());
+    }
+
+    #[test]
+    fn computers_14_a_computer_reaches_the_windows_routes_but_pairing_and_sign_ins() {
+        for (method, path) in [
+            (Method::GET, "/v1/obid/vault"),
+            (Method::PUT, "/v1/obid/vault/github"),
+            (Method::POST, "/v1/folders"),
+            (Method::GET, "/v1/status"),
+            (Method::POST, "/v1/devices/abc/pairing"),
+        ] {
+            assert!(allows_computer(&method, path), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::POST, "/v1/pairing"),
+            (Method::POST, "/v1/pairing/invite"),
+            (Method::GET, "/v1/pairing/devices"),
+            (Method::DELETE, "/v1/pairing/devices/abc"),
+            (Method::POST, "/v1/tetrix/sign-in"),
+            (Method::POST, "/v1/accounts/abc/sign-in"),
+            (Method::DELETE, "/v1/github/sign-in"),
+            (Method::GET, "/"),
+            (Method::GET, "/metrics"),
+        ] {
+            assert!(!allows_computer(&method, path), "{method} {path}");
+        }
+        // Every route a phone has, a computer has too.
+        for (method, path) in ROUTES {
+            let path = path.replace("**", "x/y").replace('*', "x");
+            assert!(
+                allows_computer(&Method::from_bytes(method.as_bytes()).unwrap(), &path),
+                "{method} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn computers_15_a_computers_invitation_names_its_key_only_when_owned() {
+        let home = folder("computer-key");
+        let gateway = Gateway::open(&home);
+        let now = SystemTime::now();
+        let url = "http://127.0.0.1:7778";
+        let owned = gateway.invite_computer(url, "Studio", "h", now, true, Some("k1".into()));
+        let paired = gateway
+            .redeem(&owned.code, "Studio Mac", now, None)
+            .unwrap();
+        assert_eq!(paired.key.as_deref(), Some("k1"));
+        assert!(gateway.is_computer(&paired.device_id));
+        assert!(gateway.list()[0]["computer"] == true);
+        let plain = gateway.invite_computer(url, "Studio", "h", now, false, Some("k2".into()));
+        let paired = gateway.redeem(&plain.code, "Laptop", now, None).unwrap();
+        assert_eq!(paired.key, None, "not without the owner");
+        let phone = gateway.invite(url, "Mac", "mac", now, None, true);
+        let phone = gateway.redeem(&phone.code, "iPhone", now, None).unwrap();
+        assert!(!gateway.is_computer(&phone.device_id));
+        assert!(serde_json::to_string(&phone).unwrap().find("key").is_none());
     }
 }
