@@ -155,6 +155,9 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'browser-unwatch': { args: ['t1'], refusal: null },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
+  'mac-pill': { args: [null], refusal: null },
+  'mac-pill-stop': { args: [], refusal: undefined },
+  'mac-pill-now': { args: [], refusal: null },
 };
 
 const UNSET = Symbol('unset');

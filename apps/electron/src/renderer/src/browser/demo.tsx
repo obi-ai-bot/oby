@@ -78,7 +78,10 @@ const BOARDS: Record<number, Demo> = {
     }),
     ui: { width: 600 },
   },
+  13: { state: state([]), ui: { open: false } },
   14: { state: state([t('dash', { owner: claude, title: 'Dashboard · Acme', url: 'localhost:3000/dashboard', action: 'Reading the dashboard', computer: { name: 'devbox', os: 'Linux' } })]), ui: { width: 620 } },
+  15: { state: state([], { mac: { agent: 'claude', action: 'Typing in TextEdit' } }), ui: { open: false } },
+  16: { state: state([], { macAsk: { agent: 'claude', wants: 'type in TextEdit' } }), ui: { open: false } },
   17: { state: state([]), ui: { width: 600 } },
 };
 

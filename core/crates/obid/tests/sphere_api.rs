@@ -1735,11 +1735,13 @@ async fn the_inbox_lists_answers_and_tells_every_app() {
                 "text",
                 "title",
                 "triage",
+                "triageWhy",
                 "why"
             ]
         );
-        // Another Obi's request is the owner's to decide (crate::triage).
+        // Another Obi's request is the owner's to decide (crate::triage): sorted, so no reason.
         assert_eq!(shown["triage"], "needs_you");
+        assert_eq!(shown["triageWhy"], Value::Null);
         assert_eq!(
             shown["details"],
             json!([

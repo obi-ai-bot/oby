@@ -19,6 +19,9 @@ data: {"path": "/srv/nvme/oby/jobs", "bytes": 8912896, "lastRun": null}
 event: inbox
 data: { …InboxItem }
 
+event: triage
+data: {"waiting": 1, "why": "Oby can't sort it yet: no Claude Code or Codex account is signed in. It's sorted once one is."}
+
 event: check
 data: { …Mac check }
 
@@ -61,6 +64,7 @@ data: {"text": "Two jobs are done. Pick a base branch needs you.", "since": "202
 - `roomPost` (obid only) comes with every post of the Sphere's room that obid keeps or whose state changes, as `GET /v1/spheres/{sphere}/room` shows it (obid only: the Sphere's room): replace the post with that `id`. An app that doesn't know it ignores it.
 - `inbox` comes with every inbox item that arrives or changes: answered, done or put off, on any app, or settled by itself. Replace the item with that `id`; one whose `state` is `done` leaves the inbox.
   obid sends the item as it is when the event goes out, one event at a time, so the events for one item never go back to an older state and the last one is the item as `GET /v1/inbox` lists it (the same goes for `exchange` events, obid only: Obi-to-Obi exchanges, below). Two changes close together can come as two events that both carry the newer state: an item answered as soon as it arrives may never be seen `open`. On obid the event comes only for an item obid kept on disk (docs/contracts/home.md, HOME-4): a change whose save failed sends none, and a new item whose save failed isn't made, in `GET /v1/inbox` or anywhere.
+- `triage` (obid only, add-only, TRIAGE-ANY-2) comes when the reason the inbox's items wait for Oby's quick model changes: `{"waiting": n, "why": "…"}` while no account can sort them (`waiting` is how many open items wait), then `{"waiting": n, "why": null}` once one can ([inbox.md](inbox.md), obid only: sorting the inbox). Each waiting item comes again in an `inbox` event with its `triageWhy` set to the same reason, or null. It isn't an item and carries no `revision`; an app that doesn't know it ignores it.
 - `check` comes when a Mac check or an Apple check (below) is queued, taken by a Mac or ends. A Mac that runs checks asks for one (`GET /v1/checks/next`) when one is `queued`; other apps can ignore it, since the job's own event carries `macCheck` and `appleCheck` too.
 - `turn` comes with every turn of the conversation that's added, from any app, and again when one changes (its `jobs`): the turn as `GET /v1/conversation` lists it. Replace the turn with that `id`, or add it in `at` order. Older runners don't send it.
 - `step`, `thinking` and `reply` (`thinking` and `reply` obid only) follow a turn of the conversation as it happens: `POST /v1/plans`, above. On obid a turn in an agent session also sends `delta`, its words as they're written, and `step` events with `tool` and `detail` (obid only: the conversation harness, below).

@@ -57,7 +57,7 @@ const EMPTY: BrowserState = { tabs: [], active: null, asks: [], downloads: [], s
 // outside a BrowserProvider (a screen drawn on its own, in a test): no browser offered
 const OFF: Browser = {
   offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined, frame: () => null,
-  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE },
+  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE },
 };
 const Ctx = createContext<Browser>(OFF);
 export const useBrowser = () => useContext(Ctx);
@@ -100,8 +100,7 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
 
   const api = useMemo<BrowserApi>(() => {
     if (onLive) {
-      // the owner's acts, signed by main on their own click (shared/words.ts); the password card,
-      // Save a copy and the switches come with BROWSERAPP-12, 16 and 18
+      // the owner's acts, signed by main on their own click (shared/words.ts)
       return {
         take: (t) => conn.current?.take(t) ?? Promise.resolve(),
         giveBack: async (t) => { await conn.current?.giveBack(t); setUi({ gaveBack: true }); },
@@ -110,7 +109,9 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
         answer: (a, choice) => conn.current?.answer(a, choice) ?? Promise.resolve(),
         saveCopy: (d) => conn.current?.saveCopy(d) ?? Promise.resolve(),
         reveal: async (d) => { const name = latest.current.downloads.find((x) => x.id === d)?.savedAs; if (name) await window.app?.browser?.reveal(name); },
-        setSettings: NONE,
+        setSettings: (x) => conn.current?.setSettings(x) ?? Promise.resolve(),
+        // desktop control's state and Stop come with its own contract (agent-desktop): nothing on obid yet
+        stopMac: NONE, answerMac: NONE,
         select: async (t) => setS((o) => ({ ...o, active: t })),
         input: (t, e) => conn.current?.input(t, e) ?? Promise.resolve(),
       };
@@ -127,6 +128,8 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       answer: async (id) => setS((o) => ({ ...o, asks: o.asks.filter((a) => a.id !== id) })),
       saveCopy: async (id) => setS((o) => ({ ...o, downloads: o.downloads.map((d) => (d.id === id ? { ...d, saved: true } : d)) })),
       reveal: NONE,
+      stopMac: async () => setS((o) => ({ ...o, mac: null })),
+      answerMac: async () => setS((o) => ({ ...o, macAsk: null })),
       setSettings: async (x) => setS((o) => ({ ...o, settings: { ...o.settings, ...x } })),
       select: async (id) => setS((o) => ({ ...o, active: id })),
     };

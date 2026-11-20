@@ -1,6 +1,6 @@
 import { app, shell, type BrowserWindow } from 'electron';
 import { existsSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { downloadsFile } from './reveal';
 import { send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { flag, string } from '../shared/decode';
@@ -78,8 +78,8 @@ export function browsing(trusted: Trusted, page: Page) {
   // Show in Finder for a download in the owner's Downloads (BROWSERAPP-16): only a file of that name
   // there, never another folder (its name's last part only); true once shown
   channels.handle('browser-reveal', [string], (_e, name) => {
-    const file = join(app.getPath('downloads'), basename(name));
-    if (!basename(name) || !existsSync(file)) return false;
+    const file = downloadsFile(app.getPath('downloads'), name);
+    if (!file || !existsSync(file)) return false;
     shell.showItemInFolder(file);
     return true;
   }, false);

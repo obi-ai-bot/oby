@@ -5,8 +5,9 @@
 //! `slow` in it, leaving the daemon busy until the test clears it, and stopping at the browser's
 //! certificate page for one with `cert` in it (and, for BROWSER-26, reload, back and a dialog
 //! answered; with a `<session>.navclosed` file in the socket folder, reload and back move the
-//! page and then fail as agent-browser does when the page navigates under its own evaluate).
-//! Every call is logged in the job's `HOME`. Tests only (obid's, and a debug build's
+//! page and then fail as agent-browser does when the page navigates under its own evaluate). A
+//! daemon whose `<session>.stubborn` file is beside its pid file ignores SIGTERM (BROWSER-25:
+//! obid stopping kills it). Every call is logged in the job's `HOME`. Tests only (obid's, and a debug build's
 //! integration tests'): it writes the script under the home it is given.
 
 use std::path::{Path, PathBuf};
@@ -19,9 +20,10 @@ self="$0"
 if [ "$1" = "__daemon" ]; then
   (exec -a "$2" /bin/sleep 100000) &
   chrome=$!
-  trap 'kill $chrome 2>/dev/null; exit 0' TERM
+  stubborn="${3%.pid}.stubborn"
+  trap '[ -f "$stubborn" ] || { kill $chrome 2>/dev/null; exit 0; }' TERM
   echo $$ > "$3"
-  wait $chrome
+  while kill -0 $chrome 2>/dev/null || [ -f "$stubborn" ]; do /bin/sleep 0.1; done
   exit 0
 fi
 echo "$*" >> "$HOME/calls.log"

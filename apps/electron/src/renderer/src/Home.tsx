@@ -40,7 +40,9 @@ import { panelFit } from './panelFit';
 import { useBrowser } from './browser/store';
 import { browserFit } from './browser/fit';
 import { BrowserGlobe, BrowserPane } from './browser/BrowserPane';
+import { MacSheet, useMacPill } from './browser/Mac';
 import { registerCommands } from './shortcuts';
+import { ComputerLine, ComputerStage, useComputerStage } from './computers/ComputerHome';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the Settings tip over the message box: off for now (its bar, SettingsTip.tsx, kept for tips to come)
@@ -313,6 +315,8 @@ export default function Home() {
   // beside the browser the conversation keeps 420px, and the side panel floats where it wouldn't
   // fit beside both (browser/fit.ts, BROWSERAPP-3)
   const browser = useBrowser();
+  // an agent using the Mac: main's pill and frame over the screen follow it (BROWSERAPP-19)
+  useMacPill();
   const browserShown = browser.offered && browser.ui.open;
   const sideFit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
   const besideBrowser = browserShown && !browser.ui.full ? browserFit(windowWidth, sideFit.docked && sidebar ? sideFit.width : 0, browser.ui.width) : null;
@@ -361,6 +365,7 @@ export default function Home() {
 
   // what's showing over Oby's stage, if anything (until it has left)
   const away = layers.length > 0;
+  const computerStage = useComputerStage();
   // the message box's usage panel asks for a Settings page (Manage accounts)
   useEffect(() => {
     // over what's open, so back (or Esc) returns to it (push only uses the
@@ -559,7 +564,9 @@ export default function Home() {
       <main className="main">
         <div className={`stage${away ? ' is-hidden' : ''}`} inert={away}>
         <Oby paused={away} glance={onChips && !away} enter={enterIn ? !arriving : undefined} gravity={enterIn ? ARRIVAL_GRAVITY : undefined} />
-        {TYPES.length > 0 && (
+        {/* another computer's: no route answers, or a switch under way (docs/contracts/computers-app.md) */}
+        <ComputerStage />
+        {TYPES.length > 0 && !computerStage && (
           <section className="attention" aria-label="Your tasks">
             {/* coming in from setting up: it waits till Oby has hopped up, then rises in (app.css) */}
             <span className={`attention-label${chatFirst || !(running || needsYou) ? ' is-idle' : ''}${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`}>{chatFirst ? HELLO : attention(running, needsYou, tasks.length === 0)}</span>
@@ -594,6 +601,7 @@ export default function Home() {
       </main>
 
       {onObid && <Connection />}
+      <ComputerLine onHome={!away} />
       {/* another conversation needs you while the window is in front (ALERTS-21) */}
       <NeedsYouNote open={top?.kind === 'talk' ? top.id : null} onOpen={(id) => start({ kind: 'talk', id })} />
       {/* asking Oby: a new conversation, opened at once */}
@@ -647,6 +655,8 @@ export default function Home() {
     </div>
       {/* the browser, beside the conversation or across the window (docs/contracts/browser-app.md) */}
       <BrowserPane width={besideBrowser?.width ?? browser.ui.width} />
+      {/* the first time an agent would use the Mac: Oby's sheet before macOS asks (BROWSERAPP-20) */}
+      <MacSheet />
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,
           so coming after the title bar keeps its click from being taken as a drag */}

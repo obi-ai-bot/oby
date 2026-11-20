@@ -45,8 +45,11 @@ def read(id, target, proves=None, **expect):
     return s
 
 
-def measure(id, target, proves=None, **expect):
-    return step(id, "app.measure", proves, app=APP, target=target, expect={"paths": expect})
+def measure(id, target, proves=None, within=None, **expect):
+    s = step(id, "app.measure", proves, app=APP, target=target, expect={"paths": expect})
+    if within:
+        s["inputs"]["within"] = within
+    return s
 
 
 def click(id, target, hover=False):
@@ -495,6 +498,96 @@ def board_14():
     )
 
 
+def board_13():
+    browser = {"role": "switch", "name": "Agents can use the browser"}
+    mac = {"role": "switch", "name": "Agents can use this Mac"}
+    checked = lambda id, target, value, proves=None: step(id, "app.read", proves, app=APP, target=target, attributes=["aria-checked"], expect={"paths": {"attributes.aria-checked": value}})
+    workflow(
+        "browser-13-settings.json",
+        "App: Settings › General, two switches for the browser, on by default (board 13)",
+        "The real app on its demo data at the design's board 13 (BROWSERAPP-18): Settings › General has a Browser group, "
+        "marked New, after Permissions on this Mac, with Agents can use the browser and Agents can use this Mac, both on, "
+        "each with the board's words, and its footer; turned off, the browser's globe goes from the title bar; on again, "
+        "it's back. The page is today's Settings, with more groups than the board draws: the group is checked by its words, "
+        "switches and place after Permissions, not by the board's places.",
+        [
+            launch(13, 1200, 860, sidebar=True),
+            # Settings by its own shortcut (⌘,: on the demo data it sits in the account menu)
+            step("settings", "app.press", app=APP, keys="Meta+Comma"),
+            click("general", {"css": ".sidebar-item", "hasText": "General"}),
+            read("head", {"css": "[data-browser=settings] .set-head"}, "BROWSERAPP-18", count=1, text="BrowserNew", within=10),
+            read("rows", {"css": "[data-browser=settings] .set-card"}, "BROWSERAPP-18", count=1,
+                 text="Agents can use the browser They open pages, click and type; you watch beside the conversation and take control any time. "
+                      "Agents can use this Mac Other apps too, through agent-desktop. macOS asks you once."),
+            checked("browser-on", browser, "true", "BROWSERAPP-18"),
+            checked("mac-on", mac, "true"),
+            read("on-is-ink", browser, None, styles={"background-color": "--ink"}, **{"styles.background-color.matches": True}),
+            read("foot", {"css": "[data-browser=settings] .set-foot"}, None, count=1, text="A password you type in Oby goes straight to the page. No agent sees it."),
+            step("after-permissions", "app.measure", "BROWSERAPP-18", app=APP, target={"css": "[data-browser=settings]"},
+                 against={"permissions": {"css": ".set-group", "hasText": "Permissions on this Mac"}}, expect={"paths": {"permissions.overlap": False}}),
+            *pictures(13, "SettingsBrowser", "board 13"),
+            read("globe-there", {"css": "[data-browser=globe]"}, None, count=1),
+            click("browser-off", browser),
+            checked("browser-is-off", browser, "false", "BROWSERAPP-18"),
+            read("globe-gone", {"css": "[data-browser=globe]"}, "BROWSERAPP-18", count=0, within=5),
+            click("browser-on-again", browser),
+            checked("browser-on-again-reads", browser, "true"),
+            read("globe-back", {"css": "[data-browser=globe]"}, None, count=1, within=5),
+            close(),
+        ],
+    )
+
+
+def board_15():
+    pill = {"css": "[data-browser=pill]", "window": "macpill"}
+    workflow(
+        "browser-15-the-mac.json",
+        "App: an agent uses the Mac, Oby's pill over the screen and Stop (board 15)",
+        "The real app on its demo data with the design's board 15 (BROWSERAPP-19): while Claude Code has the Mac, main "
+        "shows Oby's pill in a window of its own over the screen (who, what it's doing, esc esc, Stop) and an orange frame "
+        "in another, click-through; the conversation shows the card with Stop. The pill's Stop puts the pill, the frame and "
+        "the card away. Board 15 draws the Mac's own screen around them: here the pill is checked in its window, word by "
+        "word. Esc twice is main's global shortcut, which only macOS can press (desktop.*, the contract's Open list).",
+        [
+            launch(15, 1440, 900),
+            read("card", {"css": "[data-browser=mac-card] .decision-card"}, "BROWSERAPP-19", count=1, text="Claude Code has your Mac. Press Esc twice to stop it. Stop"),
+            step("card-over-the-box", "app.measure", "BROWSERAPP-19", app=APP, target={"css": "[data-browser=mac-card] .decision-card"},
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+            read("pill", pill, "BROWSERAPP-19", count=1, text="Claude Code is using your Mac · Typing in TextEdit esc esc Stop", within=15),
+            read("frame", {"css": "[data-browser=mac-frame]", "window": "macframe"}, "BROWSERAPP-19", count=1, within=15),
+            *pictures(15, "Desktop", "board 15 (the Mac's screen): the card in Oby"),
+            click("stop", {"role": "button", "name": "Stop", "window": "macpill"}),
+            read("card-gone", {"css": "[data-browser=mac-card]"}, "BROWSERAPP-19", count=0, within=5),
+            close(),
+        ],
+    )
+
+
+def board_16():
+    workflow(
+        "browser-16-first-time-mac.json",
+        "App: the first time, Oby says why macOS will ask, once (board 16)",
+        "The real app on its demo data at the design's board 16 (BROWSERAPP-20): before an agent first uses the Mac, Oby's "
+        "sheet says what that means (it sees the screen, it clicks and types, you stop it any time) and that macOS asks "
+        "next, for agent-desktop, and never Oby itself; Continue closes it.",
+        [
+            launch(16, 1280, 800),
+            read("title", {"css": ".modal-title"}, "BROWSERAPP-20", count=1, text="Let agents use your Mac?"),
+            read("wants", {"css": ".modal-text"}, None, count=1, text="Claude Code wants to type in TextEdit. Agents use other apps through agent-desktop, the same way you do."),
+            read("three-points", {"css": ".modal-list li"}, None, count=3),
+            read("macos-next", {"css": ".steps"}, "BROWSERAPP-20", count=1,
+                 text="Next, macOS asks you, once. Allow agent-desktop in System Settings › Privacy & Security, under Accessibility and then Screen Recording. Oby never asks macOS for these itself."),
+            # the app's modal grows in (modal-in): measured once it has settled
+            measure("centred", {"css": "[data-browser=mac-sheet] .modal"}, "BROWSERAPP-20", within=5, **{"box.width": 480, "box.x": 400}),
+            compare("DesktopPermission", "BROWSERAPP-20"),
+            *pictures(16, "DesktopPermission", "board 16"),
+            click("continue", {"role": "button", "name": "Continue"}),
+            read("closed", {"css": "[data-browser=mac-sheet]"}, "BROWSERAPP-20", count=0, within=5),
+            close(),
+        ],
+    )
+
+
 # The live workflows: the real app on a scratch obid that serves the browser (browser port 1, #2620),
 # its agent a stand-in job driving the browser through obid's agents' tools (browser-job, browser-mcp).
 OBID = "${state.obid}"
@@ -616,7 +709,10 @@ if __name__ == "__main__":
     board_10()
     board_11()
     board_12()
+    board_13()
     board_14()
+    board_15()
+    board_16()
     board_17()
     live_101()
     live_102()

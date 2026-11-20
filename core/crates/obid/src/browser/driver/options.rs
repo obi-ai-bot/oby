@@ -19,6 +19,10 @@ pub const SYSTEM_LIMIT: Duration = Duration::from_secs(15);
 pub const SETTLE_TRY: Duration = Duration::from_secs(5);
 /// From SIGTERM to SIGKILL when a job's browser is stopped.
 pub const END_GRACE: Duration = Duration::from_secs(3);
+/// From SIGTERM to SIGKILL when obid itself stops (BROWSER-25): its whole stop has 3 seconds
+/// (`crate::ENDING_GRACE`) and SIGKILL's own wait up to 2, so a browser slow to close is killed
+/// before obid exits rather than outliving it with its record left behind.
+pub const STOP_GRACE: Duration = Duration::from_millis(500);
 
 /// What a driver needs.
 #[derive(Clone, Debug)]
