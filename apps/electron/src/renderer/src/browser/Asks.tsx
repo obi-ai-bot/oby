@@ -7,6 +7,7 @@ import { useState, type ReactNode } from 'react';
 import { ChevronRight, Hand } from 'lucide-react';
 import { Card, Note, Options, PasswordCard, SignInCard, Text, headOf } from './cards';
 import { agentName } from './pieces';
+import { composing } from '../shortcuts';
 import { useBrowser } from './store';
 import type { Ask } from './view';
 
@@ -23,7 +24,7 @@ function CodeCard({ ask, count, onFill, onCancel }: { ask: Ask; count?: ReactNod
           <input
             inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} data-browser="code-input" aria-label="Code"
             onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            onKeyDown={(e) => { if (e.key === 'Enter') fill(); }}
+            onKeyDown={(e) => { if (!composing(e) && e.key === 'Enter') fill(); }}
             style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', border: 0, padding: 0, background: 'none', color: 'transparent' }}
           />
         </label>
