@@ -44,6 +44,17 @@ pub struct Step {
 /// and what drives the real app (`app/`, OBIDSPEC-13) and the Mac around it (`desktop/`, OBIDSPEC-14).
 pub const MANUAL_AREAS: [&str; 3] = ["triggers", "app", "desktop"];
 
+/// T3 Code's bugs, proven against obid: `workflows/t3/<topic>/` → the area `t3-<topic>`. Like the
+/// lab's, each is manual, carries the `t3` tag and never `launch`, and runs only when asked for
+/// (`--tag t3`, or `--only t3-<topic>`); `coverage` leaves them out.
+pub const T3_PREFIX: &str = "t3-";
+/// The tag every T3 workflow carries.
+pub const T3_TAG: &str = "t3";
+
+pub fn is_t3(area: &str) -> bool {
+    area.starts_with(T3_PREFIX)
+}
+
 const UNSUPPORTED: [&str; 8] = [
     "branch",
     "subworkflow",
@@ -73,7 +84,8 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
         None => bail!("its trigger is neither http nor manual"),
     };
     let lab = crate::lab::is_lab(area);
-    if !MANUAL_AREAS.contains(&area) && !lab && route.is_none() {
+    let t3 = is_t3(area);
+    if !MANUAL_AREAS.contains(&area) && !lab && !t3 && route.is_none() {
         bail!("a route's workflow has an http trigger");
     }
     let tags = match &doc["tags"] {
@@ -105,6 +117,19 @@ pub fn parse(text: &str, file: &Path, area: &str, nodes: &[&str]) -> Result<Work
         anyhow::ensure!(
             !tagged(crate::lab::TAG),
             "only a workflow under workflows/lab/ carries the `lab` tag"
+        );
+    }
+    if t3 {
+        anyhow::ensure!(route.is_none(), "a t3 workflow's trigger is manual");
+        anyhow::ensure!(tagged(T3_TAG), "a t3 workflow carries the `t3` tag");
+        anyhow::ensure!(
+            !tagged("launch"),
+            "a t3 workflow is never in the launch's set"
+        );
+    } else {
+        anyhow::ensure!(
+            !tagged(T3_TAG),
+            "only a workflow under workflows/t3/ carries the `t3` tag"
         );
     }
     let list = doc["steps"]
@@ -200,6 +225,22 @@ pub fn load_all(dir: &Path, nodes: &[&str]) -> Result<Vec<Workflow>> {
                     if f.extension().is_some_and(|e| e == "json") {
                         let name = feature.file_name().unwrap().to_string_lossy().to_string();
                         files.push((f, format!("{}{name}", crate::lab::AREA_PREFIX)));
+                    }
+                }
+            }
+        }
+    }
+    // workflows/t3/<topic>/*.json, the area `t3-<topic>`
+    let t3 = dir.join("t3");
+    if t3.is_dir() {
+        for topic in std::fs::read_dir(&t3)? {
+            let topic = topic?.path();
+            if topic.is_dir() {
+                for f in std::fs::read_dir(&topic)? {
+                    let f = f?.path();
+                    if f.extension().is_some_and(|e| e == "json") {
+                        let name = topic.file_name().unwrap().to_string_lossy().to_string();
+                        files.push((f, format!("{T3_PREFIX}{name}")));
                     }
                 }
             }
@@ -388,5 +429,48 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].area, "lab-remote");
+    }
+
+    #[test]
+    fn a_t3_workflow_is_manual_tagged_t3_never_launch_and_loads_as_t3_topic() {
+        let wf = |trigger: &str, tags: &str| {
+            format!(
+                r#"{{"schemaVersion":"2","name":"x","trigger":{trigger},"tags":{tags},"steps":[{{"id":"a","use":"call"}}]}}"#
+            )
+        };
+        let manual = r#"{"manual":{}}"#;
+        let http = r#"{"http":{"method":"get","path":"/v1/x"}}"#;
+        assert!(parse(
+            &wf(manual, r#"["t3"]"#),
+            Path::new("x.json"),
+            "t3-accounts",
+            &NODES
+        )
+        .is_ok());
+        for (text, area, why) in [
+            (wf(manual, "[]"), "t3-accounts", "carries the `t3` tag"),
+            (
+                wf(manual, r#"["t3","launch"]"#),
+                "t3-accounts",
+                "never in the launch",
+            ),
+            (wf(http, r#"["t3"]"#), "t3-accounts", "trigger is manual"),
+            (
+                wf(manual, r#"["t3"]"#),
+                "triggers",
+                "only a workflow under workflows/t3/",
+            ),
+        ] {
+            let e = parse(&text, Path::new("x.json"), area, &NODES).unwrap_err();
+            assert!(format!("{e:#}").contains(why), "{area} {text}: {e:#}");
+        }
+        let dir = std::env::temp_dir().join(format!("obid-spec-t3-load-{}", std::process::id()));
+        let topic = dir.join("t3/accounts");
+        std::fs::create_dir_all(&topic).unwrap();
+        std::fs::write(topic.join("a.json"), wf(manual, r#"["t3"]"#)).unwrap();
+        let all = load_all(&dir, &NODES).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].area, "t3-accounts");
     }
 }

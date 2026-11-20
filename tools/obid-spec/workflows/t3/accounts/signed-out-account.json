@@ -1,0 +1,156 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: a signed-out account",
+  "version": "1.0.0",
+  "description": "T3 Code's sign-in-state bugs (signed-out instances that must say how to sign in, a stale sign-in status): a Cursor account added and never signed in. A task named to it is refused before anything starts, saying why and how to sign it in, and nothing is made (ACCOUNTS-35); Auto passes over it though it's where new tasks go; a task asked of Cursor runs on Claude Code saying why (ACCOUNTS-31).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-cursor-account",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "cursor"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "cursor",
+            "signedIn": false
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-35-a-named-signed-out-account-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO",
+            "account": "${state.a-cursor-account.body.id}"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "Cursor isn't signed in, so this task didn't start: sign it in from Settings › Accounts, or ask for another account."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-35"
+        ]
+      }
+    },
+    {
+      "id": "accounts-35-nothing-was-made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-35"
+        ]
+      }
+    },
+    {
+      "id": "new-tasks-go-to-cursor",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "${state.a-cursor-account.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "auto-passes-over-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in"
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-31-cursor-asked-for-runs-on-claude-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO",
+            "agent": "cursor"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in",
+            "routed": "Cursor isn't signed in, so this runs on Claude Code · Stand-in."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-31"
+        ]
+      }
+    }
+  ]
+}
