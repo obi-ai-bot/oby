@@ -143,17 +143,22 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // in sight, a conversation is seen: obid's unread goes, and a turn that comes while it shows is
   // seen too (CHATSTATE-6)
   useEffect(() => { if (talk && !covered && !leaving) seeChat(talk.id); }, [talk?.id, talk?.unread, talk?.seen, covered, leaving]);
-  const first = useRef(true);
+  // what comes in follows only while you're at the end: scrolled up to read, you stay there, until
+  // your own words go
+  const first = useRef(true), atEnd = useRef(true), said = useRef(thread.length);
   useLayoutEffect(() => {
     const l = list.current;
     if (!l) return;
+    const mine = thread.length > said.current && thread.at(-1)?.who === 'you';
+    said.current = thread.length;
+    if (!first.current && !mine && !atEnd.current) return;
+    atEnd.current = true;
     l.scrollTo({ top: l.scrollHeight, behavior: first.current ? 'instant' : 'smooth' });
     first.current = false;
   // (the last, as its words come in, then the card or task it ends with)
   }, [thread.length, typing, step, limits.length, (thread.at(-1) as Message | undefined)?.text?.length, (thread.at(-1) as Message | undefined)?.streaming, (thread.at(-1) as Message | undefined)?.jobs?.length]);
 
   // a live card growing at the end of the thread stays in view, while you're there
-  const atEnd = useRef(true);
   useEffect(() => {
     const l = list.current, column = l?.firstElementChild;
     if (!l || !column) return;
