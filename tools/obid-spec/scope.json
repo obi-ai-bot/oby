@@ -517,7 +517,8 @@
             "DELIVERY-8",
             "DELIVERY-9",
             "DELIVERY-10",
-            "DELIVERY-11"
+            "DELIVERY-11",
+            "DELIVERY-12"
           ],
           "elsewhere": {
             "DELIVERY-6": "delivery.rs state machine unit (no route asks an arbitrary move)."
@@ -598,7 +599,8 @@
             "LIVETASK-34",
             "LIVETASK-35",
             "LIVETASK-36",
-            "LIVETASK-37"
+            "LIVETASK-37",
+            "LIVETASK-38"
           ],
           "elsewhere": {
             "LIVETASK-1": "Electron card/drawer/side-panel rendering (liveTask.test.tsx etc.). (7, 8, 18 retired.)",
@@ -959,7 +961,8 @@
             "CHANGES-10",
             "CHANGES-11",
             "CHANGES-12",
-            "CHANGES-13"
+            "CHANGES-13",
+            "CHANGES-15"
           ],
           "elsewhere": {
             "CHANGES-4": "Electron panel / main's open-in-editor.",

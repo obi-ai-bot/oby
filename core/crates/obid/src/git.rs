@@ -55,6 +55,11 @@ const SAFE: &[&str] = &[
     "credential.interactive=never",
     "-c",
     "protocol.ext.allow=never",
+    // A path outside ASCII as itself (`café.txt`), not in octal escapes (`"caf\303\251.txt"`), so
+    // what git prints names the file as obid's lists do (CHANGES-15); git still quotes a name with
+    // a tab, a newline or a `"`.
+    "-c",
+    "core.quotePath=false",
 ];
 
 /// Runs git with `args` in `dir`; its stdout, trimmed, or why it failed.

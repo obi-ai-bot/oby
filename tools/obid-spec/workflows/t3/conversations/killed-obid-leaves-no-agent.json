@@ -172,8 +172,7 @@
       "ui": {
         "proves": [
           "DELIVERY-7"
-        ],
-        "expectedRed": "#2739: obid killed mid-turn leaves the conversation's agent running after it starts again"
+        ]
       }
     }
   ]
