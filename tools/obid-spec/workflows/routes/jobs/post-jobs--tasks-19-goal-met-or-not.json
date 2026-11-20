@@ -1,0 +1,235 @@
+{
+  "schemaVersion": "2",
+  "name": "The end of a turn isn't the end of its goal (TASKS-19)",
+  "version": "1.0.0",
+  "description": "A one-round build with no check is told to end with GOAL MET or GOAL NOT MET; GOAL NOT MET with commits on its last round ends interrupted with what's left and no next step, its commits kept; a last round with neither line is told once, in its session and spending no round, to carry on and say it.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "p",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "p-stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.p}"
+      }
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/fixture-app",
+              "remote": "file://${state.p.folder}/../fixture/remote.git",
+              "defaultBranch": "main",
+              "pullRequests": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "KEEP PROMPTS COMMIT: a.txt ENDS: GOAL NOT MET: the tests are left",
+            "rounds": 1
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-19-not-met-ends-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": null,
+            "commits": 1,
+            "round": 1
+          },
+          "paths": {
+            "reason": {
+              "$matches": "^Not done yet: the tests are left\\. "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-19"
+        ]
+      }
+    },
+    {
+      "id": "tasks-19-told-to-say-it",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.n.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$contains": "GOAL NOT MET"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-19"
+        ]
+      }
+    },
+    {
+      "id": "tasks-19-nothing-went-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "published": null,
+            "pushed": null,
+            "pullRequest": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-19"
+        ]
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: b.txt KEEP PROMPTS",
+            "rounds": 1
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-19-told-once-then-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "round": 1,
+            "commits": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-19"
+        ]
+      }
+    },
+    {
+      "id": "tasks-19-told-once-in-its-session",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.q.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-19"
+        ]
+      }
+    },
+    {
+      "id": "tasks-19-its-summary-the-works",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "summary": "Added b.txt."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-19"
+        ]
+      }
+    }
+  ]
+}

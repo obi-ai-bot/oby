@@ -1,0 +1,474 @@
+{
+  "schemaVersion": "2",
+  "name": "A quiet job is continued, then stalls on its own card (RECOVERY-3, 12, 16)",
+  "version": "1.0.0",
+  "description": "A job gone quiet once is continued in its session with no model turn and ends done; one still writing in its worktree gets 5 tries then stalls with Try again and a handoff note; one idle (no CPU, nothing changed) or only spinning gets 2.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "QUIET ONCE KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-3-continued-and-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.once.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "stalled": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-3"
+        ]
+      }
+    },
+    {
+      "id": "recovery-3-told-in-its-session",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^.*<<<end of prompt>>>.*no progress for 3 seconds.*check what really ran.*What you were last sent.*QUIET ONCE.*<<<end of prompt>>>\\s*$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-3"
+        ]
+      }
+    },
+    {
+      "id": "recovery-3-two-prompts",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-3"
+        ]
+      }
+    },
+    {
+      "id": "recovery-3-no-stalled-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "stalled",
+        "seconds": 1,
+        "expect": {
+          "paths": {
+            "id": "${state.once.body.id}"
+          }
+        },
+        "none": true
+      }
+    },
+    {
+      "id": "idle",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "QUIET KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-12-idle-stalls-after-two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.idle.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "stalled": {
+              "why": "quiet"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-12"
+        ]
+      }
+    },
+    {
+      "id": "recovery-12-first-two-continued-then-the-note",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.idle.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){4}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-12"
+        ]
+      }
+    },
+    {
+      "id": "recovery-12-the-last-asks-a-handoff-note",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.idle.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)<<<end of prompt>>>.*handoff note.*<<<end of prompt>>>\\s*$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-12"
+        ]
+      }
+    },
+    {
+      "id": "busy",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "BUSY: 8000 KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-12-busy-cpu-is-progress",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.busy.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "Built quietly.",
+            "stalled": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-12"
+        ]
+      }
+    },
+    {
+      "id": "recovery-12-busy-in-one-turn",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.busy.body.id}/.obi/prompts.log",
+        "within": 10,
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-12"
+        ]
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "s",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 1
+        }
+      }
+    },
+    {
+      "id": "writing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-3-five-tries-then-stalled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.writing.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "stalled": {
+              "why": "quiet"
+            },
+            "supervised": []
+          },
+          "paths": {
+            "conversation": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-3"
+        ]
+      }
+    },
+    {
+      "id": "recovery-3-its-turn-five-more-and-the-note",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.s}",
+        "path": "worktrees/${state.writing.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){7}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-3"
+        ]
+      }
+    },
+    {
+      "id": "recovery-3-no-turn-takes-it-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.writing.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "supervised": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-3"
+        ]
+      }
+    },
+    {
+      "id": "spinning",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "BUSY KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-16-spinning-stalls-after-two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.spinning.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "stalled": {
+              "why": "quiet"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-16"
+        ]
+      }
+    },
+    {
+      "id": "recovery-16-two-continued-then-the-note",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.s}",
+        "path": "worktrees/${state.spinning.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){4}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-16"
+        ]
+      }
+    }
+  ]
+}
