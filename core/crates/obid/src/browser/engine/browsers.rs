@@ -470,6 +470,15 @@ impl Browsers {
         }
     }
 
+    /// A conversation (a job) ended: its tabs, its current tab and its commands' fates go, so a
+    /// long-running obid keeps nothing of it (BROWSER-25).
+    pub fn ended(&mut self, conversation: &str) {
+        self.tabs.retain(|_, t| t.conversation != conversation);
+        self.current.remove(conversation);
+        self.ledger
+            .retain(|_, e| !matches!(&e.actor, Actor::Agent(c) if c == conversation));
+    }
+
     /// What the tab shows now. A different URL is a navigation: its refs die.
     pub fn observed(&mut self, tab: &str, url: &str, title: Option<&str>) {
         if let Some(t) = self.tabs.get_mut(tab) {
@@ -812,6 +821,39 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn browser_25_an_ended_conversation_leaves_nothing_behind() {
+        let mut b = Browsers::new();
+        let tab = opened(&mut b, "c1");
+        let other = opened(&mut b, "c2");
+        let t = b
+            .begin(
+                &agent("c1"),
+                "oby_browser_snapshot",
+                &json!({}),
+                Path::new(ROOM),
+                0,
+            )
+            .unwrap();
+        b.ended("c1");
+        assert!(b.tab(&tab).is_none());
+        assert!(b.tabs_of("c1").is_empty());
+        assert!(b.entry(t.cmd).is_none(), "its commands' fates went with it");
+        assert_eq!(
+            b.begin(
+                &agent("c1"),
+                "oby_browser_snapshot",
+                &json!({}),
+                Path::new(ROOM),
+                0
+            )
+            .unwrap_err(),
+            Refusal::NoTab,
+            "no current tab is left"
+        );
+        assert!(b.tab(&other).is_some(), "another conversation's tab stays");
     }
 
     #[test]

@@ -84,6 +84,9 @@ impl Api {
     /// A job ends: its tabs leave the list.
     pub fn end_job(&mut self, id: &str) {
         self.jobs.remove(id);
+        // Its asks go with it: nobody is left to hear the answer, and a long-running obid keeps
+        // nothing of an ended job but its downloads, which stay listed while its profile is kept.
+        self.asks.retain(|_, a| a.job != id);
         let gone: Vec<String> = self
             .tabs
             .values()
@@ -663,10 +666,14 @@ mod tests {
         let mut a = api();
         with_tab(&mut a, "j1", "tab-1");
         with_tab(&mut a, "j2", "tab-2");
+        a.ask("j1", "tab-1", c::AskKind::SignIn, "Sign in", vec![], None);
+        a.ask("j2", "tab-2", c::AskKind::SignIn, "Sign in", vec![], None);
         a.end_job("j1");
         assert!(a.job("j1").is_none());
         assert!(a.tab("tab-1").is_none());
         assert!(a.tab("tab-2").is_some(), "another job's tab stays");
+        assert!(a.asks_of("j1").is_empty(), "its asks went with it");
+        assert_eq!(a.asks_of("j2").len(), 1, "another job's ask stays");
         let last = a.events_after(0).pop().unwrap();
         assert_eq!(
             last.body,
