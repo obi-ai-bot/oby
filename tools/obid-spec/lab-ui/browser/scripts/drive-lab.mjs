@@ -4,7 +4,7 @@
 // on stdout, `{"ok": true, "output": …}` or `{"ok": false, "error": "…"}`; the Rust node only
 // orchestrates.
 //
-// The screen runs in Chrome for Testing (the path the node gives, from obid-spec's own cache), with
+// The screen runs in chrome-headless-shell (the path the node gives, from obid-spec's own cache), with
 // a profile of its own in the run's folder: never the person's Chrome, its profile, or their screen.
 // Every picture is of the page this helper opened, never of the screen.
 //
@@ -153,7 +153,7 @@ async function still(p) {
 const ops = {
   async open(r) {
     if (!browser) {
-      if (!r.chrome || !isAbsolute(r.chrome)) throw new Error('chrome: Chrome for Testing’s absolute path');
+      if (!r.chrome || !isAbsolute(r.chrome)) throw new Error('chrome: the browser’s absolute path');
       // headless, its temporary profile under TMPDIR (the node points it into the run's folder):
       // nothing of the person's, nothing on their screen
       server = await chromium.launchServer({ executablePath: r.chrome, headless: r.headless ?? true, args: ['--no-first-run', '--no-default-browser-check', '--disable-extensions'] });

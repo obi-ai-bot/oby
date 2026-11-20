@@ -13,7 +13,7 @@
 //!   talk to, add-only like the rest of obid's API.
 //! - [`api`]: the browser's API over the engine: holds with their generation, asks, downloads,
 //!   settings and the event log, and bringing a job's browser up within its own allowance.
-//! - [`install`]: agent-browser and Chrome for Testing downloaded on first use into obid's home,
+//! - [`install`]: agent-browser and chrome-headless-shell downloaded on first use into obid's home,
 //!   each checked against its pinned SHA-256 before anything of it is unpacked (BROWSER-23).
 //! - [`driver`]: one agent-browser daemon and its Chrome per job, at most four live, run per the
 //!   core's tickets under their deadlines, stopped at the job's end and reaped at obid's start

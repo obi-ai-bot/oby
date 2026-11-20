@@ -2,7 +2,10 @@
 //! (`workflows/lab/browserapi/`, LAB-BROWSERAPI-1 to 7) pointed at the real obid. Its nodes are the
 //! lab's clients (src/lab/browserapi.rs: the MCP call, the events stream, the race, the stream's
 //! readers) given a scratch obid (`obid-start`'s output, whose `port` and `token` they take) in
-//! place of the lab's server, the lab API's fixture site, and what only obid's side needs: a field
+//! place of the lab's server, the lab API's fixture sites (the plain one, the one that fails then
+//! works at one address, and the HTTPS one whose self-signed certificate is made at run time and
+//! swapped behind its port, Chrome refusing it on macOS and Linux alike), and what only obid's side
+//! needs: a field
 //! read through the job's own agent, the secret and the scan for it under obid's home, and the
 //! downloads in a job's profile and the person's Downloads.
 //!
@@ -91,6 +94,8 @@ async fn run_once(name: &str, input: &Value) -> Result<Value> {
                 "download": {"x": lab::FIXTURE_DOWNLOAD.0, "y": lab::FIXTURE_DOWNLOAD.1},
             }))
         }
+        "browser-https-site" => lab::https(input).await,
+        "browser-flaky-site" => lab::flaky(input).await,
         "browser-job" => job(input).await,
         "browser-mcp" => {
             let out = lab::mcp_call(&as_lab(input)).await?;
@@ -335,11 +340,9 @@ fn scan(input: &Value) -> Value {
             ]
         })
         .collect();
-    let has = |bytes: &[u8]| {
-        needles
-            .iter()
-            .any(|n| bytes.windows(n.len()).any(|w| w == n.as_slice()))
-    };
+    let finders: Vec<memchr::memmem::Finder> =
+        needles.iter().map(memchr::memmem::Finder::new).collect();
+    let has = |bytes: &[u8]| finders.iter().any(|f| f.find(bytes).is_some());
     let root = PathBuf::from(input["obid"]["folder"].as_str().unwrap_or_default());
     let mut scanned = 0u64;
     let mut found = vec![];
@@ -415,5 +418,35 @@ mod tests {
         let h = ((5381u32.wrapping_mul(33) ^ 97).wrapping_mul(33)) ^ 98;
         assert_eq!(hash("ab"), format!("2:{h}"));
         assert_eq!(token("Bearer abc\n"), "abc");
+    }
+
+    #[test]
+    fn the_scan_finds_a_secret_as_it_is_base64_or_hex_and_passes_a_clean_folder() {
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().unwrap();
+        let secret = "obid-secret-scan-test";
+        SECRETS.lock().unwrap().push(secret.into());
+        std::fs::write(dir.path().join("clean.bin"), vec![0u8; 1 << 20]).unwrap();
+        let input = json!({"obid": {"folder": dir.path()}});
+        assert_eq!(scan(&input)["clean"], true, "{}", scan(&input));
+        for (n, bytes) in [
+            secret.as_bytes().to_vec(),
+            base64::engine::general_purpose::STANDARD
+                .encode(secret)
+                .into_bytes(),
+            hex::encode(secret).into_bytes(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut big = vec![7u8; 1 << 20];
+            big.extend(&bytes);
+            let file = dir.path().join(format!("found-{n}.bin"));
+            std::fs::write(&file, big).unwrap();
+            let out = scan(&input);
+            assert_eq!(out["clean"], false, "{out}");
+            std::fs::remove_file(file).unwrap();
+        }
+        SECRETS.lock().unwrap().clear();
     }
 }
