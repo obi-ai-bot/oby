@@ -82,6 +82,7 @@ The runner API is documented per area in `docs/api/<area>.md`. A change to the A
   - [obid only: ChatGPT's welcome](api/chatgpt-sign-in.md)
   - [obid only: ChatGPT's relay](api/chatgpt-sign-in.md)
   - [obid only: Tetrix](api/tetrix.md)
+  - [obid only: the browser (proposed)](api/browser.md)
   - [obid only: the owner's own connectors](api/connectors.md)
   - [obid only: the owner's agent skills](api/skills.md)
   - [obid only: the gateway](api/phone-pairing.md)
