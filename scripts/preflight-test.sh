@@ -84,6 +84,25 @@ check "CI-69 route without a workflow" coverage 1 \
     "fix: add a workflow for it under tools/obid-spec/workflows/routes/sphere/" \
     "GET /v1/preflight-orphan is in docs/api/routes.txt and in no area of tools/obid-spec/scope.json."
 
+# CI-69 red: a workflow the change touches fails against this checkout's obid.
+wf=tools/obid-spec/workflows/routes/everything-else/get-alerts.json
+python3 -c 'import sys; p=sys.argv[1]; s=open(p).read(); open(p, "w").write(s.replace("\"status\": 401", "\"status\": 402", 1))' "$wf"
+check "CI-69 workflow red" workflows 1 \
+    "preflight: workflows: routes/everything-else/get-alerts.json" \
+    "the workflow $wf fails against this checkout's obid." \
+    "fix: read its failed step above and the folder it names"
+
+# CI-69 green: a workflow the change touches that passes.
+python3 -c 'import sys; p=sys.argv[1]; s=open(p).read(); open(p, "w").write(s.replace("What should reach the owner now", "What reaches the owner now", 1))' "$wf"
+check "CI-69 workflow green" workflows 0 "workflows passed"
+
+# CI-69 green: a lab workflow is left to run by hand, never run here.
+lab=$(find tools/obid-spec/workflows/lab -name '*.json' | sort | head -1)
+printf '\n' >>"$lab"
+check "CI-69 workflow lab" workflows 0 \
+    "run it by hand: tools/obid-spec/target/debug/obid-spec run --only lab-" \
+    "workflows skipped (only lab workflows changed: run them by hand)"
+
 # CI-69 red: Rust cargo fmt would change.
 printf '\n/// preflight-test.\npub fn preflight_probe( ) -> u32 {1}\n' >>core/crates/obi-protocol/src/card.rs
 check "CI-69 fmt" fmt 1 \
@@ -105,6 +124,7 @@ check "CI-69 clean" "" 0 \
 
 # CI-69 green: nothing changed, so fmt and clippy have nothing to check.
 check "CI-69 nothing changed" "" 0 \
+    "workflows skipped (no workflow changed)" \
     "fmt       skipped (no Rust changed)" "clippy    skipped (no Rust changed)" "preflight: clean"
 
 if [[ $fails -gt 0 ]]; then
