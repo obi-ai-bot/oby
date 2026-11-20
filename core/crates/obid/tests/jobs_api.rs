@@ -2709,6 +2709,36 @@ fn tasks_31_a_failed_or_interrupted_task_archives() {
     assert!(refused.text.contains("still needs you"), "{}", refused.text);
 }
 
+/// PUBLISHING-44 (docs/contracts/publishing.md): a task naming the branch `oby`, in any case, is
+/// refused before anything starts, since Oby's own branches live under it and git can't make
+/// `oby/<kind>-<id>` beside a branch of that name; a task after it gets its `oby/` branch and runs.
+#[test]
+fn publishing_44_a_branch_named_oby_is_refused_and_oby_branches_still_start() {
+    let folder = Folder::new("publishing-44");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
+    for name in ["oby", "OBY", "Oby", " oby "] {
+        let mut job = task.clone();
+        job["branch"] = json!(name);
+        let answer = post_job(&obid, job);
+        assert_eq!(answer.status, 422, "{name}: {}", answer.text);
+        let error = answer.body["error"].as_str().unwrap();
+        assert!(error.contains("isn't a branch name"), "{name}: {error}");
+    }
+    assert_eq!(request(&obid, "GET", "/v1/jobs", None).body, json!([]));
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let id = ended(&obid, "Look around");
+    let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["branch"], format!("oby/investigate-{id}"), "{job}");
+    let oby = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "refs/heads/oby"])
+        .current_dir(&clone)
+        .status()
+        .unwrap();
+    assert!(!oby.success(), "no branch named oby was made");
+}
+
 /// JOBSTATE-9 (docs/contracts/job-state.md): Try again on an `interrupted` job.
 #[test]
 fn jobstate_9_try_again_after_interrupted_resets_the_round() {

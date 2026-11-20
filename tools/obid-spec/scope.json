@@ -711,7 +711,8 @@
             "PUBLISHING-40",
             "PUBLISHING-41",
             "PUBLISHING-42",
-            "PUBLISHING-43"
+            "PUBLISHING-43",
+            "PUBLISHING-44"
           ],
           "elsewhere": {
             "PUBLISHING-14": "Electron Publish dialog (obid side = canPublish/canPublishAnyway keys).",
