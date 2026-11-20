@@ -1,0 +1,187 @@
+{
+  "schemaVersion": "2",
+  "name": "The same words twice with one key are heard once (RECEIPTS-9)",
+  "version": "1.0.0",
+  "description": "Words to a job at work sent twice with the same request key answer the same both times, and the agent hears them once.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "KEEP PROMPTS HOG: 1 5"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "at-work",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.t.body.id}/.obi/prompts.log",
+        "within": 30,
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/messages",
+        "body": {
+          "text": "Also read the README."
+        },
+        "headers": {
+          "Idempotency-Key": "words-9"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "receipts-9-the-same-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/messages",
+        "body": {
+          "text": "Also read the README."
+        },
+        "headers": {
+          "Idempotency-Key": "words-9"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.first.body.id}",
+            "revision": "${state.first.body.revision}",
+            "status": "${state.first.body.status}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-9"
+        ]
+      }
+    },
+    {
+      "id": "t-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "receipts-9-heard-once",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.t.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-9"
+        ]
+      }
+    },
+    {
+      "id": "receipts-9-what-it-heard",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.t.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$contains": "Also read the README."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-9"
+        ]
+      }
+    },
+    {
+      "id": "receipts-9-no-second-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-9"
+        ]
+      }
+    }
+  ]
+}
