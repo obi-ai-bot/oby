@@ -1,0 +1,136 @@
+{
+  "schemaVersion": "2",
+  "name": "App: a narrow window, the conversation keeps 420px (board 4)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 4 (BROWSERAPP-3): at 994px the conversation keeps 420px and the browser takes the rest, 574px; its strip still says what the agent is doing.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "launch",
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=4",
+        "size": {
+          "width": 994,
+          "height": 670
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "conversation-420",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".app > .home"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 420,
+            "box.x": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-3"
+        ]
+      }
+    },
+    {
+      "id": "browser-rest",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 574,
+            "box.x": 420
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-3"
+        ]
+      }
+    },
+    {
+      "id": "strip-words",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Typing in Email"
+          }
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Narrow",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10,
+        "skip": [
+          ".br-address"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-3"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-04"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Narrow",
+        "name": "browser-04-beside-board",
+        "label": "board 4"
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

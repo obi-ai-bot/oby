@@ -1,0 +1,352 @@
+{
+  "schemaVersion": "2",
+  "name": "App: the browser open beside the conversation, the agent drives, you watch (board 2)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 2 (BROWSERAPP-2): the panel is the window's last column, 640px beside the conversation; its tabs sit in the title bar's row; the strip says who has the tab; the agent's pointer says what it's doing; the globe is lit. Every browser piece sits within 4px of the board, with its words. Full width puts the page across the window with the conversation folded to one line, and back (BROWSERAPP-5).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "launch",
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=2",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "panel-640",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640,
+            "box.height": 800,
+            "box.x": 640,
+            "box.y": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-2"
+        ]
+      }
+    },
+    {
+      "id": "conversation-640",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".app > .home"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640
+          }
+        }
+      }
+    },
+    {
+      "id": "tabs-in-title-row",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tabs"
+        },
+        "expect": {
+          "paths": {
+            "box.height": {
+              "$oneOf": [
+                48,
+                52
+              ]
+            },
+            "box.y": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "address-row",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-nav"
+        },
+        "expect": {
+          "paths": {
+            "box.height": 44
+          }
+        }
+      }
+    },
+    {
+      "id": "strip",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control"
+        },
+        "expect": {
+          "paths": {
+            "box.height": 40
+          }
+        }
+      }
+    },
+    {
+      "id": "strip-words",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Clicking Sign in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-2"
+        ]
+      }
+    },
+    {
+      "id": "pointer-says",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".agent-label"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Clicking Sign in"
+          }
+        }
+      }
+    },
+    {
+      "id": "tabs-with-logos",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Codex’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "on-tab-ink",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab.is-on"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--ink"
+        }
+      }
+    },
+    {
+      "id": "globe-lit",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Hide the browser"
+        },
+        "expect": {
+          "paths": {
+            "styles.color.matches": true
+          }
+        },
+        "styles": {
+          "color": "--text"
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-1"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Main",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-2"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-02"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Main",
+        "name": "browser-02-beside-board",
+        "label": "board 2"
+      }
+    },
+    {
+      "id": "full-width",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Full width"
+        }
+      }
+    },
+    {
+      "id": "full-width-panel",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br.is-full"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 1280,
+            "box.x": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-5"
+        ]
+      }
+    },
+    {
+      "id": "conversation-folds",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".app > .home"
+        },
+        "expect": {
+          "paths": {
+            "visible": false
+          }
+        }
+      }
+    },
+    {
+      "id": "peek",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".peek-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Sign-up flow works end to end · Signed up and in; now inviting a teammate"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-5"
+        ]
+      }
+    },
+    {
+      "id": "back-beside",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Back beside the conversation"
+        }
+      }
+    },
+    {
+      "id": "back-640",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

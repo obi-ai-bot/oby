@@ -1,0 +1,280 @@
+{
+  "schemaVersion": "2",
+  "name": "App: the side panel and the browser together, tabs from several agents (board 3)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 3 (BROWSERAPP-3, BROWSERAPP-4): at 1440px the side panel stays docked at 362px, the browser takes 600px and the conversation keeps the rest; the tabs carry each agent's logo, yours the Y, and a working dot while an agent uses one; a tab clicked is the one shown, its strip naming its agent.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "launch",
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=3",
+        "size": {
+          "width": 1440,
+          "height": 900
+        },
+        "storage": {
+          "oby.chatPanelOpen": "1"
+        }
+      }
+    },
+    {
+      "id": "side-panel",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".sidebar-slot"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 362,
+            "box.x": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "browser-600",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 600,
+            "box.x": 840
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-rest",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".app > .home"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 478,
+            "box.x": 362
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-3"
+        ]
+      }
+    },
+    {
+      "id": "claude-tab",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Claude Code’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-4"
+        ]
+      }
+    },
+    {
+      "id": "codex-tab",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Codex’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "cursor-tab",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Cursor’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "your-tab",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .you-mark[aria-label='Yours']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-4"
+        ]
+      }
+    },
+    {
+      "id": "working-dots",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .status-dot.is-working"
+        },
+        "expect": {
+          "paths": {
+            "count": 3
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-4"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Together",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10,
+        "skip": [
+          ".br-tabs-end .icon-button",
+          ".br-tab"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-4"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-03"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Together",
+        "name": "browser-03-beside-board",
+        "label": "board 3"
+      }
+    },
+    {
+      "id": "codex-tab-click",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "tab",
+          "name": "Codex’s Sign in · Acme",
+          "exact": false
+        }
+      }
+    },
+    {
+      "id": "codex-tab-on",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "tab",
+          "name": "Codex’s Sign in · Acme",
+          "exact": false
+        },
+        "attributes": [
+          "aria-selected"
+        ],
+        "expect": {
+          "paths": {
+            "attributes.aria-selected": "true"
+          }
+        }
+      }
+    },
+    {
+      "id": "codex-strip",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Codex is using this tab · Clicking Sign in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-4"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

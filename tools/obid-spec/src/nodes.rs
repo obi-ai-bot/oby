@@ -47,6 +47,8 @@ pub const NODES: &[(&str, &str)] = &[
     ("app.read", "Reads the elements a target finds: how many, their text, whether visible, the attributes asked for; with expect, within and hold."),
     ("app.measure", "Measures an element's box and, against other targets, whether they overlap, the area they share and the gap between them; with expect."),
     ("app.screenshot", "Saves a screenshot of the app's window in the workflow's folder (and OBID_SPEC_SHOTS when it's set)."),
+    ("app.compare", "Compares the app's window with a design board (tools/obid-spec/lab-ui/browser/design/boards/<board>.dc.html) box by box and word by word, as lab.ui.compare does the lab's screens: every held piece within `tolerance` px (4 by default); today's app pieces reported; with expect and within."),
+    ("app.sidebyside", "Saves the app's window beside a design board as one PNG into the workflow's folder (and OBID_SPEC_SHOTS), for the owner's look."),
     ("app.close", "Quits the app and stops its helper, by PID."),
     ("desktop.snapshot", "Reads a surface of the app's (the menu bar by default) through agent-desktop: its tree and, for the menu bar, each menu's items by name. macOS only; skipped without the permissions."),
     ("desktop.read", "Reads one menu's items by name, or one element by role and name, in a surface of the app's, through agent-desktop; with expect."),
