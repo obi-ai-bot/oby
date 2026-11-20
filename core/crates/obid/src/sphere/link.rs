@@ -44,6 +44,8 @@ use obi_protocol::identity::takes_card_runtime;
 
 mod asking;
 pub use asking::{AskMember, Picked, pick};
+mod calling_off;
+pub use calling_off::NotCalledOff;
 mod follower;
 mod handoffs;
 mod inbox_actions;
@@ -542,6 +544,9 @@ pub struct Link {
     /// One ask about, or trust of, a changed owner key at a time, so at most one `trust_key` card
     /// stands open for an owner (SPHERE-8).
     trusting: Mutex<()>,
+    /// One read of the directory at a time, so reads apply in the order they were fetched: one
+    /// that saw an older owner key never ends after a newer one and takes it back (SPHERE-8, #2618).
+    reading: tokio::sync::Mutex<()>,
     /// One token exchange at a time.
     tokening: tokio::sync::Mutex<()>,
     /// One key, card or join call at a time.
@@ -930,6 +935,13 @@ fn parse_later(text: &str) -> Option<i64> {
     time::parse(&format!("{whole}Z"))
 }
 
+/// Sets `item`'s `triage` on `shown`, and `triageWhy`: why it stays `pending` while nothing can
+/// sort it, or null (crate::triage::Sorts::why). Both from the same `sorts`.
+fn sorted(shown: &mut Value, item: &Item, sorts: &crate::triage::Sorts) {
+    shown["triage"] = sorts.get(item).into();
+    shown["triageWhy"] = sorts.why(item).into();
+}
+
 /// What needs the owner first (crate::triage, with what waits for the model), then FYI, then
 /// ignore; each in the order they came, also within one second (Item::arrival_order).
 fn needs_you_first(items: &mut [impl std::borrow::Borrow<Item>], sorts: &crate::triage::Sorts) {
@@ -1116,6 +1128,7 @@ impl Link {
             sending: tokio::sync::Mutex::new(()),
             saving: Mutex::new(()),
             trusting: Mutex::new(()),
+            reading: tokio::sync::Mutex::new(()),
             tokening: tokio::sync::Mutex::new(()),
             joining: tokio::sync::Mutex::new(()),
             unread_key: unread,
@@ -1173,6 +1186,7 @@ impl Link {
             self.settle_on_revoke();
         }
         self.watch_handoffs();
+        self.watch_work_ending();
         self.reconcile();
         if membership.as_deref() == Some("joined") {
             self.follow();
@@ -1919,11 +1933,18 @@ impl Link {
         self.sorts(&state.inbox).get(item)
     }
 
-    /// An item as the API shows it: with its `triage`.
+    /// An item as the API shows it: with its `triage` and `triageWhy`.
     pub fn shown(&self, item: &Item) -> Value {
         let mut shown = item.to_json();
-        shown["triage"] = self.triage_of(item).into();
+        self.sort_shown(&mut shown, item);
         shown
+    }
+
+    /// Sets `item`'s `triage` and `triageWhy` on `shown`, from the inbox's sorts now. Never with
+    /// this Link's state locked.
+    pub(super) fn sort_shown(&self, shown: &mut Value, item: &Item) {
+        let state = self.lock();
+        sorted(shown, item, &self.sorts(&state.inbox));
     }
 
     /// Open items waiting for the quick model (crate::triage), the longest-waiting first.
@@ -2844,6 +2865,7 @@ impl Link {
     /// Reads the directory and keeps every member whose card passes the checks (identity.md 2.2,
     /// with the owner key the Sphere bound), with every key it ever had.
     async fn read_directory(&self) -> Result<(), ClientError> {
+        let _one = self.reading.lock().await;
         let began = Instant::now();
         let token = self.token().await?;
         let members = match self.client()?.members(&token).await {

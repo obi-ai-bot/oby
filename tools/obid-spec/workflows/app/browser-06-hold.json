@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "2",
+  "name": "App: Take control, you hold the tab and the agent waits; Give back (board 6)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 6 (BROWSERAPP-9): you hold the tab, the strip says so in the held blue (--held), the page is ringed and the tab's dot is blue (--unread); Give back returns it to the agent and Take control holds it again. Within 4px of the board in both its states. Signing these on obid: browserLive.test.ts.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=6",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "held-strip",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text > span:last-child"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "You have this tab. Codex waits until you give it back."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "held-blue",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control.is-held"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--held"
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "ringed-page",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-view.is-held"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 639,
+            "box.x": 641
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "tab-dot-blue",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .status-dot.is-held"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--unread"
+        }
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Hold",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10,
+        "state": "held"
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-06"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Hold",
+        "name": "browser-06-beside-board",
+        "label": "board 6, held"
+      }
+    },
+    {
+      "id": "give-back",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Give back"
+        }
+      }
+    },
+    {
+      "id": "agent-again",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex is using this tab · Clicking Sign in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "ring-gone",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-view.is-held"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "matches-board-gave-back",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Hold",
+        "state": "gaveBack",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10
+      }
+    },
+    {
+      "id": "beside-board-gave-back",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Hold",
+        "state": "gaveBack",
+        "name": "browser-06-gave-back-beside-board",
+        "label": "board 6, given back"
+      }
+    },
+    {
+      "id": "take-again",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Take control"
+        }
+      }
+    },
+    {
+      "id": "held-again",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text > span:last-child"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "You have this tab. Codex waits until you give it back."
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

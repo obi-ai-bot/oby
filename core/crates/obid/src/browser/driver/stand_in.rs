@@ -1,9 +1,14 @@
-//! obid's tests' stand-in agent-browser (BROWSER-10, 11, 23 to 25): a shell script answering
+//! obid's tests' stand-in agent-browser (BROWSER-10, 11, 23 to 27): a shell script answering
 //! `--json` lines as agent-browser 0.43.0 does for the few commands the driver runs, starting a
 //! daemon (double-forked, its command line beginning with the binary's path, its PID written into
-//! the socket folder) with a "Chrome" under it that SIGTERM takes down, and sleeping for a URL with
-//! `slow` in it, leaving the daemon busy until the test clears it. Every call is logged in the
-//! job's `HOME`. Tests only: it writes the script under the home it is given.
+//! the socket folder) with a "Chrome" under it that SIGTERM takes down, sleeping for a URL with
+//! `slow` in it, leaving the daemon busy until the test clears it, and stopping at the browser's
+//! certificate page for one with `cert` in it (and, for BROWSER-26, reload, back and a dialog
+//! answered; with a `<session>.navclosed` file in the socket folder, reload and back move the
+//! page and then fail as agent-browser does when the page navigates under its own evaluate). A
+//! daemon whose `<session>.stubborn` file is beside its pid file ignores SIGTERM (BROWSER-25:
+//! obid stopping kills it). Every call is logged in the job's `HOME`. Tests only (obid's, and a debug build's
+//! integration tests'): it writes the script under the home it is given.
 
 use std::path::{Path, PathBuf};
 
@@ -15,9 +20,10 @@ self="$0"
 if [ "$1" = "__daemon" ]; then
   (exec -a "$2" /bin/sleep 100000) &
   chrome=$!
-  trap 'kill $chrome 2>/dev/null; exit 0' TERM
+  stubborn="${3%.pid}.stubborn"
+  trap '[ -f "$stubborn" ] || { kill $chrome 2>/dev/null; exit 0; }' TERM
   echo $$ > "$3"
-  wait $chrome
+  while kill -0 $chrome 2>/dev/null || [ -f "$stubborn" ]; do /bin/sleep 0.1; done
   exit 0
 fi
 echo "$*" >> "$HOME/calls.log"
@@ -33,6 +39,7 @@ while [ $# -gt 0 ]; do
 done
 dir="$AGENT_BROWSER_SOCKET_DIR"
 pidfile="$dir/$session.pid"; urlfile="$dir/$session.url"; busy="$dir/$session.busy"
+prevfile="$dir/$session.prev"
 ok() { printf '{"success":true,"data":%s}\n' "$1"; exit 0; }
 fail() { printf '{"success":false,"error":"%s"}\n' "$1"; exit 0; }
 up() {
@@ -52,12 +59,21 @@ case "${words[0]} ${words[1]}" in
     case "$u" in
       *slow*) touch "$busy"; echo "$u" > "$urlfile"; exec /bin/sleep 100000 ;;
       *refused*) fail "net::ERR_CONNECTION_REFUSED at $u" ;;
+      *cert*) cp "$urlfile" "$prevfile"; echo "chrome-error://chromewebdata/" > "$urlfile"
+        fail "net::ERR_CERT_AUTHORITY_INVALID at $u" ;;
     esac
-    echo "$u" > "$urlfile"; ok "{\"url\":\"$u\",\"title\":\"Fixture\"}" ;;
+    cp "$urlfile" "$prevfile"; echo "$u" > "$urlfile"; ok "{\"url\":\"$u\",\"title\":\"Fixture\"}" ;;
+  "get title") up; ok '{"title":"Fixture"}' ;;
+  "eval "*) up; ok '{"result":2}' ;;
+  "reload ") up; [ -f "$dir/$session.navclosed" ] && fail "CDP error (Runtime.evaluate): Inspected target navigated or closed"; ok '{}' ;;
+  "back ") up; [ -f "$prevfile" ] && mv "$prevfile" "$urlfile"
+    [ -f "$dir/$session.navclosed" ] && fail "CDP error (Runtime.evaluate): Inspected target navigated or closed"; ok '{}' ;;
+  "dialog accept"|"dialog dismiss") up; ok '{}' ;;
   "tab list") up; ok "{\"tabs\":[{\"targetId\":\"T1\",\"url\":\"$(cat "$urlfile")\",\"active\":true}]}" ;;
   "tab T1") up; ok '{}' ;;
   "snapshot ") up; ok '{"snapshot":"- button \"Go\" [ref=e1]","refs":{"e1":{"role":"button","name":"Go"}}}' ;;
   "click "*) up; ok '{}' ;;
+  "get box") up; ok '{"x":10,"y":20,"width":100,"height":20}' ;;
   "stream enable") up; ok '{}' ;;
   "stream status") up; ok "{\"port\":$(cat "$HOME/stream-port" 2>/dev/null || echo 0)}" ;;
   *) fail "the stand-in doesn't know ${words[*]}" ;;

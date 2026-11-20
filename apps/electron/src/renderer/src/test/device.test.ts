@@ -1,8 +1,9 @@
+import { createPublicKey, verify } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { confirming, notificationWords, ownersWords } from '../../../main/device';
+import { confirming, deviceKey, fillSecret, notificationWords, ownersWords } from '../../../main/device';
 import { input, picked, takeInput } from '../../../main/words';
 
 // Main's Confirm as the window reaches it (docs/contracts/peer-thread.md, PEER-17): what it signs,
@@ -21,6 +22,8 @@ const the = vi.hoisted(() => ({
   undo: 'oby/fix-1 goes back to abc1234, as it was before this round. Nothing is pushed.',
   dialog: 1,
   asked: [] as { message: string; detail: string }[],
+  // a finishing action (WORKSPACE-4): obid's sentence for it, read by main itself
+  finish: 'Commit 1 change in /Users/me/a/api on main: api/todo.md (new).',
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => mkdtempSync(join(tmpdir(), 'oby-device-')) },
@@ -36,7 +39,9 @@ vi.mock('../../../main/obid', () => ({
     if (path === '/v1/inbox') return { status: 200, text: JSON.stringify([the.item]) };
     if (path === '/v1/devices') return { status: 200, text: JSON.stringify({ id: 'd1' }) };
     if (path === '/v1/projects') return the.projects;
+    if (path === '/v1/browser') return { status: 200, text: (the as { browserList?: string }).browserList ?? '{"tabs":[]}' };
     if (path === '/v1/jobs/j1/undo' && method === 'GET') return { status: 200, text: JSON.stringify({ action: the.undo }) };
+    if (path.startsWith('/v1/conversations/c1/workspace?') && method === 'GET') return { status: 200, text: JSON.stringify({ action: the.finish }) };
     if (path.endsWith('/messages') && the.lost > 0) { the.lost--; return { status: 0, text: 'obid closed the connection.' }; }
     return { status: 200, text: '{}' };
   },
@@ -268,5 +273,97 @@ describe('obid-undo', () => {
     expect((await undo(the.undo)).status).toBe(200);
     expect(posted()).toHaveLength(1);
     expect(posted()[0].body).toMatchObject({ device: 'd1', action: the.undo, signedAt: expect.any(String), signature: expect.any(String) });
+  });
+});
+
+// A finishing action in a conversation's folder (docs/contracts/folders.md, WORKSPACE-4): main signs
+// `oby-finish` only on its own dialog's button, after an input it saw, for the sentence it read from
+// obid itself, which names the folder by its full path.
+describe('obid-finish', () => {
+  confirming(() => true);
+  const folder = '/Users/me/a/api';
+  const finish = (action: string) => the.handlers.get('obid-finish')!({ sender: {} }, 'c1', folder, action);
+  const posted = () => the.calls.filter((c) => c.method === 'POST' && c.path === '/v1/conversations/c1/workspace');
+  beforeEach(() => { the.calls.length = 0; the.asked.length = 0; the.dialog = 1; while (takeInput()) { /* other tests' */ } });
+
+  it('workspace_4_main_signs_a_finishing_action_only_on_its_own_dialogs_button', async () => {
+    // a script's call, with no input of the owner's: no read, no dialog, nothing reaches obid
+    expect((await finish('commit')).status).toBe(403);
+    expect(the.calls).toEqual([]);
+    expect(the.asked).toEqual([]);
+    // Not now in main's dialog: nothing signed; the dialog shows obid's own sentence
+    input();
+    expect((await finish('commit')).status).toBe(409);
+    const read = the.calls.find((c) => c.method === 'GET');
+    expect(read?.path).toBe(`/v1/conversations/c1/workspace?${new URLSearchParams({ folder, finish: 'commit' }).toString()}`);
+    expect(the.asked.at(-1)).toMatchObject({ message: 'Commit?', detail: the.finish });
+    expect(posted()).toEqual([]);
+    // Commit there: signed obid's sentence, with this device's key, once
+    the.dialog = 0;
+    input();
+    expect((await finish('commit')).status).toBe(200);
+    expect(posted()).toHaveLength(1);
+    const body = posted()[0].body as unknown as { folder: string; finish: string; approval: { device: string; action: string; signedAt: string; signature: string } };
+    expect(body).toMatchObject({ folder, finish: 'commit', approval: { device: 'd1', action: the.finish } });
+    const message = `oby-finish\nc1\n${the.finish}\n${body.approval.signedAt}`;
+    expect(verify('sha256', Buffer.from(message), createPublicKey(deviceKey()), Buffer.from(body.approval.signature, 'base64'))).toBe(true);
+    // the click is used: a second call with no new input signs nothing
+    expect((await finish('commit')).status).toBe(403);
+    expect(posted()).toHaveLength(1);
+  });
+});
+
+// The owner's mouse and keys on a browser tab they hold (docs/contracts/browser-app.md, BROWSERAPP-10):
+// main signs a `…/input` only right after the very input it saw itself, never on the page's say.
+describe('BROWSERAPP-10: main signs browser input only right after the input it saw', () => {
+  const path = '/v1/browser/tabs/t1/input';
+  const press = { type: 'mouse', eventType: 'mousePressed', x: 4, y: 5, button: 'left', clickCount: 1 };
+  const words = async (body: unknown) => { await ownersWords('POST', path, body, false); return the.calls.at(-1)?.words; };
+
+  it('browserapp_10_input_is_signed_once_per_real_input_and_never_without_one', async () => {
+    const { sawInput } = await import('../../../main/browserInput');
+    expect(await words(press)).toBeUndefined();
+    sawInput('mouseDown');
+    const signed = await words(press);
+    expect(signed).toMatch(/^d1 \S+ \S+$/);
+    expect(await words(press)).toBeUndefined();
+    // a take or give back is the owner's words, never an input's: no real input, no signature
+    sawInput('mouseDown');
+    await ownersWords('POST', '/v1/browser/tabs/t1/take', {}, false);
+    expect(the.calls.at(-1)?.words).toBeUndefined();
+  });
+});
+
+// A password typed in Oby's card, filled by main on the owner's press of Fill in (BROWSERAPP-12)
+describe('BROWSERAPP-12: main fills the page\'s field on the owner\'s own Fill in', () => {
+  const SECRET = 'device-test-secret-4417';
+  it('browserapp_12_fill_takes_the_owners_click_signs_each_request_and_never_logs_the_value', async () => {
+    const errors = vi.spyOn(console, 'error');
+    // no press of Fill in, or no input main saw: nothing reaches obid
+    let before = the.calls.length;
+    expect(await fillSecret('t1', '#pw', SECRET, 'a1', false)).toBe('Filling in takes your own click.');
+    takeInput(); takeInput();
+    expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBe('Filling in takes your own click.');
+    expect(the.calls.length).toBe(before);
+    // with both: take (this device doesn't hold it), the secret, the ask answered, given back, each signed
+    input();
+    before = the.calls.length;
+    expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBeNull();
+    const sent = the.calls.slice(before).filter((c) => c.method === 'POST');
+    expect(sent.map((c) => [c.path, c.body])).toEqual([
+      ['/v1/browser/tabs/t1/take', {}],
+      ['/v1/browser/tabs/t1/secret', { field: '#pw', value: SECRET }],
+      ['/v1/browser/asks/a1/answer', {}],
+      ['/v1/browser/tabs/t1/giveBack', {}],
+    ]);
+    expect(sent.every((c) => /^d1 \S+ \S+$/.test(c.words ?? ''))).toBe(true);
+    // a tab this device already holds: no take, no give back
+    (the as { browserList?: string }).browserList = JSON.stringify({ tabs: [{ id: 't1', heldBy: 'd1' }] });
+    input();
+    before = the.calls.length;
+    expect(await fillSecret('t1', '#pw', SECRET, undefined, true)).toBeNull();
+    expect(the.calls.slice(before).filter((c) => c.method === 'POST').map((c) => c.path)).toEqual(['/v1/browser/tabs/t1/secret']);
+    delete (the as { browserList?: string }).browserList;
+    expect(errors.mock.calls.flat().join(' ')).not.toContain(SECRET);
   });
 });

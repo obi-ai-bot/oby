@@ -1,0 +1,548 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: words that waited when obid went down",
+  "version": "1.0.0",
+  "description": "Two messages waiting behind a turn when obid is killed: once it starts again, one turn of their own answers them together, by the later, nobody asking, and the cut turn's words aren't in it (DELIVERY-8); waiting words are answered in order, one turn at a time, and words cancelled alone never run (CONVERSATION-AGENT-49).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "cut",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 60000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "0b1e0c0a-0000-4000-8000-0000000d8001"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "cut-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d8001",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY one",
+          "conversation": "${state.said.body.conversation}",
+          "id": "0b1e0c0a-0000-4000-8000-0000000d8002"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "one-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d8002",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY two",
+          "conversation": "${state.said.body.conversation}",
+          "id": "0b1e0c0a-0000-4000-8000-0000000d8003"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "conversation-agent-49-both-wait-queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "delivery": {
+                    "status": "queued"
+                  }
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-49"
+        ]
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "delivery-8-the-cut-words-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d8001",
+                "delivery": {
+                  "status": "interrupted"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "delivery-8-the-later-answered-by-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d8003",
+                "delivery": {
+                  "status": "answered",
+                  "by": "0b1e0c0a-0000-4000-8000-0000000d8003"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-8",
+          "CONVERSATION-AGENT-49"
+        ]
+      }
+    },
+    {
+      "id": "delivery-8-the-earlier-answered-by-the-same-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d8002",
+                "delivery": {
+                  "status": "answered",
+                  "by": "0b1e0c0a-0000-4000-8000-0000000d8003"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "delivery-8-the-cut-words-ran-once",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.again}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "last": "LINGER 60000"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "delivery-8-one-turn-for-both",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.again}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$any": {
+                "last": "SAY two"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "delivery-8-the-earlier-never-a-turn-of-its-own",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.again}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$none": {
+                "last": "SAY one"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 4000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "lingering-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "LINGER 4000",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dropped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY dropped",
+          "conversation": "${state.said.body.conversation}",
+          "id": "0b1e0c0a-0000-4000-8000-0000000d8004"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "dropped-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d8004",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cancel-it-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "body": {
+          "conversation": "${state.said.body.conversation}",
+          "turn": "0b1e0c0a-0000-4000-8000-0000000d8004"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "dropped": [
+              "0b1e0c0a-0000-4000-8000-0000000d8004"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-49-the-next-words-answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY last",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "last"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-49"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-49-the-cancelled-words-read-cancelled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d8004",
+                "delivery": {
+                  "status": "cancelled"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-49"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-49-cancelled-words-never-run",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.again}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$none": {
+                "last": "SAY dropped"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-49"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-49-one-turn-at-a-time-in-order",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.again}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "last": {
+                    "$oneOf": [
+                      "LINGER 4000",
+                      "SAY last"
+                    ]
+                  }
+                },
+                2
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "dropped-answers-none",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.dropped}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-49"
+        ]
+      }
+    }
+  ]
+}

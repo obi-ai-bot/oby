@@ -4,6 +4,42 @@
 
 use super::*;
 
+/// Whether the job's worktree is there for git: its `.git` is, and when it is a file, the git
+/// folder it points at is too. A worktree whose folder went (the owner deleted it, a disk
+/// cleanup) or whose clone went while obid was down isn't, and is made again (JOBSTATE-20).
+fn worktree_there(worktree: &Path) -> bool {
+    let dot_git = worktree.join(".git");
+    let Ok(pointer) = std::fs::read_to_string(&dot_git) else {
+        return dot_git.exists();
+    };
+    pointer
+        .strip_prefix("gitdir:")
+        .map(|dir| worktree.join(dir.trim()))
+        .is_none_or(|dir| dir.exists())
+}
+
+/// Clears the way for the job's worktree to be made again in `clone` (JOBSTATE-20, as T3 Code
+/// does, pingdotgg/t3code 0604547a3a): a folder whose git folder went moves aside, beside it as
+/// `<id>.orphaned`, so what was in it isn't lost, and git forgets the worktrees whose folders went
+/// (`git worktree prune`), this one's among them, which `git worktree add` refuses to make again.
+/// Called under the clone's lock, as the add is.
+async fn clear_for_worktree(id: &str, clone: &Path, worktree: &Path) -> Result<(), String> {
+    if std::fs::symlink_metadata(worktree).is_ok() {
+        let aside = worktree.with_file_name(format!("{id}.orphaned"));
+        let _ = std::fs::remove_dir_all(&aside);
+        std::fs::rename(worktree, &aside)
+            .map_err(|e| format!("obid can't move the job's broken worktree aside: {e}"))?;
+        tracing::warn!(
+            "job {id}: its worktree's git folder is gone, so obid made it again; what was in it is in {}",
+            aside.display()
+        );
+    }
+    git::git(clone, &["worktree", "prune"])
+        .await
+        .map_err(|e| format!("obid couldn't clear the job's old worktree: {e}"))?;
+    Ok(())
+}
+
 impl Jobs {
     /// The owner's own work: a branch, rounds of the agent and the check, its commits counted.
     pub(super) async fn run_owner_job(
@@ -32,7 +68,7 @@ impl Jobs {
 
         // Only a job that could get the owner's secrets asks GitHub (crate::secretspec).
         // A job on an issue asks once its issue is quoted, below.
-        if !worktree.join(".git").exists()
+        if !worktree_there(&worktree)
             && job.not_owners_words().is_none()
             && job.issue.is_none()
             && job.pr.is_some()
@@ -41,7 +77,7 @@ impl Jobs {
         }
         let preparing = self.preparing(&repo.repo);
         let mut prepared = preparing.lock().await;
-        if !worktree.join(".git").exists() {
+        if !worktree_there(&worktree) {
             // A clone someone else's commits came into is made again before a new job uses it;
             // Oby's review only reads it, and finds the commit it reads below either way.
             if job.clone_root.is_none()
@@ -195,6 +231,7 @@ impl Jobs {
                 worktree.as_os_str(),
                 branch_ref.as_ref(),
             ]);
+            Box::pin(clear_for_worktree(id, &clone, &worktree)).await?;
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
@@ -708,7 +745,7 @@ impl Jobs {
                 }
                 // LANES-18: a Codex session made in the other lane's folder can't go on in this one.
                 if let Some(note) = self.other_lane(id, tool) {
-                    renew = Some((note, "its mode changed its sandbox"));
+                    renew = Some((note, "it moved to another sandbox"));
                 }
                 let job = self.get(id).ok_or("the job is gone")?;
                 // A new session has heard nothing: obid's note, all it's first told, what it was last sent.
@@ -806,9 +843,12 @@ impl Jobs {
                 let tetrix = self.tetrix_mcp(&job);
                 // Oby's own server, where Codex and Cursor ask the owner (`oby_ask_owner`); Claude
                 // Code asks with its own tool. Connected apps went with the strip to a dispatcher.
+                // An own run is on the host: it reaches obid on loopback (LANES-26).
+                let on_host = super::lanes::launches_own(&job, tool, &account);
                 let broker = match tool {
                     Tool::Claude => None,
-                    Tool::Codex | Tool::Cursor => self.ask_mcp(id),
+                    Tool::Codex | Tool::Cursor => (self.ask_mcp(id))
+                        .map(|(url, token)| (Self::agent_api(&url, on_host), token)),
                 };
                 // Being given Tetrix's tools leaves the job the owner's; what a call answers marks
                 // it where it's read (MERGING-30, the owner's decision of 2026-11-06).
@@ -1006,8 +1046,9 @@ impl Jobs {
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
                 }
-                // LANES-18: its mode left Bypass under an own Codex run, which was ended: boxed now.
-                if !turn.succeeded() && self.left_own_lane(id, tool) {
+                // LANES-18: its mode narrowed under an own Codex run, which was ended: it goes on
+                // under the new mode's settings.
+                if !turn.succeeded() && self.narrowed_own_run(id, tool) {
                     continue;
                 }
                 if launch_tries < RETRY_WAITS.len()
@@ -1209,8 +1250,13 @@ impl Jobs {
                     if tries < of && recovery.spent() {
                         reason = crate::job::capped(&reason);
                     }
-                    // Its login was refused: the account can't run until that changes (ACCOUNTS-19).
+                    // Its login was refused: the account can't run until that changes (ACCOUNTS-19),
+                    // and the owner is told, in Oby's words, how to fix it from Oby; the tool's own
+                    // ("please run /login", which Oby has no way to run) go to obid's log
+                    // (ACCOUNTS-38).
                     if cant_run::login_refused(turn.cause(), &reason) {
+                        tracing::info!("job {id}: {}'s login was refused: {reason}", account.id);
+                        reason = cant_run::refused_login(&self.label(tool, &account));
                         self.cant_start(&account, &reason);
                     }
                     let resumes = None;

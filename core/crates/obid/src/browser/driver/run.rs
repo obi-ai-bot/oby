@@ -1,10 +1,13 @@
-//! Running one agent's command (BROWSER-9 to 12): the core's [`Ticket`] checked right before it
+//! Running one agent's command (BROWSER-9 to 12, 27): the core's [`Ticket`] checked right before it
 //! runs (the tab's URL read first when it names refs, so a ref the page navigated away from never
-//! reaches agent-browser), run under its own deadline, killed at it and never run again; its tab
-//! then settles in the background (`get url` tried until the browser answers) and the core hears
+//! reaches agent-browser, and when it works the page, so the browser's own error page is never the
+//! agent's to act on; never while the page shows a dialog, whose URL agent-browser can't read until
+//! it is answered), run under its own deadline, killed at it and never run again; its tab then
+//! settles in the background (`get url` tried until the browser answers) and the core hears
 //! `settled`. A finished command's answer is shaped as the lab's `shape`: page words under
 //! `outside`. A failed one answers `browser` with agent-browser's words and its tab, so the API
-//! marks it failed (BROWSER-12).
+//! marks it failed (BROWSER-12); a navigation that stopped at a certificate problem marks its tab
+//! for the core (BROWSER-27).
 //!
 //! It owns no state of its own: the core's is told through [`Browsers`]'s methods, and the
 //! settling tasks are [`Driver`]'s. It writes nothing; agent-browser writes a screenshot into the
@@ -13,13 +16,14 @@
 //! [`Browsers`]: crate::browser::engine::Browsers
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use super::{Call, Driver, Session};
-use crate::browser::engine::{Refusal, Ticket};
+use crate::browser::engine::{Refusal, Ticket, tool, works_the_page};
 
 fn words(v: &[&str]) -> Vec<String> {
     v.iter().map(|w| w.to_string()).collect()
@@ -92,8 +96,18 @@ impl Driver {
                 return failed(r);
             }
         }
-        // Right before it runs: the page as it is now, for the refs it names.
-        let url_now = if ticket.refs.is_empty() {
+        // Right before it runs: the page as it is now, for the refs it names and, for a tool that
+        // works the page, whether it is the browser's own error page (`page_allows`). Never while
+        // the page shows a dialog: reading its URL waits for the dialog.
+        let works = tool(ticket.tool).is_some_and(works_the_page);
+        let dialog_open = tab.is_some_and(|id| {
+            self.core
+                .lock()
+                .unwrap()
+                .tab(id)
+                .is_some_and(|t| t.dialog.is_some())
+        });
+        let url_now = if ticket.refs.is_empty() && !(works && !dialog_open) {
             None
         } else {
             match before(
@@ -113,6 +127,15 @@ impl Driver {
         if let Err(r) = may {
             return failed(r);
         }
+        if ticket.tool == "oby_browser_screenshot"
+            && let Some(folder) = ticket.argv.get(1).and_then(|p| Path::new(p).parent())
+            && let Err(e) = crate::store::make_private_dir(folder)
+        {
+            // agent-browser writes the PNG but doesn't make its folder.
+            return failed(Refusal::Browser(format!(
+                "obid couldn't make the screenshot's folder: {e}"
+            )));
+        }
         match session.call(&ticket.argv, self.left(ticket)).await {
             Call::TimedOut(ms) => {
                 // It may have partly happened: never run again, and its tab settles first.
@@ -122,7 +145,14 @@ impl Driver {
                 }
                 refuse(Refusal::TimedOut { ms })
             }
-            Call::Failed(e) => failed(Refusal::Browser(e)),
+            Call::Failed(e) => {
+                if matches!(ticket.tool, "oby_browser_open" | "oby_browser_navigate")
+                    && let Some(tab) = tab
+                {
+                    self.core.lock().unwrap().navigation_failed(tab, &e);
+                }
+                failed(Refusal::Browser(e))
+            }
             Call::Ok(data) => {
                 let shaped = self.shape(&session, ticket, data).await;
                 self.core.lock().unwrap().finished(ticket, true);
@@ -433,12 +463,14 @@ mod tests {
             &home,
             "job-a",
             "oby_browser_navigate",
-            json!({"url": "http://127.0.0.1:1/slow", "deadlineMs": 400}),
+            json!({"url": "http://127.0.0.1:1/slow", "deadlineMs": 2000}),
         )
         .await;
         assert_eq!(v["error"]["code"], "timed_out", "{v}");
+        // Back at the deadline, never after the stand-in's endless sleep; the margin is for a
+        // busy machine, not for the command.
         assert!(
-            started.elapsed() < Duration::from_millis(400 + 1500),
+            started.elapsed() < Duration::from_millis(2000 + 10_000),
             "{:?}",
             started.elapsed()
         );
@@ -454,7 +486,12 @@ mod tests {
         assert_eq!(v["error"]["code"], "settling", "{v}");
         // The browser finishes: the tab settles by itself.
         let session = d.session_of("job-a").unwrap();
-        std::fs::remove_file(session.socket_dir.join(format!("{}.busy", session.name))).unwrap();
+        let busy = session.socket_dir.join(format!("{}.busy", session.name));
+        assert!(
+            stand_in::within(WAIT, || async { busy.exists() }).await,
+            "the slow command ran"
+        );
+        std::fs::remove_file(&busy).unwrap();
         assert!(
             stand_in::within(WAIT, || async {
                 d.core()

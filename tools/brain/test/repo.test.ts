@@ -100,6 +100,45 @@ describe('retired routes', () => {
     expect(new Set(areas)).toEqual(new Set(read(config.obid.apiDocs)));
   });
 
+  it('retired_10_routes_documented_ahead_of_obid_are_listed_not_failed', () => {
+    const text = [
+      'Served: `GET /v1/status`.',
+      '### The browser',
+      '**Proposed: obid doesn\'t serve these routes yet.** They land with its port.',
+      '- `GET /v1/browser/tabs` lists the tabs.',
+      '#### A tab',
+      '- `POST /v1/browser/tabs/{id}/close` closes one.',
+      '### After it',
+      'Then `GET /v1/nowhere`.',
+    ].join('\n');
+    const doc = readApiDoc(text, new Set(['GET /v1/status']), { file: 'api.md', gone: 'Routes obid does not serve', proposed: config.obid.proposedMark });
+    // the marked section, its subsections included, is listed; the next section of its level is read as before
+    expect(doc.checks.map(c => `${c.kind} ${c.ref}`)).toEqual([
+      'doc-without-route GET /v1/nowhere',
+      'proposed-route GET /v1/browser/tabs',
+      'proposed-route POST /v1/browser/tabs/{}/close',
+    ]);
+    expect(doc.docRoutes.filter(d => d.proposed).map(d => d.id)).toEqual(['GET /v1/browser/tabs', 'POST /v1/browser/tabs/{}/close']);
+    expect([...doc.documented]).toEqual(['GET /v1/status']);
+    // a mark before any heading holds to the end of its file
+    const whole = readApiDoc(['**Proposed: obid doesn\'t serve these routes yet.**', '## Later', '`GET /v1/later`'].join('\n'), new Set(), { file: 'api.md', gone: 'x', proposed: config.obid.proposedMark });
+    expect(whole.checks.map(c => `${c.kind} ${c.ref}`)).toEqual(['proposed-route GET /v1/later']);
+    // with no mark configured, the same text fails as before
+    expect(readApiDoc(text, new Set(['GET /v1/status']), { file: 'api.md', gone: 'x' }).checks.filter(c => c.kind === 'doc-without-route').length).toBe(3);
+  });
+
+  it('retired_10_a_served_route_still_marked_proposed_fails', () => {
+    const text = [
+      '### The browser',
+      '**Proposed: obid doesn\'t serve these routes yet.**',
+      '- `GET /v1/browser/tabs` lists the tabs.',
+    ].join('\n');
+    const doc = readApiDoc(text, new Set(['GET /v1/browser/tabs']), { file: 'api.md', gone: 'x', proposed: config.obid.proposedMark });
+    expect(doc.checks.map(c => `${c.kind} ${c.ref}`)).toEqual(['proposed-but-routed GET /v1/browser/tabs']);
+    // and in this repository's docs, none is
+    expect(count('proposed-but-routed').map(c => c.message)).toEqual([]);
+  });
+
   it('retired_9_the_swift_client_calls_only_served_routes', () => {
     const exceptions = [
       'POST /v1/jobs/{}/proposals/{}/file', // the task page's file-a-proposal button: removing it changes a screen, its own task

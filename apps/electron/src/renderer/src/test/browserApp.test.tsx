@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserFit, CONVERSATION_MIN } from '../browser/fit';
 import { PANEL_DEFAULT, PANEL_MIN, BrowserProvider, demoNumber } from '../browser/store';
 import { BrowserGlobe, BrowserPane } from '../browser/BrowserPane';
+import { BrowserAsks } from '../browser/Asks';
+import { headOf } from '../browser/cards';
 
 // The browser in the app (docs/contracts/browser-app.md): how the panel fits beside the
 // conversation, and that it isn't offered on obid until main follows obid's browser.
@@ -29,7 +31,7 @@ describe('BROWSERAPP-3: the conversation keeps 420px beside the browser', () => 
   });
 });
 
-describe('BROWSERAPP-7: not offered on obid until main follows obid\'s browser', () => {
+describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser', () => {
   let root: Root, host: HTMLDivElement;
   beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -41,14 +43,132 @@ describe('BROWSERAPP-7: not offered on obid until main follows obid\'s browser',
   it('browserapp_7: without ?everything there is no demo board to show', () => {
     expect(demoNumber()).toBeNull();
   });
-  it('browserapp_7: on obid there is no globe and no panel', () => {
+  it('browserapp_7: with neither obid nor the demo there is no globe and no panel', () => {
     draw(null);
     expect(host.querySelector('[data-browser="globe"]')).toBeNull();
     expect(host.querySelector('aside.br')).toBeNull();
+  });
+  it('browserapp_7: on an obid without the browser (GET /v1/browser answers 404) there is no globe, and nothing is followed', async () => {
+    const follow = vi.fn(() => () => {});
+    (window as unknown as { app: unknown }).app = { obid: { call: async () => ({ status: 404, text: '{"error":"Not found."}' }) }, browser: { follow, watch: () => () => {} } };
+    await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-browser="globe"]')).toBeNull();
+    expect(follow).not.toHaveBeenCalled();
+    delete (window as unknown as { app?: unknown }).app;
+  });
+  it('browserapp_7: on an obid that answers GET /v1/browser, the globe shows and says how many tabs', async () => {
+    const tabs = [{ id: 't1', owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Sign in', url: 'http://localhost:3000/', state: 'ready', heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null }];
+    const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
+    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {} } };
+    await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Show the browser, 1 tab');
+    delete (window as unknown as { app?: unknown }).app;
+  });
+  it('browserapp_3: one panel at the window\'s right at a time: a task\'s Changes puts the browser away, and the browser opening closes Changes', async () => {
+    const { openChanges, useChangesOpen } = await import('../ChangesPanel');
+    let changes: string | null = null;
+    const Spy = () => { changes = useChangesOpen(); return null; };
+    act(() => root.render(<BrowserProvider board={1}><BrowserGlobe /><BrowserPane width={640} /><Spy /></BrowserProvider>));
+    act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
+    expect(host.querySelector('aside.br')).not.toBeNull();
+    act(() => openChanges('j1'));
+    expect(host.querySelector('aside.br')).toBeNull();
+    expect(changes).toBe('j1');
+    act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
+    expect(host.querySelector('aside.br')).not.toBeNull();
+    expect(changes).toBeNull();
   });
   it('browserapp_7: on the demo data at board 2, the globe and the panel show (the check above can fail)', () => {
     draw(2);
     expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Hide the browser');
     expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Clicking Sign in');
+  });
+});
+
+describe('BROWSERAPP-11 to 13: the agent\'s asks over the message box', () => {
+  let root: Root, host: HTMLDivElement;
+  beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+  afterEach(() => { act(() => root.unmount()); host.remove(); });
+  const text = (css: string) => host.querySelector(css)?.textContent ?? null;
+  const press = (label: string) => act(() => ([...host.querySelectorAll('button')].find((b) => b.textContent === label) as HTMLButtonElement).click());
+
+  it('browserapp_11: an agent\'s first sentence heads its card, a question keeps its mark', () => {
+    expect(headOf('Sign in to the staging admin. The mail log is behind a sign-in.', 'x')).toEqual({ head: 'Sign in to the staging admin', lead: 'The mail log is behind a sign-in.' });
+    expect(headOf('Which plan? Both work.', 'x')).toEqual({ head: 'Which plan?', lead: 'Both work.' });
+    expect(headOf(undefined, 'Sign in to a.dev')).toEqual({ head: 'Sign in to a.dev', lead: '' });
+  });
+  it('browserapp_12: Type the password opens the password card; Fill in fills the page and the card goes', () => {
+    act(() => root.render(<BrowserProvider board={7}><BrowserAsks /><BrowserPane width={640} /></BrowserProvider>));
+    expect(text('.tc-ask-head')).toBe('Sign in to the staging admin · Codex');
+    press('Type the password');
+    expect(text('.br-control-text')).toBe('You’re filling the password. Codex waits.');
+    const input = host.querySelector('[data-browser="secret-input"]') as HTMLInputElement;
+    act(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!; set.call(input, 'hunter22'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    press('Fill in');
+    expect(host.querySelector('[data-browser="asks"]')).toBeNull();
+    expect(text('[data-browser="page-password"]')).toBe('••••••••From Oby');
+  });
+  it('browserapp_13: every ask shows one at a time; Skip answers the one shown', () => {
+    act(() => root.render(<BrowserProvider board={9}><BrowserAsks /></BrowserProvider>));
+    expect(text('.tc-ask-kind')).toBe('Check');
+    act(() => (host.querySelector('[aria-label="Next decision"]') as HTMLButtonElement).click());
+    expect(text('.tc-ask-head')).toBe('Which plan should I pick at checkout? · Claude Code');
+    expect([...host.querySelectorAll('.tc-option')].map((b) => b.textContent)).toEqual(['Team · $12', 'Business · $29', 'I’ll choose in the page']);
+    press('Team · $12');
+    expect(text('.decision-count')).toBe('2 of 3');
+  });
+});
+
+describe('BROWSERAPP-14: a page that didn\'t simply load', () => {
+  let root: Root, host: HTMLDivElement;
+  beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+  afterEach(() => { act(() => root.unmount()); host.remove(); delete (window as unknown as { app?: unknown }).app; });
+
+  it('browserapp_14: on the demo data a failed page shows its words and Try again; on obid its words alone (no route for the owner yet)', async () => {
+    act(() => root.render(<BrowserProvider board={10}><BrowserPane width={640} /></BrowserProvider>));
+    act(() => (host.querySelectorAll('.br-tab')[1] as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="page-failed"]')?.textContent).toBe('This page didn’t loadlocalhost:3000 refused to connect. Is the app running?Try again');
+    act(() => root.unmount()); root = createRoot(host);
+    const tabs = [{ id: 't1', owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Dashboard', url: 'http://localhost:3000/dashboard', state: 'failed', heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null }];
+    const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
+    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {}, fill: async () => null, reveal: async () => true } };
+    await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="page-failed"]')?.textContent).toBe('This page didn’t loadlocalhost:3000 refused to connect. Is the app running?');
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(false);
+  });
+});
+
+describe('BROWSERAPP-19 and 20: an agent using the Mac', () => {
+  let root: Root, host: HTMLDivElement;
+  beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+  afterEach(() => { act(() => root.unmount()); host.remove(); delete (window as unknown as { app?: unknown }).app; });
+
+  it("browserapp_19: while an agent has the Mac, main is told to show its pill; Stop there, or the card's, puts the pill and the card away", async () => {
+    const { MacCard, useMacPill } = await import('../browser/Mac');
+    const pill = vi.fn(async () => true);
+    let stopped: (() => void) | null = null;
+    (window as unknown as { app: unknown }).app = { mac: { pill, onStopped: (fn: () => void) => { stopped = fn; return () => { stopped = null; }; } } };
+    const Pill = () => { useMacPill(); return null; };
+    act(() => root.render(<BrowserProvider board={15}><Pill /><MacCard /></BrowserProvider>));
+    expect(pill).toHaveBeenLastCalledWith({ agent: 'claude', action: 'Typing in TextEdit' });
+    expect(host.querySelector('[data-browser="mac-card"]')?.textContent).toBe('Claude Code has your Mac. Press Esc twice to stop it.Stop');
+    act(() => stopped!());
+    expect(host.querySelector('[data-browser="mac-card"]')).toBeNull();
+    expect(pill).toHaveBeenLastCalledWith(null);
+    act(() => root.render(<BrowserProvider key="again" board={15}><Pill /><MacCard /></BrowserProvider>));
+    act(() => ([...host.querySelectorAll('button')].find((b) => b.textContent === 'Stop') as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="mac-card"]')).toBeNull();
+  });
+  it('browserapp_20: the first time, the sheet says what using the Mac means and that macOS asks next; Not now closes it', async () => {
+    const { MacSheet } = await import('../browser/Mac');
+    act(() => root.render(<BrowserProvider board={16}><MacSheet /></BrowserProvider>));
+    expect(host.querySelector('.modal-title')?.textContent).toBe('Let agents use your Mac?');
+    expect(host.querySelectorAll('.modal-list li').length).toBe(3);
+    act(() => ([...host.querySelectorAll('button')].find((b) => b.textContent === 'Not now') as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="mac-sheet"]')).toBeNull();
   });
 });

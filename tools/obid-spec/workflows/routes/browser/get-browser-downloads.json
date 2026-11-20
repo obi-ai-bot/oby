@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/browser/downloads",
+  "version": "1.0.0",
+  "description": "Every download, with the last event the list reflects: none before any agent downloads, at seq 0 (BROWSER-4, 13); without obid's token, refused.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/browser/downloads"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "none-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "expect": {
+          "status": 200,
+          "body": {
+            "downloads": [],
+            "seq": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    },
+    {
+      "id": "wrong-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "as": "wrong",
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-13"
+        ]
+      }
+    }
+  ]
+}

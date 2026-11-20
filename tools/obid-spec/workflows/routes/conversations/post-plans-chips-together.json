@@ -1,0 +1,342 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: words answered together take the latest chips",
+  "version": "1.0.0",
+  "description": "Two messages waiting behind a turn are answered by one turn, and the task it starts takes the latest message's chips, whichever came first (COMPOSER-7).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "busy",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 3000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "busy-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "LINGER 3000",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY first",
+          "conversation": "${state.said.body.conversation}",
+          "id": "c0e0b007-0000-4000-8000-00000000c701",
+          "defaults": {
+            "mode": "plan"
+          }
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "first-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "c0e0b007-0000-4000-8000-00000000c701",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "latest",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\"}",
+          "conversation": "${state.said.body.conversation}",
+          "id": "c0e0b007-0000-4000-8000-00000000c702",
+          "defaults": {
+            "mode": "acceptEdits"
+          }
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "busy-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.busy}",
+        "seconds": 60,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "first-answered-together",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.first}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none"
+          }
+        }
+      }
+    },
+    {
+      "id": "latest-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.latest}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "composer-7-the-task-takes-the-latest-chips",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.latest-answered.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "acceptEdits"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-7"
+        ]
+      }
+    },
+    {
+      "id": "busy2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 3000",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "busy2-under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "LINGER 3000",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY first again",
+          "conversation": "${state.said.body.conversation}",
+          "id": "c0e0b007-0000-4000-8000-00000000c703",
+          "defaults": {
+            "mode": "acceptEdits"
+          }
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "first2-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "c0e0b007-0000-4000-8000-00000000c703",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "latest2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\"}",
+          "conversation": "${state.said.body.conversation}",
+          "id": "c0e0b007-0000-4000-8000-00000000c704",
+          "defaults": {
+            "mode": "plan"
+          }
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "busy2-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.busy2}",
+        "seconds": 60,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "latest2-answered",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.latest2}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "composer-7-whichever-came-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.latest2-answered.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "plan"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-7"
+        ]
+      }
+    }
+  ]
+}

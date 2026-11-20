@@ -1162,6 +1162,8 @@ impl Link {
     /// The merge itself stays the merge step's, once GitHub shows the approval of that head.
     pub async fn ask_teammate(&self, change: &approval::Change<'_>) -> approval::Teammate {
         use approval::{Asked, Teammate};
+        // A request about another head of it is stale: called off first (OBIREQ-2).
+        self.call_off_other_heads(change.repo, change.pr, change.head);
         // The directory as the Sphere has it now; the one read last when it can't be reached.
         if let Err(e) = self.read_directory().await {
             self.note_error(&e);

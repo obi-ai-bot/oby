@@ -70,6 +70,7 @@ pub mod publish;
 pub mod push;
 pub mod receipts;
 pub mod relay;
+pub mod remote;
 pub mod repos;
 pub mod review;
 pub mod routes;
@@ -92,6 +93,7 @@ pub mod transcript;
 pub mod triage;
 pub mod usage;
 pub mod vault;
+pub mod workspace;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -270,6 +272,8 @@ async fn keep_worktrees_clean(shared: Arc<api::Shared>, cancelled: Arc<AtomicBoo
         let wanted = jobs::disk_wanted(api::disk_free(&shared.config.home));
         if woken || now - last >= CLEAN_EVERY.as_secs() as i64 || wanted > 0 {
             last = now;
+            // A conversation's worktree whose branch is merged goes too (WORKSPACE, B00-11).
+            workspace::tidy(&shared).await;
             if shared.jobs.clean_worktrees(now, cleared, wanted).await > 0 {
                 let (shared, cancelled) = (shared.clone(), cancelled.clone());
                 let measure = move || shared.cleanup.remeasure_unless(&cancelled);
@@ -367,11 +371,39 @@ pub async fn serve(
         },
         None => (None, None),
     };
+    // The gateway over HTTPS for the owner's other computers, with this computer's own
+    // certificate (crate::remote::direct, COMPUTERS-10).
+    let (direct, direct_state) = match &gateway {
+        Some(_) => remote::direct::bind(&config.mac_home, &config.direct).await,
+        None => (Vec::new(), Vec::new()),
+    };
+    let mut gateway_state = gateway_state;
+    if let Some(state) = gateway_state.as_mut().filter(|_| !direct_state.is_empty()) {
+        state["direct"] = serde_json::Value::Array(direct_state);
+    }
+    // Where this obid answers, for `obid pair-computer` (crate::remote::addresses, COMPUTERS-9).
+    let answering = remote::addresses::Addresses {
+        api: bound,
+        gateway: gateway.as_ref().and_then(|l| l.local_addr().ok()),
+        direct: direct
+            .iter()
+            .filter_map(|d| axum::serve::Listener::local_addr(d).ok())
+            .collect(),
+    };
+    if let Err(e) = remote::addresses::keep(&config.mac_home, &answering) {
+        tracing::warn!("can't keep obid's addresses for `obid pair-computer`: {e}");
+    }
     stopwatch.lap("listen");
     // The API answers from now on: `GET /v1/status` says obid is starting, and how far it got,
     // and every other call waits until it's ready (Door).
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let (opened, door) = Door::open(token.clone(), &stopwatch);
+    // Each API connection's send buffer stays small, so a slow reader of a tab's live stream
+    // drops frames rather than queueing them in the socket (crate::browser::send_buffer).
+    let listener =
+        axum::serve::ListenerExt::tap_io(listener, |connection: &mut tokio::net::TcpStream| {
+            crate::browser::send_buffer::small_send_buffer(connection)
+        });
     let server = tokio::spawn(
         axum::serve(listener, door)
             .with_graceful_shutdown(async move {
@@ -500,6 +532,9 @@ pub async fn serve(
     };
     let connections = connections::Connections::open(&config.home, &jobs, broker_host);
     jobs.use_connections(connections.clone());
+    // Oby's browser, browsers a stopped obid left reaped first (crate::browser, BROWSER-25).
+    let browser = browser::Service::open(&config.home).await;
+    jobs.use_browser(browser.clone());
     let tetrix = tetrix::Tetrix::open(
         &config.home,
         config.tetrix_presets.clone(),
@@ -564,6 +599,7 @@ pub async fn serve(
         gateway_state,
         relay,
         connections,
+        browser,
         jobs: jobs.clone(),
         events,
         conversations,
@@ -610,6 +646,8 @@ pub async fn serve(
             }
         });
     }
+    // A browser that closed itself (10 minutes idle) shows as not started again (crate::browser).
+    shared.browser.spawn_sweeper(stopping_rx.clone());
     // The worktrees' cleanup pass, in the background: never before the first answer.
     tokio::spawn(keep_worktrees_clean(shared.clone(), cancelled.clone()));
     // The machine's memory and each running job's, while jobs run (crate::meter).
@@ -676,6 +714,7 @@ pub async fn serve(
         println!("obid gateway listening on http://{address}");
         tracing::info!(%address, "obid gateway listening");
         let app = gateway::router(shared.clone(), app.clone());
+        remote::direct::serve(direct, &app, &stopping_rx);
         let mut stopping = stopping_rx.clone();
         tokio::spawn(async move {
             let stopped = async move {
@@ -712,7 +751,9 @@ pub async fn serve(
             shared.sign_ins.kill_all();
             shared.github.kill();
             shared.harness.end_all_warm();
-            jobs.shutdown(JOBS_GRACE).await;
+            // The browsers stop alongside the jobs, not after them: both fit in ENDING_GRACE
+            // (BROWSER-25), and a browser outliving obid would keep its record and its Chrome.
+            tokio::join!(jobs.shutdown(JOBS_GRACE), shared.browser.end_all());
             let _ = tokio::task::spawn_blocking(|| conn::sweeps_done(JOBS_GRACE)).await;
         })
     };
@@ -885,7 +926,7 @@ impl Door {
                 if !agent_route
                     && let Err(error) = api::admit(request.uri(), request.headers(), &door.token)
                 {
-                    return sealed(error.into_response());
+                    return sealed(api::after_body(request, error.into_response()).await);
                 }
                 match now {
                     Some(Err(why)) => return closed(why),

@@ -1,0 +1,42 @@
+/* The terminal panel (TerminalPanel.tsx, docs/contracts/terminal.md): from the window's right edge
+   under its title bar, where Changes shows (changes.css), one at a time */
+.terminal-panel {
+  position: fixed;
+  top: var(--bar);
+  right: 0;
+  bottom: 0;
+  width: min(560px, calc(100vw - var(--view-min)));
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--divider);
+  z-index: 40;
+  font-size: var(--text-md);
+  color: var(--text);
+  animation: terminal-in var(--fade) both;
+}
+.terminal-panel[hidden] { display: none; }
+@keyframes terminal-in { from { transform: translateX(24px); opacity: 0; } }
+.terminal-head { display: flex; align-items: center; gap: 4px; padding: 12px 12px 8px 16px; }
+.terminal-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.terminal-title h2 { margin: 0; font-size: var(--text-base); font-weight: 600; color: var(--ink); }
+.terminal-place { font-size: var(--text-sm); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.terminal-icon {
+  display: grid; place-items: center; width: 28px; height: 28px;
+  border: 0; border-radius: 6px; background: none; color: var(--text); cursor: pointer;
+}
+.terminal-icon:hover { background: var(--hover); color: var(--ink); }
+.terminal-tabs { display: flex; gap: 2px; padding: 0 12px 6px; overflow-x: auto; }
+.terminal-tab { display: flex; align-items: center; border-radius: 6px; }
+.terminal-tab.is-active { background: var(--chip); }
+.terminal-tab button { border: 0; background: none; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.terminal-tab [role="tab"] { padding: 4px 4px 4px 8px; white-space: nowrap; }
+.terminal-tab.is-active [role="tab"] { color: var(--ink); }
+.terminal-tab-close { display: grid; place-items: center; width: 20px; height: 20px; margin-right: 2px; border-radius: 4px; }
+.terminal-tab-close:hover { background: var(--hover); }
+.terminal-body { flex: 1; min-height: 0; position: relative; border-top: 1px solid var(--divider); }
+.terminal-view { position: absolute; inset: 0; padding: 8px 4px 4px 12px; display: flex; flex-direction: column; }
+.terminal-view[hidden], .terminal-screen[hidden] { display: none; }
+.terminal-screen { flex: 1; min-height: 0; }
+.terminal-error { margin: 0; padding: 4px 4px 0 0; color: var(--muted); }

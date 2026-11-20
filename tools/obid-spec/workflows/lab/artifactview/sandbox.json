@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact view: a board can't fetch, open a window or navigate; a link out is asked first",
+  "version": "1.0.0",
+  "description": "LAB-ARTVIEW-10 (src/lab/artifactview.rs: BOARD_POLICY, navigation; the runtime's links). A board drawn on its version's origin can't fetch a server outside it, nor load a picture from one (nothing reaches that server), and can't open a window. When its script sends the page to an address outside, the app stops it and asks the person whether to open it outside Oby: the board stays where it was. Its link to an address outside does the same, asked first and never followed by the page. In the canvas host, a board's frame is sandboxed: the host can't reach into it, as it can't reach out.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "view",
+      "use": "runtime.rust:lab.artifactview.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "port": {
+              "$type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "design",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab design",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "out",
+      "use": "runtime.rust:lab.artifactview.outside",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "hits": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "main",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "Main.dc.html",
+        "width": 800,
+        "height": 600,
+        "name": "main",
+        "within": {
+          "width": 800,
+          "height": 600
+        },
+        "expect": {
+          "paths": {
+            "ready": true
+          }
+        }
+      }
+    },
+    {
+      "id": "10-fetch-refused",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "fetch('${state.out.url}/ping').then(() => 'reached', () => 'refused')",
+        "expect": {
+          "paths": {
+            "value": "refused"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    },
+    {
+      "id": "10-picture-from-outside-refused",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "new Promise(r => { const i = new Image(); i.onload = () => r('loaded'); i.onerror = () => r('refused'); i.src = '${state.out.url}/pic.png'; })",
+        "expect": {
+          "paths": {
+            "value": "refused"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    },
+    {
+      "id": "10-nothing-reached-outside",
+      "use": "runtime.rust:lab.artifactview.outside",
+      "inputs": {
+        "outside": "${state.out}",
+        "expect": {
+          "paths": {
+            "hits": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    },
+    {
+      "id": "10-no-window",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "String(window.open('https://example.com/window'))",
+        "expect": {
+          "paths": {
+            "value": "null"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    },
+    {
+      "id": "10-script-navigation-stopped",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "(() => { location.href = 'https://example.com/away'; return new Promise(r => setTimeout(() => r(location.pathname + ' ' + !!window.__OBY_DC), 600)); })()",
+        "expect": {
+          "paths": {
+            "value": "/Main.dc.html true"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    },
+    {
+      "id": "10-link-out-stays",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "(() => { document.querySelector('a[href=\"https://example.com/more\"]').click(); return new Promise(r => setTimeout(() => r(location.pathname + ' ' + window.__OBY_DC.asked.join(',')), 600)); })()",
+        "expect": {
+          "paths": {
+            "value": "/Main.dc.html https://example.com/more"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    },
+    {
+      "id": "10-asked-before-anything-opens",
+      "use": "runtime.rust:lab.artifactview.navigation",
+      "inputs": {
+        "name": "main",
+        "expect": {
+          "paths": {
+            "asked": [
+              "https://example.com/away",
+              "https://example.com/more"
+            ],
+            "allowed": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    },
+    {
+      "id": "host",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.id}",
+        "version": 1,
+        "path": "__canvas.html?view=canvas",
+        "width": 1280,
+        "height": 800,
+        "name": "host",
+        "expect": {
+          "paths": {
+            "ready": true
+          }
+        }
+      }
+    },
+    {
+      "id": "10-host-cant-reach-a-board",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "host",
+        "expression": "Array.from(document.querySelectorAll('iframe')).every(f => { try { return f.contentDocument === null; } catch (e) { return true; } })",
+        "expect": {
+          "paths": {
+            "value": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-10"
+        ]
+      }
+    }
+  ]
+}

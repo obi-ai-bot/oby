@@ -1,0 +1,217 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: a login refused while it runs",
+  "version": "1.0.0",
+  "description": "T3 Code's sign-in bugs (an expired or missing login, ACP sign-in failures that must tell the user to sign in): Claude Code says it isn't logged in mid-run. The task stops at once with Try again, not retried and not left running (KEYCHAIN-5, RECOVERY-1); the account keeps why (ACCOUNTS-19) and stays signed in; Auto passes over it to the Codex account that can run, though Claude Code is where new tasks go, while a task naming it still goes there (ACCOUNTS-20). The task and the account say, in Oby's words, that the login was refused and how to sign it in again from Oby, never Claude Code's own /login, which Oby has no way to run (ACCOUNTS-38).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "new-tasks-go-to-claude",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "stand-in"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-task-whose-login-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "DIE LOGIN",
+            "account": "stand-in"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "account": "stand-in"
+          }
+        }
+      }
+    },
+    {
+      "id": "keychain-5-it-stops-with-try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a-task-whose-login-is-refused.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "resumesAt": null,
+            "reason": {
+              "$contains": "login was refused, so this task stopped: sign it in again from Settings › Accounts"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-5",
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "accounts-19-the-account-says-why-and-stays-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "signedIn": true,
+                "cantRun": {
+                  "$contains": "login was refused, so this task stopped: sign it in again from Settings › Accounts"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-19",
+          "KEYCHAIN-5",
+          "ACCOUNTS-38"
+        ]
+      }
+    },
+    {
+      "id": "accounts-20-auto-passes-over-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-20"
+        ]
+      }
+    },
+    {
+      "id": "accounts-20-a-task-naming-it-still-goes-there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO",
+            "account": "stand-in"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-20"
+        ]
+      }
+    },
+    {
+      "id": "the-owner-is-told-to-sign-in-from-oby-not-to-run-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a-task-whose-login-is-refused.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "reason": {
+              "$not": {
+                "$contains": "/login"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-38"
+        ]
+      }
+    }
+  ]
+}

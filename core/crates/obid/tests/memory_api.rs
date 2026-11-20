@@ -153,6 +153,24 @@ fn a_suggestion_is_saved_only_on_remember_and_never_a_secret_or_a_wider_rule() {
 }
 
 #[test]
+fn find_without_a_signed_in_account_says_which_it_needs() {
+    let folder = Folder::new("memory-api-no-account");
+    let remote = fixture(&folder.0.join("fixture"));
+    // Its one Claude Code account has no login: nothing Oby can ask to read (B00-15).
+    let config = config(&folder.0, &remote, &stub_agent());
+    let obid = start(&folder.0, &config, None);
+
+    let refused = call(&obid, "POST", "/v1/memory/find", None);
+    assert_eq!(refused.status, 503, "{}", refused.text);
+    assert_eq!(
+        refused.body["error"],
+        "Finding needs an account Oby can ask to read: no Claude Code or Codex account is signed in.",
+        "{}",
+        refused.text
+    );
+}
+
+#[test]
 fn a_scan_that_cant_run_saves_nothing() {
     let folder = Folder::new("memory-api-broken-scan");
     let remote = fixture(&folder.0.join("fixture"));

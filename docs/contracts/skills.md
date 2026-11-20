@@ -26,7 +26,7 @@ The business behavior contract for using the skills the owner installed for thei
 
 ### Where they're offered (SKILLS-5)
 
-- Only where they'd run: the turn or task whose agent runs on the owner's own settings: their Claude Code conversation on macOS (LANES-12), their Codex conversation in Bypass on a `codex login` (LANES-13), a Claude Code task at work that's theirs (LANE-1), a Codex one in Bypass (LANES-18). Anywhere else (another Oby's conversation, a task marked untrusted, Oby's review, Codex outside Bypass or on a ChatGPT login, Cursor, a task not at work) obid lists none and says why in one sentence.
+- Only where they'd run: the turn or task whose agent runs on the owner's own settings: their Claude Code conversation (LANES-12, on macOS and Linux), their Codex conversation on a `codex login` (LANES-13), a Claude Code or Codex task at work that's theirs (LANE-1, LANES-18). Anywhere else (another Oby's conversation, a task marked untrusted, Oby's review, Codex on a ChatGPT login, Cursor, a task not at work) obid lists none and says why in one sentence.
 - A conversation's are those of the account its next turn would talk through: the one the owner chose, else the one its session is on, else whichever has room, of its profile's. Home's box with no conversation yet: a new conversation's.
 
 ### The words with a skill (SKILLS-6 to 8, 11, 12)
@@ -82,4 +82,4 @@ The business behavior contract for using the skills the owner installed for thei
 2. Install another skill in the terminal while the conversation's agent waits, then send words with it: it's there and runs.
 3. ⌘K › Restart agent, then send words: the answer comes, the conversation goes on.
 4. In a task at work, `/`, pick a skill, send: the task's agent takes it.
-5. In a conversation on Cursor, or Codex outside Bypass, type `/`: the list says why there's none.
+5. In a conversation on Cursor, or Codex on a ChatGPT login, type `/`: the list says why there's none.

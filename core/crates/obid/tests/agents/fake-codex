@@ -30,7 +30,10 @@
 //   QUIET            says nothing until it is ended, then in the turn obid continues says "Carried
 //                    on.", having heard its task again under "What you were last sent"
 //   DIE              exits with no result, then the same
-//   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
+//   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended; with
+//                    TOKEN FILE it first writes the token of Oby's own MCP server (its job's broker
+//                    token) to .obi/mcp-token, so a test can call obid's servers for agents as its
+//                    agent would (the browser's, BROWSER-1 to 16)
 //   SERVE PORT       starts a dev server's stand-in, a child process listening on 127.0.0.1 on a free
 //                    port it writes to .obi/serving; it stops listening once .obi/stop-serving is
 //                    there (then writes .obi/served) and lives on; the agent beats as SLEEP does
@@ -42,7 +45,9 @@
 //   TWICE            round one says it isn't done; round two (a resumed thread) writes `twice` in its HOME
 //                    (the job's, the check's too: the check never sees its worktree's .obi/)
 //   ENV              says its CODEX_HOME and HOME
-//   LANE             an own run (below) says nothing until it is ended; a boxed one says its CODEX_HOME
+//   LANE             an own run that asks nobody (Bypass, below) says nothing until it is ended;
+//                    another own one says "own: <its profile>" and its CODEX_HOME, a boxed one
+//                    "boxed:" and its CODEX_HOME
 //   OUTPUTFIRST      five different failing commands, each sending its output before any start
 //                    and then ending, with no start at all
 //   TOOLS            a session of items, each started and completed (tests/transcript_api.rs): its
@@ -75,9 +80,10 @@
 //   anything else    "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable, or
 // obid's token, and when obid starts a thread anywhere but in a sandbox it has to ask about: obid's
-// box (`danger-full-access`, every approval obid's), or an own run's (LANES-18: `-c` settings for
-// `approval_policy="never"` and obid's permission profile, and a thread that sets no sandbox, asks
-// for `never` and names that profile). It answers `config/read` with its `-c` settings, each from
+// box (`danger-full-access`, every approval obid's), or an own run's (LANES-18, "Yes, match T3":
+// `-c` settings for an `approval_policy` and a built-in permission profile, `:read-only`,
+// `:workspace` or `:danger-full-access`, and a thread that sets no sandbox and names both in its
+// `config`). It answers `config/read` with its `-c` settings, each from
 // `sessionFlags`, as Codex 0.162.1 does with nothing else configured, and a thread's start with
 // the policy and profile it was asked for. A thread keeps the `-c` settings it was started with
 // (`settings`).
@@ -126,20 +132,35 @@ const ask = (method, params) => new Promise((done) => {
   send({ id, method, params });
 });
 let steered = [];
+// After a decline, obid tells the turn why with turn/steer: it's waited for (10 s at most), as a
+// real turn goes on long enough to hear it; a fixed wait lost it when obid's save of the denial was
+// slow (CI health, 2026-11-20).
+const hearing = async () => {
+  const until = Date.now() + 10_000;
+  while (!steered.length && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+};
 // The turn under way, which `turn/steer` must name.
 let active = null;
 let thread = null;
 let state = null;
 
 const save = () => writeFileSync(join(threads, `${thread}.json`), JSON.stringify(state));
+// A `-c` value: JSON, or TOML's inline tables read as JSON, or the text as it is.
+const toml = (text) => {
+  try { return JSON.parse(text); } catch {}
+  try { return JSON.parse(text.replace(/"\s*=\s*/g, '":').replace(/([{,]\s*)([A-Za-z_]+)\s*=\s*/g, '$1"$2":')); } catch {}
+  return text;
+};
 const setting = (key) => {
   const argv = process.argv.slice(2);
   for (let at = 0; at < argv.length - 1; at++) {
-    if (argv[at] === "-c" && argv[at + 1].startsWith(`${key}=`)) return JSON.parse(argv[at + 1].slice(key.length + 1));
+    if (argv[at] === "-c" && argv[at + 1].startsWith(`${key}=`)) return toml(argv[at + 1].slice(key.length + 1));
   }
   return null;
 };
-const own = setting("approval_policy") === "never" && setting("default_permissions") === "oby_own";
+const own = setting("approval_policy") !== null && /^:/.test(setting("default_permissions") ?? "");
+// An own run in Bypass (T3's full access): Codex asks nobody, as under `never`.
+const asksNobody = own && typeof setting("approval_policy") === "object";
 // Its `-c` settings as `config/read` gives them: the merged config, and where each key came from.
 const configRead = () => {
   const config = {}, origins = {};
@@ -150,9 +171,7 @@ const configRead = () => {
   argv.forEach((arg, at) => {
     if (argv[at - 1] !== "-c") return;
     const [key, text] = [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)];
-    let value = text;
-    // TOML's inline tables, read as JSON.
-    try { value = JSON.parse(text.replace(/"\s*=\s*/g, '":').replace(/([{,]\s*)([A-Za-z_]+)\s*=\s*/g, '$1"$2":')); } catch {}
+    const value = toml(text);
     const path = key.split(".");
     let table = config;
     for (const part of path.slice(0, -1)) table = table[part] ??= {};
@@ -197,7 +216,8 @@ async function relayed() {
 
 async function runTurn(turnId, prompt) {
   if (leaked.length) return complete(turnId, null, "failed", { message: `leaked: ${leaked.join(", ")}` });
-  if (own ? state.sandbox !== undefined || state.approvalPolicy !== "never" || state.permissions !== "oby_own"
+  if (own ? state.sandbox !== undefined || JSON.stringify(state.approvalPolicy) !== JSON.stringify(setting("approval_policy"))
+      || state.permissions !== setting("default_permissions")
     : state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy} / ${state.permissions}` });
   const task = state.task;
@@ -213,7 +233,8 @@ async function runTurn(turnId, prompt) {
     }
     return complete(turnId, `Done in ${steps[1]} steps.`);
   }
-  if (task.includes("LANE")) return own ? undefined : complete(turnId, `boxed: CODEX_HOME=${process.env.CODEX_HOME}`);
+  if (task.includes("LANE")) return asksNobody ? undefined
+    : complete(turnId, `${own ? `own: ${setting("default_permissions")}` : "boxed:"} CODEX_HOME=${process.env.CODEX_HOME}`);
   if (task.includes("RELAY")) {
     if (task.includes("HOLD")) {
       mkdirSync(".obi", { recursive: true });
@@ -288,7 +309,7 @@ async function runTurn(turnId, prompt) {
     const answer = await ask("item/commandExecution/requestApproval", { threadId: thread, turnId, itemId: "c1", command: command[1] });
     mkdirSync(".obi", { recursive: true });
     appendFileSync(".obi/answers.log", `${answer.decision}\n`);
-    if (answer.decision === "decline") await new Promise((r) => setTimeout(r, 300));
+    if (answer.decision === "decline") await hearing();
     return complete(turnId, `answer: ${answer.decision}${steered.length ? `\nheard: ${steered.join(" | ")}` : ""}`);
   }
   if (task.includes("OUTSIDE")) {
@@ -296,7 +317,7 @@ async function runTurn(turnId, prompt) {
     send({ method: "item/fileChange/patchUpdated", params: { threadId: thread, turnId, itemId: change.id, changes: change.changes } });
     const answer = await ask("item/fileChange/requestApproval", { threadId: thread, turnId, itemId: change.id });
     if (answer.decision === "accept") writeFileSync(resolve("../outside.txt"), "escaped\n");
-    await new Promise((r) => setTimeout(r, 300));
+    await (answer.decision === "decline" ? hearing() : new Promise((r) => setTimeout(r, 300)));
     return complete(turnId, `answer: ${answer.decision}${steered.length ? `\nheard: ${steered.join(" | ")}` : ""}`);
   }
   if (task.includes("UNKNOWN")) {
@@ -316,9 +337,9 @@ async function runTurn(turnId, prompt) {
     const args = { question: "Which store?", options: [{ label: "SQLite" }, { label: "Postgres", description: "A server" }] };
     const item = { type: "mcpToolCall", id: randomUUID(), server: "oby", tool: "oby_ask_owner", arguments: args, status: "inProgress" };
     send({ method: "item/started", params: { threadId: thread, turnId, item } });
-    // Under `approval_policy="never"` (an own run), as codex-cli 0.163: Codex asks nobody, so the
-    // call is refused unless Oby's server was approved before the run.
-    const approved = own
+    // In an own run that asks nobody (Bypass), as codex-cli 0.163 under `never`: the call is
+    // refused unless Oby's server was approved before the run.
+    const approved = asksNobody
       ? { action: setting("mcp_servers.oby.default_tools_approval_mode") === "approve" ? "accept"
           : "MCP tool call requires approval, but approval policy is never" }
       : await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: "oby", mode: "form",
@@ -354,6 +375,9 @@ async function runTurn(turnId, prompt) {
   }
   if (task.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });
+    if (task.includes("TOKEN FILE")) {
+      writeFileSync(".obi/mcp-token", process.env[setting("mcp_servers.oby.bearer_token_env_var")] ?? "");
+    }
     let beats = 0;
     writeFileSync(".obi/beat", String(beats));
     setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
@@ -496,7 +520,7 @@ rl.on("line", (line) => {
         state = { task: null };
       }
       state.sandbox = params.sandbox;
-      state.approvalPolicy = params.approvalPolicy;
+      state.approvalPolicy = params.approvalPolicy ?? params.config?.approval_policy;
       state.permissions = params.config?.default_permissions;
       state.settings = process.argv.slice(2).filter((_, at, argv) => argv[at - 1] === "-c");
       state.instructions = params.developerInstructions;

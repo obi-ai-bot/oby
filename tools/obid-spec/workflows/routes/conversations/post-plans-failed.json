@@ -1,0 +1,166 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: words no session could answer read failed",
+  "version": "1.0.0",
+  "description": "No agent session could answer: the turn says so, its words read failed with an error, and the error has every secret obid knows taken out (DELIVERY-4).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "vault/secrets.json": {
+            "secrets": {
+              "staging-api-key": "I couldn't answer"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FAIL",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "failed twice"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "delivery-4-the-words-read-failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "FAIL",
+                "delivery": {
+                  "status": "failed",
+                  "error": {
+                    "$type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "delivery-4-the-error-has-the-secret-taken-out",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "FAIL",
+                "delivery": {
+                  "error": {
+                    "$contains": "[redacted:"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "delivery-4-no-secret-in-the-error",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "delivery": {
+                  "error": {
+                    "$contains": "I couldn't answer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "delivery-4-nor-the-tools-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "delivery": {
+                  "error": {
+                    "$contains": "it broke"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-4"
+        ]
+      }
+    }
+  ]
+}

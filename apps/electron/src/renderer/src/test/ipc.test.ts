@@ -65,6 +65,7 @@ vi.mock('electron', async () => {
     powerMonitor: { on() {} },
     safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) },
+    clipboard: { readText: () => '' },
     shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
@@ -121,6 +122,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'obid-publish': { args: ['j1', 'Publish this', {}], refusal: FORBIDDEN },
   'obid-limit-answer': { args: ['d1', 1, 'stop'], refusal: FORBIDDEN },
   'obid-undo': { args: ['j1', 'Undo this'], refusal: FORBIDDEN },
+  'obid-finish': { args: ['c1', '/Users/me/api', 'commit'], refusal: FORBIDDEN },
   'open-worktree': { args: ['j1', 'terminal'], refusal: false },
   'worktree-editor': { args: [], refusal: null },
   'open-task-server': { args: ['j1', 3000], refusal: false },
@@ -150,6 +152,18 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
   help: { args: ['reveal-log'], refusal: 'Not this app’s page.' },
+  'browser-follow': { args: [], refusal: null },
+  'browser-watch': { args: ['t1'], refusal: null },
+  'browser-unwatch': { args: ['t1'], refusal: null },
+  'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
+  'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
+  'mac-pill': { args: [null], refusal: null },
+  'mac-pill-stop': { args: [], refusal: undefined },
+  'mac-pill-now': { args: [], refusal: null },
+  'terminal-open': { args: ['task', 'j1', 80, 24], refusal: { error: 'Not this app’s page.' } },
+  'terminal-write': { args: ['t1', 'ls'], refusal: undefined },
+  'terminal-resize': { args: ['t1', 100, 30], refusal: undefined },
+  'terminal-close': { args: ['t1'], refusal: undefined },
 };
 
 const UNSET = Symbol('unset');

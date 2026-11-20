@@ -196,16 +196,34 @@ fn fits(text: &str) -> bool {
 }
 
 /// Its buttons' answers, decided here once (ALERTS-1, the Mac's `wanted`): Allow and Deny for a
-/// `permission`, Start for a `start`, each only when the banner shows it whole and `offers` it.
+/// `permission`, Start for a `start`, Accept and Decline for a teammate's `review_request`
+/// ([`buttons_kind`], ALERTS-22), each only when the banner shows it whole and `offers` it.
 fn answers(kind: &str, shown: &str, offers: impl Fn(&str) -> bool) -> Vec<&'static str> {
     let all: &[&'static str] = match kind {
         "permission" => &["Allow", "Deny"],
         "start" => &["Start"],
+        "review_request" => &[crate::sphere::inbox::ACCEPT, crate::sphere::inbox::DECLINE],
         _ => &[],
     };
     // `fits` counts invisible characters as one space; the body's cut counts each one.
     let whole = fits(shown) && clipped(shown, BODY + 1).chars().count() <= BODY;
     all.iter().copied().filter(|a| whole && offers(a)).collect()
+}
+
+/// Which buttons an inbox item's alert may carry ([`answers`]): its kind's, but for another Oby's
+/// request a teammate's review request's, and only with no condition in their own words (ALERTS-22,
+/// 23): what a `custom` one asks shows only on its card. A question takes the owner's own words
+/// (PEER-30) and a handoff starts work, so neither gets one.
+fn buttons_kind(item: &Value) -> &str {
+    let obi = &item["obi"];
+    let custom = obi["acceptance"]
+        .as_array()
+        .is_some_and(|all| all.iter().any(|c| c["kind"] == "custom"));
+    match item["kind"].as_str().unwrap_or_default() {
+        "obiRequest" if obi["type"] == "review_request" && !custom => "review_request",
+        "obiRequest" => "",
+        kind => kind,
+    }
 }
 
 /// The alert's title and body (the Mac's words, docs/contracts/alerts.md's table) and its
@@ -600,7 +618,7 @@ fn candidates(jobs: &[Job], inbox: &[Value], now: i64) -> Vec<(String, Alert, Ne
                     .as_array()
                     .is_some_and(|o| o.contains(&json!(a)))
         };
-        let kind = item["kind"].as_str().unwrap_or_default();
+        let kind = buttons_kind(item);
         wanted.push((
             "open".into(),
             Alert {
@@ -3589,6 +3607,52 @@ mod tests {
             .await;
         assert_eq!(heard.lock().unwrap().len(), 1);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// A teammate's review request in the inbox, as obid shows it: its `text`, and its conditions.
+    fn review_request_item(text: &str, acceptance: Value) -> Value {
+        json!({"id": "obi-c1", "kind": "obiRequest", "job": "", "title": "Review request from alex",
+               "text": text, "options": crate::sphere::inbox::OBI_OPTIONS, "state": "open",
+               "triage": "needs_you",
+               "obi": {"type": "review_request", "fromOwner": "alex", "acceptance": acceptance,
+                       "quoted": {"goal": "Fix it"}}})
+    }
+
+    fn answers_of(item: Value) -> Vec<&'static str> {
+        let all = candidates(&[], &[item], 1_000);
+        assert_eq!(all.len(), 1, "one alert");
+        all[0].1.answers.clone()
+    }
+
+    /// ALERTS-22: a teammate's review request whose text the banner shows whole alerts with Accept
+    /// and Decline, the words its card answers with.
+    #[test]
+    fn alerts_22_a_review_request_alert_has_accept_and_decline() {
+        let item = review_request_item(
+            "alex's Obi asks for a review of acme/app pull request #12.",
+            json!([{"index": 0, "kind": "tests_pass"}, {"index": 1, "kind": "no_blocker_findings"}]),
+        );
+        assert_eq!(answers_of(item), ["Accept", "Decline"]);
+    }
+
+    /// ALERTS-23: a review request with a condition in their own words, or text the banner cuts,
+    /// alerts with no button (a click opens Home); a question and a handoff never get one.
+    #[test]
+    fn alerts_23_a_custom_condition_alert_has_no_buttons() {
+        let short = "alex's Obi asks for a review of acme/app pull request #12.";
+        let custom = review_request_item(
+            short,
+            json!([{"index": 0, "kind": "tests_pass"}, {"index": 1, "kind": "custom"}]),
+        );
+        assert!(answers_of(custom).is_empty(), "a custom condition");
+        let long = review_request_item(&"words ".repeat(30), json!([]));
+        assert!(answers_of(long).is_empty(), "text the banner cuts");
+        for kind in ["question", "handoff"] {
+            let mut other = review_request_item(short, json!([]));
+            other["obi"]["type"] = json!(kind);
+            other["obi"]["quoted"]["text"] = json!("Which one?");
+            assert!(answers_of(other).is_empty(), "{kind}");
+        }
     }
 }
 

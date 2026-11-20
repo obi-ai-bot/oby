@@ -19,6 +19,11 @@ export interface BrainConfig {
     apiDocs: string[];
     /** The heading of the section, in whichever API doc holds it, that lists the routes obid stopped serving. */
     goneSection: string;
+    /**
+     * A line that opens a section of an API doc with this marks the routes it documents as proposed: ahead of obid,
+     * listed until obid serves them, a miss once it does (RETIRED-10).
+     */
+    proposedMark?: string;
   };
   app: {
     /** The renderer (Sangam's screens), main and preload, relative to root. */

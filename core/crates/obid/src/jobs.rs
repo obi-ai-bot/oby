@@ -87,7 +87,7 @@ mod keep;
 pub use keep::NotMade;
 mod lanes;
 pub(crate) use lanes::claude_place;
-use lanes::{own_codex_settings, own_run_env, owners_for};
+use lanes::{own_run_env, owners_for};
 mod logins;
 mod merge_by_owner;
 mod metering;
@@ -100,6 +100,7 @@ mod owner_run;
 mod permission_asks;
 mod profiles;
 mod publishing;
+mod reach;
 mod research;
 mod retry;
 mod review_reads;
@@ -1078,6 +1079,7 @@ pub struct Jobs {
     permissions: Mutex<permissions::Kept>,
     /// The connected-app broker: job-scoped MCP config and use records.
     connections: std::sync::OnceLock<Arc<crate::connections::Connections>>,
+    browser: std::sync::OnceLock<Arc<crate::browser::Service>>,
     /// The routines, for the owner's Confirm of one the brain planned (crate::routines).
     routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
     /// Oby's Tetrix login: every owner's job's agent gets Tetrix through obid (crate::tetrix).
@@ -1382,6 +1384,7 @@ impl Jobs {
             confirm_hook: std::sync::OnceLock::new(),
             permissions: Mutex::new(kept),
             connections: std::sync::OnceLock::new(),
+            browser: std::sync::OnceLock::new(),
             routines: std::sync::OnceLock::new(),
             tetrix: std::sync::OnceLock::new(),
             chatgpt: std::sync::OnceLock::new(),
@@ -1470,10 +1473,6 @@ impl Jobs {
             .clone()
     }
 
-    pub fn use_connections(&self, connections: Arc<crate::connections::Connections>) {
-        let _ = self.connections.set(connections);
-    }
-
     /// One use of a connection that isn't a job's (a conversation's write on GitHub), in obid's
     /// connection-use log.
     pub fn record_use(&self, record: crate::connections::ConnectionUse) {
@@ -1559,9 +1558,9 @@ impl Jobs {
     fn tetrix_mcp(&self, job: &Job) -> Option<(String, String)> {
         self.tetrix_for(job)?;
         let (url, token) = self.connections.get()?.open_tetrix(&job.id);
-        let own = matches!(self.job_account(job), Ok((tool, _)) if Self::own_lane(job, tool));
-        let host = if own { "//127.0.0.1:" } else { "//10.0.2.2:" }; // an own run is on the host
-        Some((url.replace("//10.0.2.2:", host), token))
+        let own =
+            matches!(self.job_account(job), Ok((tool, a)) if lanes::launches_own(job, tool, &a));
+        Some((Self::agent_api(&url, own), token))
     }
 
     /// Notes what the agent of job `id` got from Tetrix through obid.
@@ -2560,9 +2559,7 @@ impl Jobs {
                     }
                     _ => None,
                 };
-                if let Some(connections) = jobs.connections.get() {
-                    connections.close_job(&id).await;
-                }
+                jobs.end_reach(&id).await;
                 jobs.drop_checkout(&id).await;
                 if let Some(egress) = jobs.egress.get() {
                     egress.close(&id);
@@ -8484,7 +8481,10 @@ mod tests {
 
     /// A cleanup test's home: obid's clone of `o/r` with one commit, `base`, on `origin/main`,
     /// and jobs whose sandbox starts processes through a stand-in for `obid __session`.
-    fn cleanup_home(name: &str, sandboxed: bool) -> (PathBuf, PathBuf, String, Arc<Jobs>) {
+    pub(super) fn cleanup_home(
+        name: &str,
+        sandboxed: bool,
+    ) -> (PathBuf, PathBuf, String, Arc<Jobs>) {
         let root = std::env::temp_dir().join(format!("obid-cleanup-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -11720,7 +11720,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    fn cleanup_git(dir: &Path, args: &[&str]) -> String {
+    pub(super) fn cleanup_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             // These repositories own their objects, independently of the worktree running
             // the tests. Match obid's Git adapter when the caller pins its own object store.
@@ -11751,7 +11751,13 @@ mod tests {
     }
 
     /// A job `id` that ended done two days ago, with a worktree of its own at `base`.
-    fn ended(jobs: &Jobs, clone: &Path, base: &str, id: &str, now: i64) -> (Job, PathBuf) {
+    pub(super) fn ended(
+        jobs: &Jobs,
+        clone: &Path,
+        base: &str,
+        id: &str,
+        now: i64,
+    ) -> (Job, PathBuf) {
         let worktree = jobs.worktree_path(id);
         let path = worktree.to_str().unwrap();
         cleanup_git(clone, &["worktree", "add", "-q", "--detach", path, base]);
@@ -12614,7 +12620,7 @@ mod tests {
 
     /// `job`, published, its pull request `state` (`MERGED`, `CLOSED` or `OPEN`) as obid last read
     /// it, and ended an hour before `now`.
-    fn with_pr(mut job: Job, state: &str, now: i64) -> Job {
+    pub(super) fn with_pr(mut job: Job, state: &str, now: i64) -> Job {
         job.published = Some(format!("https://github.com/o/r/pull/{}", job.id.len()));
         job.pull_request = Some(crate::github::PullRequest {
             state: state.into(),

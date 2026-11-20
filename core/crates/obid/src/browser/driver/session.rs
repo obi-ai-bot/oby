@@ -16,6 +16,11 @@ use crate::store::{keep_private, make_private_dir};
 /// A Unix socket's path is at most this many bytes on macOS (104 with its terminating zero).
 pub const SOCKET_PATH_MAX: usize = 103;
 
+/// The longest path Chrome makes under its `TMPDIR` for its single-instance socket on Linux
+/// (`mkdtemp`'s six characters stand for themselves): too long, and Chrome stops at once with
+/// "Socket path too long".
+pub const CHROME_SINGLETON: &str = "org.chromium.Chromium.XXXXXX/SingletonSocket";
+
 /// The system's folders only: agent-browser and Chrome need nothing a person's `PATH` adds.
 const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
@@ -69,13 +74,19 @@ impl Session {
         format!("oby-{}", short_id(home, job))
     }
 
-    /// The job's socket folder: `<home>/b/<id>` when its longest socket path fits in
-    /// [`SOCKET_PATH_MAX`], else a private one in `/tmp` named for this user and job.
+    /// The job's socket folder, which is also Chrome's `TMPDIR` (on Linux Chrome puts its
+    /// single-instance socket there): `<home>/b/<id>` when the longest socket path either makes
+    /// fits in [`SOCKET_PATH_MAX`], else a private one in `/tmp` named for this user and job.
     pub fn socket_dir_of(home: &Path, job: &str) -> PathBuf {
         let id = short_id(home, job);
         let near = home.join("b").join(&id);
-        let longest = near.join(format!("{}.stream", Self::name_of(home, job)));
-        if longest.as_os_str().len() <= SOCKET_PATH_MAX {
+        let agent_browser = near.join(format!("{}.stream", Self::name_of(home, job)));
+        let chrome = near.join(CHROME_SINGLETON);
+        let longest = agent_browser
+            .as_os_str()
+            .len()
+            .max(chrome.as_os_str().len());
+        if longest <= SOCKET_PATH_MAX {
             near
         } else {
             PathBuf::from(format!("/tmp/oby-{}-{id}", nix::unistd::getuid().as_raw()))
@@ -154,10 +165,10 @@ impl Session {
             .env("PATH", SYSTEM_PATH)
             .env("HOME", &self.home)
             .env("AGENT_BROWSER_SOCKET_DIR", &self.socket_dir)
-            .env("AGENT_BROWSER_NO_VERSION_CHECK", "1");
-        if let Some(tmp) = std::env::var_os("TMPDIR") {
-            command.env("TMPDIR", tmp);
-        }
+            .env("AGENT_BROWSER_NO_VERSION_CHECK", "1")
+            // obid's own TMPDIR may be long (a scratch obid's is): Chrome's single-instance
+            // socket goes in the job's short socket folder instead.
+            .env("TMPDIR", &self.socket_dir);
         command
             .args(self.flags())
             .args(args)
@@ -257,6 +268,21 @@ mod tests {
         );
         let longest = s.socket_dir.join(format!("{}.stream", s.name));
         assert!(longest.as_os_str().len() <= SOCKET_PATH_MAX);
+        assert!(s.socket_dir.join(CHROME_SINGLETON).as_os_str().len() <= SOCKET_PATH_MAX);
+    }
+
+    /// Chrome's single-instance socket fits too (it goes under the socket folder, Chrome's
+    /// TMPDIR): a home short enough for agent-browser's sockets but not for Chrome's moves both.
+    #[test]
+    fn browser_24_chromes_singleton_socket_fits_under_the_socket_folder() {
+        // `<home>/b/<12>/oby-<12>.stream` fits, `<home>/b/<12>/org.chromium…/SingletonSocket` doesn't.
+        let home = PathBuf::from(format!("/{}", "y".repeat(50)));
+        let s = Session::for_job(&home, "job-1", &installed(), "10m").unwrap();
+        assert!(
+            s.socket_dir.join(CHROME_SINGLETON).as_os_str().len() <= SOCKET_PATH_MAX,
+            "{}",
+            s.socket_dir.display()
+        );
     }
 
     #[test]

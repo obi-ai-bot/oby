@@ -132,7 +132,15 @@ async fn run_main() -> Result<i32> {
             Ok(0)
         }
         "nodes" => {
-            for (n, d) in NODES.iter().copied().chain(obid_spec::lab::nodes()) {
+            for (n, d) in NODES
+                .iter()
+                .copied()
+                .chain(obid_spec::lab::nodes())
+                .chain(obid_spec::t3_conversations::NODES.iter().copied())
+            {
+                println!("runtime.rust:{n:<16} {d}");
+            }
+            for (n, d) in obid_spec::t3_tasks::NODES {
                 println!("runtime.rust:{n:<16} {d}");
             }
             Ok(0)
@@ -140,7 +148,7 @@ async fn run_main() -> Result<i32> {
         "coverage" => {
             // The lab proves features not yet in obid: no contract lists its scenarios yet.
             let mut workflows = workflow::load_all(&workflows_dir(), &names)?;
-            workflows.retain(|w| !obid_spec::lab::is_lab(&w.area));
+            workflows.retain(|w| !obid_spec::lab::is_lab(&w.area) && !workflow::is_t3(&w.area));
             let report = coverage::report(&root(), &scope()?, &workflows, a.only.as_deref())?;
             if a.gate {
                 // The check's gate (OBIDSPEC-11): only what must hold now is listed and judged.
@@ -259,6 +267,12 @@ async fn run(a: Args) -> Result<i32> {
         || a.only.as_deref().is_some_and(obid_spec::lab::is_lab);
     if !wants_lab {
         workflows.retain(|w| !obid_spec::lab::is_lab(&w.area));
+    }
+    // T3 Code's bugs (workflows/t3/) the same: only when asked for by their tag or area.
+    let wants_t3 = a.tag.as_deref() == Some(workflow::T3_TAG)
+        || a.only.as_deref().is_some_and(workflow::is_t3);
+    if !wants_t3 {
+        workflows.retain(|w| !workflow::is_t3(&w.area));
     }
     if let Some(only) = &a.only {
         workflows.retain(|w| &w.area == only);
@@ -615,6 +629,37 @@ fn print_one(r: &WorkflowResult) {
             s.why.as_deref().unwrap_or("")
         );
     }
+    // On CI the run folder is only in a large artifact: a failed workflow shows the end of each
+    // scratch obid's own log here, so the reason is in the job's log (obid takes secrets out of
+    // its log lines).
+    if failed(r) && std::env::var_os("GITHUB_ACTIONS").is_some() {
+        for log in obid_logs(std::path::Path::new(&r.folder)) {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            eprintln!("    {} › the end of {}:", r.name, log.display());
+            for l in &lines[lines.len().saturating_sub(40)..] {
+                eprintln!("      {l}");
+            }
+        }
+    }
+}
+
+/// Every `obid.log` under a workflow's folder, at most three levels down.
+fn obid_logs(folder: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = vec![];
+    let mut dirs = vec![(folder.to_path_buf(), 0)];
+    while let Some((dir, depth)) = dirs.pop() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() && depth < 3 {
+                dirs.push((p, depth + 1));
+            } else if p.file_name().is_some_and(|n| n == "obid.log") {
+                found.push(p);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 fn print_table(results: &[WorkflowResult], took: Duration) {

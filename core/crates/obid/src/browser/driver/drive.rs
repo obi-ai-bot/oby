@@ -57,6 +57,11 @@ impl Driver {
         self.epoch.elapsed().as_millis() as u64
     }
 
+    /// obid's home, under which every browser's folders are.
+    pub fn home(&self) -> &std::path::Path {
+        &self.options.home
+    }
+
     pub fn core(&self) -> &Arc<Mutex<Browsers>> {
         &self.core
     }
@@ -69,6 +74,22 @@ impl Driver {
     /// How many browsers are live now.
     pub fn live_count(&self) -> usize {
         self.live.lock().unwrap().len()
+    }
+
+    /// The jobs whose browsers are live now, or still recorded on disk: a job whose end is under
+    /// way has already left the live list but keeps its record until its processes are gone, so
+    /// stopping obid ends it again rather than leaving the record behind (`end` runs twice safely).
+    pub fn live_jobs(&self) -> Vec<String> {
+        let mut jobs: Vec<String> = self.live.lock().unwrap().keys().cloned().collect();
+        let recorded = std::fs::read_dir(LiveFile::dir(&self.options.home))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| LiveFile::read(&e.path()).map(|f| f.job));
+        jobs.extend(recorded);
+        jobs.sort_unstable();
+        jobs.dedup();
+        jobs
     }
 
     /// How many launches wait for a live browser to end.
@@ -166,6 +187,10 @@ impl Driver {
             &self.options.idle_timeout,
         )?;
         let place = self.place().await;
+        tracing::info!(
+            "job {job}'s browser has its place; its daemon starts (session {})",
+            session.name
+        );
         session.make_folders()?;
         let mut file = LiveFile {
             job: job.into(),
@@ -181,6 +206,12 @@ impl Driver {
             .await
         {
             Call::Ok(_) => {}
+            // agent-browser says only that Chrome stopped: ask Chrome itself why.
+            Call::Failed(e) if e.contains("exited early") => {
+                let said =
+                    super::chrome_said::chrome_said(&installed.chrome, &session.socket_dir).await;
+                return Err(format!("{e}. Chrome itself said: {said}"));
+            }
             Call::Failed(e) => return Err(e),
             Call::TimedOut(ms) => {
                 return Err(format!(
@@ -224,6 +255,11 @@ impl Driver {
     /// follows), then SIGKILL for whatever of it is left, its file and sockets go, its place frees,
     /// and the core forgets it. Its profile stays (its downloads), until the job is cleaned up.
     pub async fn end(&self, job: &str) {
+        self.end_within(job, self.options.end_grace).await;
+    }
+
+    /// [`Driver::end`] with `grace` from SIGTERM to SIGKILL ([`super::STOP_GRACE`] when obid stops).
+    pub async fn end_within(&self, job: &str, grace: std::time::Duration) {
         for task in self
             .settling
             .lock()
@@ -257,7 +293,7 @@ impl Driver {
         for &d in &daemons {
             pids.extend(procs::children(d).await);
         }
-        procs::stop(&pids, &self.root(), self.options.end_grace).await;
+        procs::stop(&pids, &self.root(), grace).await;
         LiveFile::remove(home, job);
         let _ = std::fs::remove_dir_all(&socket_dir);
         // Its place frees only now, once its processes are gone.
@@ -284,7 +320,13 @@ impl Driver {
 
 impl Launch for Driver {
     async fn launch(&self, job: &str) -> Result<(), String> {
-        self.start(job).await
+        tracing::info!("starting job {job}'s browser");
+        let started = self.start(job).await;
+        match &started {
+            Ok(()) => tracing::info!("job {job}'s browser is up"),
+            Err(why) => tracing::warn!("job {job}'s browser didn't start: {why}"),
+        }
+        started
     }
 }
 
@@ -430,6 +472,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// A job whose end is under way has left the live list but keeps its record: stopping obid
+    /// still finds it, so its record and processes don't outlive obid (BROWSER-25).
+    #[tokio::test]
+    async fn browser_25_a_job_still_recorded_is_among_the_live_ones() {
+        let home = stand_in::scratch("recorded");
+        let d = driver(&home);
+        assert!(d.live_jobs().is_empty());
+        LiveFile {
+            job: "job-ending".into(),
+            session: "s".into(),
+            socket_dir: home.join("none"),
+            daemon: None,
+            chrome: None,
+        }
+        .write(&home)
+        .unwrap();
+        assert_eq!(d.live_jobs(), vec!["job-ending".to_string()]);
+        d.end("job-ending").await;
+        assert!(d.live_jobs().is_empty(), "ending it removed its record");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[tokio::test]
     async fn browser_25_a_daemon_that_ignores_sigterm_is_killed() {
         let home = stand_in::scratch("stubborn");
@@ -448,12 +512,15 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        assert!(stand_in::within(WAIT, || async { pidfile.exists() }).await);
-        let pid: u32 = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        // The shell creates the file before it writes the pid: wait for the pid itself, or a read
+        // between the two finds the file empty.
+        let read_pid = || {
+            std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+        };
+        assert!(stand_in::within(WAIT, || async { read_pid().is_some() }).await);
+        let pid = read_pid().unwrap();
         LiveFile {
             job: "job-a".into(),
             session: "s".into(),

@@ -15,6 +15,8 @@ export type Computer = { name: string; os: string };
 export type Tab = {
   id: string;
   owner: Owner;
+  /** on obid: the agent's job the tab is for */
+  job?: string;
   title: string;
   /** host, then path: drawn as <b>host</b>path */
   url: string;
@@ -32,10 +34,15 @@ export type Tab = {
   secure?: boolean;
   /** each hold carries a number: an agent action started before your Take control is refused */
   hold?: number;
+  /** the agent ran a script in the page, and has done nothing since (11); how long it took, when known */
+  ran?: { ms?: number };
 };
 
-/** An agent's ask (7–9). `field`: the page's field a secret goes into. */
-export type Ask = { id: string; tab: string; kind: BrowserAskKind; agent: AgentId; host: string; field?: string | null };
+/**
+ * An agent's ask (7–9). `reason`: the agent's words, whose first sentence heads its card; `choices`
+ * for a choice; `field`: the page's field a secret goes into; `job`: on obid, the agent's job.
+ */
+export type Ask = { id: string; tab: string; kind: BrowserAskKind; agent: AgentId; host: string; field?: string | null; reason?: string; choices?: string[]; job?: string };
 
 export type Download = {
   id: string;
@@ -44,6 +51,8 @@ export type Download = {
   /** an agent's (stays in its browser profile) or yours (in Downloads) */
   by: Owner;
   saved?: boolean;
+  /** its name in Downloads, once there (Save a copy may name it apart) */
+  savedAs?: string;
 };
 
 /** How the demo data draws a tab where the boards differ (obid never sets them). */
@@ -55,15 +64,29 @@ export type BrowserState = {
   asks: Ask[];
   downloads: Download[];
   settings: BrowserSettings;
+  /** an agent using the Mac, and what it's doing (15); desktop control's own contract brings it on obid */
+  mac?: { agent: AgentId; action: string } | null;
+  /** the first time an agent would use the Mac: who, and what it wants to do (16) */
+  macAsk?: { agent: AgentId; wants: string } | null;
 };
 
 /** What the panel sends: the same calls on the demo data and on obid. */
 export interface BrowserApi {
   take(tab: string): Promise<void>;
   giveBack(tab: string): Promise<void>;
-  /** typed in Oby's card, put straight into the page's field; never logged or kept */
-  secret(tab: string, field: string, value: string): Promise<void>;
+  /** typed in Oby's card, put straight into the page's field (the ask it answers, if any); never logged or kept */
+  secret(tab: string, field: string, value: string, ask?: string): Promise<void>;
+  /** an ask answered: a choice, or none (Skip) */
+  answer(ask: string, choice?: string): Promise<void>;
   saveCopy(download: string): Promise<void>;
+  /** Show in Finder: a download in the owner's Downloads */
+  reveal(download: string): Promise<void>;
   setSettings(s: Partial<BrowserSettings>): Promise<void>;
   select(tab: string): Promise<void>;
+  /** Stop, or Esc twice: the agent no longer has the Mac (15) */
+  stopMac(): Promise<void>;
+  /** the first-time sheet answered: Continue, or Not now (16) */
+  answerMac(go: boolean): Promise<void>;
+  /** on obid: your mouse and keys on the page while you hold it */
+  input?(tab: string, e: import('../../../shared/obid-wire').BrowserInput): Promise<void>;
 }

@@ -13,13 +13,18 @@
 //! `lanes` (Linux lanes, Codex as T3 runs it), `sphere` (the Obysphere around them), and for the
 //! browser's build (https://claude.ai/artifact/TVVtw8kq77vnm81B5UfcXq) `browserapi` (its API and
 //! agents' tools, with `browser_contract`), `ui` (its screens, driven) and `browsersphere` (the
-//! Obysphere around it).
+//! Obysphere around it); and for Oby Artifacts, `artifacts` (the store, export and import, and the
+//! turn's artifact, with `artifacts_contract`) and `artifactview` (Oby's runtime of Claude Design's
+//! boards, the canvas host, the artifact tab and `oby_artifact_check`).
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
 use crate::obid::Run;
 
+pub mod artifacts;
+pub mod artifacts_contract;
+pub mod artifactview;
 pub mod browser;
 pub mod browser_contract;
 pub mod browserapi;
@@ -36,7 +41,7 @@ pub const AREA_PREFIX: &str = "lab-";
 /// The tag every lab workflow carries.
 pub const TAG: &str = "lab";
 
-const FEATURES: [&[(&str, &str)]; 9] = [
+const FEATURES: [&[(&str, &str)]; 11] = [
     machine::NODES,
     remote::NODES,
     browser::NODES,
@@ -46,6 +51,8 @@ const FEATURES: [&[(&str, &str)]; 9] = [
     browserapi::NODES,
     ui::NODES,
     browsersphere::NODES,
+    artifacts::NODES,
+    artifactview::NODES,
 ];
 
 /// Every lab node: its name, what it does.
@@ -77,6 +84,10 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         ui::run_node(run, name, input).await
     } else if owns(browsersphere::NODES) {
         browsersphere::run_node(run, name, input).await
+    } else if owns(artifacts::NODES) {
+        artifacts::run_node(run, name, input).await
+    } else if owns(artifactview::NODES) {
+        artifactview::run_node(run, name, input).await
     } else {
         bail!("{name} isn't a lab node")
     }
@@ -86,11 +97,15 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
 /// in: the screens and the servers behind them first, then the browsers, then the machines.
 pub async fn cleanup() -> Value {
     let ui = ui::cleanup().await;
+    let artifactview = artifactview::cleanup().await;
+    let artifacts = artifacts::cleanup().await;
     let browsersphere = browsersphere::cleanup().await;
     let browserapi = browserapi::cleanup().await;
     // Browsers before machines: one running on a lab machine is closed before its machine goes.
     json!({
         "ui": ui,
+        "artifactview": artifactview,
+        "artifacts": artifacts,
         "browsersphere": browsersphere,
         "browserapi": browserapi,
         "browsers": browser::cleanup().await,

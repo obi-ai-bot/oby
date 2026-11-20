@@ -4,11 +4,13 @@
 // screens (tools/obid-spec/lab-ui/browser/src/scenes.tsx), whose conversations were the boards'
 // own: here the conversation is the app's.
 import { useLayoutEffect, useRef, useState } from 'react';
-import { Globe, Server, X } from 'lucide-react';
+import { CodeXml, Globe, Server, X } from 'lucide-react';
 import { Control, FileRow, Nav, Panel, Pointer, Tabs, View, YouPointer } from './Panel';
 import { Globe17, Logo, agentName } from './pieces';
 import { useBrowser } from './store';
 import { demoPage } from './demo';
+import { shown } from './live';
+import { useLive } from '../live';
 import './browser.css';
 
 /** The globe at the bar's end: closed, it says how many tabs and who's using one; open, it hides the panel. */
@@ -21,7 +23,7 @@ export function BrowserGlobe() {
   const who = using?.owner.kind === 'agent' ? `, ${agentName(using.owner.agent)} is using one` : '';
   return (
     <div style={{ position: 'relative' }} onMouseEnter={() => setTip(true)} onMouseLeave={() => setTip(false)}>
-      <Globe17 label={`Show the browser, ${s.tabs.length} tabs${who}`} badge={!!using} onClick={() => setUi({ open: true })} />
+      <Globe17 label={`Show the browser, ${s.tabs.length} ${s.tabs.length === 1 ? 'tab' : 'tabs'}${who}`} badge={!!using} onClick={() => setUi({ open: true })} />
       {tip && <span className="tip-under" role="tooltip">Show the browser<kbd>⇧⌘B</kbd></span>}
     </div>
   );
@@ -29,7 +31,8 @@ export function BrowserGlobe() {
 
 /** The panel, as wide as Home lets it be (browser/fit.ts). */
 export function BrowserPane({ width }: { width: number }) {
-  const { offered, ui, setUi, s, active, peek, mode } = useBrowser();
+  const { offered, ui, setUi, s, active, peek: demoPeek, mode } = useBrowser();
+  const { jobs } = useLive();
   const view = useRef<HTMLDivElement>(null);
   const [viewWidth, setViewWidth] = useState(0);
   useLayoutEffect(() => {
@@ -62,6 +65,8 @@ export function BrowserPane({ width }: { width: number }) {
   }
 
   const held = active.holder === 'you';
+  // the conversation folded to one line: the tab's task, and what its agent is at (on obid, its job's title)
+  const peek = demoPeek ?? (mode === 'obid' ? { agent: active.owner, title: (active.job && jobs[active.job]?.title) || active.title, line: active.action ?? shown(active.url) } : null);
   const where = active.computer;
   const { page, label } = mode === 'demo' ? demoPage(active) : { page: null, label: active.title };
   // the agent's label turns to the pointer's left near the page's right edge (5)
@@ -74,10 +79,13 @@ export function BrowserPane({ width }: { width: number }) {
         {where && <div className="where-bar" data-browser="where"><Server size={13} strokeWidth={1.6} /><span>This browser runs on <b>{where.name}</b>. Its localhost is {where.name}’s, not this Mac’s.</span></div>}
         {active.state === 'loading'
           ? <Nav tab={active} set="loading"><span className="br-loading" style={{ left: 8 }} /></Nav>
-          : <Nav tab={active} />}
+          : <Nav tab={active} warn={active.state === 'certificate'} />}
         <Control tab={active} />
         <View tab={active} label={label} page={page} className={where ? 'is-dark-page' : ''}>
           {held ? mode === 'demo' && <YouPointer x={380} y={268} /> : pointer}
+          {!held && active.ran && active.owner.kind === 'agent' && (
+            <span className="ran"><Logo agent={active.owner.agent} size={14} /><CodeXml size={13} strokeWidth={1.6} />Ran a script{active.ran.ms !== undefined ? ` · ${active.ran.ms} ms` : ''}</span>
+          )}
           {ui.full && peek && (
             <div className="peek" role="group" aria-label="The conversation, while the browser is full width">
               {peek.agent.kind === 'agent' && <Logo agent={peek.agent.agent} size={16} />}

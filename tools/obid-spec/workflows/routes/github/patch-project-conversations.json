@@ -1,0 +1,847 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/projects/{id} (its conversations)",
+  "version": "1.0.0",
+  "description": "A conversation put in a project answers the project's folders and comes out with its own again (PROJECTS-4, 5); a project's new name changes only the name and its new folders reach its conversations, revision one higher, refusals changing nothing (PROJECTS-3); in a project a conversation takes no folders of its own (PROJECTS-6); words start a conversation in a project, refused without new or for an unknown one, and sent again are repeated (PROJECTS-7).",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/projects/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/a/README.md": "x\n",
+          "Projects/b/README.md": "x\n",
+          "Projects/c/README.md": "x\n",
+          "Projects/d/README.md": "x\n"
+        }
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "P",
+          "folders": [
+            "${state.o.person}/Projects/b",
+            "${state.o.person}/Projects/c"
+          ]
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY in a",
+          "new": true,
+          "folders": [
+            "${state.o.person}/Projects/a"
+          ]
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "lone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY alone",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "projects-4-no-project-answers-null",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.lone.body.conversation}",
+                "project": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-4-an-unknown-project-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.a.body.conversation}",
+        "body": {
+          "project": "00000000-0000-4000-8000-000000000000"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-4-nothing-changed",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.a.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.a.body.conversation}",
+                "project": null,
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/a$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-4-put-in-p",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.a.body.conversation}",
+        "body": {
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": "${state.p.body.id}",
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/b$"
+              },
+              {
+                "$matches": "/env-home/Projects/c$"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-4-listed-in-p",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-4"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.a.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.a.body.conversation}",
+                "project": "${state.p.body.id}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/b$"
+                  },
+                  {
+                    "$matches": "/env-home/Projects/c$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-5-taken-out",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-5"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.a.body.conversation}",
+        "body": {
+          "project": null
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": null,
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/a$"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-5-listed-with-its-own-folders",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-5"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.a.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.a.body.conversation}",
+                "project": null,
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/a$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "in-p-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.a.body.conversation}",
+        "body": {
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": "${state.p.body.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-3-revision-before",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.a.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.a.body.conversation}",
+                "project": "${state.p.body.id}",
+                "revision": 5
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-3-only-the-name",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/projects/${state.p.body.id}",
+        "body": {
+          "name": "Renamed"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": "Renamed",
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/b$"
+              },
+              {
+                "$matches": "/env-home/Projects/c$"
+              }
+            ],
+            "repos": []
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-3-new-folders",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/projects/${state.p.body.id}",
+        "body": {
+          "folders": [
+            "${state.o.person}/Projects/d"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": "Renamed",
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/d$"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-3-the-conversation-answers-them",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.a.body.conversation}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/d$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-3-revision-one-higher",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.a.body.conversation}",
+                "revision": 6
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-3-empty-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/projects/${state.p.body.id}",
+        "body": {},
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-3-unknown-404",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/projects/00000000-0000-4000-8000-000000000000",
+        "body": {
+          "name": "x"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "projects-3-a-refused-folder-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/projects/${state.p.body.id}",
+        "body": {
+          "folders": [
+            "${state.o.home}"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-3-nothing-changed",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-3"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.p.body.id}",
+              "folders": [
+                {
+                  "$matches": "/env-home/Projects/d$"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-6-no-own-folders-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.a.body.conversation}",
+        "body": {
+          "folders": [
+            "${state.o.person}/Projects/a"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-6-words-with-folders-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY more",
+          "conversation": "${state.a.body.conversation}",
+          "folders": [
+            "${state.o.person}/Projects/a"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROJECTS-6"
+        ]
+      }
+    },
+    {
+      "id": "projects-6-turns-unchanged",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.a.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-6-folders-unchanged",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.a.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.a.body.conversation}",
+                "project": "${state.p.body.id}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/d$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-6-out-with-folders-200",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-6"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.a.body.conversation}",
+        "body": {
+          "project": null,
+          "folders": [
+            "${state.o.person}/Projects/b"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "project": null,
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/b$"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-7-project-without-new-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROJECTS-7"
+        ]
+      }
+    },
+    {
+      "id": "projects-7-an-unknown-project-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY x",
+          "new": true,
+          "project": "00000000-0000-4000-8000-000000000000"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROJECTS-7"
+        ]
+      }
+    },
+    {
+      "id": "projects-7-no-conversation-made",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-7"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-7-started-in-p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY in p",
+          "new": true,
+          "project": "${state.p.body.id}",
+          "id": "7b2c3d4e-0000-4000-8000-00000000c0de"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "projects-7-it-answers-p-and-its-folders",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-7"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "pick": {
+          "where": {
+            "id": "${state.projects-7-started-in-p.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.projects-7-started-in-p.body.conversation}",
+                "project": "${state.p.body.id}",
+                "folders": [
+                  {
+                    "$matches": "/env-home/Projects/d$"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-7-the-same-words-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY in p",
+          "new": true,
+          "project": "${state.p.body.id}",
+          "id": "7b2c3d4e-0000-4000-8000-00000000c0de"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "repeated": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROJECTS-7"
+        ]
+      }
+    },
+    {
+      "id": "projects-7-still-three",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-7"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 3
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,216 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: a CLI version known to break",
+  "version": "1.0.0",
+  "description": "T3 Code's version bugs (one compatibility lookup for broken provider versions, a minimum version read from the manifest): obid's table says Codex 0.170.0 breaks. Status says so with the reason (CLIVERSIONS-7); Auto passes over Codex though it's where new tasks go (CLIVERSIONS-8); a task the owner names to it runs there, its transcript saying once that the version is known to break (CLIVERSIONS-9).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        },
+        "files": {
+          "cli-versions.json": {
+            "codex": {
+              "tested": {
+                "from": "0.162.1",
+                "to": "0.170.0"
+              },
+              "knownBad": [
+                {
+                  "version": "0.170.0",
+                  "reason": "its app-server drops turn/interrupt"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "o2",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        },
+        "env": {
+          "OBID_TEST_CLI_VERSIONS": "${state.o.home}/cli-versions.json"
+        }
+      }
+    },
+    {
+      "id": "cliversions-7-status-says-codex-breaks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "codex",
+                "version": "0.170.0",
+                "versionStatus": "knownBad",
+                "knownBadReason": "its app-server drops turn/interrupt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-7"
+        ]
+      }
+    },
+    {
+      "id": "new-tasks-go-to-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "cx"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "cliversions-8-auto-passes-over-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-8"
+        ]
+      }
+    },
+    {
+      "id": "named-to-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO",
+            "account": "cx"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "codex",
+            "account": "cx"
+          }
+        }
+      }
+    },
+    {
+      "id": "cliversions-9-its-transcript-says-it-breaks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named-to-codex.body.id}/transcript",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "entries": {
+              "$count": [
+                {
+                  "kind": "start",
+                  "summary": "Codex 0.170.0 is known to break: its app-server drops turn/interrupt"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLIVERSIONS-9"
+        ]
+      }
+    }
+  ]
+}

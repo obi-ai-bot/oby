@@ -1,13 +1,13 @@
 //! The lab's `ui` feature (src/lab/mod.rs): the browser's screens (lane B of the browser plan,
 //! https://claude.ai/artifact/TVVtw8kq77vnm81B5UfcXq), a Vite + React app in `lab-ui/browser/` on
-//! the real app's own styles, driven in Chrome for Testing with Playwright the way `app.*` drives
+//! the real app's own styles, driven in chrome-headless-shell with Playwright the way `app.*` drives
 //! the real app (src/app.rs): `lab.ui.serve` builds the app into the workflow's folder and serves it
 //! on 127.0.0.1 on a free port; `lab.ui.open` starts one helper (`lab-ui/browser/scripts/
 //! drive-lab.mjs`) per screen and keeps it; every later step sends it one JSON line and reads one
 //! back. These nodes only orchestrate: what an element is and where it sits, the helper finds out.
 //!
 //! Nothing here touches the person's Chrome, its profile, their screen, their obid or Oby.app: the
-//! browser is Chrome for Testing from obid-spec's own cache, headless, its profile and temporary
+//! browser is chrome-headless-shell from obid-spec's own cache, its profile and temporary
 //! files in the workflow's folder, and every picture is of the page the helper opened. Owned by the
 //! session building the screens; nothing else edits this file.
 
@@ -28,7 +28,7 @@ use crate::procs;
 /// Every `lab.ui.*` node: its name, what it does.
 pub const NODES: &[(&str, &str)] = &[
     ("lab.ui.serve", "Builds the browser's screens (tools/obid-spec/lab-ui/browser) into the workflow's folder and serves them on 127.0.0.1 on a free port, first installing their packages from the lockfile (npm ci) when missing or stale; `api`: lane A's browser API, proxied for live mode; `slowReadsMs` holds each answer to GET /v1/browser and /v1/browser/downloads that long (a busy main process). Skipped only without npm."),
-    ("lab.ui.open", "Opens a board's screen (`board`: 1 to 17, `live` for lane A's API) in Chrome for Testing, headless, at the board's own size, with a profile in the workflow's folder; one helper per `name`. Skipped without Chrome for Testing."),
+    ("lab.ui.open", "Opens a board's screen (`board`: 1 to 17, `live` for lane A's API) in chrome-headless-shell at the board's own size, with a profile in the workflow's folder; one helper per `name`. Skipped without chrome-headless-shell."),
     ("lab.ui.click", "Clicks (or `hover`s) one element of the screen, at its middle or at `position` {x, y} in it: a target by role and name, label, text or css."),
     ("lab.ui.type", "Types `text` into the screen (into `target` first, when given); answers only how many characters."),
     ("lab.ui.press", "Presses `keys` (`times` times) on the screen."),
@@ -88,8 +88,9 @@ fn app_dir(run: &Run) -> PathBuf {
         .unwrap_or_else(|| run.root.join("tools/obid-spec/lab-ui/browser"))
 }
 
-/// Chrome for Testing: `OBID_SPEC_CHROME`, else the one obid-spec's lab.browser nodes keep in their
-/// cache (agent-browser's install). Never the person's Chrome.
+/// The browser the screens are opened in: `OBID_SPEC_CHROME`, else the chrome-headless-shell
+/// obid-spec's lab.browser nodes keep in their cache (pinned and hash-checked there). Never the
+/// person's Chrome.
 fn chrome() -> std::result::Result<PathBuf, String> {
     if let Some(p) = std::env::var_os("OBID_SPEC_CHROME") {
         let p = PathBuf::from(p);
@@ -102,37 +103,15 @@ fn chrome() -> std::result::Result<PathBuf, String> {
             ))
         };
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("skipped: no HOME")?;
-    let cache = if cfg!(target_os = "macos") {
-        home.join("Library/Caches/obid-spec/agent-browser-chrome/.agent-browser/browsers")
-    } else {
-        home.join(".cache/obid-spec/agent-browser-chrome/.agent-browser/browsers")
-    };
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&cache)
-        .map_err(|_| format!("skipped: Chrome for Testing isn't in obid-spec's cache ({}); a lab.browser workflow installs it", cache.display()))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("chrome-")))
-        .collect();
-    dirs.sort();
-    let dir = dirs
-        .pop()
-        .ok_or_else(|| format!("skipped: no Chrome for Testing in {}", cache.display()))?;
-    let exe = if cfg!(target_os = "macos") {
-        dir.join("Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
-    } else {
-        dir.join("chrome-linux64/chrome")
-    };
-    if exe.is_file() {
-        Ok(exe)
-    } else {
-        Err(format!(
-            "skipped: Chrome for Testing isn't at {}",
-            exe.display()
-        ))
-    }
+    let plat = super::browser::shell_platform()
+        .ok_or("skipped: chrome-headless-shell has no build for this computer")?;
+    let cache = super::browser::shell_cache().ok_or("skipped: no HOME")?;
+    super::browser::find_shell(&cache, plat).ok_or_else(|| {
+        format!(
+            "skipped: chrome-headless-shell isn't in obid-spec's cache ({}); a lab.browser workflow installs it",
+            cache.display()
+        )
+    })
 }
 
 fn node() -> std::result::Result<PathBuf, String> {
@@ -456,7 +435,10 @@ async fn open(run: &Run, input: &Value) -> Result<Value> {
         let mut g = h.lock().await;
         if g.chrome != Some(pid) {
             g.chrome = Some(pid);
-            started(pid, &format!("screen {name}'s Chrome for Testing"));
+            started(
+                pid,
+                &format!("screen {name}'s browser (chrome-headless-shell)"),
+            );
         }
     }
     Ok(json!({
@@ -584,7 +566,7 @@ fn ours_alive() -> Vec<Value> {
                     && !found.iter().any(|f| f["pid"] == pid)
                 {
                     let what = if cmd.contains("Chrome") || cmd.contains("chrome") {
-                        "Chrome for Testing"
+                        "the screens' browser"
                     } else if cmd.contains("vite") {
                         "the screens' server"
                     } else {
@@ -611,7 +593,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
                     .count()
             };
             Ok(
-                json!({ "alive": found.len(), "any": !found.is_empty(), "servers": count("server"), "helpers": count("helper"), "chromes": count("Chrome"), "processes": found }),
+                json!({ "alive": found.len(), "any": !found.is_empty(), "servers": count("server"), "helpers": count("helper"), "chromes": count("browser"), "processes": found }),
             )
         }
         "lab.ui.down" => Ok(json!({ "stopped": cleanup().await })),

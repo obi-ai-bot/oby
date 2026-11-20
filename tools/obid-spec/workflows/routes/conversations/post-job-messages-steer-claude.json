@@ -1,0 +1,114 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/messages: words reach a Claude Code task's turn under way",
+  "version": "1.0.0",
+  "description": "Words to a Claude Code task at work reach its agent in the turn under way, at its next step, in the same Claude Code process: the turn answers them, and no new turn or Claude Code is started for them (TASKCONV-33); its reply joins the task's report after the work's first line (TASKCONV-14).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "STEPS: 60 250 KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "at-work",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.job.body.id}/.obi/prompts.log",
+        "expect": {
+          "exists": true
+        },
+        "within": 60
+      }
+    },
+    {
+      "id": "told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.job.body.id}/messages",
+        "body": {
+          "text": "use SQLite"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-33-the-turn-under-way-heard-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$contains": "heard: use SQLite"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-33"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-33-one-prompt-no-turn-started-for-them",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.job.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "^(?s:[^<]|<[^<]|<<[^<]|<<<[^e])*<<<end of prompt>>>\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-33"
+        ]
+      }
+    }
+  ]
+}

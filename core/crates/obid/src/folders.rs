@@ -189,6 +189,68 @@ fn refused(places: &Places, real: &Path) -> Option<&'static str> {
     None
 }
 
+/// What finishing a conversation's work in a folder can do (WORKSPACE-4, WORKSPACE-5), as T3 Code's
+/// git actions decide them (`GitActionsControl.logic.ts`, `buildMenuItems` and `resolveQuickAction`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Action {
+    /// Commit every change, untracked files too.
+    Commit,
+    /// Push the branch to its remote, setting its upstream.
+    Push,
+    /// Open a pull request from the branch on the code host.
+    PullRequest,
+    /// Make the repository on the code host signed in (GitHub today) and push it.
+    PublishRepository,
+    /// Make the folder a git repository.
+    InitializeGit,
+}
+
+impl Action {
+    /// Whether it sends anything out of this Mac: those pass the secret scan first.
+    pub fn leaves(self) -> bool {
+        matches!(
+            self,
+            Action::Push | Action::PullRequest | Action::PublishRepository
+        )
+    }
+}
+
+/// The actions a folder's git `state` can take now, in the order the app shows them. Read from git
+/// alone: a folder with no remote makes no gh call until the owner publishes it.
+///
+/// - Not a repository: only Initialize Git (T3's `resolveSendEnvMode`: always local).
+/// - No remote: Commit while there are changes; once everything is committed, Publish repository.
+/// - A remote: Commit with changes; Push with commits the remote hasn't and none to pull; Create
+///   pull request with commits the default branch hasn't, off the default branch, none to pull.
+pub fn finishing(state: &crate::git::State) -> Vec<Action> {
+    if !state.repo {
+        return vec![Action::InitializeGit];
+    }
+    if state.remote.is_none() {
+        return if state.changes {
+            vec![Action::Commit]
+        } else if state.committed {
+            vec![Action::PublishRepository]
+        } else {
+            vec![]
+        };
+    }
+    let mut actions = Vec::new();
+    if state.changes {
+        actions.push(Action::Commit);
+    }
+    let on_branch = state.branch.is_some() && state.behind == 0;
+    if on_branch && state.ahead > 0 {
+        actions.push(Action::Push);
+    }
+    let off_default = state.branch.is_some() && state.branch != state.default_branch;
+    if on_branch && off_default && state.ahead_of_default > 0 {
+        actions.push(Action::PullRequest);
+    }
+    actions
+}
+
 /// `path` is `root` or inside it.
 fn within(path: &str, root: &str) -> bool {
     let root = root.trim_end_matches('/');
@@ -217,6 +279,73 @@ mod tests {
         assert!(within("/usr", "/usr"));
         assert!(within("/usr/local", "/usr"));
         assert!(!within("/usrx", "/usr"));
+    }
+
+    fn repo() -> crate::git::State {
+        crate::git::State {
+            repo: true,
+            committed: true,
+            branch: Some("feature".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn workspace_4_no_remote_commit_then_publish() {
+        let changed = crate::git::State {
+            changes: true,
+            ..repo()
+        };
+        assert_eq!(finishing(&changed), vec![Action::Commit]);
+        assert_eq!(finishing(&repo()), vec![Action::PublishRepository]);
+        // A repository with no commit and nothing to commit has nothing to publish yet.
+        let empty = crate::git::State {
+            committed: false,
+            ..repo()
+        };
+        assert_eq!(finishing(&empty), vec![]);
+    }
+
+    #[test]
+    fn workspace_5_not_git_initialize() {
+        assert_eq!(
+            finishing(&crate::git::State::default()),
+            vec![Action::InitializeGit]
+        );
+    }
+
+    #[test]
+    fn with_a_remote_commit_push_and_pull_request_as_t3_does() {
+        let remote = crate::git::State {
+            remote: Some("origin".into()),
+            default_branch: Some("main".into()),
+            changes: true,
+            ahead: 2,
+            ahead_of_default: 2,
+            ..repo()
+        };
+        assert_eq!(
+            finishing(&remote),
+            vec![Action::Commit, Action::Push, Action::PullRequest]
+        );
+        // Behind its upstream: pull first, so neither push nor a pull request.
+        let behind = crate::git::State {
+            behind: 1,
+            ..remote.clone()
+        };
+        assert_eq!(finishing(&behind), vec![Action::Commit]);
+        // On the default branch: a push, never a pull request into itself.
+        let on_main = crate::git::State {
+            branch: Some("main".into()),
+            ..remote.clone()
+        };
+        assert_eq!(finishing(&on_main), vec![Action::Commit, Action::Push]);
+        // Detached: only a commit.
+        let detached = crate::git::State {
+            branch: None,
+            ..remote
+        };
+        assert_eq!(finishing(&detached), vec![Action::Commit]);
     }
 
     #[test]

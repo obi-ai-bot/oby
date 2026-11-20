@@ -1,0 +1,210 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: an account that can't start moves and says why",
+  "version": "1.0.0",
+  "description": "A chosen account whose agent can't start: the turn moves and its line says why in plain words, no path in them (CONVERSATION-AGENT-26); one not signed in says it isn't, the session stays where it was, and the apps' pill names where the answers come from until chosen again (CONVERSATION-AGENT-3).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                },
+                {
+                  "id": "nobody",
+                  "name": "Nobody",
+                  "configDir": "${run.scratch}/o/home/accounts/nobody"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}",
+          "accounts/nobody/.keep": ""
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=none"
+          }
+        }
+      }
+    },
+    {
+      "id": "chose-nobody",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "nobody"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "nobody"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-3-a-chosen-account-that-cant-run-moves",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^resume=\\S+\\nCodex · Nobody couldn't start: it isn't signed in, so I moved to Claude Code · Stand-in\\.$"
+            }
+          },
+          "paths": {
+            "text": {
+              "$not": {
+                "$matches": "^resume=none"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3",
+          "CONVERSATION-AGENT-26"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-moved-off-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "movedOff": "nobody"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-said-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "chose-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "nobody"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "nobody"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-3-chosen-again-names-the-choice",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "movedOff": {
+                "$exists": false
+              }
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    }
+  ]
+}

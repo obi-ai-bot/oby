@@ -1,0 +1,200 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: accountFailover off keeps one account",
+  "version": "1.0.0",
+  "description": "With accountFailover off a turn stays on one account, across tools too, and says why: a full account isn't left for another, the one chosen or the one Auto picked (CONVERSATION-AGENT-4).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "failover-off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "accountFailover": false
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FULL ON stand-in",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^I couldn't answer: Claude Code · Stand-in"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-4"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-4-codex-never-ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": {
+                "$ne": "codex"
+              }
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-4"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-4-one-try-on-the-one-account",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "last": "FULL ON stand-in"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-4"
+        ]
+      }
+    },
+    {
+      "id": "chose-claude",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "stand-in"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "stand-in"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-4-the-chosen-full-account-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^I couldn't answer: Claude Code · Stand-in"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-4"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-4-nothing-else-tried",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$none": {
+                "last": "REMEMBER"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-4"
+        ]
+      }
+    }
+  ]
+}

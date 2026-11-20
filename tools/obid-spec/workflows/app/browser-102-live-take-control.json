@@ -1,0 +1,404 @@
+{
+  "schemaVersion": "2",
+  "name": "App live: an agent's tab drawn live; Take control, your click reaches the page, Give back (board 6, live)",
+  "version": "1.0.0",
+  "description": "The real app on a scratch obid that serves the browser (BROWSERAPP-8 to 10): a stand-in Codex job opens the fixture site; the panel shows its tab and draws the page from obid's stream. Take control (signed by main on the click it saw) holds the tab: the strip says so and the agent's act is refused (human_control). Your click on the live page's download link reaches the page, signed by main right after the real mouse input, and obid keeps the file as yours, delivered. Give back returns the tab and the agent acts again. (Your keys are signed only after main sees that very key reach the window: a test's keys, made inside the page, never do, so they're proven by browserLive.test.ts and device.test.ts.)",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "obid": "${state.obid}",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "within": 300,
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "globe",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=globe]"
+        },
+        "within": 30,
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-8"
+        ]
+      }
+    },
+    {
+      "id": "show",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=globe]"
+        }
+      }
+    },
+    {
+      "id": "one-tab",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-tab .logo[aria-label='Codex’s']"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        },
+        "within": 30
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-8"
+        ]
+      }
+    },
+    {
+      "id": "live-page",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=frame]"
+        },
+        "against": {
+          "page": {
+            "css": "aside.br .br-view"
+          }
+        },
+        "within": 60,
+        "expect": {
+          "paths": {
+            "page.overlap": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-8"
+        ]
+      }
+    },
+    {
+      "id": "agent-strip",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex opened this tab · idle"
+          }
+        },
+        "within": 15
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Take control"
+        }
+      }
+    },
+    {
+      "id": "held",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text > span:last-child"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "You have this tab. Codex waits until you give it back."
+          }
+        },
+        "within": 15
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "held-by-a-device",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "tabs.0.heldBy": {
+              "$type": "string"
+            },
+            "tabs.0.holdGeneration": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "agent-refused",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "agent"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "human_control"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "click-download",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=frame-input]"
+        },
+        "pagePoint": "${state.site.download}"
+      }
+    },
+    {
+      "id": "your-download",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/browser/downloads",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "downloads": {
+              "$len": 1
+            },
+            "downloads.0.startedBy": "person",
+            "downloads.0.place": "delivered"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-10"
+        ]
+      }
+    },
+    {
+      "id": "give-back",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Give back"
+        }
+      }
+    },
+    {
+      "id": "agent-again",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-control-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex opened this tab · idle"
+          }
+        },
+        "within": 15
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "free-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "tabs.0.heldBy": null,
+            "tabs.0.holdGeneration": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "snap-again",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-acts-again",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "agent"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-9"
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}",
+        "job": "${state.job.job}",
+        "end": true
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

@@ -183,8 +183,9 @@ pub struct Turns {
     draining: Mutex<HashSet<String>>,
     /// What each request asked with, by the user's turn its words are, until a turn takes them.
     asking: Mutex<HashMap<String, Asking>>,
-    /// Where each request waiting for its words' answer hears it, by their user's turn.
-    heard: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Heard>>>,
+    /// Where each request waiting for its words' answer hears it, and the conversation they were
+    /// said in, by their user's turn.
+    heard: Mutex<HashMap<String, (String, tokio::sync::oneshot::Sender<Heard>)>>,
 }
 
 fn held<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -196,13 +197,27 @@ impl Turns {
         held(&self.underway)
     }
 
-    /// The request for `turn`'s words, which asked with `asking`, waits for their answer: it hears
-    /// it, or `none` when a later turn's words carried them or a cancel dropped them.
-    pub fn ask(&self, turn: &str, asking: Asking) -> tokio::sync::oneshot::Receiver<Heard> {
+    /// The request for `turn`'s words in `conversation`, which asked with `asking`, waits for
+    /// their answer: it hears it, or `none` when a later turn's words carried them, a cancel
+    /// dropped them or their conversation was deleted (DELIVERY-11).
+    pub fn ask(
+        &self,
+        turn: &str,
+        conversation: &str,
+        asking: Asking,
+    ) -> tokio::sync::oneshot::Receiver<Heard> {
         let (tell, hear) = tokio::sync::oneshot::channel();
         held(&self.asking).insert(turn.to_owned(), asking);
-        held(&self.heard).insert(turn.to_owned(), tell);
+        held(&self.heard).insert(turn.to_owned(), (conversation.to_owned(), tell));
         hear
+    }
+
+    /// The user's turns in `conversation` whose request still waits for an answer.
+    pub fn waiting_in(&self, conversation: &str) -> Vec<String> {
+        (held(&self.heard).iter())
+            .filter(|(_, (said_in, _))| said_in == conversation)
+            .map(|(turn, _)| turn.clone())
+            .collect()
     }
 
     /// What the request for `turn`'s words asked with, taken once.
@@ -212,7 +227,7 @@ impl Turns {
 
     /// The request for `turn`'s words, if one waits, hears `heard`.
     pub fn tell(&self, turn: &str, heard: Heard) {
-        if let Some(tell) = held(&self.heard).remove(turn) {
+        if let Some((_, tell)) = held(&self.heard).remove(turn) {
             let _ = tell.send(heard);
         }
     }
@@ -284,6 +299,13 @@ impl Turns {
             any = true;
         }
         any
+    }
+
+    /// When the earliest turn under way in `conversation` began, if one is.
+    pub fn begun_in(&self, conversation: &str) -> Option<i64> {
+        let underway = self.lock();
+        let turns = underway.iter().filter(|c| c.conversation == conversation);
+        turns.map(|c| c.begun).min()
     }
 
     /// Whether a turn is under way in `conversation`.
@@ -469,7 +491,9 @@ mod tests {
             back: Some(7),
             ..Default::default()
         };
-        let heard = turns.ask("t1", asking);
+        let heard = turns.ask("t1", "c1", asking);
+        assert_eq!(turns.waiting_in("c1"), ["t1"]);
+        assert!(turns.waiting_in("c2").is_empty());
         assert_eq!(turns.take_asking("t1").and_then(|a| a.back), Some(7));
         assert!(turns.take_asking("t1").is_none());
         turns.tell("t1", Heard::Answer(serde_json::json!({"kind": "none"})));
@@ -478,6 +502,10 @@ mod tests {
             Heard::Answer(body) => assert_eq!(body["kind"], "none"),
             other => panic!("{other:?}"),
         }
+        assert!(
+            turns.waiting_in("c1").is_empty(),
+            "told once, it waits no more"
+        );
         assert!(turns.start_draining("c1"));
         assert!(!turns.start_draining("c1"), "one drain at a time");
         assert!(turns.start_draining("c2"), "another conversation's own");

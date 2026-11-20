@@ -1,0 +1,460 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: the page's own dialog answered by the person, Leave or Stay, signed and only by the device that holds the tab",
+  "version": "1.0.0",
+  "description": "BROWSER-26 (core/crates/obid/src/browser/routes.rs, way_out; api/state.rs, Api::way_out): the agent opens the fixture's /leave page and clicks Leave; the page asks its confirm and the tab is in state dialog with the page's words. POST …/dialog signed on a tab nobody holds is refused (not_held); once the device takes, unsigned is refused (unsigned), another device is refused (not_holder), an `accept` that isn't a boolean is refused (bad_request); {accept: false} is Stay (the tab ready on /leave, no dialog); with no dialog left, a second answer is refused (no_dialog); given back, the agent clicks Leave again and, taken again, {accept: true} is Leave (the page goes home).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/tabs/{id}/dialog"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "d2",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d2"
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        },
+        "within": 300
+      }
+    },
+    {
+      "id": "leave-page",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/leave"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "click-leave",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.dialogOpened": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "dialog-state",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "tabs.0.state": "dialog",
+            "tabs.0.dialog": {
+              "$contains": "Leave this page?"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "dialog-not-held",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "device": "${state.d1}",
+        "body": {
+          "accept": false
+        },
+        "as": "device",
+        "expect": {
+          "status": 409,
+          "paths": {
+            "reason": "not_held"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "take-for-dialog",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "paths": {}
+        }
+      }
+    },
+    {
+      "id": "dialog-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "body": {
+          "accept": false
+        },
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "dialog-other-device",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "device": "${state.d2}",
+        "body": {
+          "accept": false
+        },
+        "as": "device",
+        "expect": {
+          "status": 403,
+          "paths": {
+            "reason": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "dialog-bad-body",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "body": {
+          "accept": "yes"
+        },
+        "expect": {
+          "status": 400,
+          "paths": {
+            "reason": "bad_request"
+          }
+        },
+        "as": "device",
+        "device": "${state.d1}"
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "stay",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "device": "${state.d1}",
+        "body": {
+          "accept": false
+        },
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "state": "ready",
+            "dialog": null,
+            "url": "${state.site.url}/leave"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "stayed",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.url": "${state.site.url}/leave"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "no-dialog",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "device": "${state.d1}",
+        "body": {
+          "accept": true
+        },
+        "as": "device",
+        "expect": {
+          "status": 409,
+          "paths": {
+            "reason": "no_dialog"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "give-back-for-leave",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "paths": {}
+        }
+      }
+    },
+    {
+      "id": "snap-again",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "click-leave-again",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.dialogOpened": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "take-to-leave",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "paths": {}
+        }
+      }
+    },
+    {
+      "id": "leave",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "device": "${state.d1}",
+        "body": {
+          "accept": true
+        },
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "state": "ready",
+            "dialog": null,
+            "url": "${state.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "left",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.url": "${state.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    }
+  ]
+}

@@ -60,10 +60,11 @@ export type PersonQuestion = { id: string; from: string; words: string; choices:
 // another Oby's review request (docs/contracts/teammate-review.md, TEAMREVIEW-2): obid's words
 // (text), then what that Oby wrote, which is data (its goal, summary, and each condition's text and
 // note), and the item's own answers (AskStack.tsx)
-// A handoff (docs/contracts/handoff.md, HANDOFF-6) is the same card, `task` its kind.
+// A handoff (docs/contracts/handoff.md, HANDOFF-6) is the same card, `task` its kind. closed: why it
+// closed while it showed, not by an answer (expired, called off; peer-thread.md, PEER-49)
 export type PersonReview = {
   kind: 'review' | 'task'; id: string; from: string; text: string; repo: string; headSha: string; goal: string; summary: string;
-  conditions: { text: string; note: string }[]; options: string[];
+  conditions: { text: string; note: string }[]; options: string[]; closed?: string;
 };
 export type Asking = { id: string; title: string; who?: string; brand?: Brand; url?: string; talk?: string }
   & ({ ask: Ask; offer?: undefined; question?: undefined; review?: undefined } | { offer: Offer; ask?: undefined; question?: undefined; review?: undefined }

@@ -48,6 +48,8 @@ pub struct Shared {
     pub relay: Arc<crate::relay::Relay>,
     /// Connected apps and their job-scoped MCP broker.
     pub connections: Arc<crate::connections::Connections>,
+    /// Oby's browser: every job's, its API and the agents' tools (crate::browser).
+    pub browser: Arc<crate::browser::Service>,
     pub jobs: Arc<Jobs>,
     pub events: Events,
     /// The conversations, shared by every device and plan request (#493).
@@ -237,10 +239,12 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .route("/v1/alerts", get(crate::routes::alerts))
         .merge(crate::connections::router())
+        .merge(crate::browser::routes::router())
         .merge(crate::connectors::router())
         .merge(crate::tetrix::router())
         .merge(crate::chatgpt_relay::router())
         .merge(crate::vault::router())
+        .merge(crate::workspace::router())
         .route(
             "/v1/settings/jobs",
             get(crate::routes::job_settings).put(crate::routes::set_job_settings),
@@ -377,6 +381,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::sphere::routes::exchange),
         )
         .route(
+            "/v1/obid/sphere/exchanges/{id}/cancel",
+            post(crate::sphere::routes::call_off),
+        )
+        .route(
             "/v1/obid/sphere/peers/{owner}",
             get(crate::sphere::routes::peer_thread),
         )
@@ -504,9 +512,11 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
     let api = request.uri().path().starts_with("/v1/");
     let path = request.uri().path();
     let agent_mcp = agent_route_of(path);
+    // The browser's MCP server names no job: its caller's broker token says which.
+    let browser_mcp = path == crate::browser::contract::PATH_MCP;
     // On Linux an agent reaches obid at slirp4netns's host alias: admitted for the agent's own
     // routes only, its broker's, Tetrix's and ChatGPT's relay, each with its token.
-    let agent_route = agent_mcp.is_some();
+    let agent_route = agent_mcp.is_some() || browser_mcp;
     let via_gateway = agent_route && agent_gateway_request(request.uri(), request.headers());
     let admitted = admit(request.uri(), request.headers(), &shared.token).or_else(|error| {
         if !agent_route || (!loopback_request(request.uri(), request.headers()) && !via_gateway) {
@@ -522,7 +532,7 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
                 shared.connections.allows(id, token)
                     || shared.harness.session(id, token).is_some()
                     || shared.harness.waiting_with(id, token)
-            })
+            }) || (browser_mcp && shared.connections.job_of(token).is_some())
         }) {
             Ok(())
         } else if via_gateway {
@@ -535,7 +545,11 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
     });
     let mut response = match admitted {
         Ok(()) => next.run(request).await,
-        Err(error) => error.into_response(),
+        Err(error) => {
+            let refusal =
+                crate::browser::routes::gate_reason(path, request.headers(), error).into_response();
+            after_body(request, refusal).await
+        }
     };
     if api {
         let headers = response.headers_mut();
@@ -548,6 +562,41 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
         );
     }
     response
+}
+
+/// The most of a refused request's body obid reads before it answers: axum's default body limit,
+/// the most any route but an upload reads.
+const REFUSED_BODY_MOST: usize = 2 << 20;
+/// How long obid waits for a refused request's body before it answers anyway.
+const REFUSED_BODY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `refusal`, answered once the refused request's body is read (BROWSER-28). hyper closes a
+/// connection whose request body nobody read, and a socket closed with bytes it never read sends
+/// a reset, which can reach the caller before it reads its 401, or while it still writes. A body
+/// past [`REFUSED_BODY_MOST`], or slower than [`REFUSED_BODY_WAIT`], gets the refusal with
+/// `Connection: close` at once.
+pub async fn after_body(request: Request, mut refusal: Response) -> Response {
+    use futures_util::StreamExt as _;
+    let mut body = request.into_body().into_data_stream();
+    let read_whole = async {
+        let mut read = 0usize;
+        while let Some(chunk) = body.next().await {
+            read += chunk.map_err(|_| ())?.len();
+            if read > REFUSED_BODY_MOST {
+                return Err(());
+            }
+        }
+        Ok(())
+    };
+    if !matches!(
+        tokio::time::timeout(REFUSED_BODY_WAIT, read_whole).await,
+        Ok(Ok(()))
+    ) {
+        refusal
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
+    refusal
 }
 
 /// The one id in an agent's own route: its broker's, Tetrix's or ChatGPT's relay.
@@ -695,6 +744,7 @@ pub const CAPABILITIES: &[&str] = &[
     "projects-v1",
     "revisions-v1",
     "skills-v1",
+    "workspace-v1",
 ];
 
 #[derive(Serialize)]

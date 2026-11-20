@@ -20,7 +20,17 @@ let page = null;
 let scratch = null;
 const errors = [];
 
-function locate(target, root = page) {
+// window: another of the app's windows, by the word its page's address carries after ? (macpill:
+// the Mac's pill, BROWSERAPP-19); none, the main window
+function windowOf(target) {
+  if (!target?.window) return page;
+  if (!/^[a-z]+$/.test(target.window)) throw new Error('window: a word, as its address has it after ?');
+  const w = app.windows().find((p) => new URL(p.url()).searchParams.has(target.window));
+  if (!w) throw new Error(`no window of the app's at ?${target.window}`);
+  return w;
+}
+
+function locate(target, root = windowOf(target)) {
   if (!target || typeof target !== 'object') throw new Error('a target is an object: role and name, label, text or css');
   let scope = target.within ? locate(target.within, root) : root;
   const exact = target.exact ?? true;
@@ -55,7 +65,9 @@ async function one(target, timeout = 10_000) {
 async function describe(el, attributes, styles) {
   const attrs = {};
   for (const a of attributes ?? []) attrs[a] = await el.getAttribute(a);
-  const out = { text: (await el.innerText()).trim(), visible: await el.isVisible(), attributes: attrs };
+  const text = (await el.innerText()).trim();
+  // words: the text as a person reads it, each run of white space one space (as the lab reads its screens)
+  const out = { text, words: text.replace(/\s+/g, ' '), visible: await el.isVisible(), attributes: attrs };
   if (styles) {
     out.styles = {};
     for (const [prop, token] of Object.entries(styles)) {
@@ -119,18 +131,20 @@ const ops = {
     app = await launch({ dir: r.scratch, userData: r.userData, env, hidden: r.hidden ?? true, ...(r.main ? { main: resolve(r.main) } : {}) });
     page = await app.firstWindow();
     page.on('pageerror', (e) => errors.push(e.message));
+    // what the page warned of (a refused browser call says why: browser/store.tsx), kept with its errors
+    page.on('console', (m) => { if (m.type() === 'warning' || m.type() === 'error') errors.push(`${m.type()}: ${m.text()}`.slice(0, 400)); });
     await page.waitForLoadState('domcontentloaded');
     if (r.skipFirstRun ?? true) {
       await skipFirstRun(page);
       await page.waitForLoadState('domcontentloaded');
     }
+    // storage: the window's own remembered choices (the side panel kept open or closed), on the demo or on obid
+    if (r.storage) {
+      if (typeof r.storage !== 'object' || Object.entries(r.storage).some(([k, v]) => !/^oby\.[A-Za-z.]+$/.test(k) || typeof v !== 'string')) throw new Error('storage: oby.* keys with string values');
+      await page.evaluate((kept) => { for (const [k, v] of Object.entries(kept)) localStorage.setItem(k, v); }, r.storage);
+    }
     // the app's demo data (src/renderer/src/mock.ts) in the chat-first window, for what needs no obid
     if (r.mock) {
-      // storage: the window's own remembered choices for the demo (the side panel kept open or closed)
-      if (r.storage) {
-        if (typeof r.storage !== 'object' || Object.entries(r.storage).some(([k, v]) => !/^oby\.[A-Za-z.]+$/.test(k) || typeof v !== 'string')) throw new Error('storage: oby.* keys with string values');
-        await page.evaluate((kept) => { for (const [k, v] of Object.entries(kept)) localStorage.setItem(k, v); }, r.storage);
-      }
       const url = new URL(page.url());
       // query: more of the demo's words after ?everything&chat (browser=<n>: a board of the browser's design)
       if (r.query !== undefined && !/^[a-z0-9=&_-]*$/i.test(r.query)) throw new Error('query: letters, digits, =, & and dashes');
@@ -141,9 +155,9 @@ const ops = {
     // invisible still, but able to take the keyboard while a desktop.* step brings it forward to
     // press keys through macOS (agent-desktop), as a person's keys reach the menu bar
     if (r.size) await app.evaluate(({ BrowserWindow }, s) => { const w = BrowserWindow.getAllWindows()[0]; w?.setResizable(true); w?.setSize(s.width, s.height); }, r.size);
-    // the demo with choices of its own (storage) opens again at its size, so they apply as at that
+    // a window with choices of its own (storage) opens again at its size, so they apply as at that
     // width (the side panel docks where it fits)
-    if (r.mock && r.storage && r.size) {
+    if (r.storage && r.size) {
       await page.reload();
       await page.waitForLoadState('domcontentloaded');
     }
@@ -152,8 +166,19 @@ const ops = {
   },
   async click(r) {
     const el = await one(r.target, r.timeout);
-    if (r.hover) await el.hover({ timeout: r.timeout ?? 10_000 });
-    else await el.click({ timeout: r.timeout ?? 10_000 });
+    // pagePoint: a point of the live page in its own px (the browser panel's frame, BROWSERAPP-10), placed
+    // as the panel draws the frame: from the top left, scaled to fit
+    let position;
+    if (r.pagePoint) {
+      position = await el.evaluate((e, p) => {
+        const img = e.querySelector('img');
+        const r = e.getBoundingClientRect();
+        const scale = img && img.naturalWidth ? Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight) : 1;
+        return { x: p.x * scale, y: p.y * scale };
+      }, r.pagePoint);
+    }
+    if (r.hover) await el.hover({ timeout: r.timeout ?? 10_000, ...(position ? { position } : {}) });
+    else await el.click({ timeout: r.timeout ?? 10_000, ...(position ? { position } : {}) });
     return { clicked: !r.hover, hovered: !!r.hover };
   },
   async type(r) {

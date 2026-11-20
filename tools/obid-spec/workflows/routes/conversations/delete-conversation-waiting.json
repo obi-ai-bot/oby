@@ -1,0 +1,186 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/conversations/{id}: words waiting there are answered",
+  "version": "1.0.0",
+  "description": "A conversation deleted with a turn under way and words waiting behind it: the turn's request still answers with its conversation, and the waiting words' request answers none with the conversation, as after a cancel, instead of never (DELIVERY-11).",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/conversations/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 4000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "0b1e0c0a-0000-4000-8000-0000000d1101"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d1101",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "waiting",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY never",
+          "conversation": "${state.said.body.conversation}",
+          "id": "0b1e0c0a-0000-4000-8000-0000000d1102"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "0b1e0c0a-0000-4000-8000-0000000d1102",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deleted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "expect": {
+          "status": [
+            200,
+            204
+          ]
+        }
+      }
+    },
+    {
+      "id": "delivery-11-the-turns-request-answers-with-its-conversation",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.running}",
+        "seconds": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-11"
+        ]
+      }
+    },
+    {
+      "id": "delivery-11-the-waiting-words-answer-none",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.waiting}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none",
+            "jobs": [],
+            "drafts": [],
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-11"
+        ]
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

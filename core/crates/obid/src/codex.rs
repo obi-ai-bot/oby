@@ -8,9 +8,11 @@
 //! can't run inside another, so the thread runs `danger-full-access` with `approvalPolicy`
 //! `untrusted`, and every command that isn't a known read, and every file change, comes to obid as
 //! an approval (as the Swift runner does inside bubblewrap). In Plan mode obid declines file changes.
-//! An own run (the owner's Bypass job, LANES-18) runs unboxed instead, its commands in Codex's own
-//! sandbox as its `-c` settings say (crate::jobs, `own_codex_settings`), with `approvalPolicy`
-//! `never`, once Codex says those settings hold ([`own_config_problem`], [`own_thread_problem`]).
+//! An own run (the owner's Codex job or conversation, in any mode: LANES-18, the owner's "Yes,
+//! match T3") runs unboxed instead, under Codex's own sandbox and approvals as its mode sets them
+//! ([`own::policy`]), once Codex says they hold; what Codex asks still comes to obid.
+
+pub mod own;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -49,6 +51,9 @@ pub struct Options {
     /// so, and the provider has no default of its own) and Codex says it's Oby, the name it signed
     /// in under.
     pub chatgpt: bool,
+    /// The settings an own run ([`Launch::own_sandbox`]) holds its threads to, its mode's
+    /// ([`own::policy`]); an own run without them starts none.
+    pub own: Option<own::Policy>,
 }
 
 /// The `command` line `codex app-server` runs as: the binary, then `app-server`. Oby's broker
@@ -79,12 +84,12 @@ pub fn argv(
 /// The MCP servers [`argv`] gives Codex, the only ones that may start or run.
 const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
 
-/// What an own run (`approval_policy = "never"`, LANES-13 and LANES-18) is told so that Oby's own
-/// tools run (LANES-21): under `never` Codex asks nobody, and from codex-cli 0.163 it refuses an
-/// MCP call that would need approval ("MCP tool call requires approval, but approval policy is
-/// never"), `oby_dispatch` among them. Only Oby's server is approved, as obid approves its calls
-/// in every run anyway (each is checked by obid's rules as it's served); any other server keeps
-/// Codex's own default. Only for a run [`argv`] gave Oby's server: the key alone would make one.
+/// What an own run (LANES-13 and LANES-18) is told so that Oby's own tools run (LANES-21): in
+/// Bypass Codex asks nobody, and from codex-cli 0.163 it refuses an MCP call that would need
+/// approval with nobody to ask ("MCP tool call requires approval, but approval policy is never"),
+/// `oby_dispatch` among them. Only Oby's server is approved, as obid approves its calls in every
+/// run anyway (each is checked by obid's rules as it's served); any other server keeps Codex's own
+/// default. Only for a run [`argv`] gave Oby's server: the key alone would make one.
 pub(crate) const OWN_OBY_TOOLS: [&str; 2] = [
     "-c",
     r#"mcp_servers.oby.default_tools_approval_mode="approve""#,
@@ -386,6 +391,8 @@ struct Run<D, E> {
     plan: bool,
     /// An own run ([`Launch::own_sandbox`], LANES-18): Codex's sandbox, the owner's MCP servers.
     own: bool,
+    /// The settings its threads are held to ([`Options::own`]).
+    policy: Option<own::Policy>,
     /// The files each file change writes, by item id: an approval request names only the item.
     files: HashMap<String, Vec<String>>,
     /// The MCP tools each server was called for this turn, as their items started: the approval
@@ -462,6 +469,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             worktree,
             plan: options.plan,
             own,
+            policy: options.own,
             files: HashMap::new(),
             calls: HashMap::new(),
             no_commands: options.no_commands,
@@ -520,19 +528,25 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         }
     }
 
-    /// An own run's settings (LANES-13, LANES-18) are the ones that hold, as Codex says
-    /// (`config/read`): asked before every thread, and before every turn on a kept server.
+    /// An own run's settings (LANES-13, LANES-18) are its mode's, as Codex says (`config/read`):
+    /// asked before every thread, and before every turn on a kept server.
     async fn own_settings_hold(&mut self) -> Result<(), Stop> {
         if !self.own {
             return Ok(());
         }
+        let policy = self.own_policy()?;
         let cwd = self.worktree.to_string_lossy().into_owned();
         let read = self.call("config/read", json!({"cwd": cwd})).await?;
         let read = read.map_err(|e| Stop::Failed(format!("Codex didn't say which settings it runs with, so obid started no run outside its box: {}", e.message)))?;
-        match own_config_problem(&read, &cwd) {
+        match policy.config_problem(&read) {
             Some(why) => Err(Stop::Failed(why)),
             None => Ok(()),
         }
+    }
+
+    /// The settings an own run holds its threads to: none, and it starts no thread.
+    fn own_policy(&self) -> Result<own::Policy, Stop> {
+        (self.policy).ok_or_else(|| Stop::Failed("obid started this run outside its box with no mode's settings, so it started no thread.".into()))
     }
 
     /// `initialize`, then the thread started or picked up again, as `options` say: its id.
@@ -572,7 +586,12 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
 
         let cwd = self.worktree.to_string_lossy().into_owned();
         self.own_settings_hold().await?;
-        let mut params = thread_params(&cwd, self.own);
+        let policy = if self.own {
+            Some(self.own_policy()?)
+        } else {
+            None
+        };
+        let mut params = thread_params(&cwd, policy);
         if let Some(instructions) = &options.instructions {
             params["developerInstructions"] = json!(instructions);
         }
@@ -599,7 +618,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             }
             Stop::Failed(why)
         })?;
-        if let Some(why) = own_thread_problem(&started).filter(|_| self.own) {
+        if let Some(why) = policy.and_then(|p| p.thread_problem(&started)) {
             return Err(Stop::Failed(why));
         }
         let thread = started["thread"]["id"]
@@ -1110,70 +1129,12 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     }
 }
 
-/// The permission profile an own run's commands are held to (crate::jobs, `own_codex_settings`).
-pub(crate) const OWN_PROFILE: &str = "oby_own";
-
-/// What obid tells the owner when an own run can't start on Codex's settings.
-fn not_obids(what: &str) -> String {
-    format!(
-        "Codex's own settings on this Mac change what obid sets for a Bypass run outside its box ({what}), so it started none. Take that out of Codex's config.toml or its managed settings, or pick another mode: the job then runs in Oby's box."
-    )
-}
-
-/// Why an own run can't start (LANES-18), from Codex's answer `read` to `config/read` for its
-/// `cwd`: Codex merges obid's `-c` settings with its other layers, so obid starts no thread unless
-/// they are what holds, each key that isn't named. The worktree untrusted as named and where it
-/// leads; every key of obid's profile from obid's own `-c` (`origins`: one another layer adds would
-/// widen it); its commands' `HOME` obid's, with no `include_only`, which Codex applies after `set`
-/// (codex-cli 0.162.1) and would drop it.
-fn own_config_problem(read: &Value, cwd: &str) -> Option<String> {
-    let (c, origins) = (&read["config"], &read["origins"]);
-    let obids = |key: &str| origins[key]["name"]["type"] == "sessionFlags";
-    let empty = |list: &Value| list.as_array().is_none_or(Vec::is_empty);
-    let real = Path::new(cwd).canonicalize().ok();
-    let dirs = [Some(cwd), real.as_deref().and_then(Path::to_str)];
-    let trusted = |dir: &str| c["projects"][dir]["trust_level"] != "untrusted";
-    let profile = format!("permissions.{OWN_PROFILE}.");
-    let added = (origins.as_object().into_iter().flatten())
-        .map(|(key, _)| key.as_str())
-        .find(|key| key.starts_with(&profile) && !obids(key));
-    let (network, off) = (format!("{profile}network.enabled"), json!(false));
-    let net = &c["permissions"][OWN_PROFILE]["network"]["enabled"];
-    let home = "shell_environment_policy.set.HOME";
-    let only = &c["shell_environment_policy"]["include_only"];
-    let wrong = [
-        ("approval_policy", c["approval_policy"] != "never"),
-        (
-            "default_permissions",
-            c["default_permissions"] != OWN_PROFILE,
-        ),
-        ("features.hooks", c["features"]["hooks"] != off),
-        ("notify", !empty(&c["notify"])),
-        ("projects", dirs.into_iter().flatten().any(trusted)),
-        (network.as_str(), *net != off || !obids(&network)),
-        (added.unwrap_or_default(), added.is_some()),
-        (home, !obids(home)),
-        ("shell_environment_policy.include_only", !empty(only)),
-    ];
-    let (what, _) = wrong.into_iter().find(|(_, wrong)| *wrong)?;
-    Some(not_obids(what))
-}
-
-/// Why an own run can't go on in the thread Codex `started` or resumed (LANES-18): not with
-/// `never`, or not in obid's profile (a resumed thread's own, a managed requirement's).
-fn own_thread_problem(started: &Value) -> Option<String> {
-    let obids = started["approvalPolicy"] == "never"
-        && started["activePermissionProfile"]["id"] == OWN_PROFILE;
-    (!obids).then(|| not_obids("the thread's approval policy or permission profile"))
-}
-
 /// The thread's settings: obid's sandbox is the sandbox, and every approval comes to obid. An `own`
-/// run's is Codex's own, obid's profile named on a new thread and on a resumed one (which would
-/// keep the one it was last saved with), and it never asks to leave it (LANES-18).
-fn thread_params(cwd: &str, own: bool) -> Value {
-    if own {
-        return json!({"cwd": cwd, "approvalPolicy": "never", "approvalsReviewer": "user",
-                      "config": {"default_permissions": OWN_PROFILE}});
+/// run's are its mode's ([`own::Policy::thread_config`]), named on a new thread and on a resumed
+/// one, which would keep the ones it was last saved with (LANES-18).
+fn thread_params(cwd: &str, own: Option<own::Policy>) -> Value {
+    if let Some(policy) = own {
+        return json!({"cwd": cwd, "approvalsReviewer": "user", "config": policy.thread_config()});
     }
     json!({"cwd": cwd, "sandbox": "danger-full-access", "approvalPolicy": "untrusted",
            "approvalsReviewer": "user"})
@@ -1749,117 +1710,15 @@ exec sleep 30
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// What Codex 0.162.1 answers `config/read` with for an own run's `-c` settings in `cwd`, as
-    /// measured on a stand-in `CODEX_HOME` (the keys obid reads).
-    fn own_config(cwd: &str) -> Value {
-        let from_obid = json!({"name": {"type": "sessionFlags"}, "version": "v"});
-        json!({"config": {"approval_policy": "never", "default_permissions": OWN_PROFILE,
-                "features": {"hooks": false}, "notify": [],
-                "projects": {cwd: {"trust_level": "untrusted"}},
-                "permissions": {OWN_PROFILE: {"extends": null,
-                    "filesystem": {"/": "read", cwd: "write"}, "network": {"enabled": false}}}},
-            "origins": {"approval_policy": from_obid,
-                format!("permissions.{OWN_PROFILE}.filesystem./"): from_obid,
-                format!("permissions.{OWN_PROFILE}.filesystem.{cwd}"): from_obid,
-                format!("permissions.{OWN_PROFILE}.network.enabled"): from_obid,
-                "shell_environment_policy.set.HOME": from_obid}})
-    }
-
-    /// LANES-18: obid starts an own run only on settings that are its own. What Codex 0.162.1
-    /// merges in from the account's `config.toml` or a managed layer stops it, each named: an entry
-    /// in obid's profile (an `auth.json` to read, the clone's refs to write), its network, a
-    /// `notify` program, hooks, another approval policy or profile, the worktree trusted (its
-    /// `.codex/` would load), or no word of where the profile's keys came from.
-    #[test]
-    fn lanes_18_settings_codex_merged_in_stop_an_own_run() {
-        let cwd = "/private/obid-no-such-worktree";
-        assert_eq!(own_config_problem(&own_config(cwd), cwd), None);
-        let users = json!({"name": {"type": "user", "file": "/a/config.toml"}});
-        let network = format!("permissions.{OWN_PROFILE}.network.enabled");
-        let auth = format!("permissions.{OWN_PROFILE}.filesystem./a/auth.json");
-        let extends = format!("permissions.{OWN_PROFILE}.extends");
-        let (profile, policy) = (["config", "permissions", OWN_PROFILE], "approval_policy");
-        let (home, only) = (
-            "shell_environment_policy.set.HOME",
-            "shell_environment_policy.include_only",
-        );
-        let cases: [(&str, Vec<&str>, Value); 11] = [
-            (home, vec!["origins", home], users.clone()),
-            (
-                only,
-                vec!["config", "shell_environment_policy", "include_only"],
-                json!(["PATH"]),
-            ),
-            (&auth, vec!["origins", &auth], users.clone()),
-            (&extends, vec!["origins", &extends], users.clone()),
-            (&network, vec!["origins", &network], users),
-            (
-                &network,
-                [&profile[..], &["network", "enabled"]].concat(),
-                json!(true),
-            ),
-            (
-                "notify",
-                vec!["config", "notify"],
-                json!(["python3", "scripts/notify.py"]),
-            ),
-            (
-                "features.hooks",
-                vec!["config", "features", "hooks"],
-                json!(true),
-            ),
-            (policy, vec!["config", policy], json!("on-request")),
-            (
-                "default_permissions",
-                vec!["config", "default_permissions"],
-                json!(":workspace"),
-            ),
-            (
-                "projects",
-                vec!["config", "projects", cwd, "trust_level"],
-                json!("trusted"),
-            ),
-        ];
-        for (what, path, value) in cases {
-            let mut read = own_config(cwd);
-            let mut at = &mut read;
-            for key in path {
-                at = &mut at[key];
-            }
-            *at = value;
-            let why = own_config_problem(&read, cwd).unwrap_or_default();
-            assert!(why.contains(&format!("({what})")), "{what}: {why}");
-        }
-        let mut silent = own_config(cwd);
-        silent["origins"] = Value::Null;
-        assert!(own_config_problem(&silent, cwd).is_some());
-        // A thread that comes back with another policy or profile (a resumed one's own) stops it too.
-        let ours =
-            json!({"approvalPolicy": "never", "activePermissionProfile": {"id": OWN_PROFILE}});
-        assert_eq!(own_thread_problem(&ours), None);
-        for (key, value) in [
-            ("approvalPolicy", json!("on-request")),
-            (
-                "activePermissionProfile",
-                json!({"id": ":danger-full-access"}),
-            ),
-            ("activePermissionProfile", Value::Null),
-        ] {
-            let mut theirs = ours.clone();
-            theirs[key] = value;
-            assert!(own_thread_problem(&theirs).is_some(), "{theirs}");
-        }
-    }
-
-    /// LANES-18: an own run asks Codex which settings hold before any thread, then names obid's
-    /// profile and `never` on a new thread and on a resumed one (Codex 0.162.1 resumes a thread in
-    /// the profile it was saved with unless its permissions are named), sets no sandbox, and goes
-    /// on only in a thread that comes back with both; a boxed run's is obid's box, every approval
-    /// obid's, as before, and asks Codex nothing first. Settings that aren't obid's, or a thread
-    /// that comes back in another profile, start no turn. Every thread, own or boxed, new or
-    /// resumed, starts in the job's worktree root (docs/agent-clis.md, "What a Codex job reads").
+    /// LANES-18: an own run asks Codex which settings hold before any thread, then names its mode's
+    /// approval policy and profile on a new thread and on a resumed one (Codex resumes a thread in
+    /// the ones it was saved with unless they're named), sets no sandbox of obid's, and goes on only
+    /// in a thread that comes back with both; a boxed run's is obid's box, every approval obid's, as
+    /// before, and asks Codex nothing first. Settings that aren't its mode's, a thread that comes
+    /// back in another profile, or an own run with no mode's settings start no turn. Every thread,
+    /// own or boxed, new or resumed, starts in the job's worktree root (docs/agent-clis.md).
     #[tokio::test]
-    async fn lanes_18_an_own_thread_is_held_to_obids_profile() {
+    async fn lanes_18_an_own_thread_is_held_to_its_modes_settings() {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("obid-codex-own-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1884,14 +1743,19 @@ done
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cwd = root.to_str().unwrap();
-        let ours = json!({"thread": {"id": "t1"}, "approvalPolicy": "never",
-            "activePermissionProfile": {"id": OWN_PROFILE}});
-        let run = async |own: bool, resume: Option<&str>, config: Value, thread: Value| {
+        let ask = own::policy(crate::permissions::Mode::Ask);
+        let ours = json!({"thread": {"id": "t1"}, "approvalPolicy": ask.approval(),
+            "activePermissionProfile": {"id": ask.profile}});
+        let held = json!({"config": ask.thread_config()});
+        let run = async |own: Option<Option<own::Policy>>,
+                         resume: Option<&str>,
+                         config: Value,
+                         thread: Value| {
             let _ = std::fs::remove_file(root.join("asked.jsonl"));
             std::fs::write(root.join("config.json"), config.to_string()).unwrap();
             std::fs::write(root.join("thread.json"), thread.to_string()).unwrap();
             let launch = Launch {
-                own_sandbox: own,
+                own_sandbox: own.is_some(),
                 group: None,
                 argv: vec![bin.clone().into_os_string()],
                 env: vec![("PATH".into(), "/usr/bin:/bin".into())],
@@ -1900,6 +1764,7 @@ done
             };
             let options = Options {
                 resume: resume.map(str::to_owned),
+                own: own.flatten(),
                 ..Options::default()
             };
             let (_stop, stop) = watch::channel(process::Signal::Run);
@@ -1916,7 +1781,7 @@ done
             (turn, asked)
         };
         for resume in [None, Some("t1")] {
-            let (turn, asked) = run(true, resume, own_config(cwd), ours.clone()).await;
+            let (turn, asked) = run(Some(Some(ask)), resume, held.clone(), ours.clone()).await;
             assert_eq!(turn.text(), "Done.", "{}", turn.error());
             let methods: Vec<&str> = asked
                 .iter()
@@ -1931,26 +1796,37 @@ done
             assert_eq!(asked[0]["params"]["cwd"], cwd);
             let params = &asked[1]["params"];
             assert_eq!(params["cwd"], cwd, "{thread} starts in the worktree root");
-            assert_eq!(params["approvalPolicy"], "never");
-            assert_eq!(params["config"]["default_permissions"], OWN_PROFILE);
+            assert_eq!(params["config"], ask.thread_config());
             assert!(params.get("sandbox").is_none(), "{params}");
+            assert!(params.get("approvalPolicy").is_none(), "{params}");
         }
-        let (turn, asked) = run(false, None, Value::Null, json!({"thread": {"id": "t1"}})).await;
+        let (turn, asked) = run(None, None, Value::Null, json!({"thread": {"id": "t1"}})).await;
         assert_eq!(turn.text(), "Done.");
         assert_eq!(asked[0]["method"], "thread/start");
         assert_eq!(asked[0]["params"]["cwd"], cwd);
         assert_eq!(asked[0]["params"]["approvalPolicy"], "untrusted");
         assert_eq!(asked[0]["params"]["sandbox"], "danger-full-access");
-        // Its `notify` back from a managed layer: no thread. A resumed thread in the profile it was
-        // saved with: no turn.
-        let mut notifies = own_config(cwd);
-        notifies["config"]["notify"] = json!(["/bin/sh", "notify.sh"]);
-        let (turn, asked) = run(true, None, notifies, ours.clone()).await;
-        assert!(turn.error().contains("(notify)"), "{}", turn.error());
+        // Another approval policy from a managed layer: no thread. A resumed thread in the profile
+        // it was saved with: no turn. No mode's settings at all: nothing asked, no thread.
+        let mut never = held.clone();
+        never["config"]["approval_policy"] = json!("never");
+        let (turn, asked) = run(Some(Some(ask)), None, never, ours.clone()).await;
+        assert!(
+            turn.error().contains("(approval_policy)"),
+            "{}",
+            turn.error()
+        );
         assert_eq!(asked.len(), 1, "{asked:?}");
+        let (turn, asked) = run(Some(None), None, held.clone(), ours.clone()).await;
+        assert!(
+            turn.error().contains("no mode's settings"),
+            "{}",
+            turn.error()
+        );
+        assert!(asked.is_empty(), "{asked:?}");
         let mut wide = ours;
         wide["activePermissionProfile"]["id"] = json!(":danger-full-access");
-        let (turn, asked) = run(true, Some("t1"), own_config(cwd), wide).await;
+        let (turn, asked) = run(Some(Some(ask)), Some("t1"), held, wide).await;
         assert!(
             turn.error().contains("permission profile"),
             "{}",

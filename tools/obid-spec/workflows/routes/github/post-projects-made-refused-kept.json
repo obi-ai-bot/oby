@@ -1,0 +1,798 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/projects (made, refused, kept)",
+  "version": "1.0.0",
+  "description": "A project is made with its name trimmed, its folder canonical and its repository, listed, kept 0600 and still listed after a restart (PROJECTS-1); each refused input is 422 (an unknown key 400) and changes nothing, and the same folder twice is kept once (PROJECTS-2); the status lists projects-v1 and project-jobs-v1, still sorted (PROJECTS-11, 15).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/projects"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "Projects/a/README.md": "x\n",
+          "Projects/b/README.md": "x\n",
+          "Projects/c/README.md": "x\n",
+          "Projects/d/README.md": "x\n",
+          "Projects/many/f00/README.md": "x\n",
+          "Projects/many/f01/README.md": "x\n",
+          "Projects/many/f02/README.md": "x\n",
+          "Projects/many/f03/README.md": "x\n",
+          "Projects/many/f04/README.md": "x\n",
+          "Projects/many/f05/README.md": "x\n",
+          "Projects/many/f06/README.md": "x\n",
+          "Projects/many/f07/README.md": "x\n",
+          "Projects/many/f08/README.md": "x\n",
+          "Projects/many/f09/README.md": "x\n",
+          "Projects/many/f10/README.md": "x\n",
+          "Projects/many/f11/README.md": "x\n",
+          "Projects/many/f12/README.md": "x\n",
+          "Projects/many/f13/README.md": "x\n",
+          "Projects/many/f14/README.md": "x\n",
+          "Projects/many/f15/README.md": "x\n",
+          "Projects/many/f16/README.md": "x\n",
+          "Projects/many/f17/README.md": "x\n",
+          "Projects/many/f18/README.md": "x\n",
+          "Projects/many/f19/README.md": "x\n",
+          "Projects/many/f20/README.md": "x\n",
+          ".ssh/config": "Host x\n"
+        }
+      }
+    },
+    {
+      "id": "projects-1-made",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-1"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": " Oby ",
+          "folders": [
+            "${state.o.person}/Projects/c/../a"
+          ],
+          "repos": [
+            "obi-ai-bot/oby"
+          ]
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$matches": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "name": "Oby",
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/a$"
+              }
+            ],
+            "repos": [
+              "obi-ai-bot/oby"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-1-listed",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-1"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}",
+              "name": "Oby",
+              "folders": [
+                {
+                  "$matches": "/env-home/Projects/a$"
+                }
+              ],
+              "repos": [
+                "obi-ai-bot/oby"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-1-kept-0600",
+      "use": "runtime.rust:home-file",
+      "ui": {
+        "proves": [
+          "PROJECTS-1"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "projects.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    },
+    {
+      "id": "projects-2-a-relative-path-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "folders": [
+            "Projects/a"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-a-relative-path",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-a-missing-path-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "folders": [
+            "${state.o.person}/Projects/nowhere"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-a-missing-path",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-the-ssh-folder-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "folders": [
+            "${state.o.person}/.ssh"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-the-ssh-folder",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-obids-home-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "folders": [
+            "${state.o.home}"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-obids-home",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-more-than-limits-folders-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "folders": [
+            "${state.o.person}/Projects/many/f00",
+            "${state.o.person}/Projects/many/f01",
+            "${state.o.person}/Projects/many/f02",
+            "${state.o.person}/Projects/many/f03",
+            "${state.o.person}/Projects/many/f04",
+            "${state.o.person}/Projects/many/f05",
+            "${state.o.person}/Projects/many/f06",
+            "${state.o.person}/Projects/many/f07",
+            "${state.o.person}/Projects/many/f08",
+            "${state.o.person}/Projects/many/f09",
+            "${state.o.person}/Projects/many/f10",
+            "${state.o.person}/Projects/many/f11",
+            "${state.o.person}/Projects/many/f12",
+            "${state.o.person}/Projects/many/f13",
+            "${state.o.person}/Projects/many/f14",
+            "${state.o.person}/Projects/many/f15",
+            "${state.o.person}/Projects/many/f16",
+            "${state.o.person}/Projects/many/f17",
+            "${state.o.person}/Projects/many/f18",
+            "${state.o.person}/Projects/many/f19",
+            "${state.o.person}/Projects/many/f20"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-more-than-limits-folders",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-a-repo-a-b-c-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "repos": [
+            "a/b/c"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-a-repo-a-b-c",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-a-repo-dot-dot-x-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "repos": [
+            "../x"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-a-repo-dot-dot-x",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-an-empty-name-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": ""
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-an-empty-name",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-a-101-character-name-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-a-101-character-name",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-a-name-with-a-line-break-422",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "two\nlines"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-a-name-with-a-line-break",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-an-unknown-key-400",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "x",
+          "colour": "red"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "projects-2-unchanged-after-an-unknown-key",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-2-the-same-folder-twice-kept-once",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-2"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "Twice",
+          "folders": [
+            "${state.o.person}/Projects/b",
+            "${state.o.person}/Projects/b/"
+          ]
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "folders": [
+              {
+                "$matches": "/env-home/Projects/b$"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "projects-1-still-listed-after-a-restart",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-1"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.projects-1-made.body.id}",
+              "name": "Oby",
+              "folders": [
+                {
+                  "$matches": "/env-home/Projects/a$"
+                }
+              ]
+            },
+            {
+              "name": "Twice"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projects-11-status-lists-projects-v1",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-11"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "capabilities": {
+              "$contains": "projects-v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-15-status-lists-project-jobs-v1",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-15"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "capabilities": {
+              "$contains": "project-jobs-v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "projects-11-15-still-sorted",
+      "use": "runtime.rust:call",
+      "ui": {
+        "proves": [
+          "PROJECTS-11",
+          "PROJECTS-15"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "capabilities": [
+              "ask-mentions-v1",
+              "composer-v1",
+              "conversation-marks-v1",
+              "events-replay-v1",
+              "folders-v1",
+              "profile-projects-v1",
+              "profile-scope-v1",
+              "project-jobs-v1",
+              "projects-v1",
+              "revisions-v1",
+              "skills-v1"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -44,6 +44,21 @@ libc = "0.2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
+# The browser's secret scan (src/browser.rs, `browser-scan`): every file under a scratch obid's
+# home, its browser engine's hundreds of MB included, searched for each secret in well under a second.
+memchr = "2"
+# Oby Artifacts in the lab (src/lab/artifacts.rs): Claude Design's project zip, out and in.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Oby Artifacts' views in the lab (src/lab/artifactview.rs): chrome-headless-shell over the DevTools
+# protocol, and its pictures compared pixel by pixel.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+png = "0.17"
 
 [dev-dependencies]
 tempfile = "3"
+
+# The secret scan's search runs optimised even in a debug build: a naive search over a scratch
+# obid's browser engine took minutes, past its step's limit when the browser workflows run at once.
+[profile.dev.package.memchr]
+opt-level = 3

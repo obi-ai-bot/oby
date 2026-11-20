@@ -44,8 +44,8 @@ Oby dispatches the user's agents and joins them to the Obysphere, not competing 
 
 So work runs in two lanes, step by step in [docs/contracts/lanes.md](docs/contracts/lanes.md) (LANES-1 to 18, some still proposed) and run by run in "Logins and secrets".
 
-- In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code job of the owner's own; on macOS, their Claude Code conversations and, in Bypass, their Codex jobs (CODEX-1, LANES-18) and conversations (CODEX-2, LANES-13).
-- In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work in any other mode or on a ChatGPT login, a Codex job off macOS or that builds, every Cursor job and conversation, and an owner's conversation off macOS.
+- In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code and Codex job and conversation of the owner's own, on macOS and Linux (LANES-26, LANES-18, LANES-13), but Codex on a ChatGPT login.
+- In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work on a ChatGPT login, and every Cursor job and conversation.
 - `claudeOwnSandbox` is accepted and ignored (LANE-9). Each step changes those rules in the same pull request.
 - `jobs.rs` may only shrink (`jobs_rs_limit` in `scripts/oby-check.sh`); a raise of it comes in a pull request of its own, a `# payback:` line directly above it naming the issue or task whose cut repays it (docs/contracts/ci.md, CI-39 to 41). The Rust core's total lines are reported, never limited ([why](docs/decisions/2026-11-16-obid-lines-reported.md)).
 - obid's tests may only lose `thread::sleep`/`time::sleep` calls (`tests_sleep_limit` in `scripts/oby-check.sh`, docs/contracts/ci.md): a test waits for state with `support::within`.
@@ -152,19 +152,19 @@ Claude Code in the own lane:
 - Every Claude Code job of the owner's own (not another Oby's, not `untrusted`, not Oby's review) runs unboxed on its account's own folder and Keychain login, no copy, no egress proxy (LANE-1); its check then gets none of the declared secrets (LANE-3a).
 - It runs under the owner's own settings, sandbox, hooks and permissions, as their terminal does; obid refuses nothing they hold, only pins its git and no-publish variables and denies file tools its secrets ([why](docs/decisions/2026-11-16-own-lane-trusts-the-cli.md)).
 - obid answers what Claude Code asks it, by the job's mode; an unsandboxed command reaches what the owner's user can.
-- On macOS the owner's own Claude Code conversation runs the same way (LANES-12); an untrusted read keeps it in the own lane and marks it (CONVO-1); elsewhere it stays boxed.
+- On macOS and Linux the owner's own Claude Code conversation runs the same way (LANES-12, LANES-26); an untrusted read keeps it in the own lane and marks it (CONVO-1).
 - Another Oby's conversation, Codex's and Cursor's (CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy.
 - obid's own git calls in a worktree are pinned to the job's git folders as obid checked them.
 
 Codex:
 
-- CODEX-1 (LANES-18): every Codex job of the owner's own in Bypass on a `codex login`, on macOS (not another Oby's, not `untrusted`, not a review), runs unboxed on its account's folder as `CODEX_HOME` and the person's `HOME`, no copy, no egress proxy.
+- "Yes, match T3" (LANES-18): every Codex job of the owner's own on a `codex login` (not another Oby's, not `untrusted`, not a review), in every mode, on macOS and Linux, runs unboxed on its account's folder as `CODEX_HOME` and the person's `HOME`, no copy, no egress proxy.
 - From its first such launch its check, and its follow-up's, gets none of the declared secrets whatever it becomes (LANE-3a): saved in the job's file before the run starts, no run if that fails, never undone.
-- Only its commands are kernel-sandboxed, in Codex's sandbox under obid's profile: no network, writing only the worktree, its git folder and its temporary folder (`HOME`), reading none of obid's home, the person's home or any account's folder, its own included, but the job's paths, off the git pointers; Codex and its MCP servers (LANE-12) run outside it.
-- obid sets this with `-c` settings (`approval_policy = "never"`, no hooks, no `notify`, the worktree an untrusted project), asks Codex before every thread, resumed too, whether they and its commands' `HOME` hold, and starts no run on settings not its own.
-- With `approval_policy = "never"` Codex refuses a command's ask to run outside its sandbox.
-- A job whose mode leaves Bypass while it runs has its turn ended at obid's next one-second tick and goes on in Oby's box.
-- CODEX-2 (LANES-13): the owner's Codex conversation in Bypass on a `codex login`, on macOS (not another Oby's), runs the same way, writing only its room (never `repos/`) and its temporary folder, checked before every thread; every command it runs counts as an untrusted read, and leaving Bypass mid-turn ends that turn and boxes the next.
+- Its limits are Codex's own sandbox and approvals as its mode sets them, by T3 Code's mapping (`:read-only`, `:workspace`, `:danger-full-access`); obid adds no profile of its own and answers what Codex asks by the mode.
+- obid sets them with `-c` settings, names them on every thread, asks Codex before each whether they hold, and starts no run on other settings.
+- In Bypass Codex asks nobody: Oby's own tools are approved before the run.
+- A mode narrower than the one a run launched in ends its turn at obid's next one-second tick; it goes on under the new mode.
+- LANES-13: the owner's Codex conversation on a `codex login` (not another Oby's) runs the same way, with its own shell; every command it runs counts as an untrusted read.
 - Every other Codex run on a `codex login` gets `auth.json` with `tokens.refresh_token` set to `""`; a copy whose access token ends within 5 minutes doesn't run, nor one OpenAI refused until the owner signs in again; obid never writes a token back.
 
 Cursor:

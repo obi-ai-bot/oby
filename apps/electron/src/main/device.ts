@@ -5,9 +5,12 @@ import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, write
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, takesKeys, type Answer, type Trusted } from './obid';
-import { mayConfirm, takeInput, wordsHeader } from './words';
+import { mayConfirm, signedHeader, takeInput, wordsHeader } from './words';
+import { INPUT_PATH, mayInput } from './browserInput';
 import { ipc } from './ipc';
+import { FINISH_WORDS } from '../shared/finish';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
+import { BROWSER_PATH, browserAskPath, browserTabPath } from '../shared/obid-wire';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept in the app's own folder as a 0600 file,
@@ -172,6 +175,17 @@ async function projectFolders(method: string, path: string, body: unknown): Prom
 // owners: the preload saw the owner's own keystroke or click hold its words
 export async function ownersWords(method: string, path: string, body: unknown, owners = true): Promise<Answer> {
   const at = Date.now();
+  // the owner's mouse and keys on a browser tab they hold: signed only right after the very input
+  // main saw (browser.ts, BROWSERAPP-10); anything else goes unsigned, and obid refuses it
+  if (method === 'POST' && INPUT_PATH.test(path.split('?')[0])) {
+    let header: string | undefined;
+    try {
+      if (mayInput(body, at)) header = signedHeader(deviceKey(), (device ??= await register()), method, path, body);
+    } catch (err) {
+      console.error(`Oby couldn’t sign a browser input, so it goes unsigned: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return obid(method, path, body, header);
+  }
   unanswered = unanswered.filter((u) => at - u.at < AGAIN_MS && u.again < AGAIN);
   const request = keyOf(body) ? `${method} ${path}\n${JSON.stringify(body)}` : null;
   const kept = request === null ? undefined : unanswered.find((u) => u.request === request && u.again < AGAIN);
@@ -191,6 +205,35 @@ export async function ownersWords(method: string, path: string, body: unknown, o
 }
 
 // Fetch and verify the current options before signing; the revision and destination are covered.
+// A password or a code typed in Oby's card, put straight into the page's field (docs/contracts/browser-app.md,
+// BROWSERAPP-12), on the owner's own press of Fill in (the preload saw it, `clicked`) and a real click
+// or Enter main saw itself: one input, one fill. Main holds the tab for it if this device doesn't
+// already, puts the value in (`…/secret`), answers the ask it was for and gives back only the hold it
+// took, each request signed. The value goes to obid once and nowhere else: never logged, kept or
+// answered back; a refusal says obid's words, which never carry it. Null once filled, else why not.
+export async function fillSecret(tab: string, field: string, value: string, ask: string | undefined, clicked: boolean): Promise<string | null> {
+  if (!clicked || !takeInput()) return 'Filling in takes your own click.';
+  const refused = (a: Answer) => {
+    if (a.status >= 200 && a.status < 300) return null;
+    try { return (JSON.parse(a.text) as { error?: string }).error ?? `obid answered ${a.status}.`; } catch { return a.status ? `obid answered ${a.status}.` : a.text; }
+  };
+  try {
+    const id = (device ??= await register());
+    const send = (path: string, body: unknown) => obid('POST', path, body, signedHeader(deviceKey(), id, 'POST', path, body));
+    const list = await obid('GET', BROWSER_PATH);
+    let heldBy: string | null = null;
+    try { heldBy = (JSON.parse(list.text) as { tabs?: { id: string; heldBy: string | null }[] }).tabs?.find((t) => t.id === tab)?.heldBy ?? null; } catch { /* taken below */ }
+    const took = heldBy !== id;
+    if (took) { const why = refused(await send(browserTabPath(tab, 'take'), {})); if (why) return why; }
+    const filled = refused(await send(browserTabPath(tab, 'secret'), { field, value }));
+    if (!filled && ask) await send(browserAskPath(ask), {});
+    if (took) await send(browserTabPath(tab, 'giveBack'), {});
+    return filled;
+  } catch (err) {
+    return `Oby couldn’t sign the fill: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 export async function answerLimit(id: string, revision: number, choice: string, account?: string): Promise<Answer> {
   try {
     const current = await obid('GET', '/v1/limit-decisions');
@@ -313,6 +356,29 @@ export function confirming(trusted: Trusted) {
       if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Not undone: you said not now.' }) };
       const device = await register(), signedAt = now();
       return obid('POST', path, { device, action, signedAt, signature: signed(`oby-undo\n${id}\n${action}\n${signedAt}`) });
+    } catch (err) {
+      return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
+    }
+  }, REFUSED);
+
+  // A finishing action in a conversation's folder, on the owner's click (docs/contracts/folders.md,
+  // WORKSPACE-4 and 5): as Undo, main reads obid's own sentence for it itself, asks in main's own
+  // dialog, which the page can't click or word, and signs (`oby-finish`) only on its button there.
+  // Asked only right after an input main saw.
+  channels.handle('obid-finish', [string, string, oneOf('commit', 'push', 'pullRequest', 'publishRepository', 'initializeGit')], async (e, conversation, folder, finish): Promise<Answer> => {
+    if (!takeInput()) return { status: 403, text: JSON.stringify({ error: 'That takes your own click.' }) };
+    try {
+      const path = `/v1/conversations/${encodeURIComponent(conversation)}/workspace`;
+      const sentence = await obid('GET', `${path}?${new URLSearchParams({ folder, finish }).toString()}`);
+      if (sentence.status !== 200) return sentence;
+      const action = (JSON.parse(sentence.text) as { action?: string }).action;
+      if (typeof action !== 'string' || !action) return { status: 409, text: JSON.stringify({ error: 'That can’t be done there now. Look at it again.' }) };
+      const w = BrowserWindow.fromWebContents(e.sender);
+      const asked = { type: 'question' as const, message: `${FINISH_WORDS[finish]}?`, detail: action, buttons: [FINISH_WORDS[finish], 'Not now'], defaultId: 1, cancelId: 1 };
+      const { response } = await (w ? dialog.showMessageBox(w, asked) : dialog.showMessageBox(asked));
+      if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Nothing done: you said not now.' }) };
+      const device = await register(), signedAt = now();
+      return obid('POST', path, { folder, finish, approval: { device, action, signedAt, signature: signed(`oby-finish\n${conversation}\n${action}\n${signedAt}`) } });
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }

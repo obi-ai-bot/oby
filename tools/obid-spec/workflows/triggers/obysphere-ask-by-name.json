@@ -1,0 +1,680 @@
+{
+  "schemaVersion": "2",
+  "name": "Asking: who a name means",
+  "version": "1.0.0",
+  "description": "Only an exact owner id no other card claims goes on the owner's word; an Obi id reaches no one; a first name one member fits, or an owner id another card claims, waits for a Confirm showing who, the model told nothing of it (ASK-17, ASK-25); with no one who fits nothing goes and the answer says who is there (ASK-25); knownAs keeps a name for a member until leaving (ASK-27).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "alex",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "alex",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dmitry-grechko",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "dmitry-grechko",
+        "owner": "dmitry-grechko",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "sam",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "sam",
+        "owner": "sam",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "copycat",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "copycat",
+        "owner": "copycat",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "alex-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "dmitry-grechko-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "sam-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "copycat-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "alex-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.alex}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.alex-key}",
+        "name": "Alex's Oby"
+      }
+    },
+    {
+      "id": "dmitry-grechko-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.dmitry-grechko}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.dmitry-grechko-key}",
+        "name": "Dmitry Grechko's Oby"
+      }
+    },
+    {
+      "id": "sam-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.sam}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.sam-key}",
+        "name": "Sam's Oby"
+      }
+    },
+    {
+      "id": "copycat-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.copycat}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.copycat-key}",
+        "name": "Sam's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.alex}",
+            "ownerKey": "${state.alex-key}"
+          },
+          {
+            "obid": "${state.dmitry-grechko}",
+            "ownerKey": "${state.dmitry-grechko-key}"
+          },
+          {
+            "obid": "${state.sam}",
+            "ownerKey": "${state.sam-key}"
+          },
+          {
+            "obid": "${state.copycat}",
+            "ownerKey": "${state.copycat-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/members",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "by-id",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dmitry-grechko\", \"question\": \"Is the build green?\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-17-an-exact-owner-id-goes-on-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dmitry-grechko}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "obiRequest",
+                "obi": {
+                  "quoted": {
+                    "text": "Is the build green?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-17"
+        ]
+      }
+    },
+    {
+      "id": "by-obi-id",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"${state.dmitry-grechko-joined.obiId}\", \"question\": \"By my Obi id?\"}",
+          "conversation": "${state.by-id.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$not": {
+                "$contains": "Asked"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ask-17-an-obi-id-reaches-no-one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dmitry-grechko}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "obi": {
+                  "quoted": {
+                    "text": "By my Obi id?"
+                  }
+                }
+              }
+            },
+            "0.kind": "obiRequest"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-17"
+        ]
+      }
+    },
+    {
+      "id": "ask-17-and-no-confirm",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-17"
+        ]
+      }
+    },
+    {
+      "id": "by-first-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"Dmitry\", \"question\": \"And the docs?\"}",
+          "conversation": "${state.by-id.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$not": {
+                "$contains": "grechko"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-17",
+          "ASK-25"
+        ]
+      }
+    },
+    {
+      "id": "ask-25-a-first-name-one-member-fits-waits-for-the-confirm",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "title": "Ask Dmitry Grechko's Oby (dmitry-grechko)"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-25",
+          "ASK-17"
+        ]
+      }
+    },
+    {
+      "id": "ask-25-nothing-before-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dmitry-grechko}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "obi": {
+                  "quoted": {
+                    "text": "And the docs?"
+                  }
+                }
+              }
+            },
+            "0.kind": "obiRequest"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-25"
+        ]
+      }
+    },
+    {
+      "id": "dismissed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.ask-25-a-first-name-one-member-fits-waits-for-the-confirm.picked.id}/answer",
+        "body": {
+          "answer": "Cancel"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "by-a-claimed-id",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"sam\", \"question\": \"Coffee?\"}",
+          "conversation": "${state.by-id.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$not": {
+                "$contains": "copycat"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-17"
+        ]
+      }
+    },
+    {
+      "id": "ask-17-an-owner-id-another-card-claims-makes-a-confirm-naming-both",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 20,
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "state": "open"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "state": "open",
+                "title": "Ask sam's Oby, not copycat, whose card goes by that name too"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-17"
+        ]
+      }
+    },
+    {
+      "id": "ask-17-nothing-to-sam-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.sam}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-17"
+        ]
+      }
+    },
+    {
+      "id": "dismissed-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.ask-17-an-owner-id-another-card-claims-makes-a-confirm-naming-both.picked.id}/answer",
+        "body": {
+          "answer": "Cancel"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "nobody",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"Zebulon\", \"question\": \"Hello?\"}",
+          "conversation": "${state.by-id.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "dmitry-grechko"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-25"
+        ]
+      }
+    },
+    {
+      "id": "ask-25-with-no-one-who-fits-nothing-goes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-25"
+        ]
+      }
+    },
+    {
+      "id": "ask-25-and-the-turn-is-no-longer-the-owners-own-word",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "conversations/${state.by-id.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "readUntrusted": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-25"
+        ]
+      }
+    },
+    {
+      "id": "known-as",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"dmitry-grechko\", \"question\": \"One more?\", \"knownAs\": \"Dimka\"}",
+          "new": true
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Asked"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-27"
+        ]
+      }
+    },
+    {
+      "id": "ask-27-that-name-means-that-member-from-then-on",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "sphere/known-as.json",
+        "within": 5,
+        "expect": {
+          "json": {
+            "dimka": "dmitry-grechko"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-27"
+        ]
+      }
+    },
+    {
+      "id": "by-known-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_ask {\"to\": \"Dimka\", \"question\": \"Through the name?\"}",
+          "conversation": "${state.known-as.body.conversation}"
+        },
+        "device": "${state.alex-device}",
+        "as": "device",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "ask-27-the-name-means-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.dmitry-grechko}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "obi": {
+                  "quoted": {
+                    "text": "Through the name?"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-27"
+        ]
+      }
+    },
+    {
+      "id": "left",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "DELETE",
+        "path": "/v1/obid/sphere",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "none"
+          }
+        }
+      }
+    },
+    {
+      "id": "ask-27-gone-on-leaving",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.alex}",
+        "path": "sphere/known-as.json",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "dimka"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ASK-27"
+        ]
+      }
+    }
+  ]
+}

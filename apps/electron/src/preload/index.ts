@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { WITHIN_MS, owners } from '../shared/words';
+import { FILL_IN, WITHIN_MS, owners } from '../shared/words';
 import type { AdminsAnswer, InvitesAnswer, PolicyAnswer, SigninStatus } from '../shared/sphere';
 import type { HandoffAsk } from '../shared/handoff';
 import type { Joined } from '../shared/invite';
@@ -25,10 +25,12 @@ function textOf(el: Element | null): string | null {
   const box = el.isContentEditable ? el.closest('[contenteditable="true"]') : null;
   return box instanceof HTMLElement ? box.innerText : null;
 }
-// a button's own label, never a whole card's text
+// a button's own label, never a whole card's text; a switch, which has no words of its own, by its
+// aria-label (Settings › General's browser switches, BROWSERAPP-18)
 const labelOf = (el: Element | null) => {
   const b = el?.closest('button');
-  return b && seen(b) && !b.querySelector('button, input, textarea, [contenteditable="true"]') ? b.innerText : null;
+  if (!b || !seen(b) || b.querySelector('button, input, textarea, [contenteditable="true"]')) return null;
+  return b.innerText.trim() ? b.innerText : b.getAttribute('role') === 'switch' ? b.getAttribute('aria-label') : null;
 };
 function hold(e: Event) {
   if (!e.isTrusted || (e instanceof KeyboardEvent && ((e.key !== 'Enter' && e.key !== ' ') || e.isComposing))) return;
@@ -40,6 +42,10 @@ function hold(e: Event) {
     }
     return;
   }
+  // Enter in a browser card's password or code box presses its Fill in (BROWSERAPP-12); the box's
+  // value is never read here
+  if (e instanceof KeyboardEvent && e.key === 'Enter' && target instanceof HTMLInputElement && seen(target)
+    && (target.type === 'password' || target.autocomplete === 'one-time-code') && target.closest('[data-browser="card"]')) keep(held, { text: FILL_IN, at });
   // the keys that press a focused button hold its label; Enter holds the box it was pressed in
   const texts = e.type === 'keydown' ? [...(e instanceof KeyboardEvent && e.key === ' ' ? [] : [textOf(target)]), labelOf(target)]
     : [labelOf(target), ...[...(target?.closest('form')?.querySelectorAll('textarea, input, [contenteditable="true"]') ?? [])].map(textOf)];
@@ -60,13 +66,14 @@ function signs(method: string, path: string, body: unknown) {
   return true;
 }
 
-// Whether the owner's own event just pressed a button labelled Confirm (each press once)
-function pressedConfirm() {
+// Whether the owner's own event just pressed a button with this label (each press once)
+function pressed(label: string) {
   const now = Date.now();
-  const at = held.findIndex((h) => now - h.at < WITHIN_MS && h.text.trim() === 'Confirm');
+  const at = held.findIndex((h) => now - h.at < WITHIN_MS && h.text.trim() === label);
   if (at >= 0) held.splice(at, 1);
   return at >= 0;
 }
+const pressedConfirm = () => pressed('Confirm');
 
 contextBridge.exposeInMainWorld('app', {
   // where macOS put the traffic lights, in CSS px (null without the native
@@ -183,6 +190,67 @@ contextBridge.exposeInMainWorld('app', {
   // Add sign-in (main/sphere.ts, SPHEREAPP-13): whether one is linked, and linking one right after the owner's click
   sphereSigninStatus: () => ipcRenderer.invoke('sphere-signin-status') as Promise<SigninStatus | null>,
   sphereAddSignin: (provider: string) => ipcRenderer.invoke('sphere-add-signin', provider) as Promise<string | null>,
+  // an agent using the Mac (main/macPill.ts, BROWSERAPP-19): the window tells main who has it (null:
+  // nobody), and hears its Stop; the pill's own window hears who has it and sends its Stop
+  mac: {
+    pill: (use: { agent: string; action: string } | null) => ipcRenderer.invoke('mac-pill', use) as Promise<boolean | null>,
+    onStopped(fn: () => void) {
+      const listener = () => fn();
+      ipcRenderer.on('mac-stopped', listener);
+      return () => { ipcRenderer.off('mac-stopped', listener); };
+    },
+    onPill(fn: (use: { agent: string; action: string }) => void) {
+      const listener = (_: unknown, use: { agent: string; action: string }) => fn(use);
+      ipcRenderer.on('mac-pill', listener);
+      // who has it now, asked once listening (nothing is missed before it)
+      void (ipcRenderer.invoke('mac-pill-now') as Promise<{ agent: string; action: string } | null>).then((use) => { if (use) fn(use); });
+      return () => { ipcRenderer.off('mac-pill', listener); };
+    },
+    stop: () => ipcRenderer.send('mac-pill-stop'),
+  },
+  // the owner's own shell in a task's or conversation's working copy (main/terminal.ts,
+  // docs/contracts/terminal.md): opened right after the owner's click main saw, with only where and
+  // the size the page measured (main finds the folder); what's typed, which main lets through only as
+  // it saw it typed; a new size; closed; and each shell's output and end
+  terminal: {
+    open: (place: 'task' | 'conversation', id: string, cols: number, rows: number) =>
+      ipcRenderer.invoke('terminal-open', place, id, cols, rows) as Promise<{ term: string; cwd: string; name: string } | { error: string }>,
+    write: (term: string, data: string) => ipcRenderer.send('terminal-write', term, data),
+    resize: (term: string, cols: number, rows: number) => ipcRenderer.send('terminal-resize', term, cols, rows),
+    close: (term: string) => ipcRenderer.send('terminal-close', term),
+    onData(fn: (term: string, data: string) => void) {
+      const listener = (_: unknown, term: string, data: string) => fn(term, data);
+      ipcRenderer.on('terminal-data', listener);
+      return () => { ipcRenderer.off('terminal-data', listener); };
+    },
+    onExit(fn: (term: string, code: number, signal: number | null) => void) {
+      const listener = (_: unknown, term: string, code: number, signal: number | null) => fn(term, code, signal);
+      ipcRenderer.on('terminal-exit', listener);
+      return () => { ipcRenderer.off('terminal-exit', listener); };
+    },
+  },
+  // obid's browser, followed by main, which holds the token (main/browser.ts, BROWSERAPP-8): its events
+  // from now on (`open` each time the stream connects again), and a tab's frames while the page draws
+  // it; each a function that stops listening
+  browser: {
+    follow(fn: (m: { name: string; data: string }) => void) {
+      const listener = (_: unknown, m: { name: string; data: string }) => fn(m);
+      ipcRenderer.on('browser-event', listener);
+      void ipcRenderer.invoke('browser-follow');
+      return () => { ipcRenderer.off('browser-event', listener); };
+    },
+    // a password or code into the page's field, filled by main on the owner's press of Fill in (or
+    // Enter in the card's box): main checks it saw that input itself; null once filled, else why not
+    fill: (tab: string, field: string, value: string, ask?: string) => ipcRenderer.invoke('browser-fill', tab, field, value, ask ?? '', pressed(FILL_IN)) as Promise<string | null>,
+    // Show in Finder for a download in Downloads, by its name (main/browser.ts): true once shown
+    reveal: (name: string) => ipcRenderer.invoke('browser-reveal', name) as Promise<boolean>,
+    watch(tab: string, fn: (data: string) => void) {
+      const listener = (_: unknown, m: { tab: string; data: string }) => { if (m.tab === tab) fn(m.data); };
+      ipcRenderer.on('browser-frame', listener);
+      void ipcRenderer.invoke('browser-watch', tab);
+      return () => { ipcRenderer.off('browser-frame', listener); void ipcRenderer.invoke('browser-unwatch', tab); };
+    },
+  },
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page
   obid: {
@@ -196,6 +264,10 @@ contextBridge.exposeInMainWorld('app', {
     // Undo this round, on the owner's click: main reads obid's sentence again, asks in its own
     // dialog and signs it (CHANGES-14)
     undo: (job: string, action: string) => ipcRenderer.invoke('obid-undo', job, action) as Promise<Answer>,
+    // A finishing action in a conversation's folder (WORKSPACE-4, 5), on the owner's click: main reads
+    // obid's sentence for it, asks in its own dialog and signs it
+    finish: (conversation: string, folder: string, action: string) =>
+      ipcRenderer.invoke('obid-finish', conversation, folder, action) as Promise<Answer>,
     limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     // Pair a device: main signs the invitation with this Mac's device key

@@ -192,11 +192,13 @@ export type InboxItem = {
   // text and never as instructions. A review_request's (reviewOf): the repository and head it's
   // for, and, quoted, the goal, summary and each condition's note (a custom one's text too)
   obi?: {
-    type?: unknown; fromOwner?: unknown; repos?: unknown; repo?: unknown; headSha?: unknown;
+    type?: unknown; fromOwner?: unknown; repos?: unknown; repo?: unknown; headSha?: unknown; expiresAt?: unknown;
     quoted?: { text?: unknown; choices?: unknown; goal?: unknown; summary?: unknown; acceptance?: unknown } | null;
   } | null;
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number;
+  // obid only: the answer that settled it, none for one settled with no answer (expired, called off)
+  answer?: string | null;
 };
 
 // One owner decision for all jobs stopped by the same account's limit (#1563).
@@ -402,7 +404,19 @@ export type PlanDefaults = { mode?: string; agent?: string; model?: string; effo
 export type PlanRequest = {
   said: string; answer?: { question: string; option: string }; conversation?: string; new?: true; folders?: string[]; id?: string;
   attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[]; skill?: string;
+  // where a new conversation works (obid only, workspace-v1; docs/api/folders.md, "Workspace"): with
+  // new only, never changed after (WORKSPACE-3)
+  workspace?: Workspace;
 };
+// "GET /v1/conversations/{id}/workspace" (obid only, workspace-v1; docs/api/folders.md, "Workspace"):
+// where the conversation works in each of its folders, and what finishing can do there now
+export type Workspace = 'folder' | 'worktree';
+export type FinishAction = 'commit' | 'push' | 'pullRequest' | 'publishRepository' | 'initializeGit';
+// path null: obid can't tell or make where it works there (its choice unreadable, a worktree it
+// couldn't make), so the conversation works only in its own room there, and why says so
+export type WorkspacePlace = { folder: string; name: string; path: string | null; worktree: boolean; branch: string | null; actions: FinishAction[]; why?: string };
+// workspace null: the conversation's choice can't be read
+export type WorkspaceAnswer = { workspace: Workspace | null; places: WorkspacePlace[] };
 // "POST /v1/jobs/{id}/messages" as this app sends it; skill as on POST /v1/plans (COMPOSER-27)
 export type JobMessageRequest = { text: string; attachments?: string[]; conversation?: true; clientRequestId?: string; skill?: string };
 // "GET /v1/skills" (obid only, skills-v1; docs/api/skills.md): a skill of the agent that would get the
@@ -601,3 +615,78 @@ export interface BrowserSettings {
   agentsUseMac: boolean;
 }
 export const BROWSER_DEFAULT_SETTINGS: BrowserSettings = { agentsUseBrowser: true, agentsUseMac: true };
+
+/** The browser's routes (docs/api/browser.md) */
+export const BROWSER_PATH = '/v1/browser';
+export const BROWSER_EVENTS = '/v1/browser/events';
+export const BROWSER_SETTINGS = '/v1/browser/settings';
+export const BROWSER_DOWNLOADS = '/v1/browser/downloads';
+export const browserTabPath = (tab: string, verb: 'stream' | 'input' | 'take' | 'giveBack' | 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
+export const browserAskPath = (ask: string) => `/v1/browser/asks/${encodeURIComponent(ask)}/answer`;
+export const browserSaveCopyPath = (download: string) => `/v1/browser/downloads/${encodeURIComponent(download)}/saveCopy`;
+
+/** A tab's owner: an agent's job (`agent` is open: "claude", "codex", "cursor", …), or the person */
+export type BrowserOwner = { kind: 'agent'; job: string; agent: string } | { kind: 'person' };
+
+export interface BrowserAsk {
+  id: string;
+  tabId: string;
+  job: string;
+  kind: BrowserAskKind;
+  reason: string;
+  choices: string[];
+  /** signIn and code: the page's field a secret goes into (a CSS selector) */
+  field: string | null;
+  answered: boolean;
+  choice: string | null;
+}
+
+export interface BrowserTab {
+  id: string;
+  owner: BrowserOwner;
+  title: string;
+  url: string;
+  state: BrowserTabState;
+  /** the device whose person holds the tab, or null */
+  heldBy: string | null;
+  holdGeneration: number;
+  /** `id` "local": this Mac */
+  computer: { id: string; name: string };
+  ask: BrowserAsk | null;
+  dialog: string | null;
+}
+
+export interface BrowserDownload {
+  id: string;
+  job: string;
+  tabId: string | null;
+  name: string;
+  startedBy: 'agent' | 'person';
+  place: 'profile' | 'delivered';
+  bytes: number;
+}
+
+/** GET /v1/browser; `seq`: the last event the answer reflects (none from an obid before it) */
+export interface BrowserTabsAnswer { tabs: BrowserTab[]; settings: BrowserSettings; seq?: number }
+/** GET /v1/browser/downloads */
+export interface BrowserDownloadsAnswer { downloads: BrowserDownload[]; seq?: number }
+
+/** One message of GET /v1/browser/events: its SSE `id` is `seq`, its `event` its type. Unknown types are ignored. */
+export type BrowserEvent = { seq: number } & (
+  | { type: 'tab'; tab: BrowserTab }
+  | { type: 'tabClosed'; tabId: string }
+  | { type: 'action'; tabId: string | null; job: string; tool: string; text: string; pointer: { x: number; y: number } | null; outcome: 'started' | 'done' | 'refused' | 'failed'; reason: string | null }
+  | { type: 'ask'; ask: BrowserAsk }
+  | { type: 'askAnswered'; askId: string }
+  | { type: 'download'; download: BrowserDownload }
+  | { type: 'scriptRun'; tabId: string; job: string; expression: string; result: { from: string; what: string; note: string; data: unknown } }
+  | { type: 'settings'; settings: BrowserSettings }
+);
+
+/** `event: frame` on a tab's stream: the newest frame only */
+export interface BrowserFrame { tabId: string; seq: number; data: string; mime: string; width: number; height: number; dropped: number }
+
+/** POST …/input: the person's mouse and keys on a tab they hold, in the page's CSS pixels (the lab's contract) */
+export type BrowserInput =
+  | { type: 'mouse'; eventType: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel'; x: number; y: number; button?: string | null; clickCount?: number | null; deltaX?: number | null; deltaY?: number | null }
+  | { type: 'key'; eventType: 'keyDown' | 'keyUp' | 'char'; key: string; text?: string | null; code?: string | null };
