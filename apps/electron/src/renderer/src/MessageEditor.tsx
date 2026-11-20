@@ -147,10 +147,14 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
         return true;
       }, COMMAND_PRIORITY_HIGH),
       // a paste with files in it (an image copied or a screenshot): they're
-      // attached instead, and nothing is typed
+      // attached instead, and nothing is typed. Text that comes with only a picture of itself (cells
+      // from Numbers or Excel, words from Pages: Chromium hands that picture over as `image.png`) is
+      // typed, and nothing attached (T3 Code's composerAttachmentFiles)
       editor.registerCommand(PASTE_COMMAND, (e: ClipboardEvent | InputEvent | KeyboardEvent) => {
-        const files = 'clipboardData' in e && e.clipboardData ? [...e.clipboardData.files] : [];
+        const data = 'clipboardData' in e ? e.clipboardData : null;
+        const files = data ? [...data.files] : [];
         if (!files.length || !cb.current.onPasteFiles) return false;
+        if (data!.getData('text/plain') && files.every((f) => f.name === 'image.png' && f.type.startsWith('image/'))) return false;
         e.preventDefault();
         cb.current.onPasteFiles(files);
         return true;
