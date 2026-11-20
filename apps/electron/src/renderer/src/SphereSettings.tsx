@@ -17,6 +17,7 @@ import { JoinLink, useJoinLink } from './JoinLink';
 import InviteTeammates from './InviteTeammates';
 import { SoleAdmin, isSoleAdmin, useSphereAdmins } from './SphereAdmins';
 import AddSignIn, { needsSignin, useSigninStatus } from './AddSignIn';
+import { composing } from './shortcuts';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
 
@@ -80,6 +81,7 @@ function Settings({ sphere }: { sphere: Sphere }) {
   };
   // Enter keeps it (by leaving the field); Esc puts it back
   const keys = (undo: () => void) => (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (composing(e)) return;
     if (e.key === 'Enter') e.currentTarget.blur();
     if (e.key === 'Escape') undo();
   };
