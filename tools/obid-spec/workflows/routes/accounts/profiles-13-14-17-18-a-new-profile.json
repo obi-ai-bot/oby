@@ -1,0 +1,504 @@
+{
+  "schemaVersion": "2",
+  "name": "PROFILES-13, 14, 17 and 18: a new profile and its folder",
+  "version": "1.0.0",
+  "description": "An install with one profile behaves as before. A bad name or colour, a missing colour, an extra key or a body that isn't JSON is 400 and writes nothing. `POST /v1/profiles {\"name\":\"  Acme  \",\"color\":\"#7a4a8c\"}` answers 201 with exactly a lower-case UUID id, the name trimmed, its colour, default and waiting false; both are listed and kept (0600), and its folder is home/profiles/<id>, 0700, with every other file as it was.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/profiles"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0.default": true,
+            "0.waiting": false
+          }
+        }
+      }
+    },
+    {
+      "id": "profiles-18-one-profile-behaves-as-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-18"
+        ]
+      }
+    },
+    {
+      "id": "profiles-18-no-profiles-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-18"
+        ]
+      }
+    },
+    {
+      "id": "registry",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles.json",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "profiles-14-refused-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-refused-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "   ",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-refused-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-refused-4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme",
+          "color": "red"
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-refused-5",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme",
+          "color": "#12345"
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-refused-6",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme"
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-refused-7",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme",
+          "color": "#7a4a8c",
+          "default": true
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-not-json",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "raw": "not json",
+        "expect": {
+          "status": 400,
+          "body": {
+            "error": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-the-registry-is-byte-identical",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles.json",
+        "expect": {
+          "text": "${state.registry.text}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-and-no-profiles-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "profiles-14-still-one-profile",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-14"
+        ]
+      }
+    },
+    {
+      "id": "accounts-before",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts.json",
+        "expect": {}
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "  Acme  ",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$matches": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "name": "Acme",
+            "color": "#7a4a8c",
+            "default": false,
+            "waiting": false
+          },
+          "paths": {
+            "$": {
+              "$len": 5
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-13"
+        ]
+      }
+    },
+    {
+      "id": "profiles-13-get-lists-both-the-first-still-the-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            },
+            "0.default": true,
+            "1": "${state.b.body}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-13"
+        ]
+      }
+    },
+    {
+      "id": "profiles-13-the-registry-holds-both",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles.json",
+        "expect": {
+          "mode": "0600",
+          "json": {
+            "paths": {
+              "profiles": {
+                "$len": 2
+              },
+              "profiles.1.id": "${state.b.body.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-13"
+        ]
+      }
+    },
+    {
+      "id": "profiles-13-17-its-own-folder-inside-home-under-its-id",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "profiles/${state.b.body.id}",
+        "expect": {
+          "exists": true,
+          "mode": "0700"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-13",
+          "PROFILES-17"
+        ]
+      }
+    },
+    {
+      "id": "profiles-13-every-other-file-as-it-was",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts.json",
+        "expect": {
+          "text": "${state.accounts-before.text}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-13"
+        ]
+      }
+    },
+    {
+      "id": "profiles-13-and-the-account-still-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-13"
+        ]
+      }
+    }
+  ]
+}

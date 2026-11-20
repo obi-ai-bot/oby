@@ -1,0 +1,169 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a Codex conversation's MCP servers",
+  "version": "1.0.0",
+  "description": "A Codex conversation calls obid's own oby server and its tools answer; a call of any other MCP server ends the turn, saying why, in Bypass and in Ask (CONVERSATION-AGENT-18; expected red with #2698 since the owner's Codex conversation runs in the own lane).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "conversation": {
+            "agent": "codex"
+          },
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-18-obys-own-server",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_jobs {}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^oby: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-18"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-18-oby-answered",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.conversation-agent-18-obys-own-server.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$matches": "^oby: [^r]"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-18"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-18-another-server-ends-the-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "ELSEWHERE",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "I couldn't answer: Codex called elsewhere's run, which a conversation never does, so obid stopped it\\.$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-18"
+        ],
+        "expectedRed": "#2698: since #2683 the owner's own Codex conversation runs another MCP server's tool: in Bypass Codex declines it and the turn goes on, in Ask obid approves it and it runs; the contract says it ends the turn"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-18-in-ask-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "ELSEWHERE",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "I couldn't answer: Codex called elsewhere's run, which a conversation never does, so obid stopped it\\.$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-18"
+        ],
+        "expectedRed": "#2698: since #2683 the owner's own Codex conversation runs another MCP server's tool: in Bypass Codex declines it and the turn goes on, in Ask obid approves it and it runs; the contract says it ends the turn"
+      }
+    }
+  ]
+}

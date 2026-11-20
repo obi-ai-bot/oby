@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-9: an own job says how to open its session in a terminal",
+  "version": "1.0.0",
+  "description": "An own Claude Code job with a session carries `cd '<worktree>' && claude --resume <session>`; a foreign job's resumeCommand is null.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "Look around."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "lanes-9-an-own-claude-code-job-says-how-to-resume-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "session": {
+              "$type": "string"
+            },
+            "resumeCommand": {
+              "$matches": "^cd '${state.o.home}/worktrees/${state.own.body.id}' && claude --resume [0-9a-f-]+$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-9"
+        ]
+      }
+    },
+    {
+      "id": "marked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around.\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-9-a-foreign-job-has-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.marked.body.jobs.0.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "untrusted": true,
+            "resumeCommand": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-9"
+        ]
+      }
+    }
+  ]
+}

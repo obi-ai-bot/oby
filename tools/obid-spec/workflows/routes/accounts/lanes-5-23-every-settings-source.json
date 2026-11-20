@@ -1,0 +1,347 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-5 and 23: an own job loads the owner's settings as their terminal does",
+  "version": "1.0.0",
+  "description": "The owner's skill, settings (their sandbox off, commands out of it, more folders, a bare Read allow, a hook, CLAUDE_* in env) and MCP server in their account, and the repository's .claude/settings.json, settings.local.json and .mcp.json: an own job starts, loads every source and both servers, and ends done; obid's --settings hold no sandbox, disableAllHooks or ask rule and deny the vault. A job of the same repository marked untrusted loads none.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "skill",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/stand-in/skills/owners-skill/SKILL.md",
+        "content": "# Mine\n"
+      }
+    },
+    {
+      "id": "owners-settings",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/stand-in/settings.json",
+        "content": "{\"sandbox\": {\"enabled\": false, \"excludedCommands\": [\"git\"], \"network\": {\"allowUnixSockets\": [\"/tmp/s\"]}}, \"permissions\": {\"allow\": [\"Read\", \"Grep\"], \"additionalDirectories\": [\"/tmp\"]}, \"hooks\": {\"PreToolUse\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"true\"}]}]}, \"env\": {\"CLAUDE_CODE_MANAGED_SETTINGS_PATH\": \"/tmp/x.json\", \"CLAUDE_FOO\": \"1\"}}"
+      }
+    },
+    {
+      "id": "owners-servers",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/stand-in/.claude.json",
+        "content": "{\"mcpServers\": {\"owners-github\": {\"type\": \"http\", \"url\": \"http://127.0.0.1:9/\"}}}"
+      }
+    },
+    {
+      "id": "repo-settings-0",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "seed-tree/.claude/settings.json",
+        "content": "{\"hooks\": {\"SessionStart\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"true\"}]}]}}"
+      }
+    },
+    {
+      "id": "repo-settings-1",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "seed-tree/.claude/settings.local.json",
+        "content": "{\"hooks\": {\"SessionStart\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"true\"}]}]}}"
+      }
+    },
+    {
+      "id": "repo-settings-2",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "seed-tree/.mcp.json",
+        "content": "{\"mcpServers\": {\"repos-server\": {\"type\": \"http\", \"url\": \"http://127.0.0.1:9/\"}}}"
+      }
+    },
+    {
+      "id": "repo-settings-read",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "--work-tree=${state.o.person}/seed-tree",
+          "read-tree",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "repo-settings-add",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "--work-tree=${state.o.person}/seed-tree",
+          "add",
+          "-f",
+          ".claude/settings.json",
+          ".claude/settings.local.json",
+          ".mcp.json"
+        ]
+      }
+    },
+    {
+      "id": "repo-settings-commit",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "-c",
+          "user.name=teammate",
+          "-c",
+          "user.email=teammate@example.invalid",
+          "--work-tree=${state.o.person}/seed-tree",
+          "commit",
+          "-q",
+          "-m",
+          "Settings"
+        ]
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "REPORT"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "lanes-23-an-own-job-starts-whatever-the-owners-settings-hold",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-23"
+        ]
+      }
+    },
+    {
+      "id": "lanes-5-an-own-job-loads-every-source-as-the-terminal-does",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "loaded": {
+                "sources": [
+                  "user",
+                  "project",
+                  "local"
+                ],
+                "found": [
+                  "user",
+                  "project",
+                  "local"
+                ],
+                "skills": [
+                  "owners-skill"
+                ],
+                "mcpServers": [
+                  "owners-github",
+                  "repos-server"
+                ],
+                "sandbox": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-5",
+          "LANES-23"
+        ]
+      }
+    },
+    {
+      "id": "lanes-23-no-setting-sources-and-no-strict-mcp-config",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$none": {
+                  "$oneOf": [
+                    "--setting-sources",
+                    "--strict-mcp-config"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-23",
+          "LANES-5"
+        ]
+      }
+    },
+    {
+      "id": "lanes-23-obids-settings-set-no-sandbox-no-hooks-off-no-ask-and-deny-the-vault",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$any": {
+                  "$matches": "^\\{\"env\":.*\"permissions\":\\{\"deny\":\\[.*/home/vault\\)"
+                }
+              },
+              "env.HOME": "${state.o.person}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-23",
+          "LANES-5"
+        ]
+      }
+    },
+    {
+      "id": "lanes-23-and-nothing-else-in-them",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "argv": {
+                "$any": {
+                  "$matches": "^\\{\"env\":\\{[^{}]*\\},\"permissions\":\\{\"deny\":\\[[^\\]]*\\]\\}\\}$"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-23"
+        ]
+      }
+    },
+    {
+      "id": "marked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"REPORT\", \"kind\": \"research\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "jobs.0.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "foreign-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.marked.body.jobs.0.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "untrusted": true
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-5-a-foreign-job-of-the-same-repository-loads-none",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.marked.body.jobs.0.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "loaded.sources": [],
+              "loaded.skills": [],
+              "loaded.mcpServers": []
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-5",
+          "LANES-23"
+        ]
+      }
+    }
+  ]
+}
