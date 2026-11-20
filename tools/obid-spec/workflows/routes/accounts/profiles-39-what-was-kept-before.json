@@ -1,0 +1,244 @@
+{
+  "schemaVersion": "2",
+  "name": "PROFILES-39: what was kept before profiles is the default's",
+  "version": "1.0.0",
+  "description": "An install with a conversation and an account, started again: both are the default profile's, unmoved; a profile made then lists no conversation, account or job; the conversation's file is as it was, and no side file is written.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/profiles"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY groceries",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "kept",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.one.body.conversation}.json",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "profiles-39-what-was-kept-is-the-defaults",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "${state.one.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    },
+    {
+      "id": "profiles-39-its-account-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "name": "Acme",
+            "default": false
+          }
+        }
+      }
+    },
+    {
+      "id": "profiles-39-a-new-profile-has-no-conversation",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "headers": {
+          "Oby-Profile": "${state.b.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    },
+    {
+      "id": "profiles-39-no-account",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "headers": {
+          "Oby-Profile": "${state.b.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    },
+    {
+      "id": "profiles-39-no-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "headers": {
+          "Oby-Profile": "${state.b.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    },
+    {
+      "id": "profiles-39-the-conversations-file-as-it-was",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "conversations/${state.one.body.conversation}.json",
+        "expect": {
+          "text": "${state.kept.text}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    },
+    {
+      "id": "profiles-39-no-side-file-for-accounts",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "account-profiles.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    },
+    {
+      "id": "profiles-39-nor-for-the-vault",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "vault-profiles.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-39"
+        ]
+      }
+    }
+  ]
+}

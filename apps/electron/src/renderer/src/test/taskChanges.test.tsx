@@ -164,3 +164,22 @@ describe('CHANGES-14: Undo this round… in the menu', () => {
     expect(sent).not.toContain('GET /v1/jobs/j1/undo');
   });
 });
+
+// T3 Code's diffRendering tests ("diff lines drawn as what they are"), held to CHANGES-4: the diff, every changed line of it
+describe('T3: the diff as git wrote it', () => {
+  // known bug obi-ai-bot/oby#2730: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_changes_a_changed_line_that_starts_with_dashes_or_pluses_still_shows (known bug #2730)', async () => {
+    const diff = [
+      'diff --git a/query.sql b/query.sql', 'index 1111111..2222222 100644', '--- a/query.sql', '+++ b/query.sql',
+      '@@ -1,2 +1,2 @@', '--- old comment', '+-- new comment', ' select 1;',
+      'diff --git a/a.c b/a.c', 'index 3333333..4444444 100644', '--- a/a.c', '+++ b/a.c',
+      '@@ -1 +1,2 @@', ' int i;', '+++i;', '',
+    ].join('\n');
+    answers['GET /v1/jobs/j1/changes'] = { status: 200, body: { ...WHOLE, diff, files: [
+      { path: 'query.sql', status: 'modified', additions: 1, deletions: 1 }, { path: 'a.c', status: 'modified', additions: 1, deletions: 0 },
+    ] } };
+    await panel();
+    expect(lines('del')).toEqual(['--- old comment']);
+    expect(lines('add')).toEqual(['+-- new comment', '+++i;']);
+  });
+});

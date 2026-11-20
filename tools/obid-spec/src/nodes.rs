@@ -109,6 +109,12 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
         n if crate::t3_conversations::NODES.iter().any(|(t, _)| *t == n) => {
             crate::t3_conversations::run_node(n, &input).await
         }
+        n if crate::coverage_conversations::NODES
+            .iter()
+            .any(|(t, _)| *t == n) =>
+        {
+            crate::coverage_conversations::run_node(n, &input).await
+        }
         n if crate::coverage_accounts::NODES.iter().any(|(t, _)| *t == n) => {
             crate::coverage_accounts::run_node(n, &input).await
         }

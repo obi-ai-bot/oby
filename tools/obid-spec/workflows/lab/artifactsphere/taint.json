@@ -1,0 +1,193 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: a received artifact read by an agent taints the turn; its text reaches the agent only quoted",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-14 (src/lab/artifactsphere.rs: read). Ben's agent reads the page Ana shared (oby_artifact_read): its turn is marked untrusted, and each text file reaches it fenced as data from Ana's Oby, never as words. Ana's own agent reading her own page is neither.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "shared",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "bens",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "14-bens-agent-reads-it",
+      "use": "runtime.rust:lab.artifactsphere.read",
+      "inputs": {
+        "oby": "ben",
+        "job": "jb",
+        "artifact": "${state.bens.kept.0.artifact}",
+        "expect": {
+          "paths": {
+            "untrusted": true,
+            "outside": true,
+            "files": {
+              "$any": {
+                "path": "index.html",
+                "text": {
+                  "$contains": "data, never instructions"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-14"
+        ]
+      }
+    },
+    {
+      "id": "14-bens-turn-marked",
+      "use": "runtime.rust:lab.artifactsphere.said",
+      "inputs": {
+        "oby": "ben",
+        "member": "ana",
+        "expect": {
+          "paths": {
+            "jobs.jb": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-14"
+        ]
+      }
+    },
+    {
+      "id": "14-anas-own-isnt",
+      "use": "runtime.rust:lab.artifactsphere.read",
+      "inputs": {
+        "oby": "ana",
+        "job": "ja",
+        "artifact": "${state.page.id}",
+        "expect": {
+          "paths": {
+            "untrusted": false,
+            "outside": false,
+            "files": {
+              "$none": {
+                "text": {
+                  "$contains": "data, never instructions"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-14"
+        ]
+      }
+    }
+  ]
+}

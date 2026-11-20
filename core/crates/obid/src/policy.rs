@@ -330,9 +330,9 @@ fn value_names_a_path(value: &Value) -> bool {
 }
 
 /// Why a tool call is refused whatever the job, or `None`. `mcp` is the job's permission rules
-/// for MCP tools: `mcp__tetrix__<tool>` for each of Tetrix's allowed tools (crate::tetrix::TOOLS)
-/// and the broker's rule. Every other MCP tool is refused (Engine/Jobs.swift's
-/// `Policy.tetrixTools`).
+/// for MCP tools: `mcp__tetrix__<tool>` for each of Tetrix's allowed tools (crate::tetrix::TOOLS),
+/// `mcp__browser__<tool>` for each of the browser's (crate::browser::AgentServer::rules) and the
+/// broker's rule. Every other MCP tool is refused (Engine/Jobs.swift's `Policy.tetrixTools`).
 pub fn fixed_denial(tool: &str, input: &Value, worktree: &Path, mcp: &[String]) -> Option<String> {
     fixed_denial_as(false, tool, input, worktree, mcp)
 }
@@ -356,9 +356,18 @@ pub fn fixed_denial_as(
     {
         return None;
     }
+    // obid's browser server (BROWSER-17) serves only its own tools: a rule naming another tool of
+    // a server called `browser` (a plug-in, the owner's own) doesn't let it through.
+    if tool.starts_with(crate::browser::agent_server::RULE_PREFIX)
+        && !crate::browser::AgentServer::serves(tool)
+    {
+        return Some(format!(
+            "Oby's browser has no tool named {tool}: its tools are oby_browser_*. Say in your summary what you'd have done with it."
+        ));
+    }
     if tool.starts_with("mcp__") || tool == "mcp" {
         return (!mcp.iter().any(|rule| rule == tool)).then(|| format!(
-            "obid's agents use only the MCP tools Oby connected for them (Tetrix's allowed tools, Oby's own). Say in your summary what you'd have done with {tool}."
+            "obid's agents use only the MCP tools Oby connected for them (Tetrix's allowed tools, Oby's browser, Oby's own). Say in your summary what you'd have done with {tool}."
         ));
     }
     // A background command is fine: Claude Code wakes when it ends, obid waits for that
@@ -969,5 +978,76 @@ mod tests {
                 "{rules:?}"
             );
         }
+    }
+
+    /// BROWSER-17: obid's browser server's 11 tools, by the job's rules (`AgentServer::rules`),
+    /// and not one more: an `mcp__browser__` name it doesn't serve stays refused even when a rule
+    /// names it (a plug-in or server of the same name), as does any other outside MCP tool.
+    #[test]
+    fn browser_17_the_browser_servers_tools_and_no_other() {
+        let worktree = Path::new("/tmp/work");
+        let mut rules: Vec<String> = crate::browser::AgentServer::rules().collect();
+        assert_eq!(rules.len(), crate::browser::contract::MCP_TOOLS.len());
+        for tool in crate::browser::contract::MCP_TOOLS {
+            let name = format!("mcp__browser__{tool}");
+            assert_eq!(
+                fixed_denial(&name, &json!({}), worktree, &rules),
+                None,
+                "{name}"
+            );
+            assert_eq!(
+                decide(&name, &json!({}), worktree, false, &rules),
+                Answer::Allow,
+                "{name}"
+            );
+            // Without the job's rules, none.
+            assert!(
+                fixed_denial(&name, &json!({}), worktree, &[]).is_some(),
+                "{name}"
+            );
+        }
+        // Rules naming tools the server doesn't serve, beside its own.
+        rules.extend(
+            [
+                "mcp__browser__oby_browser_steal",
+                "mcp__browser__oby_browser_open_x",
+                "mcp__browser__",
+            ]
+            .map(String::from),
+        );
+        for refused in [
+            "mcp__browser__oby_browser_steal",
+            "mcp__browser__oby_browser_open_x",
+            "mcp__browser__",
+            "mcp__browser__x",
+            "mcp__browserx__oby_browser_open",
+            "mcp__playwright__browser_navigate",
+            "mcp__github__create_pr",
+            "mcp__tetrix__get_entity",
+            "mcp",
+        ] {
+            assert!(
+                fixed_denial(refused, &json!({}), worktree, &rules).is_some(),
+                "{refused}"
+            );
+            assert!(
+                matches!(
+                    decide(refused, &json!({}), worktree, false, &rules),
+                    Answer::Deny(_)
+                ),
+                "{refused}"
+            );
+        }
+        // A review another Obi asked for only reads, whatever the rules.
+        assert!(matches!(
+            decide(
+                "mcp__browser__oby_browser_snapshot",
+                &json!({}),
+                worktree,
+                true,
+                &rules
+            ),
+            Answer::Deny(_)
+        ));
     }
 }

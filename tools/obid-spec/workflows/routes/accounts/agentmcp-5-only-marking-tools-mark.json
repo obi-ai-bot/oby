@@ -1,0 +1,157 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTMCP-5: only a tool that marks its answer marks the conversation",
+  "version": "1.0.0",
+  "description": "On the owner's signed turns in new conversations: `oby_routines`, whose entry marks its answer, marks the conversation with `oby_routines's answer`; `oby_tasks`, which marks nothing, leaves it clean; a name with no entry fails closed: it marks the conversation as its answer and says Oby has no such tool.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "tasks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_tasks {}",
+          "new": true
+        },
+        "as": "device",
+        "expect": {
+          "status": 200
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "agentmcp-5-a-tool-that-marks-nothing-leaves-it-clean",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.tasks.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": null,
+              "turns": {
+                "$type": "array"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-5"
+        ]
+      }
+    },
+    {
+      "id": "routines",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_routines {}",
+          "new": true
+        },
+        "as": "device",
+        "expect": {
+          "status": 200
+        },
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "agentmcp-5-a-tool-whose-entry-marks-its-answer-marks-it",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.routines.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": "oby_routines's answer"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-5"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-5-a-name-with-no-entry-says-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_no_such_tool {}",
+          "new": true
+        },
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Oby has no tool oby_no_such_tool."
+            }
+          }
+        },
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-5"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-5-and-marks-as-its-answer",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.agentmcp-5-a-name-with-no-entry-says-so.body.conversation}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "foreign": "oby_no_such_tool's answer"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-5"
+        ]
+      }
+    }
+  ]
+}

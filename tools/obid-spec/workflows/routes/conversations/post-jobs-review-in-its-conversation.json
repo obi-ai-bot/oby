@@ -1,0 +1,207 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs: Oby's review in its task's conversation",
+  "version": "1.0.0",
+  "description": "Oby's review of a task in a conversation is in that conversation, with no turn of its own, not the owner's own work and in Plan mode; no conversation is made for it (TASKCONV-26); when it ends it adds no turn, card or notification there (TASKCONV-28).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "task",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 201,
+          "body": {
+            "conversation": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "merged",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.task.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "pullRequest": {
+              "state": "MERGED"
+            },
+            "review": {
+              "verdict": "approved",
+              "job": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-26-the-review-is-in-its-conversation",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.merged.body.review.job}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "review",
+            "reviewOf": "${state.task.body.id}",
+            "conversation": "${state.task.body.conversation}",
+            "mode": "plan"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-26"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-26-with-no-turn-of-its-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.merged.body.review.job}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "turn": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-26"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-26-no-conversation-made-for-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-26"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-28-no-turn-or-card-for-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.task.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "jobs": {
+                  "$contains": "${state.merged.body.review.job}"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-28"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-28-no-notice-in-the-inbox",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "job": "${state.merged.body.review.job}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-28"
+        ]
+      }
+    }
+  ]
+}
