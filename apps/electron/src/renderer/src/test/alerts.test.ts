@@ -386,7 +386,16 @@ describe('ALERTS-22 to 24', () => {
     const [banner] = await servedAfterLaunch(review);
     expect(banner).toMatchObject({ title: 'Review request from alex', actions: ['Accept', 'Decline'] });
     await banner.press('Accept');
-    expect(mac.sent).toEqual([{ method: 'POST', path: '/v1/inbox/obi-c1/answer', body: { answer: 'Accept' }, signed: false }]);
+    // signed in main on the banner's own action, as Allow and Deny are: obid refuses an unsigned Accept (SPHERE-17)
+    expect(mac.sent).toEqual([{ method: 'POST', path: '/v1/inbox/obi-c1/answer', body: { answer: 'Accept' }, signed: true }]);
+  });
+
+  it('alerts_22_the_banners_decline_is_signed_too', async () => {
+    mac.inbox = [item];
+    await launch();
+    const [banner] = await servedAfterLaunch(review);
+    await banner.press('Decline');
+    expect(mac.sent).toEqual([{ method: 'POST', path: '/v1/inbox/obi-c1/answer', body: { answer: 'Decline' }, signed: true }]);
   });
 
   it('alerts_23_a_review_request_served_with_no_answers_has_no_buttons', async () => {
@@ -405,6 +414,6 @@ describe('ALERTS-22 to 24', () => {
     const [banner] = await servedAfterLaunch(review);
     await banner.press('Accept');
     expect(mac.sent).toHaveLength(1);
-    expect(mac.sent[0]).toMatchObject({ path: '/v1/inbox/obi-c1/answer', signed: false });
+    expect(mac.sent[0]).toMatchObject({ path: '/v1/inbox/obi-c1/answer', signed: true });
   });
 });

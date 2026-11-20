@@ -117,6 +117,14 @@ export async function launch() {
     if (method !== 'GET') {
       mac.sent.push({ method, path, body, signed });
       if (mac.lost > 0) { mac.lost--; return { status: 0, text: 'obid closed the connection.' }; }
+      // as obid's `unsigned_accept` (SPHERE-17): an Accept of another Oby's review request or
+      // handoff that no hand of the owner's signed is refused
+      const item = /^\/v1\/inbox\/([^/]+)\/answer$/.exec(path)?.[1];
+      const type = (mac.inbox.find((i) => (i as { id?: unknown }).id === item) as { obi?: { type?: unknown } } | undefined)?.obi?.type;
+      const said = (body as { answer?: unknown } | undefined)?.answer;
+      if (!signed && (type === 'review_request' || type === 'handoff') && typeof said === 'string' && said.startsWith('Accept')) {
+        return { status: 403, text: '{"error": "Accepting another Oby\'s work takes your own click in Oby."}' };
+      }
       if (mac.refusing) return { status: mac.refusing, text: '{"error": "That item is done already."}' };
       return { status: 200, text: '{}' };
     }
