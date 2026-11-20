@@ -1,0 +1,182 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: a share without the Sphere's feature says feature_not_taken in words; a policy refusal names the admin",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-18 (src/lab/artifactsphere.rs: Sphere::may_send, refusal_words). Ben's card lacks artifacts.v1: sharing with him is refused feature_not_taken, said as Ben's Oby needing an update. The members' rule no longer allows artifact_offer: sharing with Cleo is refused policy_refused, naming Ana as the admin who can change it. Neither upload happens.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "ben-old",
+      "use": "runtime.rust:lab.artifactsphere.policy",
+      "inputs": {
+        "features": {
+          "ben": []
+        }
+      }
+    },
+    {
+      "id": "18-feature-not-taken",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 403,
+            "body.reason": "feature_not_taken",
+            "body.error": "Ben’s Oby can’t take artifacts yet: it needs updating before you can share with it."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-18"
+        ]
+      }
+    },
+    {
+      "id": "no-offers",
+      "use": "runtime.rust:lab.artifactsphere.policy",
+      "inputs": {
+        "allowed": [
+          "artifact_revoke",
+          "artifact_deleted"
+        ]
+      }
+    },
+    {
+      "id": "18-policy-names-the-admin",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "cleo"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 403,
+            "body.reason": "policy_refused",
+            "body.error": "Your Obysphere doesn’t let members share artifacts. Its admin, Ana, can change that."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-18"
+        ]
+      }
+    },
+    {
+      "id": "18-nothing-went-up",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$len": 0
+            },
+            "sent": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-18"
+        ]
+      }
+    }
+  ]
+}

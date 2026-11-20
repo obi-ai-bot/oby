@@ -54,6 +54,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 png = "0.17"
+# Oby Artifacts over the Obysphere in the lab (src/lab/artifactsphere.rs): shares, edits back and
+# public links in one format, age (the owner's decision of 2026-11-20), a version packed as a tar.
+age = { version = "0.11", default-features = false }
+tar = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
