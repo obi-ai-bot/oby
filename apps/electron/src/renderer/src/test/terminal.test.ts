@@ -578,8 +578,7 @@ describe('T3: the terminal', () => {
   });
 
   // TERMINAL-2: "a conversation's starts in its first folder as obid lists it"; a folder gone since says so
-  // known bug obi-ai-bot/oby#2723: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_terminal_a_conversation_whose_first_folder_went_never_opens_in_its_second (known bug #2723)', async () => {
+  it('t3_terminal_a_conversation_whose_first_folder_went_never_opens_in_its_second', async () => {
     const gone = mkdtempSync(join(tmpdir(), 'oby-term-first-'));
     rmSync(gone, { recursive: true });
     const b = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-second-')));
@@ -601,8 +600,7 @@ describe('T3: the terminal', () => {
   });
 
   // NodePtyAdapter.test "replays an exit to late subscribers and respects unsubscription"; TERMINAL-4: nothing comes after its close
-  // known bug obi-ai-bot/oby#2724: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_terminal_nothing_at_all_comes_after_a_close_not_even_its_exit (known bug #2724)', async () => {
+  it('t3_terminal_nothing_at_all_comes_after_a_close_not_even_its_exit', async () => {
     worktree('j1');
     const p = page();
     input();

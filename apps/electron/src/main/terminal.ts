@@ -8,7 +8,7 @@ import { HOME, obid, type Trusted } from './obid';
 import { obidState, onLive } from './live';
 import { takeInput } from './words';
 import { mayWrite } from './terminalInput';
-import { foldersOf, worktreeOf } from './worktree';
+import { worktreeOf } from './worktree';
 import { ipc } from './ipc';
 import { oneOf, safeInteger, string, type Decoder } from '../shared/decode';
 
@@ -98,7 +98,11 @@ export function cleanEnv(base: NodeJS.ProcessEnv, who: { home: string; user: str
 // home (worktree.ts) and only while obid has the job; a conversation's first folder, as obid lists
 // it (its project's while it's in one). Null: none on this Mac.
 export async function cwdOf(place: Place, id: string, ask = obid): Promise<string | null> {
-  if (place === 'conversation') return foldersOf('conversation', id)[0] ?? null;
+  // obid's first folder as it lists it, there or not: one gone since says so (start), never the next
+  if (place === 'conversation') {
+    const first = obidState().conversations.find((c) => c.id === id)?.folders?.[0];
+    return typeof first === 'string' && isAbsolute(first) ? first : null;
+  }
   const dir = worktreeOf(HOME, id);
   if (!dir) return null;
   return (await ask('GET', `/v1/jobs/${encodeURIComponent(id)}`)).status === 200 ? dir : null;
@@ -144,7 +148,8 @@ export class Terminals {
       t.exited = true;
       this.dying.delete(pty);
       this.flush(t);
-      this.send(t.page, 'terminal-exit', id, exitCode, signal ?? null);
+      // nothing comes after a close (TERMINAL-4), its exit neither
+      if (!t.closing) this.send(t.page, 'terminal-exit', id, exitCode, signal ?? null);
       this.terms.delete(id);
     });
     return { term: id, cwd, name: basename(cwd) };
