@@ -300,12 +300,6 @@
             }
           }
         }
-      },
-      "ui": {
-        "proves": [
-          "CLEANUP-4"
-        ],
-        "expectedRed": "#2658: cleanup trusts git status, which skips skip-worktree files"
       }
     },
     {
@@ -324,9 +318,9 @@
       },
       "ui": {
         "proves": [
-          "CLEANUP-4"
-        ],
-        "expectedRed": "#2658: cleanup trusts git status, which skips skip-worktree files"
+          "CLEANUP-4",
+          "CLEANUP-7"
+        ]
       }
     },
     {
@@ -344,9 +338,9 @@
       },
       "ui": {
         "proves": [
-          "CLEANUP-4"
-        ],
-        "expectedRed": "#2658: cleanup trusts git status, which skips skip-worktree files"
+          "CLEANUP-4",
+          "CLEANUP-7"
+        ]
       }
     }
   ]

@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTMCP-4: a confirm tool waits without the owner's word",
+  "version": "1.0.0",
+  "description": "On a turn that isn't the owner's signed word, its agent's `oby_delete_conversations` on its own conversation doesn't act: a confirm inbox item, `Delete the conversation …`, and the conversation stays; the 11th such call in one turn answers that Oby asks for the owner's OK at most 10 times, while `oby_routines`, which has no gate, is never capped.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "agentmcp-4-a-confirm-tool-waits-for-the-owners-ok",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_delete_conversations {\"ids\": [\"${state.c.body.conversation}\"]}",
+          "conversation": "${state.c.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for your OK"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-4"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-4-it-leaves-a-confirm-item",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "confirm": {
+                  "action": "delete_conversations"
+                },
+                "title": {
+                  "$matches": "^Delete the conversation "
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-4"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-4-and-the-conversation-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "${state.c.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-4"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-4-the-11th-in-a-turn-is-capped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REPEAT 11 OBY oby_delete_conversations {\"ids\": [\"${state.c.body.conversation}\"]}",
+          "conversation": "${state.c.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "asks for the owner's OK at most 10 times"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-4"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-4-a-tool-without-the-gate-is-never-capped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REPEAT 11 OBY oby_routines {}",
+          "conversation": "${state.c.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^oby: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-4"
+        ]
+      }
+    }
+  ]
+}

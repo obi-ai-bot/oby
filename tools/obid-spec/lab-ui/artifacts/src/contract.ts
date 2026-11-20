@@ -74,6 +74,8 @@ export interface Version {
   blobs?: Record<string, string>;
   /// The job that made this version, when one did.
   job?: string | null;
+  /// Another Oby's version (an edit sent back, or the owner's on a recipient's copy): data.
+  by?: string;
 }
 
 export interface ShareSummary {
@@ -142,6 +144,86 @@ export interface TurnAnswer {
   artifact: TurnArtifact | null;
 }
 
+// ── Sharing and public links ────────────────────────────────────────────────────────────────────
+
+export const VERB_SHARES = "shares";
+export const VERB_ANSWERS = "answers";
+export const VERB_SEND_BACK = "sendBack";
+export const VERB_PUBLIC = "public";
+
+export const SHARING_ROUTES = [
+  "GET /v1/artifacts/{id}/shares",
+  "POST /v1/artifacts/{id}/shares",
+  "DELETE /v1/artifacts/{id}/shares/{to}",
+  "POST /v1/artifacts/{id}/answers",
+  "POST /v1/artifacts/{id}/sendBack",
+  "POST /v1/artifacts/{id}/public",
+  "DELETE /v1/artifacts/{id}/public",
+] as const;
+
+export const SHARING_SIGNED_ROUTES = [
+  "POST /v1/artifacts/{id}/shares",
+  "DELETE /v1/artifacts/{id}/shares/{to}",
+  "POST /v1/artifacts/{id}/answers",
+  "POST /v1/artifacts/{id}/sendBack",
+  "POST /v1/artifacts/{id}/public",
+  "DELETE /v1/artifacts/{id}/public",
+] as const;
+
+export const EVERYONE = "everyone";
+/// What a public link's request must say: the owner saw the Share menu's warning.
+export const ACKNOWLEDGED = "anyone-with-the-link";
+
+export const ACCESS = ["view", "comment", "edit"] as const;
+export type Access = (typeof ACCESS)[number];
+
+export const SHARE_STATES = ["sent", "answered", "declined", "expired", "revoked"] as const;
+
+export interface ShareBody {
+  to: string[] | typeof EVERYONE;
+  access: Access;
+  ask?: string | null;
+  latest?: boolean;
+  /// The owner's yes to sending files that instruct agents, which the recipient quarantines anyway.
+  instructions?: boolean;
+}
+
+export interface ShareRecord {
+  to: string;
+  sphere: string;
+  offer: string;
+  access: Access;
+  version: number;
+  latest: boolean;
+  at: string;
+  state: (typeof SHARE_STATES)[number];
+  blob: string;
+  /// Unix ms.
+  expires: number;
+}
+
+export interface AnswerBody {
+  text?: string | null;
+  decline?: boolean;
+}
+
+export interface SendBackBody {
+  version: number;
+}
+
+export interface PublicBody {
+  acknowledged?: typeof ACKNOWLEDGED | null;
+  latest?: boolean;
+}
+
+/// The whole link, its key after `#`: shown once, then kept only in obid's vault.
+export interface PublicAnswer {
+  link: string;
+  linkId: string;
+  version: number;
+  latest: boolean;
+}
+
 // ── Errors ──────────────────────────────────────────────────────────────────────────────────────
 
 export interface ApiError {
@@ -167,4 +249,14 @@ export const REASONS = [
   "full",
   "bad_zip",
   "no_export",
+  "feature_not_taken",
+  "policy_refused",
+  "not_acknowledged",
+  "not_allowed",
+  "not_shared",
+  "instructions",
+  "secret_found",
+  "scan_failed",
+  "bad_blob",
+  "expired",
 ] as const;

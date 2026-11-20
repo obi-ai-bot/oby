@@ -1,0 +1,204 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-12: the owner's Claude Code conversation runs in the own lane",
+  "version": "1.0.0",
+  "description": "On Linux too (LANES-26): the owner's conversation's turn runs `git status` with Claude Code's own Bash in its room, on the account's own folder with no login copy and the owner's settings and servers; after it reads something untrusted its next turn is still own, and the mark stays, so the job it starts is untrusted.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "BASH git status",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^bash: ran .*/room$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      }
+    },
+    {
+      "id": "lanes-12-its-turn-ran-on-the-accounts-own-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.first.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "\"config\":\"${state.o.home}/accounts/stand-in\""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      }
+    },
+    {
+      "id": "lanes-12-with-the-owners-settings-and-servers-and-its-own-bash",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.first.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "^\\{[^\\n]*\"argv\":\\[\"-p\",\"--input-format\",\"stream-json\",\"--output-format\",\"stream-json\",\"--verbose\",\"--include-partial-messages\",\"--permission-prompt-tool\",\"stdio\",\"--permission-mode\",\"default\",\"--exclude-dynamic-system-prompt-sections\",\"--tools\",\"[^\"]*Bash[^\"]*\",\"--max-turns\",\"50\",\"--model\",\"[^\"]*\",\"--append-system-prompt\",\"(?:[^\"\\\\]|\\\\.)*\",\"--mcp-config\",\"[^\"]*\",\"--settings\",\""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      }
+    },
+    {
+      "id": "lanes-12-no-login-copy",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.first.body.conversation}/config/.credentials.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO SAY looked",
+          "conversation": "${state.first.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "lanes-12-after-an-untrusted-read-its-turn-is-still-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "BASH git status",
+          "conversation": "${state.first.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^bash: ran .*/room$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      }
+    },
+    {
+      "id": "lanes-12-on-the-same-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.first.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "(?s)(\"config\":\"${state.o.home}/accounts/stand-in\".*){3}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      }
+    },
+    {
+      "id": "dispatched",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around.\", \"kind\": \"research\"}",
+          "conversation": "${state.first.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "lanes-12-and-the-mark-stays-so-its-job-is-untrusted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "untrusted": true,
+                "task": "Look around.",
+                "conversation": "${state.first.body.conversation}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-12"
+        ]
+      }
+    }
+  ]
+}

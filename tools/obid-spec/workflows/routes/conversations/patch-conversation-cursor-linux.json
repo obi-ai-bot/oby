@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/conversations/{id}: Cursor where no box holds it to the proxy",
+  "version": "1.0.0",
+  "description": "On Linux, where no box holds a conversation's Cursor to obid's proxy, choosing Cursor for a conversation is refused: 422 with talk-needs-egress-box, and the conversation keeps talking where it was (CONVERSATION-AGENT-8). On macOS the workflow is skipped: there the box exists.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/conversations/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "linux",
+      "use": "runtime.rust:conversations.only-on",
+      "inputs": {
+        "os": "linux"
+      }
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "conversation": {
+            "agent": "claude"
+          },
+          "agents": {
+            "cursor": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-cursor-harness",
+              "accounts": [
+                {
+                  "id": "cursor",
+                  "name": "Cursor",
+                  "configDir": "${run.scratch}/o/home/accounts/cursor"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/cursor/.config/cursor/auth.json": {
+            "accessToken": "cursor-access-plain-test-login",
+            "refreshToken": "never-copied"
+          }
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=none"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-8-choosing-cursor-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "cursor"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "talk-needs-egress-box"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-8"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-8-it-talks-where-it-was",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "stand-in",
+              "talkAccount": {
+                "$exists": false
+              }
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-8"
+        ]
+      }
+    }
+  ]
+}

@@ -78,16 +78,22 @@ applies to obid gets workflows here, driving the real obid with its stand-in age
   `coverage` doesn't count them.
 - `t3/conversations/`: one turn's events in order and once, Stop with words waiting, a provider's
   errors, an agent that dies mid-turn, restarts with words waiting, the event stream reconnected
-  mid-turn, a conversation deleted while it runs, the same words sent twice, and two conversations
-  at once. Their nodes, `src/t3_conversations.rs`: `t3.follow` (the stream from `after` and/or a
-  `Last-Event-ID` header, as `EventSource` reconnects), `t3.trail` (one conversation's events in the
-  order they came, so a `check` can assert order and count), `t3.kill-agent` (SIGKILL to the
-  stand-in agent itself, never what starts it) and `t3.heard` (what the stand-in heard, from its
-  own `turns.jsonl`).
+  mid-turn, a conversation deleted while it runs, the same words sent twice, two conversations
+  at once, obid killed mid-turn, a question answered after a restart, words with files waiting
+  across a kill, and the account's model changed between two turns. Their nodes,
+  `src/t3_conversations.rs`: `t3.follow` (the stream from `after` and/or a `Last-Event-ID` header,
+  as `EventSource` reconnects), `t3.trail` (one conversation's events in the order they came, so a
+  `check` can assert order and count), `t3.kill-agent` (SIGKILL to the stand-in agent itself, never
+  what starts it), `t3.heard` (what the stand-in heard, from its own `turns.jsonl`) and `t3.agents`
+  (the stand-ins of a conversation still running, signalling none).
+- `t3/approvals/`: a card answered twice, from two places or after Stop, a mode change that keeps
+  what waits, obid restarted while a card waits, and a settings save with one wrong value. They use
+  the suite's own nodes only.
 - A step that finds a real obid bug keeps its assertion, marked `expectedRed` with the bug's issue.
 - `t3/tasks/`: worktrees and git, a worktree gone from under its task, tasks started at once, branch
   names, edits `git status` hides, a stale lock, a clone moved, a base that moved, binary and large
-  diffs, submodules, and a delete that leaves nothing behind. What a crash or the owner's Finder
+  diffs, submodules, a delete that leaves nothing behind, names outside ASCII, and obid killed while
+  a task's command runs. What a crash or the owner's Finder
   does to obid's folders between two of its steps, `t3.git` (git in a worktree or obid's clone) and
   `t3.fs` (remove, move or write a file there) do (`src/t3_tasks.rs`). They only act: what obid
   answers is asserted with the suite's own nodes.

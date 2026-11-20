@@ -278,7 +278,8 @@
               "card_runtime",
               "card_topics",
               "follow_up",
-              "introduction"
+              "introduction",
+              "policy_classes"
             ],
             "card.capabilities.extensions.0.params.runtime": {
               "id": "oby",
@@ -287,9 +288,6 @@
             "card.version": "0.3.0+card-runtime"
           }
         }
-      },
-      "ui": {
-        "expectedRed": "#2525: the card carries policy_classes too, which docs/api/obysphere.md doesn't list"
       }
     }
   ]

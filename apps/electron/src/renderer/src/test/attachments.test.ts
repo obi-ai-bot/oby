@@ -85,6 +85,29 @@ describe('files and photos reach obid', () => {
     expect(live.liveState().problem).toBe("big.mov is larger than 25 MB, so Oby can't take it.");
   });
 
+  // COMPOSER-10 (T3 Code cebdf39984, ceed427d79): Edit on waiting words puts their files back where obid
+  // keeps them; one this app doesn't know the upload of is never sent without it
+  it('t3_queue_edit_files_go_again_from_where_obid_keeps_them_and_never_without_them', async () => {
+    let id = '';
+    const { live } = await load((c) => {
+      if (c.path.startsWith('/v1/attachments?name=')) return { status: 201, body: { path: '/home/attachments/app/u1/shot_1.png', name: 'shot_1.png' } };
+      if (c.path === '/v1/plans') { id = (c.body as { id: string }).id; return { status: 200, body: { kind: 'none', jobs: [] } }; }
+      return { status: 200, body: [] };
+    });
+    const files = await live.uploadFiles([{ name: 'shot 1.png', file: new File(['pixels'], 'shot 1.png', { type: 'image/png' }) }]);
+    live.ask('Also this', 'c1', undefined, undefined, { files: files! });
+    await vi.waitFor(() => expect(plans()).toHaveLength(1));
+    expect(live.queuedFiles(id, ['shot_1.png', 'other.pdf'])).toEqual([{ name: 'shot 1.png', path: '/home/attachments/app/u1/shot_1.png' }, { name: 'other.pdf' }]);
+    // put back with its path: sent as it is, not uploaded again
+    calls.length = 0;
+    expect(await live.uploadFiles([{ name: 'shot 1.png', path: '/home/attachments/app/u1/shot_1.png' }])).toEqual([{ name: 'shot 1.png', path: '/home/attachments/app/u1/shot_1.png' }]);
+    expect(calls).toEqual([]);
+    // put back with no upload this app knows: nothing goes, and the box says why
+    expect(await live.uploadFiles([{ name: 'other.pdf' }])).toBeNull();
+    expect(calls).toEqual([]);
+    expect(live.liveState().problem).toBe('other.pdf can’t go again from here: remove it and attach it again.');
+  });
+
   it('attach_10_files_alone_are_sent', async () => {
     const { live } = await load((c) => ({ status: 200, body: c.path === '/v1/plans' ? { kind: 'none', jobs: [] } : [] }));
     live.ask('', 'c9', undefined, undefined, { files: [{ name: 'a.txt', path: '/p/a.txt' }] });

@@ -40,19 +40,21 @@ export const FOLDER_DROPPED = 'Folders can’t be attached. Use + › Select wor
 export const fileWords = (f: ConversationFile, folders: number) => (folders > 1 ? `${f.folder.split('/').filter(Boolean).pop()}/${f.path}` : f.path);
 
 // The files matching what's typed after an @ in a conversation, asked 120 ms after the last
-// keystroke, the latest answer winning (as search.ts does); none while there's no @ or no conversation
+// keystroke, the latest answer winning (as search.ts does); none while there's no @ or no conversation,
+// and none while what's typed isn't what they answer: Tab or Enter never picks from an older answer
+// (T3 Code's composerMenuHighlight)
 export function useMentionFiles(conversation: string | undefined, at: string | null): ConversationFile[] {
-  const [files, setFiles] = useState<ConversationFile[]>([]);
+  const [answer, setAnswer] = useState<{ conversation?: string; at: string | null; files: ConversationFile[] }>({ at: null, files: [] });
   const asked = useRef(0);
   useEffect(() => {
     const n = ++asked.current;
-    if (!conversation || at === null) { setFiles([]); return; }
+    if (!conversation || at === null) { setAnswer({ at: null, files: [] }); return; }
     // (in a browser, the mock's: obid lists the real ones)
     const ask = () => (onObid ? conversationFiles(conversation, at) : Promise.resolve(FILES.filter((f) => f.path.toLowerCase().includes(at.toLowerCase())).slice(0, 20)));
-    const t = setTimeout(() => { void ask().then((f) => { if (n === asked.current) setFiles(f); }); }, 120);
+    const t = setTimeout(() => { void ask().then((f) => { if (n === asked.current) setAnswer({ conversation, at, files: f }); }); }, 120);
     return () => clearTimeout(t);
   }, [conversation, at]);
-  return files;
+  return answer.conversation === conversation && answer.at === at ? answer.files : [];
 }
 
 // --- / commands (COMPOSER-16)

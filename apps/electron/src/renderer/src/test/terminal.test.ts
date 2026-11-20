@@ -39,7 +39,7 @@ vi.mock('../../../main/obid', () => ({
 }));
 vi.mock('../../../main/live', () => ({ obidState: () => the.state, onLive: (f: () => void) => { the.live.push(f); } }));
 
-const { Terminals, cleanEnv, cwdOf, ownersShell, shellOf, shellArgs, terminals, nodePty, jobGroups, MAX_TERMINALS, KILL_GRACE_MS } = await import('../../../main/terminal');
+const { Terminals, cleanEnv, cwdOf, ownersShell, shellOf, shellArgs, terminals, nodePty, jobGroups, killJobs, MAX_TERMINALS, KILL_GRACE_MS } = await import('../../../main/terminal');
 type Spawn = import('../../../main/terminal').Spawn;
 
 // A pty that does what it's told and records it; it ends on the signal named in `endsOn`
@@ -223,15 +223,15 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     worktree('j1');
     const p = page();
-    endsOn = null;  // ignores SIGHUP and SIGTERM, as a stuck program can
+    endsOn = null;  // ignores SIGHUP, as a stuck program can
     input();
     const { term } = await open(p, 'task', 'j1');
     the.handlers.get('terminal-close')!({ sender: p }, term);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    expect(spawned[0].killed).toEqual(['SIGHUP']);
     vi.advanceTimersByTime(KILL_GRACE_MS - 1);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    expect(spawned[0].killed).toEqual(['SIGHUP']);
     vi.advanceTimersByTime(1);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM', 'SIGKILL']);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGKILL']);
     // the jobs it never passed its hang-up to go with it
     expect(jobsKilled).toEqual([4242]);
     // one that ends on its hang-up gets nothing more
@@ -265,9 +265,9 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     vi.advanceTimersByTime(KILL_GRACE_MS);
     // asked, not waited for: the shell isn't killed until the jobs' answer comes
     expect(jobsAsked).toEqual([false]);
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM']);
+    expect(spawned[0].killed).toEqual(['SIGHUP']);
     holdJobs.shift()!();
-    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGTERM', 'SIGKILL']);
+    expect(spawned[0].killed).toEqual(['SIGHUP', 'SIGKILL']);
     // Oby quitting: waited for, as nothing would run after the app ends
     holdJobs = null;
     input(); await open(p, 'task', 'j1');
@@ -284,7 +284,7 @@ describe('TERMINAL-4: a shell never outlives its tab, its page, its place or Oby
     input(); await open(p, 'task', 'j1');
     input(); await open(p, 'task', 'j1');
     the.app.emit('before-quit');
-    expect(spawned.map((s) => s.killed)).toEqual([['SIGHUP', 'SIGTERM'], ['SIGHUP', 'SIGTERM']]);
+    expect(spawned.map((s) => s.killed)).toEqual([['SIGHUP'], ['SIGHUP']]);
     the.app.emit('will-quit');
     expect(spawned.map((s) => s.killed.at(-1))).toEqual(['SIGKILL', 'SIGKILL']);
     expect(terms.open).toBe(0);
@@ -456,21 +456,56 @@ describe('TERMINAL-7: output', () => {
 // node-pty's own pty and a real shell: the rules above, as a person at the terminal sees them
 describe('TERMINAL-8: a real shell', () => {
   const bash = '/bin/bash';
+  // what Oby did to each shell and when, from its start: the signals close() sent, the jobs it
+  // killed, and the shell's exit as node-pty reported it (a failure says which path it took)
   const real = () => {
-    const out: string[] = [], exits: unknown[] = [];
-    const t = new Terminals(nodePty, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); else exits.push(channel); }, () => {
+    const out: string[] = [], exits: unknown[] = [], did: string[] = [];
+    const t0 = Date.now(), at = (what: string) => did.push(`${Date.now() - t0}ms ${what}`);
+    const spawn = () => { const start = nodePty(); return ((file, args, opts) => {
+      const pty = start(file, args, opts), kill = pty.kill.bind(pty);
+      pty.kill = (sig?: string) => { at(`sent ${sig ?? 'SIGHUP'}`); kill(sig); };
+      pty.onExit(({ exitCode, signal }) => at(`exit reported (code ${exitCode}, signal ${signal ?? 'none'})`));
+      return pty;
+    }) as Spawn; };
+    const t = new Terminals(spawn, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); else exits.push(channel); }, () => {
       const who = userInfo();
       return { shell: bash, env: cleanEnv({ ...process.env, OBY_TERMINAL_TEST_SECRET: 'vault-secret-value' }, { home: who.homedir, user: who.username, shell: bash }, '1.2.3') };
-    }, 300);
-    return { t, text: () => out.join(''), exits };
+    }, 300, (shell, done, now) => { at(`killing the jobs of ${shell}`); killJobs(shell, () => { at('jobs killed'); done(); }, now); });
+    return { t, text: () => out.join(''), exits, did };
   };
+  // a process as ps has it (pid ppid pgid stat started command), or that it's gone
+  const row = (pid: number) => spawnSync('/bin/ps', ['-o', 'pid=,ppid=,pgid=,stat=,lstart=,comm=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim() || 'gone';
   const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
   // running, not gone or a zombie waiting to be reaped
   const alive = (pid: number) => { const st = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim(); return !!st && !st.startsWith('Z'); };
 
+  // a shell the close finds busy (stopped here, as a loaded Mac can leave it) still hangs up its job
+  // once it runs: nothing is sent behind its SIGHUP that could end it first. A SIGTERM right behind it
+  // did, in about one close in eight (bash 3.2 dying of it mid hang-up, its job left to launchd), so 24
+  it('terminal_4_a_busy_shell_closed_still_hangs_up_its_job', { timeout: 120_000 }, async () => {
+    const left: string[] = [];
+    for (let i = 0; i < 24; i++) {
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-busy-')));
+      const { t, text, did } = real();
+      const term = (t.start(null, 'task', 'j1', dir, 80, 24) as { term: string }).term;
+      t.write(term, 'sleep 300 & echo JOB=$!\r');
+      await until(() => /JOB=\d+/.test(text()));
+      const job = Number(/JOB=(\d+)/.exec(text())![1]);
+      const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
+      process.kill(shellPid, 'SIGSTOP');
+      t.close(term);
+      process.kill(shellPid, 'SIGCONT');
+      await until(() => !alive(shellPid));
+      await until(() => !alive(job), 2000).catch(() => { left.push(`job [${row(job)}]; ${did.join('; ')}`); });
+      try { process.kill(job, 'SIGKILL'); } catch { /* gone */ }
+      t.killLeft();
+    }
+    expect(left).toEqual([]);
+  });
+
   it('terminal_8_a_real_shell_runs_in_the_folder_with_a_clean_environment_utf8_whole_and_ends_with_its_jobs', async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-real-')));
-    const { t, text } = real();
+    const { t, text, did } = real();
     const opened = t.start(null, 'task', 'j1', dir, 80, 24);
     expect('term' in opened).toBe(true);
     const term = (opened as { term: string }).term;
@@ -489,7 +524,10 @@ describe('TERMINAL-8: a real shell', () => {
     const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
     expect(alive(job)).toBe(true);
     t.close(term);
-    await until(() => !alive(shellPid) && !alive(job));
+    // a failure here says which way it went: what Oby sent the shell and when, and where each is now
+    await until(() => !alive(shellPid) && !alive(job)).catch(() => {
+      throw new Error(`the shell or its job outlived the close: shell [${row(shellPid)}], job [${row(job)}]; ${did.join('; ')}`);
+    });
     t.killLeft();
   });
 
@@ -540,5 +578,133 @@ describe('TERMINAL-8: a real shell', () => {
       process.env.PATH = path;
       if (job) try { process.kill(job, 'SIGKILL'); } catch { /* gone */ }
     }
+  });
+});
+
+// T3 Code's terminal tests and fixes, held to Oby's own contract (docs/contracts/terminal.md)
+describe('T3: the terminal', () => {
+  // T3 e101cae1b9, Manager.test "keeps a startup failure in the snapshot": a shell that can't start says why
+  it('t3_terminal_a_shell_that_cant_start_says_why_and_nothing_runs', async () => {
+    const dir = worktree('j1');
+    const failing = new Terminals(() => () => { throw new Error('posix_spawnp failed.'); }, (p, ...a) => (p as unknown as Page | null)?.send(...(a as Sent)), () => ENV);
+    const p = page();
+    expect(failing.start(p as never, 'task', 'j1', dir, 80, 24)).toEqual({ error: 'The shell didn’t start: posix_spawnp failed.' });
+    expect(failing.open).toBe(0);
+    expect(p.sent).toEqual([]);
+  });
+
+  // T3 8a227eba4e: a project folder gone since it was listed gives words, not a crash
+  it('t3_terminal_a_folder_gone_since_says_so_and_starts_nothing', () => {
+    const gone = mkdtempSync(join(tmpdir(), 'oby-term-gone-'));
+    rmSync(gone, { recursive: true });
+    expect(terms.start(page() as never, 'task', 'j1', gone, 80, 24)).toEqual({ error: 'Its folder isn’t on this Mac any more.' });
+    expect(spawned).toHaveLength(0);
+  });
+
+  // TERMINAL-2: "a conversation's starts in its first folder as obid lists it"; a folder gone since says so
+  it('t3_terminal_a_conversation_whose_first_folder_went_never_opens_in_its_second', async () => {
+    const gone = mkdtempSync(join(tmpdir(), 'oby-term-first-'));
+    rmSync(gone, { recursive: true });
+    const b = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-second-')));
+    the.state.conversations = [{ id: 'c1', folders: [gone, b] }];
+    input();
+    const a = await open(page(), 'conversation', 'c1');
+    expect(a.cwd).toBeUndefined();
+    expect(spawned.map((s) => s.opts.cwd)).not.toContain(b);
+  });
+
+  // T3 fe949fe1bc (threads with long ids): obid's own ids, a 36-character UUID, open a shell
+  it('t3_terminal_a_conversation_with_obids_own_uuid_id_opens_its_shell', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-uuid-')));
+    const uuid = '0f8e2b7c-3a41-4d0e-9b5f-6c2d1e8a9b70';
+    the.state.conversations = [{ id: uuid, folders: [dir] }];
+    input();
+    expect((await open(page(), 'conversation', uuid)).cwd).toBe(dir);
+    expect(spawned.map((s) => s.opts.cwd)).toEqual([dir]);
+  });
+
+  // NodePtyAdapter.test "replays an exit to late subscribers and respects unsubscription"; TERMINAL-4: nothing comes after its close
+  it('t3_terminal_nothing_at_all_comes_after_a_close_not_even_its_exit', async () => {
+    worktree('j1');
+    const p = page();
+    input();
+    const { term } = await open(p, 'task', 'j1');
+    spawned[0].data!('late');
+    the.handlers.get('terminal-close')!({ sender: p }, term);
+    await flush();
+    expect(p.sent.filter((s) => s[1] === term)).toEqual([]);
+  });
+
+  // a paste with control sequences in it (a coloured log line): exactly the clipboard's text, as xterm.js 6.0.0 brackets it
+  it('t3_terminal_a_bracketed_paste_holding_an_escape_reaches_the_shell_as_copied', async () => {
+    worktree('j1');
+    input();
+    const { term } = await open(page(), 'task', 'j1');
+    the.clip = 'a\x1b[31mred\x1b[0m\nb';
+    key('v', { meta: true });
+    write(term!, '\x1b[200~a\x1b[31mred\x1b[0m\rb\x1b[201~');
+    await flush();
+    expect(spawned[0].written).toEqual(['\x1b[200~a\x1b[31mred\x1b[0m\rb\x1b[201~']);
+  });
+});
+
+describe('T3: a real shell', () => {
+  const bash = '/bin/bash';
+  const real = () => {
+    const out: string[] = [];
+    const t = new Terminals(nodePty, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); }, () => {
+      const who = userInfo();
+      return { shell: bash, env: cleanEnv(process.env, { home: who.homedir, user: who.username, shell: bash }, '1.2.3') };
+    }, 300);
+    return { t, text: () => out.join('') };
+  };
+  const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
+  const started = (t: InstanceType<typeof Terminals>, dir: string) => { const o = t.start(null, 'task', 'j1', dir, 80, 24); expect('term' in o).toBe(true); return (o as { term: string }).term; };
+
+  // T3's e2e scenarios, real-Mac step 2 (⌃C): the key's byte stops what runs in the foreground, and the shell goes on
+  it('t3_terminal_ctrl_c_stops_the_running_program_and_the_shell_goes_on', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-int-')));
+    const { t, text } = real();
+    const term = started(t, dir);
+    // `&&`, not `;`: macOS's bash 3.2 runs the rest of a `;` list after its foreground job dies of SIGINT
+    t.write(term, 'sleep 30 && echo SL""EPT\r');
+    await new Promise((r) => setTimeout(r, 300));
+    t.write(term, '\x03');
+    t.write(term, 'echo AF""TER\r');
+    await until(() => /AFTER/.test(text()), 5000);
+    expect(text()).not.toContain('SLEPT');
+    t.close(term);
+    t.killLeft();
+  });
+
+  // T3 Manager.test "joins surrogate pairs across chunk boundaries": 4-byte characters split between reads arrive whole
+  it('t3_terminal_four_byte_characters_split_between_reads_arrive_whole', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-emoji-')));
+    const { t, text } = real();
+    const term = started(t, dir);
+    t.write(term, 'printf "\\360\\237\\230\\200%.0s" $(seq 1 2000); printf "\\nEN""D\\n"\r');
+    await until(() => /\r\nEND\r\n/.test(text()));
+    expect(text()).toContain('😀'.repeat(2000));
+    expect(text()).not.toContain('�');
+    t.close(term);
+    t.killLeft();
+  });
+
+  // T3 8dba23e420, e2e terminal-large-paste-reaches-program: a large paste reaches the program byte for byte
+  it('t3_terminal_a_large_paste_reaches_the_program_byte_for_byte', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-paste-')));
+    const line = 'const answer = 42; // é ü 日本 😀 tab\there\r';
+    const paste = line.repeat(Math.ceil(300_000 / line.length));
+    const want = Buffer.from(paste);
+    const { t, text } = real();
+    const term = started(t, dir);
+    t.write(term, `stty raw -echo; head -c ${want.length} > got.bin; stty sane; echo GO""T\r`);
+    await new Promise((r) => setTimeout(r, 300));
+    t.write(term, paste);
+    await until(() => /GOT/.test(text()), 20_000);
+    const { readFileSync } = await import('node:fs');
+    expect(readFileSync(join(dir, 'got.bin')).equals(want)).toBe(true);
+    t.close(term);
+    t.killLeft();
   });
 });

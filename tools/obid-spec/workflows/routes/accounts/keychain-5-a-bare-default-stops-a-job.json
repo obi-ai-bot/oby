@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "2",
+  "name": "KEYCHAIN-5 and ACCOUNTS-38: a login refused mid-run says how to sign in from Oby",
+  "version": "1.0.0",
+  "description": "On a Claude Code whose -p runs bare by default, a job on a plan login stops after one launch: interrupted, Try again, no resumesAt, its reason and summary Oby's own words (the login was refused; sign it in again from Settings › Accounts), never Claude Code's `/login`, which goes only to obid's log; the account stays signed in, its cantRun the same words.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude-bare-default"
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Say hello."
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "keychain-5-a-job-stops-after-one-launch-in-obys-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "reason": "Claude Code's login was refused, so this task stopped: sign it in again from Settings › Accounts, then Try again, or ask for another account.",
+            "summary": "Claude Code's login was refused, so this task stopped: sign it in again from Settings › Accounts, then Try again, or ask for another account.",
+            "nextStep": "Try again",
+            "resumesAt": null,
+            "round": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-5",
+          "ACCOUNTS-38"
+        ]
+      }
+    },
+    {
+      "id": "log",
+      "use": "runtime.rust:accounts.log",
+      "inputs": {
+        "obid": "${state.o}",
+        "has": "Not logged in · Please run /login"
+      }
+    },
+    {
+      "id": "keychain-5-claude-codes-own-words-go-to-obids-log",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.log.with}",
+        "expect": {
+          "paths": {
+            "0": {
+              "$contains": "Not logged in · Please run /login"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-5",
+          "ACCOUNTS-38"
+        ]
+      }
+    },
+    {
+      "id": "keychain-5-the-account-stays-signed-in-its-cant-run-the-same-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "signedIn": true,
+                "cantRun": "Claude Code's login was refused, so this task stopped: sign it in again from Settings › Accounts, then Try again, or ask for another account"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-5",
+          "ACCOUNTS-38"
+        ]
+      }
+    }
+  ]
+}

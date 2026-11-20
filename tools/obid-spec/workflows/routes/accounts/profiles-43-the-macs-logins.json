@@ -1,0 +1,255 @@
+{
+  "schemaVersion": "2",
+  "name": "PROFILES-43: a profile is offered the Mac's logins no profile holds",
+  "version": "1.0.0",
+  "description": "With Claude Code's, Codex's and Cursor's own logins on the Mac, Codex's and Cursor's listed in the default profile at the first start: profile B is offered Claude Code's and told the default holds the other two; once B takes Claude Code's, neither is offered it and the default is told B holds it.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "person": {
+          ".claude/.credentials.json": "{\"claudeAiOauth\": {\"accessToken\": \"obid-spec-own\", \"expiresAt\": 4102444800000}}",
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"fake-codex\"}",
+          ".config/cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\"}",
+          ".cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\"}"
+        }
+      }
+    },
+    {
+      "id": "codex-and-cursor-listed-in-the-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "cursor"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/profiles",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/profiles",
+        "body": {
+          "name": "Acme",
+          "color": "#7a4a8c"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "name": "Acme",
+            "default": false
+          }
+        }
+      }
+    },
+    {
+      "id": "profiles-43-b-is-offered-the-login-no-profile-holds",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "headers": {
+          "Oby-Profile": "${state.b.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "availableLogins": {
+              "$len": 1
+            },
+            "availableLogins.0.agent": "claude",
+            "availableLogins.0.id": "default"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-43"
+        ]
+      }
+    },
+    {
+      "id": "profiles-43-and-told-which-another-profile-holds",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "headers": {
+          "Oby-Profile": "${state.b.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "otherProfileLogins": [
+              {
+                "agent": "codex",
+                "profile": "${state.first.body.0.id}",
+                "profileName": "${state.first.body.0.name}"
+              },
+              {
+                "agent": "cursor",
+                "profile": "${state.first.body.0.id}",
+                "profileName": "${state.first.body.0.name}"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-43"
+        ]
+      }
+    },
+    {
+      "id": "profiles-43-the-default-holds-them-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "otherProfileLogins": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-43"
+        ]
+      }
+    },
+    {
+      "id": "profiles-43-b-takes-claude-codes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "headers": {
+          "Oby-Profile": "${state.b.body.id}"
+        },
+        "body": {
+          "agent": "claude",
+          "default": true
+        },
+        "expect": {
+          "status": 201
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-43"
+        ]
+      }
+    },
+    {
+      "id": "profiles-43-then-the-default-is-offered-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "availableLogins": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-43"
+        ]
+      }
+    },
+    {
+      "id": "profiles-43-nor-b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "headers": {
+          "Oby-Profile": "${state.b.body.id}"
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "availableLogins": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-43"
+        ]
+      }
+    },
+    {
+      "id": "profiles-43-and-the-default-is-told-b-holds-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "otherProfileLogins": [
+              {
+                "agent": "claude",
+                "profile": "${state.b.body.id}",
+                "profileName": "Acme"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-43"
+        ]
+      }
+    }
+  ]
+}

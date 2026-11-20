@@ -145,32 +145,7 @@ impl Jobs {
         let out = self
             .sandboxed_git_within(id, &args, None, DIFF_LIMIT, DIFF_OUTPUT_MAX)
             .await?;
-        // `:<modes> <shas> <letter>` then its path, for each file; then `<added>\t<deleted>\t<path>`.
-        let mut files: Vec<Changed> = Vec::new();
-        let mut fields = out.split(|b| *b == 0).filter(|f| !f.is_empty());
-        while let Some(field) = fields.next() {
-            let field = String::from_utf8_lossy(field);
-            if let Some(raw) = field.strip_prefix(':') {
-                let status = match raw.chars().last() {
-                    Some('A') => "added",
-                    Some('D') => "deleted",
-                    _ => "modified",
-                };
-                let Some(path) = fields.next() else {
-                    return Err(format!("git listed {raw} with no path"));
-                };
-                let path = String::from_utf8_lossy(path).into_owned();
-                files.push((path, status, 0, 0));
-            } else if let Some((added, rest)) = field.split_once('\t')
-                && let Some((deleted, path)) = rest.split_once('\t')
-                && let Some(file) = files.iter_mut().find(|f| f.0 == path)
-            {
-                // A binary file's `-` counts 0.
-                file.2 = added.parse().unwrap_or(0);
-                file.3 = deleted.parse().unwrap_or(0);
-            }
-        }
-        Ok(files)
+        listed(&out, ignore_whitespace)
     }
 
     /// The diff over `range` (only `ask`'s path's, taken literally), redacted and then cut to
@@ -205,6 +180,61 @@ impl Jobs {
     }
 }
 
+/// The files `git diff --raw --numstat -z` lists in `out`, in git's order, each with its counts.
+/// With `ignore_whitespace`, a file only whitespace changed is left out on any git (CHANGES-3).
+fn listed(out: &[u8], ignore_whitespace: bool) -> Result<Vec<Changed>, String> {
+    // `:<modes> <shas> <letter>` then its path, for each file; then `<added>\t<deleted>\t<path>`.
+    let mut files: Vec<Changed> = Vec::new();
+    // The files only whitespace changed, as an older git lists them under
+    // `--ignore-all-space`: git 2.43 keeps them in `--raw` with no `--numstat` line, where
+    // 2.54 and later leave them out. A plain `M` with its mode kept, and counted `0 0` or not
+    // at all (a binary's is `-`).
+    let mut counted: Vec<String> = Vec::new();
+    let mut contentless: Vec<String> = Vec::new();
+    let mut kept_mode: Vec<String> = Vec::new();
+    let mut fields = out.split(|b| *b == 0).filter(|f| !f.is_empty());
+    while let Some(field) = fields.next() {
+        let field = String::from_utf8_lossy(field);
+        if let Some(raw) = field.strip_prefix(':') {
+            let letter = raw.rsplit(' ').next().unwrap_or_default();
+            let status = match letter {
+                "A" => "added",
+                "D" => "deleted",
+                _ => "modified",
+            };
+            let Some(path) = fields.next() else {
+                return Err(format!("git listed {raw} with no path"));
+            };
+            let path = String::from_utf8_lossy(path).into_owned();
+            let mut modes = raw.split(' ');
+            if letter == "M" && modes.next().is_some_and(|old| modes.next() == Some(old)) {
+                kept_mode.push(path.clone());
+            }
+            files.push((path, status, 0, 0));
+        } else if let Some((added, rest)) = field.split_once('\t')
+            && let Some((deleted, path)) = rest.split_once('\t')
+            && let Some(file) = files.iter_mut().find(|f| f.0 == path)
+        {
+            counted.push(path.to_owned());
+            if (added, deleted) == ("0", "0") {
+                contentless.push(path.to_owned());
+            }
+            // A binary file's `-` counts 0.
+            file.2 = added.parse().unwrap_or(0);
+            file.3 = deleted.parse().unwrap_or(0);
+        }
+    }
+    // Under `--ignore-all-space`, leave out what git 2.54 and later leave out themselves, on
+    // any git (CHANGES-3): a mode change, an empty new file or a binary stays listed.
+    if ignore_whitespace {
+        let whitespace_only = |path: &String| {
+            kept_mode.contains(path) && (!counted.contains(path) || contentless.contains(path))
+        };
+        files.retain(|f| !whitespace_only(&f.0));
+    }
+    Ok(files)
+}
+
 /// TASKS-24: how much of `text` stays within `cap` bytes, cut on a character, and whether any was cut.
 pub(crate) fn diff_cut(text: &str, cap: usize) -> (usize, bool) {
     if text.len() <= cap {
@@ -220,6 +250,37 @@ pub(crate) fn diff_cut(text: &str, cap: usize) -> (usize, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CHANGES-3: under `--ignore-all-space`, git 2.43 lists a re-indented file in `--raw` with no
+    /// `--numstat` line, where git 2.54 leaves it out: both read the same. A binary (`-`), a file
+    /// whose mode alone changed and an empty new file (`0 0` each) stay listed on both.
+    #[test]
+    fn changes_3_whitespace_alone_is_left_out_on_any_git() {
+        let older = ":100644 100644 8352675 1592e5c M\0bin.dat\0:000000 100644 0000000 e69de29 A\0empty.txt\0:100644 100644 422c2b7 0cd5ff0 M\0f.js\0:100644 100755 587be6b 587be6b M\0mode.sh\0-\t-\tbin.dat\x000\t0\tempty.txt\x000\t0\tmode.sh\0";
+        let newer = ":100644 100644 8352675 1592e5c M\0bin.dat\0:000000 100644 0000000 e69de29 A\0empty.txt\0:100644 100755 587be6b 587be6b M\0mode.sh\0-\t-\tbin.dat\x000\t0\tempty.txt\x000\t0\tmode.sh\0";
+        let names = |out: &str, ignore| -> Vec<String> {
+            listed(out.as_bytes(), ignore)
+                .unwrap()
+                .into_iter()
+                .map(|f| f.0)
+                .collect()
+        };
+        for out in [older, newer] {
+            assert_eq!(
+                names(out, true),
+                ["bin.dat", "empty.txt", "mode.sh"],
+                "{out:?}"
+            );
+        }
+        // Not asked to ignore whitespace: what git lists stays, the re-indented file too.
+        assert_eq!(
+            names(older, false),
+            ["bin.dat", "empty.txt", "f.js", "mode.sh"]
+        );
+        // An addition or a deletion counted `0 0` (an empty file) stays.
+        let gone = ":100644 000000 e69de29 0000000 D\0was.txt\x000\t0\twas.txt\0";
+        assert_eq!(names(gone, true), ["was.txt"]);
+    }
 
     /// TASKS-24: a text at or under the cap stays whole.
     #[test]

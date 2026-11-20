@@ -1,0 +1,146 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-3: an own job on the default account runs on Claude Code's own folder",
+  "version": "1.0.0",
+  "description": "The owner's Claude Code job on the account with no folder runs with no CLAUDE_CONFIG_DIR (Claude Code's own ~/.claude) and the owner's HOME, with no login copy in the job's folder, whatever `claudeOwnSandbox` lists; the account stays signed in.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "claude": {
+              "accounts": [
+                {
+                  "id": "default",
+                  "name": "Default",
+                  "configDir": null
+                }
+              ]
+            }
+          },
+          "claudeOwnSandbox": [
+            "someone-else"
+          ]
+        },
+        "person": {
+          ".claude/.credentials.json": "{\"claudeAiOauth\": {\"accessToken\": \"obid-spec-own\", \"expiresAt\": 4102444800000}}"
+        }
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "REPORT",
+            "account": "default"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "own-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "account": "default"
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-3-the-default-accounts-own-job-has-no-claude-config-dir",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.CLAUDE_CONFIG_DIR": {
+                "$exists": false
+              },
+              "env.HOME": "${state.o.person}",
+              "argv": {
+                "$contains": "--settings"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-3"
+        ]
+      }
+    },
+    {
+      "id": "lanes-3-no-login-copy-in-the-jobs-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "logins/${state.own.body.id}/.credentials.json",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-3"
+        ]
+      }
+    },
+    {
+      "id": "lanes-3-the-macs-own-login-is-untouched",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "default",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-3"
+        ]
+      }
+    }
+  ]
+}
