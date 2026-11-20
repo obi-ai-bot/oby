@@ -1,0 +1,234 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: a Claude Code job's and a Codex job's agent each find the browser server in what they were given and drive a page with it; with Agents can use the browser off, a new job is given none",
+  "version": "1.0.0",
+  "description": "BROWSER-17, own lane: a scratch obid on the stand-ins (a Claude Code and a Codex account), the browser fixture site, the real agent-browser and chrome-headless-shell obid installs. Each stand-in uses only what obid gave its agent: Claude Code's --mcp-config `browser` server (http, the job's broker token as a Bearer header) and --allowedTools' 11 `mcp__browser__<tool>` rules, no more; Codex's `-c mcp_servers.browser.*` settings, its token in the variable they name, its tools approved before the run (`default_tools_approval_mode`), as Oby's own server's are, in Bypass, where Codex asks nobody, and in Ask mode alike. Each lists the 11 tools, opens the site and snapshots it (the sign-in form). The owner then turns Agents can use the browser off (signed): a new job of each tool is given no browser server.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/mcp"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "claude",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.o}",
+        "agent": "claude",
+        "url": "${state.site.url}/"
+      }
+    },
+    {
+      "id": "claude-browsed",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.claude}",
+        "expect": {
+          "paths": {
+            "browsed.server.url": {
+              "$contains": "/v1/browser/mcp"
+            },
+            "browsed.server.bearer": true,
+            "browsed.calls.list.result.tools.0.name": "oby_browser_open",
+            "browsed.calls.list.result.tools.10.name": "oby_browser_close_tab",
+            "browsed.calls.open.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Sign in"
+            },
+            "browsed.server.type": "http",
+            "browsed.rules.0": "mcp__browser__oby_browser_open",
+            "browsed.rules.10": "mcp__browser__oby_browser_close_tab",
+            "browsed.rules.11": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-17"
+        ]
+      }
+    },
+    {
+      "id": "codex",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.o}",
+        "agent": "codex",
+        "url": "${state.site.url}/"
+      }
+    },
+    {
+      "id": "codex-browsed",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.codex}",
+        "expect": {
+          "paths": {
+            "browsed.server.url": {
+              "$contains": "/v1/browser/mcp"
+            },
+            "browsed.server.bearer": true,
+            "browsed.calls.list.result.tools.0.name": "oby_browser_open",
+            "browsed.calls.list.result.tools.10.name": "oby_browser_close_tab",
+            "browsed.calls.open.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Sign in"
+            },
+            "browsed.lane": "own",
+            "browsed.approval": "approve"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-17"
+        ]
+      }
+    },
+    {
+      "id": "codexAsks",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.o}",
+        "agent": "codex",
+        "url": "${state.site.url}/",
+        "mode": "ask"
+      }
+    },
+    {
+      "id": "codex-asks-browsed",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.codexAsks}",
+        "expect": {
+          "paths": {
+            "browsed.server.url": {
+              "$contains": "/v1/browser/mcp"
+            },
+            "browsed.server.bearer": true,
+            "browsed.calls.list.result.tools.0.name": "oby_browser_open",
+            "browsed.calls.list.result.tools.10.name": "oby_browser_close_tab",
+            "browsed.calls.open.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Sign in"
+            },
+            "browsed.lane": "own",
+            "browsed.approval": "approve"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-17"
+        ]
+      }
+    },
+    {
+      "id": "off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseBrowser": false
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "agentsUseBrowser": false
+          }
+        }
+      }
+    },
+    {
+      "id": "claudeOff",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.o}",
+        "agent": "claude",
+        "url": "${state.site.url}/"
+      }
+    },
+    {
+      "id": "claude-off-none",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.claudeOff}",
+        "expect": {
+          "paths": {
+            "browsed.server": null,
+            "browsed.calls.open": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-17"
+        ]
+      }
+    },
+    {
+      "id": "codexOff",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.o}",
+        "agent": "codex",
+        "url": "${state.site.url}/"
+      }
+    },
+    {
+      "id": "codex-off-none",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.codexOff}",
+        "expect": {
+          "paths": {
+            "browsed.server": null,
+            "browsed.calls.open": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-17"
+        ]
+      }
+    }
+  ]
+}

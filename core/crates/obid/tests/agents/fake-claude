@@ -100,6 +100,11 @@
 //                    worktree, and entries whose names are a made-up AWS key and a made-up
 //                    Google API key; then ends the turn with "Made artifacts."
 //   ARTIFACTS_MANY   writes 25 Markdown files in .obi/artifacts/ instead
+//   BROWSE: <url>    uses Oby's browser as Claude Code would (BROWSER-17): finds the `browser` server
+//                    in its --mcp-config, calls each tool only when --allowedTools names its rule
+//                    (`mcp__browser__<tool>`), lists the tools, opens <url> and snapshots it; writes
+//                    what it found and got to .obi/browsed.json and ends "Browsed." (or "Not
+//                    browsed: <why>")
 //   REPORT           writes .obi/report.json in the worktree: its arguments, environment, prompt,
 //                    the MCP config it was given (--mcp-config), the tools it was allowed
 //                    (--allowedTools), what each http MCP server answered to `tools/list`, the
@@ -797,6 +802,8 @@ ${probes}`;
   } else if (prompt.startsWith("ECHO")) {
     const at = process.argv.indexOf("--resume");
     result(`heard: ${prompt} resume=${at >= 0 ? process.argv[at + 1] : "none"}`);
+  } else if (prompt.match(/BROWSE: \S+/)) {
+    browse(prompt.match(/BROWSE: (\S+)/)[1]).then(result, (e) => result(`browse failed: ${e}`, true));
   } else if (prompt.includes("REPORT")) {
     // LINGER: the turn goes on after the report, until obid ends it.
     report(prompt).then(() => (prompt.includes("LINGER") ? setInterval(() => {}, 1000) : result("Reported.")), (e) => result(`report failed: ${e}`, true));
@@ -961,6 +968,41 @@ ${probes}`;
     result("Nothing to do.");
   }
 });
+
+async function browse(url) {
+  const argv = process.argv.slice(2);
+  const at = argv.indexOf("--mcp-config");
+  const server = at >= 0 ? JSON.parse(readFileSync(argv[at + 1], "utf8")).mcpServers?.browser : undefined;
+  const from = argv.indexOf("--allowedTools");
+  const allowed = [];
+  for (const arg of from < 0 ? [] : argv.slice(from + 1)) {
+    if (arg.startsWith("-")) break;
+    allowed.push(arg);
+  }
+  const seen = { server: server && { type: server.type, url: server.url, bearer: /^Bearer \S+$/.test(server.headers?.Authorization ?? "") },
+    rules: allowed.filter((rule) => rule.startsWith("mcp__browser__")), calls: {} };
+  const write = (said) => {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/browsed.json", JSON.stringify(seen, null, 2));
+    return said;
+  };
+  if (!server) return write("Not browsed: no browser server");
+  let id = 0;
+  const call = async (method, params) => {
+    const answer = await fetch(server.url, { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(server.headers ?? {}) },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }) });
+    return answer.json();
+  };
+  // Claude Code calls an MCP tool its --allowedTools names without asking, and no other here.
+  const tool = (name, args) => allowed.includes(`mcp__browser__${name}`)
+    ? call("tools/call", { name, arguments: args }) : Promise.resolve({ notAllowed: name });
+  seen.calls.list = await call("tools/list", {});
+  seen.calls.open = await tool("oby_browser_open", { url });
+  seen.calls.snapshot = await tool("oby_browser_snapshot", {});
+  const ok = seen.calls.open.result?.structuredContent?.ok === true && seen.calls.snapshot.result?.structuredContent?.ok === true;
+  return write(ok ? "Browsed." : "Not browsed: a call failed");
+}
 
 async function report(prompt) {
   const argv = process.argv.slice(2);

@@ -97,6 +97,7 @@ async fn run_once(name: &str, input: &Value) -> Result<Value> {
         "browser-https-site" => lab::https(input).await,
         "browser-flaky-site" => lab::flaky(input).await,
         "browser-job" => job(input).await,
+        "browser-agent-job" => agent_job(input).await,
         "browser-mcp" => {
             let out = lab::mcp_call(&as_lab(input)).await?;
             seen(&out);
@@ -196,6 +197,46 @@ async fn job(input: &Value) -> Result<Value> {
         anyhow::ensure!(
             Instant::now() < deadline,
             "job {id}'s stand-in wrote no broker token in 90 s (obid-start's `browser: true` gives it a Codex account)"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// A job of `agent` whose stand-in browses `url` through its own configuration (BROWSE, BROWSER-17),
+/// and what it wrote: the server and rules it found, and each call's answer.
+async fn agent_job(input: &Value) -> Result<Value> {
+    let obid = &input["obid"];
+    let home = PathBuf::from(crate::sphere::str_of(obid, "home")?);
+    let agent = crate::sphere::str_of(input, "agent")?;
+    let url = crate::sphere::str_of(input, "url")?;
+    let mut job = json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+        "task": format!("BROWSE: {url}"), "agent": agent});
+    if let Some(mode) = input["mode"].as_str() {
+        job["mode"] = json!(mode);
+    }
+    let made = crate::sphere::obid_call(obid, "POST", "/v1/jobs", Some(&json!({"job": job}))).await?;
+    anyhow::ensure!(made.status == 201, "the job: {} {}", made.status, made.text);
+    let id = made.body["id"]
+        .as_str()
+        .context("the job's id")?
+        .to_string();
+    let file = home.join("worktrees").join(&id).join(".obi/browsed.json");
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        if let Ok(browsed) = serde_json::from_str::<Value>(&std::fs::read_to_string(&file).unwrap_or_default()) {
+            let j = crate::sphere::obid_call(obid, "GET", &format!("/v1/jobs/{id}"), None).await?;
+            return Ok(json!({"job": id, "status": j.body["status"], "browsed": browsed}));
+        }
+        let j = crate::sphere::obid_call(obid, "GET", &format!("/v1/jobs/{id}"), None).await?;
+        let status = j.body["status"].as_str().unwrap_or_default();
+        anyhow::ensure!(
+            status == "running" || status == "queued",
+            "job {id} is {status} and its stand-in wrote no .obi/browsed.json: {}",
+            j.body["step"]
+        );
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "job {id}'s stand-in wrote no .obi/browsed.json in 180 s"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
