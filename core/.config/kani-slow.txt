@@ -2,4 +2,8 @@
 # the merge queue, and proves them nightly and on demand (docs/proofs.md, CI-58 and 59). One exact
 # harness name per line, then why; a harness leaves this list once it proves within the job's
 # 20 minutes a harness.
-job::lifecycle::proofs::jobstate_7_holds_in_every_status  # past 100 minutes on GitHub's runner; the factory's gate VM proves it
+job::lifecycle::proofs::jobstate_7_holds_after_another_round  # JOBSTATE-7 split by command (one harness ran CBMC out of 16 GB); here until it proves within 20 minutes
+job::lifecycle::proofs::jobstate_7_holds_after_a_failed_end  # JOBSTATE-7 split by command (one harness ran CBMC out of 16 GB); here until it proves within 20 minutes
+job::lifecycle::proofs::jobstate_7_holds_after_an_end_that_needs_you  # JOBSTATE-7 split by command (one harness ran CBMC out of 16 GB); here until it proves within 20 minutes
+job::lifecycle::proofs::jobstate_7_holds_after_an_account_limit  # JOBSTATE-7 split by command (one harness ran CBMC out of 16 GB); here until it proves within 20 minutes
+job::lifecycle::proofs::jobstate_7_holds_after_a_question  # JOBSTATE-7 split by command (one harness ran CBMC out of 16 GB); here until it proves within 20 minutes

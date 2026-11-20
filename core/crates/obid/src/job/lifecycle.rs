@@ -537,22 +537,46 @@ mod proofs {
         std::mem::forget(job);
     }
 
-    /// JOBSTATE-7 for every status and command: a change that leaves the job queued for another
-    /// round leaves every field of [`ROUND_CLEARS`] empty.
-    #[kani::proof]
-    fn jobstate_7_holds_in_every_status() {
-        any_command(|cmd| {
-            let mut job = any_job();
-            if let Ok(change) = transition(&job, &cmd) {
-                change.apply(&mut job);
-                if job.status == Status::Queued && job.phase == Some(Phase::Work) {
-                    for field in ROUND_CLEARS {
-                        assert!(is_clear(field, &job));
-                    }
+    /// JOBSTATE-7 for every status, after `cmd`: a change that leaves the job queued for another
+    /// round leaves every field of [`ROUND_CLEARS`] empty. One harness per kind of command, the
+    /// five together every command [`any_command`] makes: one harness for all of them ran CBMC past
+    /// the 16 GB of GitHub's runner.
+    fn jobstate_7_holds_after(cmd: Command) {
+        let mut job = any_job();
+        if let Ok(change) = transition(&job, &cmd) {
+            change.apply(&mut job);
+            if job.status == Status::Queued && job.phase == Some(Phase::Work) {
+                for field in ROUND_CLEARS {
+                    assert!(is_clear(field, &job));
                 }
-                std::mem::forget(change);
             }
-            std::mem::forget((job, cmd));
-        });
+            std::mem::forget(change);
+        }
+        std::mem::forget((job, cmd));
+    }
+
+    #[kani::proof]
+    fn jobstate_7_holds_after_another_round() {
+        jobstate_7_holds_after(Command::NextRound);
+    }
+
+    #[kani::proof]
+    fn jobstate_7_holds_after_a_failed_end() {
+        jobstate_7_holds_after(any_end(EndKind::Failed));
+    }
+
+    #[kani::proof]
+    fn jobstate_7_holds_after_an_end_that_needs_you() {
+        jobstate_7_holds_after(any_end(EndKind::NeedsYou));
+    }
+
+    #[kani::proof]
+    fn jobstate_7_holds_after_an_account_limit() {
+        jobstate_7_holds_after(any_end(EndKind::AccountLimit));
+    }
+
+    #[kani::proof]
+    fn jobstate_7_holds_after_a_question() {
+        jobstate_7_holds_after(any_end(EndKind::Asked));
     }
 }
