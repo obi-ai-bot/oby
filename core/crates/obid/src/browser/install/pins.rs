@@ -1,9 +1,10 @@
-//! The pins obid downloads against (BROWSER-23): agent-browser 0.43.0's npm tarball and its
-//! binary, and Chrome for Testing 158.0.8127.36's zip (the version agent-browser 0.43.0 installs),
-//! per platform. Google publishes no hashes for Chrome for Testing, so these are obid's own,
-//! recorded on 2026-11-20 over HTTPS; agent-browser's tarballs matched npm's `dist.integrity` and
-//! their binaries the lab's `PINNED`. A Chrome security update is a new pin here. It owns only
-//! these constant tables and writes nothing.
+//! The pins obid downloads against (BROWSER-23): agent-browser 0.43.0's npm tarball and its binary,
+//! and chrome-headless-shell 158.0.8127.36's zip (the version agent-browser 0.43.0 installs as
+//! Chrome for Testing; the owner's choice, docs/decisions/2026-11-20-headless-shell.md), per
+//! platform. Google publishes no hashes for these zips, so these are obid's own, recorded on
+//! 2026-11-20 over HTTPS and matching the lab's `SHELL_PINNED`; agent-browser's tarballs matched
+//! npm's `dist.integrity` and their binaries the lab's `PINNED`. A Chrome security update is a new
+//! pin here. It owns only these constant tables and writes nothing.
 
 use std::path::Path;
 
@@ -46,25 +47,26 @@ const AGENT_BROWSER: &[(&str, &str, &str, u64, &str)] = &[
     ),
 ];
 
-/// Per platform: Google's name for it, the zip's SHA-256 and size. linux-arm64 has no build.
+/// Per platform: Google's name for it, chrome-headless-shell's zip's SHA-256 and size.
+/// linux-arm64 has no build.
 const CHROME: &[(&str, &str, &str, u64)] = &[
     (
         "darwin-arm64",
         "mac-arm64",
-        "b86d3b393def1f87d369b022abff0a51acb015d6fcb79ddfd1c379c9d72fbbe2",
-        200_339_070,
+        "c24d40a3786322ff3a5e3ac6eed162226cbaf07ebe468715407827226b0f8897",
+        105_057_133,
     ),
     (
         "darwin-x64",
         "mac-x64",
-        "1390e9b1386a1fd8ec2c4940b9ff59cbbda71b896b85182d7efbd73c58213802",
-        213_549_680,
+        "e0c5d07d8f5bcc5bdd5ef370e7daf3770856b585fcc9eecf441c7e3bb2e3d1cf",
+        112_306_247,
     ),
     (
         "linux-x64",
         "linux64",
-        "dba9cc838e1ce269c33ea68170881127bd15d078fc3ca5891c90802819a4d7c7",
-        208_062_943,
+        "2d3a23017323c54fd457a678e4351f895c4076d8050e39d5aa6247f93448b73a",
+        132_087_165,
     ),
 ];
 
@@ -97,28 +99,21 @@ pub fn agent_browser(platform: &str, base: &str) -> Result<Pin, String> {
     })
 }
 
-/// Chrome for Testing's pin for `platform`, downloaded from under `base` (Google's bucket but in
-/// tests).
+/// chrome-headless-shell's pin for `platform`, downloaded from under `base` (Google's bucket but
+/// in tests).
 pub fn chrome(platform: &str, base: &str) -> Result<Pin, String> {
     let (_, google, sha256, bytes) = CHROME
         .iter()
         .find(|row| row.0 == platform)
-        .ok_or_else(|| no_build("Chrome for Testing", platform))?;
-    let executable = if google.starts_with("mac") {
-        format!(
-            "chrome-{google}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
-        )
-    } else {
-        format!("chrome-{google}/chrome")
-    };
+        .ok_or_else(|| no_build("chrome-headless-shell", platform))?;
     Ok(Pin {
-        name: format!("Chrome for Testing {CHROME_VERSION}"),
-        url: format!("{base}/{CHROME_VERSION}/{google}/chrome-{google}.zip"),
+        name: format!("chrome-headless-shell {CHROME_VERSION}"),
+        url: format!("{base}/{CHROME_VERSION}/{google}/chrome-headless-shell-{google}.zip"),
         sha256: (*sha256).into(),
         bytes: *bytes,
         archive: Archive::Zip,
-        folder: format!("chrome-{CHROME_VERSION}"),
-        executable,
+        folder: format!("chrome-headless-shell-{CHROME_VERSION}"),
+        executable: format!("chrome-headless-shell-{google}/chrome-headless-shell"),
         executable_sha256: None,
     })
 }
@@ -160,16 +155,21 @@ mod tests {
         let mac = chrome("darwin-arm64", CHROME_BASE).unwrap();
         assert_eq!(
             mac.url,
-            "https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.36/mac-arm64/chrome-mac-arm64.zip"
+            "https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.36/mac-arm64/chrome-headless-shell-mac-arm64.zip"
         );
-        assert!(mac.executable.ends_with("MacOS/Google Chrome for Testing"));
+        assert_eq!(
+            mac.executable,
+            "chrome-headless-shell-mac-arm64/chrome-headless-shell"
+        );
+        assert_eq!(mac.folder, "chrome-headless-shell-158.0.8127.36");
+        assert_eq!(mac.bytes, 105_057_133);
         assert_eq!(
             chrome("linux-x64", CHROME_BASE).unwrap().executable,
-            "chrome-linux64/chrome"
+            "chrome-headless-shell-linux64/chrome-headless-shell"
         );
         let why = chrome("linux-arm64", CHROME_BASE).unwrap_err();
         assert!(
-            why.contains("Chrome for Testing has no build for linux-arm64"),
+            why.contains("chrome-headless-shell has no build for linux-arm64"),
             "{why}"
         );
     }

@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "Lab browser: the same core drives agent-browser on a headless Ubuntu machine",
   "version": "1.0.0",
-  "description": "The browser on another computer (src/lab/browser.rs on a lab machine, src/lab/machine.rs): an isolated amd64 Ubuntu machine with agent-browser installed and hash-checked there (Chrome for Testing has no Linux arm64 build) runs the same core loop headless: open, snapshot, type and click by ref, evaluate quoted as outside data, the person's hold refusing an act, and a timed-out command neither replayed nor left blocking. Skipped without OrbStack.",
+  "description": "The browser on another computer (src/lab/browser.rs on a lab machine, src/lab/machine.rs): an isolated amd64 Ubuntu machine with agent-browser and chrome-headless-shell installed and hash-checked there (chrome-headless-shell has no Linux arm64 build) runs the same core loop headless: open, snapshot, type and click by ref, evaluate quoted as outside data, the person's hold refusing an act, and a timed-out command neither replayed nor left blocking. Skipped without OrbStack.",
   "trigger": {
     "manual": {}
   },
@@ -31,7 +31,10 @@
         "expect": {
           "paths": {
             "agentBrowser.pinned": true,
-            "profileInWorkflow": true
+            "profileInWorkflow": true,
+            "chrome": {
+              "$contains": "chrome-headless-shell"
+            }
           }
         },
         "machine": "${state.box}"

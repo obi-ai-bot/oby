@@ -39,7 +39,7 @@ export const config: BrainConfig = {
     { id: 'publish', title: 'Publish and review', summary: 'Publishing, reviews, merging and the decision checks before them.', modules: ['publish', 'merge', 'autofix', 'review', 'decisions', 'teammates'] },
     { id: 'connectors', title: 'Connectors', summary: 'GitHub, Tetrix, the MCP broker agents reach them through, and the owner\'s own Claude Code connectors.', modules: ['github', 'github_login', 'github_work', 'tetrix', 'connections', 'connectors', 'mcp'] },
     { id: 'security', title: 'Security', summary: 'The box, egress, the secret scan, permissions, policy, the vault and approvals.', modules: ['sandbox', 'egress', 'scan', 'secrets', 'secretspec', 'permissions', 'policy', 'vault', 'approval', 'devices', 'token', 'proofs', 'local_paths'] },
-    { id: 'sphere', title: 'Sphere and remote', summary: 'The Obysphere link, the phone relay, the LAN gateway and pushes.', modules: ['sphere', 'relay', 'gateway', 'push', 'triage'] },
+    { id: 'sphere', title: 'Sphere and remote', summary: 'The Obysphere link, the phone relay, the LAN gateway, pushes and the owner\'s other computers.', modules: ['sphere', 'relay', 'gateway', 'push', 'triage', 'remote'] },
     { id: 'platform', title: 'Platform', summary: 'Serving obid: the HTTP API, events, configuration and settings.', modules: ['api', 'app', 'routes', 'events', 'config', 'settings', 'profiles', 'profile_scope'] },
   ],
   // What Sangam's app keeps itself. "obid": a choice obid owes him (the issue that takes it over); "app": a per-viewer

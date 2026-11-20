@@ -23,6 +23,7 @@ pub enum Refusal {
     UploadOutsideRoom(String),
     NotGranted,
     Browser(String),
+    CertificatePage,
 }
 
 impl Refusal {
@@ -45,6 +46,7 @@ impl Refusal {
             Refusal::UploadOutsideRoom(_) => "upload_outside_room",
             Refusal::NotGranted => "not_granted",
             Refusal::Browser(_) => "browser",
+            Refusal::CertificatePage => "certificate_page",
         }
     }
 
@@ -90,6 +92,7 @@ impl Refusal {
                 "This app isn't one the person let this conversation drive.".into()
             }
             Refusal::Browser(why) => why.clone(),
+            Refusal::CertificatePage => "This page stopped at a certificate problem (or another of the browser's own error pages); only the person can decide to go on. Reads still work, and so does navigating elsewhere.".into(),
         }
     }
 

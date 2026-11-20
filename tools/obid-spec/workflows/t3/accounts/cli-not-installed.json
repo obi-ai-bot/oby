@@ -1,0 +1,202 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 accounts: a tool whose CLI isn't on this Mac",
+  "version": "1.0.0",
+  "description": "T3 Code's provider-not-installed bugs (a missing binary, a binary path that isn't there): Codex's CLI isn't on this Mac while its account is signed in. Status says it has no path; a task named to it is refused before anything starts, in plain words with what to do and no path, and nothing is made (ACCOUNTS-32); a task asked of Codex runs on Claude Code saying why (ACCOUNTS-32, 31); Auto passes over it even when it's where new tasks go (ACCOUNTS-30); and the task that went elsewhere ends instead of hanging.",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "/nonexistent/obid-spec/codex",
+              "accounts": [
+                {
+                  "id": "cx",
+                  "name": "Work"
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "status-says-codex-has-no-path",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tools": {
+              "$any": {
+                "agent": "codex",
+                "path": null,
+                "version": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accounts-32-a-named-account-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO",
+            "account": "cx"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "Codex isn't installed on this Mac, so this task didn't start: install it, or ask for another account."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-32"
+        ]
+      }
+    },
+    {
+      "id": "accounts-32-nothing-was-made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-32"
+        ]
+      }
+    },
+    {
+      "id": "accounts-32-codex-asked-for-runs-on-claude-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO",
+            "agent": "codex"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in",
+            "routed": "Codex isn't installed on this Mac, so this runs on Claude Code · Stand-in."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-32",
+          "ACCOUNTS-31"
+        ]
+      }
+    },
+    {
+      "id": "new-tasks-go-to-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "cx"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-30-auto-passes-over-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ECHO"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "agent": "claude",
+            "account": "stand-in",
+            "routed": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-30"
+        ]
+      }
+    },
+    {
+      "id": "the-task-it-handed-off-ends",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.accounts-32-codex-asked-for-runs-on-claude-saying-why.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "account": "stand-in"
+          }
+        }
+      }
+    }
+  ]
+}
