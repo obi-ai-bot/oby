@@ -93,6 +93,9 @@ export function closeTerminalPanel() {
   delete sessions[k];
   set({ shown: null, sessions });
 }
+// the panel gone from the page (another profile opened, the splash): its tabs' shells ended with their
+// views, so their places are forgotten too, and none opens again until the owner's click (TERMINAL-1)
+export function forgetTerminals() { if (state.shown || Object.keys(state.sessions).length) set({ shown: null, sessions: {} }); }
 // put away for Changes or the browser: the shells keep going, shown again from the menu
 export function hideTerminal() { if (state.shown) set({ ...state, shown: null }); }
 // (tests) as at launch

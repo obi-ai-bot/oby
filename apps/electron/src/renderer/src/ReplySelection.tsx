@@ -11,13 +11,33 @@ import { createPortal } from 'react-dom';
 // What counts as a reply's words: Oby's (and another Oby's it quotes), an agent's in its session
 export const REPLY = '.msg.is-oby .msg-bubble, .msg-quote, .ss-said';
 
+// The first (or last) text of which `range` picks a word: a triple-click ends the range at the very
+// start of the next block, and a drag can start at the very end of the one before, neither picking
+// anything there (T3 Code d02e292610)
+function pickedEnd(range: Range, last: boolean): Node | null {
+  const words = (n: Node) => {
+    const t = n as Text, from = n === range.startContainer ? range.startOffset : 0, to = n === range.endContainer ? range.endOffset : t.length;
+    return /\S/.test(t.data.slice(from, to));
+  };
+  const top = range.commonAncestorContainer;
+  if (top.nodeType === Node.TEXT_NODE) return words(top) ? top : null;
+  const walk = document.createTreeWalker(top, NodeFilter.SHOW_TEXT);
+  let found: Node | null = null;
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    if (!range.intersectsNode(n) || !words(n)) continue;
+    if (!last) return n;
+    found = n;
+  }
+  return found;
+}
+
 // The words of `selection` when they lie within one reply under `root`, else null
 export function replyWords(root: HTMLElement | null, selection: Selection | null): { text: string; range: Range } | null {
   if (!root || !selection || selection.isCollapsed || !selection.rangeCount) return null;
   const range = selection.getRangeAt(0);
   const at = (n: Node | null) => (n?.nodeType === Node.ELEMENT_NODE ? (n as Element) : n?.parentElement ?? null)?.closest(REPLY) ?? null;
-  const reply = at(range.startContainer);
-  if (!reply || reply !== at(range.endContainer) || !root.contains(reply)) return null;
+  const reply = at(pickedEnd(range, false));
+  if (!reply || reply !== at(pickedEnd(range, true)) || !root.contains(reply)) return null;
   const text = selection.toString().trim();
   return text ? { text, range } : null;
 }

@@ -109,7 +109,7 @@ The business behavior contract for what the message box takes besides typing, do
 - **COMPOSER-7:** Words answered together take the latest words' chips. Test: `composer_7_words_answered_together_take_the_latest_chips` (`src/brain/turn.rs`).
 - **COMPOSER-8:** Words queued behind a turn under way show over the box, not in the conversation. Test: `composer_8_waiting_words_show_over_the_box`.
 - **COMPOSER-9:** Cancel drops the one message. Tests: `composer_9_cancel_drops_the_waiting_words`, `composer_9_one_waiting_message_is_cancelled_alone` (`tests/plans_api.rs`).
-- **COMPOSER-10:** Edit puts the words back in the box once obid dropped them, and changes nothing when a turn took them. Test: `composer_10_edit_puts_the_words_back`.
+- **COMPOSER-10:** Edit puts the words back in the box once obid dropped them, their files back as tags (sent again from where obid keeps them; one this app didn't send says so and never goes without it), and changes nothing when a turn took them. Tests: `composer_10_edit_puts_the_words_back`, `t3_queue_edit_brings_back_the_files_of_the_waiting_words_too`, `t3_queue_edit_files_go_again_from_where_obid_keeps_them_and_never_without_them`.
 - **COMPOSER-11:** obid drops waiting words alone, never the turn under way. Test: `composer_11_cancelled_waiting_words_go_alone` (`src/brain/turn.rs`).
 - **COMPOSER-12:** Stop reads "Stopping…" until the turn ends. Test: `composer_12_stop_says_stopping_until_the_turn_ends`.
 - **COMPOSER-13:** Dropped files are attached; a folder alone is explained. Tests: `composer_13_dropped_files_are_attached`, `composer_13_folders_are_told_apart` (`composerInput.test.ts`).
