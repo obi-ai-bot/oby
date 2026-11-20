@@ -1092,6 +1092,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("lab.artifacts.events", "The `artifact` events the API sent so far: {events, count}; with expect."),
     ("lab.artifacts.alive", "Whether the API still answers on its port: {answers}; with expect."),
     ("lab.artifacts.down", "Stops the API now rather than at the cleanup: {stopped}."),
+    ("lab.artifacts.claude_headless", "The Claude Code headless spike (plan §3.8), informational, never red: the owner's own `claude` on PATH, on its own login, asked whether its Artifact tool is offered headless (`system/init`, with and without --allowedTools Artifact), then to make a design from Oby's guide alone (lab-ui/artifacts/scripts/claude-headless.mjs): {claude, init, initWithArtifact, make: {seconds, turns, tokens, costUsd, toolUses, toolErrors, files}, design}. OBID_SPEC_LAB_CLAUDE_HEADLESS_FROM replays a run made on another computer (its out-folder); without either, skipped."),
 ];
 
 fn rules_here() -> Rules {
@@ -2613,6 +2614,76 @@ fn fixture(run: &Run, input: &Value) -> Result<Value> {
     Ok(out)
 }
 
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if e.file_type()?.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if e.file_type()?.is_file() {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// The Claude Code headless spike: what the owner's own Claude Code offers and makes headless.
+/// It reports and never fails a run; a computer with no Claude Code (and no run to replay) skips.
+async fn claude_headless(run: &Run) -> Result<Value> {
+    let out = run.scratch.join("claude-headless");
+    let replayed = std::env::var_os("OBID_SPEC_LAB_CLAUDE_HEADLESS_FROM");
+    match &replayed {
+        Some(from) => copy_tree(Path::new(from), &out).with_context(|| {
+            format!(
+                "can't copy the run to replay from {}",
+                Path::new(from).display()
+            )
+        })?,
+        None => {
+            let found = tokio::process::Command::new("claude")
+                .arg("--version")
+                .output()
+                .await
+                .is_ok_and(|o| o.status.success());
+            if !found {
+                return Ok(
+                    json!({"skipped": "Claude Code isn't on this computer (OBID_SPEC_LAB_CLAUDE_HEADLESS_FROM replays a run made on another)"}),
+                );
+            }
+            let script = run
+                .root
+                .join("tools/obid-spec/lab-ui/artifacts/scripts/claude-headless.mjs");
+            let done = tokio::time::timeout(
+                Duration::from_secs(1200),
+                tokio::process::Command::new("node")
+                    .arg(&script)
+                    .arg(&out)
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await;
+            match done {
+                Ok(Ok(o)) if o.status.success() => {}
+                Ok(Ok(o)) => {
+                    return Ok(
+                        json!({"skipped": format!("the spike stopped: {}", String::from_utf8_lossy(&o.stderr).trim())}),
+                    )
+                }
+                Ok(Err(e)) => return Ok(json!({"skipped": format!("node didn't start: {e}")})),
+                Err(_) => return Ok(json!({"skipped": "the spike took more than 20 minutes"})),
+            }
+        }
+    }
+    let mut v: Value = serde_json::from_slice(&std::fs::read(out.join("result.json"))?)?;
+    if v.get("skipped").is_some() {
+        return Ok(json!({"skipped": v["skipped"]}));
+    }
+    v["design"] = json!(out.join("work").join("design"));
+    v["replayed"] = json!(replayed.is_some());
+    Ok(v)
+}
+
 async fn alive(input: &Value) -> Result<Value> {
     let port = port_of(input)?;
     let answers = tokio::time::timeout(
@@ -2652,6 +2723,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         }
         "lab.artifacts.alive" => alive(input).await,
         "lab.artifacts.down" => Ok(cleanup().await),
+        "lab.artifacts.claude_headless" => claude_headless(run).await,
         _ => bail!("{name} isn't a lab.artifacts node"),
     }
 }
