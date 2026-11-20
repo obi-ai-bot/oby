@@ -37,6 +37,9 @@ import { useHelpers } from './helpers';
 import { hasAttachments, type Attachments } from './view';
 import { box as draftBox } from './drafts';
 import { panelFit } from './panelFit';
+import { useBrowser } from './browser/store';
+import { browserFit } from './browser/fit';
+import { BrowserGlobe, BrowserPane } from './browser/BrowserPane';
 import { registerCommands } from './shortcuts';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
@@ -307,7 +310,13 @@ export default function Home() {
     addEventListener('resize', onResize);
     return () => removeEventListener('resize', onResize);
   }, []);
-  const fit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
+  // beside the browser the conversation keeps 420px, and the side panel floats where it wouldn't
+  // fit beside both (browser/fit.ts, BROWSERAPP-3)
+  const browser = useBrowser();
+  const browserShown = browser.offered && browser.ui.open;
+  const sideFit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
+  const besideBrowser = browserShown && !browser.ui.full ? browserFit(windowWidth, sideFit.docked && sidebar ? sideFit.width : 0, browser.ui.width) : null;
+  const fit = besideBrowser && !besideBrowser.sidebarDocks ? { docked: false, width: sideFit.width } : sideFit;
   const [floating, setFloating] = useState(false);
   useEffect(() => { if (fit.docked) setFloating(false); }, [fit.docked]);
   // floating, a row's click takes you there and the panel goes, as T3 Code's sheet does
@@ -415,7 +424,7 @@ export default function Home() {
   const rootTask = top?.kind === 'task' || top?.kind === 'thread' ? top.id : top?.kind === 'talk' && under?.kind === 'task' ? under.id : null;
 
   return (
-    <div className={`app${panelShown ? ' has-sidebar' : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
+    <div className={`app${panelShown ? ' has-sidebar' : ''}${browserShown ? (browser.ui.full ? ' has-browser is-browser-full' : ' has-browser') : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
       <Sidebar
         open={panelShown}
         atHome={!away}
@@ -518,23 +527,25 @@ export default function Home() {
             })}
           </nav>
         )}
-        {/* in a conversation with a few Obys, at the right: who's in it (one Oby's
-            name is already the trail's) */}
-        {peerWith && peerWith.length > 1 && (
+        {(peerWith && peerWith.length > 1 || (shown && onPage) || browser.offered) && (
           <div className="bar-end">
-            <span className="bar-obys" title={peerWith.map((n) => `${n}’s Oby`).join(', ')}>
-              <AvatarStack names={peerWith} />
-              {/* a count only once there are 3 or more; fewer, the pictures say it */}
-              {peerWith.length >= 3 && peerWith.length}
-            </span>
-          </div>
-        )}
-        {/* on a task's page, at the right: the way into its conversation */}
-        {shown && onPage && (
-          <div className="bar-end">
-            <button className="bar-convo" onClick={() => goToConversation(shown.id)}>
-              Go to conversation
-            </button>
+            {/* in a conversation with a few Obys, at the right: who's in it (one Oby's
+                name is already the trail's) */}
+            {peerWith && peerWith.length > 1 && (
+              <span className="bar-obys" title={peerWith.map((n) => `${n}’s Oby`).join(', ')}>
+                <AvatarStack names={peerWith} />
+                {/* a count only once there are 3 or more; fewer, the pictures say it */}
+                {peerWith.length >= 3 && peerWith.length}
+              </span>
+            )}
+            {/* on a task's page, at the right: the way into its conversation */}
+            {shown && onPage && (
+              <button className="bar-convo" onClick={() => goToConversation(shown.id)}>
+                Go to conversation
+              </button>
+            )}
+            {/* the browser's globe (docs/contracts/browser-app.md, BROWSERAPP-1) */}
+            <BrowserGlobe />
           </div>
         )}
       </header>
@@ -634,6 +645,8 @@ export default function Home() {
           drawer over its box (ChatView, DecisionBar), what other conversations ask on their rows and
           in Waiting for you; with none open, all of it on the stage, as on Home (CHATFIRST-8) */}
     </div>
+      {/* the browser, beside the conversation or across the window (docs/contracts/browser-app.md) */}
+      <BrowserPane width={besideBrowser?.width ?? browser.ui.width} />
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,
           so coming after the title bar keeps its click from being taken as a drag */}

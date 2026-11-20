@@ -2092,6 +2092,31 @@
             "CONNECTOR-29": "the conformance crate's tests (core/crates/oby-connectors, #2579).",
             "CONNECTOR-30": "github_recorded (core/crates/obid/tests/github_recorded.rs, #2583)."
           }
+        },
+        "browser-app.md": {
+          "obid": [],
+          "elsewhere": {
+            "BROWSERAPP-1": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
+            "BROWSERAPP-2": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
+            "BROWSERAPP-3": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
+            "BROWSERAPP-4": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
+            "BROWSERAPP-5": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
+            "BROWSERAPP-6": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
+            "BROWSERAPP-7": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
+            "BROWSERAPP-8": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-9": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-10": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-11": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-12": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-13": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-14": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-15": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-16": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-17": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-18": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-19": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-20": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/"
+          }
         }
       }
     },

@@ -1,0 +1,245 @@
+{
+  "schemaVersion": "2",
+  "name": "App: the browser closed, a globe in the title bar opens it (board 1)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 1 (BROWSERAPP-1): an agent works in the browser while it's closed; the globe at the title bar's end carries the blue dot and says so; pointed at, it says Show the browser and its keys; clicked, the panel opens beside the conversation as board 2 shows, and the lit globe hides it again.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=1",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "no-browser",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "globe-dot-unread",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".bar-end .badge"
+        },
+        "expect": {
+          "paths": {
+            "styles.background-color.matches": true
+          }
+        },
+        "styles": {
+          "background-color": "--unread"
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-1"
+        ]
+      }
+    },
+    {
+      "id": "hover-globe",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show the browser, 2 tabs, Codex is using one"
+        },
+        "hover": true
+      }
+    },
+    {
+      "id": "tooltip",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "tooltip"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": "Show the browser⇧⌘B"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-1"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Closed",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-1"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-01"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Closed",
+        "name": "browser-01-beside-board",
+        "label": "board 1"
+      }
+    },
+    {
+      "id": "globe-opens",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show the browser, 2 tabs, Codex is using one"
+        }
+      }
+    },
+    {
+      "id": "opens-beside",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 640,
+            "box.x": 640
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-1"
+        ]
+      }
+    },
+    {
+      "id": "now-board-2",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Main",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10
+      }
+    },
+    {
+      "id": "hide",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Hide the browser"
+        }
+      }
+    },
+    {
+      "id": "hidden",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "globe-shows",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show the browser, 2 tabs, Codex is using one"
+        }
+      }
+    },
+    {
+      "id": "shown-again",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

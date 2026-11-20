@@ -200,7 +200,7 @@ pub async fn launch(run: &Run, input: &Value) -> Result<Value> {
         "op": "launch", "scratch": folder, "userData": folder.join("user-data"),
         "obid": {"port": port, "home": home}, "mock": mock, "main": main,
     });
-    for k in ["skipFirstRun", "focusable", "size"] {
+    for k in ["skipFirstRun", "focusable", "size", "query", "storage"] {
         if let Some(v) = input.get(k) {
             request[k] = v.clone();
         }
@@ -244,27 +244,34 @@ pub async fn act(run: &Run, node: &str, input: &Value) -> Result<Value> {
         "app.press" => ask(&h, &request("press", input, &["target", "keys", "timeout"])).await,
         "app.read" | "app.measure" => {
             let op = node.trim_start_matches("app.");
-            let keys = ["target", "attributes", "against", "max", "timeout"];
+            let keys = [
+                "target",
+                "attributes",
+                "styles",
+                "against",
+                "max",
+                "timeout",
+            ];
             looked(&h, &request(op, input, &keys), input).await
         }
+        // the window beside a design board (apps/electron/scripts/board-compare.mjs)
+        "app.compare" => {
+            let keys = ["board", "state", "tolerance", "skip"];
+            looked(&h, &request("compare", input, &keys), input).await
+        }
+        "app.sidebyside" => {
+            let file = input["name"].as_str().unwrap_or("beside-board");
+            let path = shot(run, &name, file)?;
+            let mut r = request("sidebyside", input, &["board", "state", "label"]);
+            r["path"] = json!(path);
+            let out = ask(&h, &r).await?;
+            keep_shot(&path)?;
+            Ok(out)
+        }
         "app.screenshot" => {
-            let file = input["name"].as_str().unwrap_or("screen");
-            anyhow::ensure!(
-                file.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-                "name: letters, digits, dashes"
-            );
-            let path = run
-                .scratch
-                .join("screens")
-                .join(format!("{name}-{file}.png"));
+            let path = shot(run, &name, input["name"].as_str().unwrap_or("screen"))?;
             let out = ask(&h, &json!({"op": "screenshot", "path": path})).await?;
-            // OBID_SPEC_SHOTS: a folder the screenshots are copied to, kept when the run passes
-            if let Some(dir) = std::env::var_os("OBID_SPEC_SHOTS") {
-                let dir = Path::new(&dir);
-                std::fs::create_dir_all(dir)?;
-                std::fs::copy(&path, dir.join(path.file_name().unwrap()))?;
-            }
+            keep_shot(&path)?;
             Ok(out)
         }
         "app.close" => {
@@ -292,6 +299,29 @@ pub async fn act(run: &Run, node: &str, input: &Value) -> Result<Value> {
         }
         other => bail!("no node named {other}"),
     }
+}
+
+/// Where a picture of the app's window goes: the workflow's folder, `<app>-<name>.png`.
+fn shot(run: &Run, app: &str, file: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        file.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "name: letters, digits, dashes"
+    );
+    Ok(run
+        .scratch
+        .join("screens")
+        .join(format!("{app}-{file}.png")))
+}
+
+/// OBID_SPEC_SHOTS: a folder the pictures are copied to, kept when the run passes.
+fn keep_shot(path: &Path) -> Result<()> {
+    if let Some(dir) = std::env::var_os("OBID_SPEC_SHOTS") {
+        let dir = Path::new(&dir);
+        std::fs::create_dir_all(dir)?;
+        std::fs::copy(path, dir.join(path.file_name().unwrap()))?;
+    }
+    Ok(())
 }
 
 /// A read or a measure, judged by the step's `expect`: `within` seconds asks again until it holds

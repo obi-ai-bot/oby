@@ -581,3 +581,23 @@ export function parseEvent(name: string, data: string): Event | null {
     default: return null;
   }
 }
+
+// --- The browser (tools/obid-spec/src/lab/browser_contract.rs, the lab's contract obid's
+// /v1/browser routes follow, add-only). Enums only grow: an unknown tab state reads as "ready".
+
+/** GET /v1/browser: a tab's state */
+export const BROWSER_TAB_STATES = ['loading', 'ready', 'failed', 'timedOut', 'dialog', 'certificate', 'crashed'] as const;
+export type BrowserTabState = (typeof BROWSER_TAB_STATES)[number];
+
+/** An agent's ask on a tab (POST /v1/browser/asks/{id}/answer) */
+export const BROWSER_ASK_KINDS = ['signIn', 'captcha', 'choice', 'code', 'passkey'] as const;
+export type BrowserAskKind = (typeof BROWSER_ASK_KINDS)[number];
+
+/** GET and PUT /v1/browser/settings: Settings › General's two switches, both on by default */
+export interface BrowserSettings {
+  /** "Agents can use the browser" */
+  agentsUseBrowser: boolean;
+  /** "Agents can use this Mac" */
+  agentsUseMac: boolean;
+}
+export const BROWSER_DEFAULT_SETTINGS: BrowserSettings = { agentsUseBrowser: true, agentsUseMac: true };

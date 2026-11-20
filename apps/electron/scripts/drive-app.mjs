@@ -11,11 +11,13 @@
 // element is inside).
 import { mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { launch, skipFirstRun } from './drive-lib.mjs';
+import { boardFile, judge, pieces } from './board-compare.mjs';
 
 let app = null;
 let page = null;
+let scratch = null;
 const errors = [];
 
 function locate(target, root = page) {
@@ -48,10 +50,28 @@ async function one(target, timeout = 10_000) {
   throw new Error(`${JSON.stringify(target)}: ${count} found, expected exactly one`);
 }
 
-async function describe(el, attributes) {
+// styles: {"background-color": "--held"} → the computed value, the app's token's, and whether they
+// match (a token's colour as the page computes it, so `rgb(…)` compares to `rgb(…)`)
+async function describe(el, attributes, styles) {
   const attrs = {};
   for (const a of attributes ?? []) attrs[a] = await el.getAttribute(a);
-  return { text: (await el.innerText()).trim(), visible: await el.isVisible(), attributes: attrs };
+  const out = { text: (await el.innerText()).trim(), visible: await el.isVisible(), attributes: attrs };
+  if (styles) {
+    out.styles = {};
+    for (const [prop, token] of Object.entries(styles)) {
+      const value = (await el.evaluate((e, p) => getComputedStyle(e).getPropertyValue(p), prop)).trim();
+      const want = token ? await page.evaluate((t) => {
+        const probe = document.createElement('span');
+        probe.style.color = `var(${t})`;
+        document.body.appendChild(probe);
+        const c = getComputedStyle(probe).color;
+        probe.remove();
+        return c;
+      }, token) : null;
+      out.styles[prop] = { value, ...(token ? { token, tokenValue: want, matches: value === want } : {}) };
+    }
+  }
+  return out;
 }
 
 const box = async (el) => {
@@ -61,6 +81,29 @@ const box = async (el) => {
 };
 // The area two boxes share, 0 when they only touch or are apart
 const shared = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+
+// Still, for a measure or a picture: no animation, no transition, no caret
+async function still() {
+  await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}' });
+  await page.waitForTimeout(50);
+}
+
+// A design board in a hidden window of the app's own, at the window's size: its page, and its close
+async function boardPage(board, state) {
+  if (!scratch) throw new Error('launch first');
+  const url = boardFile(board, state, join(scratch, 'boards'));
+  const size = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const opened = app.waitForEvent('window');
+  const id = await app.evaluate(({ BrowserWindow }, a) => {
+    const w = new BrowserWindow({ show: false, width: a.size.width, height: a.size.height, useContentSize: true, webPreferences: { sandbox: true, contextIsolation: true } });
+    void w.loadURL(a.url);
+    return w.id;
+  }, { url, size });
+  const p = await opened;
+  await p.waitForLoadState('load');
+  await p.evaluate(() => document.fonts.ready);
+  return { page: p, id, size, close: () => app.evaluate(({ BrowserWindow }, i) => BrowserWindow.fromId(i)?.destroy(), id).catch(() => {}) };
+}
 
 const ops = {
   async launch(r) {
@@ -72,6 +115,7 @@ const ops = {
     // the person's environment but for where obid is, and nothing that points the page at a dev server
     const { ELECTRON_RENDERER_URL, OBID_PORT, OBID_HOME, ...rest } = process.env;
     const env = { ...rest, OBID_PORT: String(r.obid.port), OBID_HOME: r.obid.home };
+    scratch = r.scratch;
     app = await launch({ dir: r.scratch, userData: r.userData, env, hidden: r.hidden ?? true, ...(r.main ? { main: resolve(r.main) } : {}) });
     page = await app.firstWindow();
     page.on('pageerror', (e) => errors.push(e.message));
@@ -82,15 +126,28 @@ const ops = {
     }
     // the app's demo data (src/renderer/src/mock.ts) in the chat-first window, for what needs no obid
     if (r.mock) {
+      // storage: the window's own remembered choices for the demo (the side panel kept open or closed)
+      if (r.storage) {
+        if (typeof r.storage !== 'object' || Object.entries(r.storage).some(([k, v]) => !/^oby\.[A-Za-z.]+$/.test(k) || typeof v !== 'string')) throw new Error('storage: oby.* keys with string values');
+        await page.evaluate((kept) => { for (const [k, v] of Object.entries(kept)) localStorage.setItem(k, v); }, r.storage);
+      }
       const url = new URL(page.url());
-      url.search = '?everything&chat';
+      // query: more of the demo's words after ?everything&chat (browser=<n>: a board of the browser's design)
+      if (r.query !== undefined && !/^[a-z0-9=&_-]*$/i.test(r.query)) throw new Error('query: letters, digits, =, & and dashes');
+      url.search = `?everything&chat${r.query ? `&${r.query}` : ''}`;
       await page.goto(url.href);
       await page.waitForLoadState('domcontentloaded');
     }
     // invisible still, but able to take the keyboard while a desktop.* step brings it forward to
     // press keys through macOS (agent-desktop), as a person's keys reach the menu bar
-    if (r.focusable) await app.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) w.setFocusable(true); });
     if (r.size) await app.evaluate(({ BrowserWindow }, s) => { const w = BrowserWindow.getAllWindows()[0]; w?.setResizable(true); w?.setSize(s.width, s.height); }, r.size);
+    // the demo with choices of its own (storage) opens again at its size, so they apply as at that
+    // width (the side panel docks where it fits)
+    if (r.mock && r.storage && r.size) {
+      await page.reload();
+      await page.waitForLoadState('domcontentloaded');
+    }
+    if (r.focusable) await app.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) w.setFocusable(true); });
     return { pid: app.process().pid, title: await page.title() };
   },
   async click(r) {
@@ -116,7 +173,7 @@ const ops = {
     const found = locate(r.target);
     const count = await found.count();
     const items = [];
-    for (let i = 0; i < Math.min(count, r.max ?? 20); i++) items.push(await describe(found.nth(i), r.attributes));
+    for (let i = 0; i < Math.min(count, r.max ?? 20); i++) items.push(await describe(found.nth(i), r.attributes, r.styles));
     return { count, items, ...(items[0] ?? { text: null, visible: false, attributes: {} }) };
   },
   async measure(r) {
@@ -134,6 +191,41 @@ const ops = {
     mkdirSync(dirname(r.path), { recursive: true });
     await page.screenshot({ path: r.path });
     return { path: r.path };
+  },
+  // The window beside a design board (board-compare.mjs), box by box: every piece both have, matched
+  // by its class and its place in the page, within `tolerance` px and the same words.
+  async compare(r) {
+    if (!r.board) throw new Error('board: the board’s file name (design/boards/<board>.dc.html)');
+    await still();
+    const b = await boardPage(r.board, r.state);
+    try {
+      const [mine, theirs] = [await pieces(page), await pieces(b.page)];
+      return judge(r.board, mine, theirs, { tolerance: r.tolerance ?? 4, skip: r.skip ?? [] });
+    } finally { await b.close(); }
+  },
+  // The board and the window side by side in one PNG (the board left, the app right), for the owner's look
+  async sidebyside(r) {
+    if (!r.path || !isAbsolute(r.path)) throw new Error('path: an absolute file in the run’s folder');
+    if (!r.board) throw new Error('board: the board’s file name');
+    await still();
+    const mine = await page.screenshot();
+    const b = await boardPage(r.board, r.state);
+    try {
+      const theirs = await b.page.screenshot();
+      const { width, height } = b.size;
+      const gap = 24, head = 36, w = width * 2 + gap * 3, h = height + head + gap;
+      await app.evaluate(({ BrowserWindow }, a) => BrowserWindow.fromId(a.id)?.setContentSize(a.w, a.h), { id: b.id, w, h });
+      const img = (buf) => `data:image/png;base64,${buf.toString('base64')}`;
+      await b.page.setContent(`<body style="margin:0;background:#1c1c1e;font:600 14px -apple-system,system-ui,sans-serif;color:#d0d0d4">
+        <div style="position:absolute;left:${gap}px;top:10px">Design board · ${r.board}${r.state ? ` (${r.state})` : ''}</div>
+        <div style="position:absolute;left:${gap * 2 + width}px;top:10px">The app · ${r.label ?? ''}</div>
+        <img src="${img(theirs)}" style="position:absolute;left:${gap}px;top:${head}px;width:${width}px;height:${height}px">
+        <img src="${img(mine)}" style="position:absolute;left:${gap * 2 + width}px;top:${head}px;width:${width}px;height:${height}px"></body>`);
+      await b.page.waitForTimeout(100);
+      mkdirSync(dirname(r.path), { recursive: true });
+      await b.page.screenshot({ path: r.path, clip: { x: 0, y: 0, width: w, height: h } });
+      return { path: r.path, width: w, height: h };
+    } finally { await b.close(); }
   },
   async close() {
     const pid = app?.process().pid;

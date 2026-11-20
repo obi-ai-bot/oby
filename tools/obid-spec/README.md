@@ -137,12 +137,18 @@ a change a person sees is proven by driving the app, from outside, red before gr
   with `npm run build` in `apps/electron`) through the human drive's launcher
   (`apps/electron/scripts/drive-lib.mjs`, `_electron.launch`), hidden, with its own user-data
   folder, on the workflow's scratch obid (`"obid": "${state.obid}"`, as `OBID_PORT` and `OBID_HOME`)
-  or on the app's demo data (`"mock": true`, `?everything&chat`, a port nothing listens on).
+  or on the app's demo data (`"mock": true`, `?everything&chat`, a port nothing listens on; `query`
+  adds more of the demo's words, `browser=<n>` one of the browser's design boards; `storage` sets
+  the window's own `oby.*` choices first, the side panel kept open or closed).
   Never the owner's obid on 7777, their Oby.app or their app folder. Then `app.click` (or
   `"hover": true`), `app.type`, `app.press`, `app.read` (count, text, visible, attributes),
   `app.measure` (an element's box and, `against` other targets, `overlap`, `sharedArea`, `gap`),
-  `app.screenshot` (into the workflow's `screens/`, and `OBID_SPEC_SHOTS` when set) and
-  `app.close`. A target is `{"role", "name"}`, `{"label"}`, `{"text"}` or `{"css"}`, with
+  `app.screenshot` (into the workflow's `screens/`, and `OBID_SPEC_SHOTS` when set),
+  `app.compare` (the window against a design board of `lab-ui/browser/design`, box by box and word
+  by word, as `lab.ui.compare` holds the lab's screens: `within`, `sameWords`, `off`, `today`;
+  `skip` leaves pieces out, each with its reason in the contract), `app.sidebyside` (the board and
+  the window as one PNG) and `app.close`. `app.read` takes `styles` too (a property against an
+  app token: `matches`). A target is `{"role", "name"}`, `{"label"}`, `{"text"}` or `{"css"}`, with
   `within`, `hasText`, `visible`, `nth`/`last`. `app.read` and `app.measure` take `expect`,
   `within` (seconds, asked again until it holds) and `hold` (milliseconds: it must still hold
   then, so a toggle that flips back fails). The Rust nodes only orchestrate: each app has one
