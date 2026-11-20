@@ -272,6 +272,7 @@
         "obid": "${state.o}",
         "method": "GET",
         "path": "/v1/jobs/${state.t.body.id}",
+        "within": 30,
         "expect": {
           "status": 200,
           "body": {
