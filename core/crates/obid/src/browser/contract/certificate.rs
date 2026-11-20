@@ -1,4 +1,4 @@
-//! A server's certificate on the wire (BROWSER-28): on a tab stopped at a certificate problem, the
+//! A server's certificate on the wire (BROWSER-29): on a tab stopped at a certificate problem, the
 //! one obid read there itself, what Go on anyway would trust. A wire type: it owns no state and
 //! writes nothing.
 

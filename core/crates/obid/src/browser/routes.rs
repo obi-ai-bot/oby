@@ -626,7 +626,7 @@ async fn way_out(
     }
 }
 
-/// The person's Go on anyway (BROWSER-28), in the lab's order (`browserapi.rs`, `way_out` with
+/// The person's Go on anyway (BROWSER-29), in the lab's order (`browserapi.rs`, `way_out` with
 /// `proceed`): the device's signed words, the body naming the certificate's fingerprint, the tab
 /// held by that device and stopped at a certificate obid read, then the driver's restart trusting
 /// that certificate's key. Answers the tab as it is after; the job's other tabs leave the list.

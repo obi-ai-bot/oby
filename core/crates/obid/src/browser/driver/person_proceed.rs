@@ -1,4 +1,4 @@
-//! Go on anyway (BROWSER-28, the owner's "B: headless, trust key", ported from the lab's
+//! Go on anyway (BROWSER-29, the owner's "B: headless, trust key", ported from the lab's
 //! `proceed` and `trusted_elsewhere`): a page that stopped at a certificate problem has its
 //! certificate read by obid; the person's Go on anyway, on a tab they hold, trusts only that exact
 //! certificate, read again and named by them; the job's browser starts again with its key in

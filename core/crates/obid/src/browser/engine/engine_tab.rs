@@ -31,6 +31,6 @@ pub struct EngineTab {
     /// `net::ERR_CERT_*`, and nothing has loaded in the tab since.
     pub certificate: bool,
     /// While `certificate`: the certificate obid read there and the address the tab was going to,
-    /// what the person's Go on anyway may trust (BROWSER-28).
+    /// what the person's Go on anyway may trust (BROWSER-29).
     pub seen: Option<(SeenCertificate, String)>,
 }

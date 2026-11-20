@@ -139,7 +139,7 @@ pub const VERB_BACK: &str = "back";
 /// dialog on the tab, refused `no_dialog`.
 pub const VERB_DIALOG: &str = "dialog";
 /// `POST` a [`ProceedBody`]: Go on anyway, past a certificate the browser doesn't trust
-/// (BROWSER-28, the owner's "B: headless, trust key"). Only on a tab stopped at a certificate
+/// (BROWSER-29, the owner's "B: headless, trust key"). Only on a tab stopped at a certificate
 /// problem whose certificate obid read (else `no_certificate`), and only for that exact
 /// certificate: obid reads it again and refuses `certificate_changed` when it isn't the one seen
 /// there and named in the body. The job's browser starts again trusting that certificate's key,

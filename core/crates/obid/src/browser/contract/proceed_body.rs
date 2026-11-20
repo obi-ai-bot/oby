@@ -1,4 +1,4 @@
-//! `POST /v1/browser/tabs/{id}/proceed`'s body (BROWSER-28): the person's Go on anyway, naming the
+//! `POST /v1/browser/tabs/{id}/proceed`'s body (BROWSER-29): the person's Go on anyway, naming the
 //! certificate they were shown. A wire type: it owns no state and writes nothing.
 
 use serde::{Deserialize, Serialize};

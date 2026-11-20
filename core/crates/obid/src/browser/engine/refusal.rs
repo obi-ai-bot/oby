@@ -31,7 +31,7 @@ pub enum Refusal {
     NotGranted,
     Browser(String),
     CertificatePage,
-    /// The page presents a key the person trusted only on another host (BROWSER-28).
+    /// The page presents a key the person trusted only on another host (BROWSER-29).
     TrustedElsewhere(String),
     NoCertificate,
     CertificateChanged,

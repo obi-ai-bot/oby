@@ -38,7 +38,7 @@ pub struct Session {
     pub downloads: PathBuf,
     pub socket_dir: PathBuf,
     pub idle_timeout: String,
-    /// The keys the person's Go on anyway trusted (BROWSER-28), each with the host it was for:
+    /// The keys the person's Go on anyway trusted (BROWSER-29), each with the host it was for:
     /// the browser runs with them in `--ignore-certificate-errors-spki-list`, and agent-browser
     /// starts it again by itself when they change. Empty for a browser started afresh.
     pub trusted: Vec<(String, String)>,

@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "obid's browser: Go on anyway trusts that certificate's key for that host, only on the person's signed click",
   "version": "1.0.0",
-  "description": "BROWSER-28, the owner's \"B: headless, trust key\", ported from the lab's LAB-BROWSERAPI-10 (workflows/lab/browserapi/go-on-anyway.json) onto obid (core/crates/obid/src/browser/routes.rs, proceed; driver/person_proceed.rs; driver/certificate.rs reads the server's certificate). On chrome-headless-shell, which draws no certificate page of its own. The agent has two tabs; its navigate to an HTTPS fixture with a self-signed certificate made at run time stops there, and GET /v1/browser shows the tab `certificate` with the certificate obid read (host, fingerprint). The agent can't go on. `POST …/proceed` on no tab, unsigned, with the job's token, signed on a tab nobody holds or by another device is refused (no_such_tab, unsigned, bad_token, not_held, not_holder); held, a body without a fingerprint is bad_request, and another fingerprint than the one seen is certificate_changed. With the fingerprint seen, the job's browser restarts trusting that key (--ignore-certificate-errors-spki-list) and opens the address: the tab is ready there, the agent's other tab is gone (tabClosed: the restart closes it), the agent acts there again, and a second Go on anyway has nothing to go past (no_certificate). The same key on another host (https://localhost, the same server) is stopped as a certificate page: Chrome would load it, trusting the key on every host. With the fixture's certificate swapped behind the same origin, the trusted host's other certificate stops at the certificate page again, its new fingerprint shown.",
+  "description": "BROWSER-29, the owner's \"B: headless, trust key\", ported from the lab's LAB-BROWSERAPI-10 (workflows/lab/browserapi/go-on-anyway.json) onto obid (core/crates/obid/src/browser/routes.rs, proceed; driver/person_proceed.rs; driver/certificate.rs reads the server's certificate). On chrome-headless-shell, which draws no certificate page of its own. The agent has two tabs; its navigate to an HTTPS fixture with a self-signed certificate made at run time stops there, and GET /v1/browser shows the tab `certificate` with the certificate obid read (host, fingerprint). The agent can't go on. `POST …/proceed` on no tab, unsigned, with the job's token, signed on a tab nobody holds or by another device is refused (no_such_tab, unsigned, bad_token, not_held, not_holder); held, a body without a fingerprint is bad_request, and another fingerprint than the one seen is certificate_changed. With the fingerprint seen, the job's browser restarts trusting that key (--ignore-certificate-errors-spki-list) and opens the address: the tab is ready there, the agent's other tab is gone (tabClosed: the restart closes it), the agent acts there again, and a second Go on anyway has nothing to go past (no_certificate). The same key on another host (https://localhost, the same server) is stopped as a certificate page: Chrome would load it, trusting the key on every host. With the fixture's certificate swapped behind the same origin, the trusted host's other certificate stops at the certificate page again, its new fingerprint shown.",
   "trigger": {
     "http": {
       "method": "POST",
@@ -123,7 +123,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -152,7 +152,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -174,7 +174,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -194,7 +194,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -218,7 +218,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -243,7 +243,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -266,7 +266,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -291,7 +291,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -316,7 +316,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -358,7 +358,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -381,7 +381,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -406,7 +406,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -436,7 +436,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -458,7 +458,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -481,7 +481,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -506,7 +506,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -543,7 +543,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -569,7 +569,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -592,7 +592,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -614,7 +614,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -652,7 +652,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     },
@@ -681,7 +681,7 @@
       },
       "ui": {
         "proves": [
-          "BROWSER-28"
+          "BROWSER-29"
         ]
       }
     }

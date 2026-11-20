@@ -22,7 +22,7 @@ Both are the owner's words as the orchestrator session relayed them, said on 202
 
 ## Where it is stated
 
-- [browser.md](../contracts/browser.md), "Rules": "The certificate page is the person's", and BROWSER-28
+- [browser.md](../contracts/browser.md), "Rules": "The certificate page is the person's", and BROWSER-29
 - [docs/api/browser.md](../api/browser.md), `POST /v1/browser/tabs/{id}/proceed`
 
 ## Notes

@@ -1,4 +1,4 @@
-//! Reading a server's certificate the way Go on anyway needs it (BROWSER-28, the owner's "B:
+//! Reading a server's certificate the way Go on anyway needs it (BROWSER-29, the owner's "B:
 //! headless, trust key", docs/decisions/2026-11-20-go-on-anyway.md), ported from the lab's
 //! `browser_cert.rs`: a TLS handshake to the host that accepts any certificate, only to read the
 //! leaf the server presents, never to send anything over it. It answers the certificate's SHA-256
@@ -204,19 +204,19 @@ mod tests {
     }
 
     #[test]
-    fn browser_28_the_spki_hash_is_chromes() {
+    fn browser_29_the_spki_hash_is_chromes() {
         assert_eq!(spki_hash(&der()).unwrap(), CERT_SPKI.trim());
     }
 
     #[test]
-    fn browser_28_a_truncated_certificate_is_an_error_not_a_hash() {
+    fn browser_29_a_truncated_certificate_is_an_error_not_a_hash() {
         let d = der();
         assert!(spki_hash(&d[..d.len() / 3]).is_err());
         assert!(spki_hash(b"not a certificate").is_err());
     }
 
     #[test]
-    fn browser_28_https_origins() {
+    fn browser_29_https_origins() {
         assert_eq!(
             https_origin("https://127.0.0.1:18443/a?b"),
             Some(("127.0.0.1".into(), 18443))

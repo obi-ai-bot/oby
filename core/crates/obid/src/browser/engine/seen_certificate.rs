@@ -1,4 +1,4 @@
-//! A server's certificate as obid read it where a tab stopped (BROWSER-28): its host and port,
+//! A server's certificate as obid read it where a tab stopped (BROWSER-29): its host and port,
 //! its SHA-256 fingerprint (what the person's Go on anyway names) and its key's hash (what
 //! chrome-headless-shell's `--ignore-certificate-errors-spki-list` trusts). A value the engine
 //! keeps on the tab; it writes nothing.

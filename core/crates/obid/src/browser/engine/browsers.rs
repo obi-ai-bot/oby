@@ -551,7 +551,7 @@ impl Browsers {
     }
 
     /// The certificate obid read where the tab stopped (`url`, the address it was going to): what
-    /// the person's Go on anyway may trust (BROWSER-28). The tab stops there as at a certificate
+    /// the person's Go on anyway may trust (BROWSER-29). The tab stops there as at a certificate
     /// problem, its refs dead.
     pub fn certificate_seen(&mut self, tab: &str, seen: SeenCertificate, url: &str) {
         if let Some(t) = self.tabs.get_mut(tab) {
@@ -564,7 +564,7 @@ impl Browsers {
         }
     }
 
-    /// The job's browser started again trusting a key (the person's Go on anyway, BROWSER-28): its
+    /// The job's browser started again trusting a key (the person's Go on anyway, BROWSER-29): its
     /// other tabs went with the old browser, and this one is the browser's `target` now. Answers
     /// the tabs that went.
     pub fn restarted(&mut self, tab: &str, target: &str) -> Vec<String> {
@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_28_a_certificate_seen_stops_the_tab_and_a_restart_keeps_only_that_tab() {
+    fn browser_29_a_certificate_seen_stops_the_tab_and_a_restart_keeps_only_that_tab() {
         let room = Path::new(ROOM);
         let mut b = Browsers::new();
         let other = opened(&mut b, "c1");

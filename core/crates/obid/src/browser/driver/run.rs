@@ -119,7 +119,7 @@ impl Driver {
                 Err(r) => return failed(r),
             }
         };
-        // A trusted key on another host than the one it was trusted for (BROWSER-28).
+        // A trusted key on another host than the one it was trusted for (BROWSER-29).
         if let (Some(u), Some(tab)) = (&url_now, tab)
             && let Some((_, seen)) = self.trusted_elsewhere(&session, u).await
         {
@@ -164,7 +164,7 @@ impl Driver {
             Call::Ok(data) => {
                 let shaped = self.shape(&session, ticket, data).await;
                 self.core.lock().unwrap().finished(ticket, true);
-                // Landed on a trusted key's other host: stopped there (BROWSER-28).
+                // Landed on a trusted key's other host: stopped there (BROWSER-29).
                 let landed = shaped.as_ref().ok().and_then(|r| {
                     Some((
                         r["tab"]
