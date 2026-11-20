@@ -1,0 +1,294 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: a tab's stream sends its frames, a slow reader drops frames without holding a fast one back, and the person's input reaches the page only while they hold it",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-7 (src/lab/browserapi.rs, the stream bridge, frames_stream and person_input over browser.rs's FrameSlot): on the fixture's animated counter two readers watch the same tab for 5 s, one reading as fast as it can, one stuck for 3.5 s before it reads again: the fast one gets frames all along, never held back; the stuck one, once it reads, jumps to the newest frames with the ones it missed dropped (counted in each frame's dropped), never queued for it. Input before a take is refused (not_held); after a signed take a click on the Name field and the keys h, i land in it.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "watch",
+      "use": "runtime.rust:lab.browserapi.watch",
+      "inputs": {
+        "api": "${state.up}",
+        "tab": "${state.open.structured.result.tab}",
+        "ms": 5000,
+        "readers": [
+          {
+            "readEveryMs": 0
+          },
+          {
+            "stallMs": 3500
+          }
+        ],
+        "expect": {
+          "paths": {
+            "fastFramesArrived": true,
+            "stuckDropped": true,
+            "fastNotHeldBack": true,
+            "stuckCaughtUp": true,
+            "readers.0.width": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-7"
+        ]
+      }
+    },
+    {
+      "id": "not-held",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "key",
+          "eventType": "keyDown",
+          "key": "x",
+          "text": "x"
+        },
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "not_held"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-7"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "press",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "mouse",
+          "eventType": "mousePressed",
+          "x": "${state.up.site.name.x}",
+          "y": "${state.up.site.name.y}",
+          "button": "left",
+          "clickCount": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "release",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "mouse",
+          "eventType": "mouseReleased",
+          "x": "${state.up.site.name.x}",
+          "y": "${state.up.site.name.y}",
+          "button": "left",
+          "clickCount": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "h-down",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "key",
+          "eventType": "keyDown",
+          "key": "h",
+          "text": "h"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "h-up",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "key",
+          "eventType": "keyUp",
+          "key": "h"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "i-down",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "key",
+          "eventType": "keyDown",
+          "key": "i",
+          "text": "i"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "i-up",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
+        "body": {
+          "type": "key",
+          "eventType": "keyUp",
+          "key": "i"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "landed",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "selector": "#name",
+        "within": 5,
+        "expect": {
+          "paths": {
+            "value": "hi"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-7"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,405 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: GET /v1/browser and its events follow the engine as an agent opens and drives a page",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-1 (src/lab/browserapi.rs, Api::sync_job and the events stream): before any tool the job's browser is notStarted; its first tool brings the browser up (events: starting, then ready) under its own allowance, apart from the command's deadline, and opens the fixture through its MCP tools; GET /v1/browser lists the tab as the agent's, ready, on this Mac, with the page's title; the agent snapshots, types and clicks Sign in; the events stream has the tab, each action with its words (\"Clicking Sign in\", outcome done), in order; a second tab opens beside it, and closing the first says tabClosed and leaves only the second. Without the owner token the list is refused.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "not-started",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs": {
+              "$len": 0
+            },
+            "body.browsers.0": {
+              "job": "j1",
+              "agent": "claude",
+              "state": "notStarted"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "tabs",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.browsers.0.state": "ready",
+            "body.tabs": {
+              "$len": 1
+            },
+            "body.tabs.0.id": "${state.open.structured.result.tab}",
+            "body.tabs.0.owner": {
+              "kind": "agent",
+              "job": "j1",
+              "agent": "claude"
+            },
+            "body.tabs.0.state": "ready",
+            "body.tabs.0.title": "Sign in to the lab",
+            "body.tabs.0.url": {
+              "$contains": "${state.up.site.url}"
+            },
+            "body.tabs.0.computer.id": "local",
+            "body.tabs.0.heldBy": null,
+            "body.settings.agentsUseBrowser": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "no-token",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "as": "none",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "no_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "wrong-token",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "as": "wrong",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data.tree": {
+              "$contains": "Sign in"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "type",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "Ada"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "click",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Sign in"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "events",
+      "use": "runtime.rust:lab.browserapi.events",
+      "inputs": {
+        "api": "${state.up}",
+        "ms": 800,
+        "within": 10,
+        "expect": {
+          "paths": {
+            "inOrder": true,
+            "of.tab": {
+              "$any": {
+                "tab": {
+                  "id": "${state.open.structured.result.tab}",
+                  "state": "ready",
+                  "title": "Sign in to the lab"
+                }
+              }
+            },
+            "of.action": {
+              "$any": {
+                "text": "Clicking Sign in",
+                "outcome": "done",
+                "tabId": "${state.open.structured.result.tab}",
+                "job": "j1"
+              }
+            },
+            "of.browser": {
+              "$len": 2
+            },
+            "of.browser.0.browser": {
+              "job": "j1",
+              "state": "starting"
+            },
+            "of.browser.1.browser": {
+              "job": "j1",
+              "state": "ready"
+            },
+            "types": {
+              "$contains": "action"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "typed",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "selector": "#name",
+        "expect": {
+          "paths": {
+            "value": "Ada"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "open2",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/",
+          "newTab": true
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "two",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_close_tab",
+        "args": {
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.closed": true
+          }
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs": {
+              "$len": 1
+            },
+            "body.tabs.0.id": "${state.open2.structured.result.tab}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "closed-event",
+      "use": "runtime.rust:lab.browserapi.events",
+      "inputs": {
+        "api": "${state.up}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.tabClosed": {
+              "$any": {
+                "tabId": "${state.open.structured.result.tab}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    }
+  ]
+}
