@@ -191,6 +191,26 @@ pub fn plain_path(path: &str) -> Option<String> {
     Some(plain)
 }
 
+/// A path [`plain_path`] decoded, encoded the one standard way: every byte but the unreserved ones
+/// (RFC 3986: letters, digits, `-`, `.`, `_`, `~`) as `%` and two upper-case hex digits. obid's
+/// router matches it as the gateway's list read it, a literal segment as itself.
+pub fn canonical(plain: &str) -> String {
+    let mut out = String::with_capacity(plain.len());
+    for (n, segment) in plain.split('/').enumerate() {
+        if n > 0 {
+            out.push('/');
+        }
+        for byte in segment.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                out.push(byte as char);
+            } else {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    out
+}
+
 /// `segment` with its `%` escapes decoded, when each is two hex digits and the result is UTF-8.
 fn decoded(segment: &str) -> Option<String> {
     let bytes = segment.as_bytes();
@@ -980,12 +1000,12 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     // A phone's and a computer's token reach the same list (COMPUTERS-14): a route off it is one
     // obid's docs keep on its loopback API, until the owner adds it by name.
-    if !plain_path(parts.uri.path()).is_some_and(|path| allows(&parts.method, &path)) {
+    let Some(path) = plain_path(parts.uri.path()).filter(|path| allows(&parts.method, path)) else {
         return error(
             StatusCode::NOT_FOUND,
             "That route isn't available through the gateway.",
         );
-    }
+    };
     let token = bearer(&parts.headers);
     // A phone paired through the Obysphere is reached only sealed, by its own relay token's
     // socket; any other only here, on the listener.
@@ -1030,11 +1050,12 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
     let Ok(body) = axum::body::to_bytes(body, BODY).await else {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "That request is too large.");
     };
-    let target = parts
-        .uri
-        .path_and_query()
-        .map_or(parts.uri.path(), |p| p.as_str())
-        .to_owned();
+    // obid serves exactly the route the list read: the decoded path, encoded the one standard way,
+    // never the request's own spelling (COMPUTERS-14).
+    let target = match parts.uri.query() {
+        Some(query) => format!("{}?{query}", canonical(&path)),
+        None => canonical(&path),
+    };
     let mut upstream = Request::builder()
         .method(parts.method)
         .uri(target)
@@ -1892,6 +1913,29 @@ mod tests {
             &Method::GET,
             &plain_path("/v1/%70airing/devices").unwrap()
         ));
+        // What obid is sent: that path, encoded the one standard way, whatever the request's spelling.
+        for (path, sent) in [
+            ("/v1/jobs/abc/rep%6Frt", "/v1/jobs/abc/report"),
+            ("/v1/jobs/abc/report", "/v1/jobs/abc/report"),
+            (
+                "/v1/inbox/listen%2Dreview-1/answer",
+                "/v1/inbox/listen-review-1/answer",
+            ),
+            (
+                "/v1/artifacts/abc/1/my%20notes.md",
+                "/v1/artifacts/abc/1/my%20notes.md",
+            ),
+            (
+                "/v1/artifacts/abc/1/a+b(1).md",
+                "/v1/artifacts/abc/1/a%2Bb%281%29.md",
+            ),
+            (
+                "/v1/artifacts/abc/1/caf%c3%a9",
+                "/v1/artifacts/abc/1/caf%C3%A9",
+            ),
+        ] {
+            assert_eq!(canonical(&plain_path(path).unwrap()), sent, "{path}");
+        }
         for path in [
             "/v1/./pairing/devices",
             "//v1/pairing/devices",

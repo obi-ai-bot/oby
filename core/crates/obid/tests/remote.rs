@@ -391,6 +391,26 @@ fn computers_14_a_path_read_two_ways_reaches_no_route() {
             );
         }
     }
+    // A path spelled another way reaches the route the gateway's list read, never another: an
+    // escaped literal is that literal, so it answers as the plain path does.
+    for bearer in [&token, &phone_token] {
+        let plain = through(
+            &obid,
+            Some(bearer),
+            "GET",
+            "/v1/jobs/no-such-job/report",
+            None,
+        );
+        let spelled = through(
+            &obid,
+            Some(bearer),
+            "GET",
+            "/v1/jobs/no-such-job/rep%6Frt",
+            None,
+        );
+        assert_eq!(spelled, plain, "the same route");
+        assert!(!spelled.1.contains("no such endpoint"), "{}", spelled.1);
+    }
 }
 
 /// COMPUTERS-7: without a gateway no other computer can reach this obid, and it says so.
