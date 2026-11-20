@@ -8797,7 +8797,11 @@ mod tests {
         assert!(!jobs.lock().workers.contains_key("q"));
         assert_eq!(queued.status, Status::Queued);
         assert!(queued.waiting.as_ref().is_some_and(Waiting::for_consent));
-        assert!(queued.step.contains("Settings › Accounts"), "{}", queued.step);
+        assert!(
+            queued.step.contains("Settings › Accounts"),
+            "{}",
+            queued.step
+        );
         assert!(jobs.lock().workers.contains_key("mine"));
     }
 
