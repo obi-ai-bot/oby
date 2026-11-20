@@ -55,6 +55,32 @@ impl Account {
     }
 }
 
+/// How the account new tasks go to is marked (AGENTS-3).
+const GOES_HERE: &str = "new tasks go here unless the user names another agent";
+
+/// What a conversation's turn hears of where new tasks go (AGENTS-3): the default account, only
+/// while routing would put a task on it ([`crate::jobs::Jobs::preferred_account`], so never a full
+/// or signed-out one) and only when it is one of the conversation's profile's accounts (B00-40).
+/// Told with every turn, so the agent knows it as the owner changes it.
+pub(super) fn default_account_line(
+    shared: &crate::api::Shared,
+    conversation: &str,
+) -> Option<String> {
+    let (tool, id) = shared.jobs.preferred_account()?;
+    let scope = crate::profile_scope::of_conversation(shared, conversation);
+    if !shared.profiles.accounts.holds(&scope, &id) {
+        return None;
+    }
+    let account = (super::tool_accounts(&shared.config).into_iter())
+        .flat_map(|(_, accounts)| accounts)
+        .find(|account| account.id == id)?;
+    Some(format!(
+        "Accounts: {} · {}: {GOES_HERE}.",
+        tool.name(),
+        account.name
+    ))
+}
+
 fn tool_name(agent: &str) -> &str {
     crate::agent::Tool::from_id(agent).map_or(agent, |t| t.name())
 }
@@ -210,10 +236,7 @@ impl Briefing {
         for account in &self.accounts {
             let mut parts = vec!["no usage reported yet".to_owned()];
             if self.default_account.as_ref() == Some(&account.id) {
-                parts.insert(
-                    0,
-                    "new tasks go here unless the user names another agent".into(),
-                );
+                parts.insert(0, GOES_HERE.into());
             }
             if account.running > 0 {
                 parts.push(format!(

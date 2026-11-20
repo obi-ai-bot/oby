@@ -2124,6 +2124,7 @@ async fn attempts(
         )
     });
     let heard = session.control.asked_mentioned();
+    let goes_to = super::briefing::default_account_line(shared, &control.conversation);
     let with = |prompt: String| {
         let prompt = match &heard {
             Some(heard) => format!("{heard}\n\n{prompt}"),
@@ -2141,8 +2142,12 @@ async fn attempts(
             Some(names) => format!("{names}\n\n{prompt}"),
             None => prompt,
         };
-        match &tasks {
+        let prompt = match &tasks {
             Some(tasks) => format!("{tasks}\n\n{prompt}"),
+            None => prompt,
+        };
+        match &goes_to {
+            Some(line) => format!("{line}\n\n{prompt}"),
             None => prompt,
         }
     };
