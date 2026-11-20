@@ -4450,6 +4450,108 @@ async fn sphere_24_a_rebound_join_takes_the_membership_the_sphere_lists() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// A send that's safe to repeat (docs/contracts/obi-requests.md, OBIREQ-7 to 10)
+
+/// `POST /v1/obid/sphere/requests` with `body`, and `headers`.
+fn send_request(obid: &Obid, body: &Value, headers: &[(&str, &str)]) -> Answer {
+    tokio::task::block_in_place(|| {
+        call_with_headers(
+            obid,
+            TOKEN,
+            "POST",
+            "/v1/obid/sphere/requests",
+            Some(body),
+            headers,
+        )
+    })
+}
+
+/// How many review requests obid sent that the Sphere took.
+fn reviews_taken(sphere: &FakeSphere) -> usize {
+    sends_of(sphere, "obi-wellington")
+        .iter()
+        .filter(|(kind, status)| kind == "review_request" && *status < 300)
+        .count()
+}
+
+/// A review request for Ernesto's Oby, with `operation` as its `operationId`.
+fn review_for_ernesto(operation: Option<&str>) -> Value {
+    let mut ask =
+        json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
+    if let Some(id) = operation {
+        ask["operationId"] = json!(id);
+    }
+    ask
+}
+
+/// OBIREQ-7: a request sent with operationId X, sent again with X (or X as R02's
+/// `Idempotency-Key`), gets the first exchange, and the Sphere sees one envelope.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_7_a_repeat_sends_nothing() {
+    let folder = Folder::new("obireq-7");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
+    let first = send_request(&obid, &review_for_ernesto(Some("obireq-7")), &[]);
+    assert_eq!(first.status, 202, "{}", first.text);
+    let cid = first.body["correlationId"].as_str().unwrap().to_owned();
+    ernesto.receive(1, 20).await;
+    let again = send_request(&obid, &review_for_ernesto(Some("obireq-7")), &[]);
+    assert_eq!(again.status, 202, "{}", again.text);
+    assert_eq!(again.body["correlationId"], cid.as_str());
+    let by_header = send_request(
+        &obid,
+        &review_for_ernesto(None),
+        &[("Idempotency-Key", "obireq-7")],
+    );
+    assert_eq!(by_header.status, 202, "{}", by_header.text);
+    assert_eq!(by_header.body["correlationId"], cid.as_str());
+    assert_eq!(reviews_taken(&sphere), 1);
+    let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+/// OBIREQ-8: operationId X used for one body, then sent with another: `409`, and nothing is sent;
+/// a body and a header that name two keys is `422`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_8_one_id_two_bodies_is_409() {
+    let folder = Folder::new("obireq-8");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
+    let first = send_request(&obid, &review_for_ernesto(Some("obireq-8")), &[]);
+    assert_eq!(first.status, 202, "{}", first.text);
+    ernesto.receive(1, 20).await;
+    let mut other = review_for_ernesto(Some("obireq-8"));
+    other["body"]["goal"] = json!("Another review");
+    let conflict = send_request(&obid, &other, &[]);
+    assert_eq!(conflict.status, 409, "{}", conflict.text);
+    let two_keys = send_request(
+        &obid,
+        &review_for_ernesto(Some("obireq-8")),
+        &[("Idempotency-Key", "another")],
+    );
+    assert_eq!(two_keys.status, 422, "{}", two_keys.text);
+    assert!(two_keys.text.contains("operationId"), "{}", two_keys.text);
+    let mut not_text = review_for_ernesto(None);
+    not_text["operationId"] = json!(8);
+    assert_eq!(send_request(&obid, &not_text, &[]).status, 422);
+    assert_eq!(reviews_taken(&sphere), 1);
+}
+
+/// OBIREQ-10: a client that sends no operationId and posts twice sends two requests, as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_10_no_id_behaves_as_before() {
+    let folder = Folder::new("obireq-10");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
+    let first = send_request(&obid, &review_for_ernesto(None), &[]);
+    let second = send_request(&obid, &review_for_ernesto(None), &[]);
+    assert_eq!((first.status, second.status), (202, 202));
+    assert_ne!(first.body["correlationId"], second.body["correlationId"]);
+    ernesto.receive(2, 20).await;
+    assert_eq!(reviews_taken(&sphere), 2);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Calling off what obid asked (docs/contracts/obi-requests.md, OBIREQ-1 to 6)
 
 /// The fixture's pull request 12, which the jobs below published to.

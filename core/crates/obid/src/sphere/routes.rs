@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
@@ -106,12 +106,58 @@ pub async fn join(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
     Ok(json(StatusCode::OK, shared.link.join(&body).await?))
 }
 
-/// `POST /v1/obid/sphere/requests`.
-pub async fn request(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
-    Ok(json(
-        StatusCode::ACCEPTED,
-        shared.link.request(&body).await?,
-    ))
+/// A send's request key (docs/contracts/obi-requests.md, OBIREQ-7 to 10): the body's
+/// `operationId` or R02's `Idempotency-Key` header, read by R02's own rule
+/// ([`crate::routes::request_key`]), and the body a repeat must match: the body without the key.
+/// A body that isn't a JSON object has neither, and its route refuses it as before.
+fn operation(body: &[u8], headers: &HeaderMap) -> Result<(Option<String>, Value), ApiError> {
+    let invalid = |why: String| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            why.replace("clientRequestId", "operationId"),
+        )
+    };
+    let mut judged = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let id = match judged.as_object_mut().and_then(|m| m.remove("operationId")) {
+        None | Some(Value::Null) => Value::Null,
+        Some(id @ Value::String(_)) => id,
+        Some(_) => return Err(invalid("operationId is a string.".into())),
+    };
+    let key = crate::routes::request_key(&serde_json::json!({"clientRequestId": id}), headers)
+        .map_err(invalid)?;
+    Ok((key, judged))
+}
+
+/// A repeat's answer: what was sent the first time, as it is now (`now` finds it by the stored
+/// answer), else as it was then. `202`, as the first.
+fn first_send(answer: &str, now: impl FnOnce(&Value) -> Option<Value>) -> Response {
+    let stored = serde_json::from_str(answer).unwrap_or(Value::Null);
+    json(StatusCode::ACCEPTED, now(&stored).unwrap_or(stored))
+}
+
+/// `POST /v1/obid/sphere/requests`. With an `operationId` or `Idempotency-Key`, the same body again
+/// gets the first exchange and nothing is sent; another body with the same key is `409`
+/// (OBIREQ-7, 8). The key is looked up before the secret scan and the send.
+pub async fn request(
+    State(shared): State<Arc<Shared>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let (key, judged) = operation(&body, &headers)?;
+    let link = &shared.link;
+    crate::routes::keyed(
+        &shared,
+        key.as_deref(),
+        "POST /v1/obid/sphere/requests",
+        &judged,
+        |_, answer, _| {
+            first_send(&answer, |first| {
+                link.exchange_json(first["correlationId"].as_str()?)
+            })
+        },
+        async { Ok((StatusCode::ACCEPTED, link.request(&body).await?, None)) },
+    )
+    .await
 }
 
 /// `GET /v1/obid/sphere/exchanges?limit=50`.
@@ -161,23 +207,41 @@ pub async fn peer_thread(
 
 /// `POST /v1/obid/sphere/peers/{owner}/ask`: the owner's own words to that member's Oby, signed by an
 /// app of theirs (docs/contracts/peer-thread.md).
+///
+/// With an `operationId` or `Idempotency-Key`, the key is looked up before the signature is
+/// checked: a signed question that went, retried with the same body, gets its first post and
+/// never reads as a used signature (OBIREQ-9; PEER-33). Only a signed question writes a receipt.
 pub async fn peer_ask(
     State(shared): State<Arc<Shared>>,
     Path(owner): Path<String>,
     uri: axum::http::Uri,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if crate::routes::signed_by(&shared, "POST", &uri, &headers, &body).is_none() {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "Only your own words go from their thread as yours: an app of yours signs them.",
-        ));
-    }
-    Ok(json(
-        StatusCode::ACCEPTED,
-        Box::pin(shared.link.ask_peer(&owner, &body)).await?,
-    ))
+    let (key, judged) = operation(&body, &headers)?;
+    let link = &shared.link;
+    crate::routes::keyed(
+        &shared,
+        key.as_deref(),
+        &format!("POST /v1/obid/sphere/peers/{owner}/ask"),
+        &judged,
+        |_, answer, _| {
+            first_send(&answer, |first| {
+                link.asked_post(&owner, first["exchange"]["id"].as_str()?)
+            })
+        },
+        async {
+            if crate::routes::signed_by(&shared, "POST", &uri, &headers, &body).is_none() {
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "Only your own words go from their thread as yours: an app of yours signs them.",
+                ));
+            }
+            let post = Box::pin(link.ask_peer(&owner, &body)).await?;
+            Ok((StatusCode::ACCEPTED, post, None))
+        },
+    )
+    .await
 }
 
 /// Whether a `PUT …/unsealed` is refused: letting a member's Obys have words in the clear takes an
