@@ -1,0 +1,455 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: the next turn hears how its jobs ended",
+  "version": "1.0.0",
+  "description": "The session going on hears, once, how its jobs ended since the owner last spoke, quoted, before their words: obid's first line on each, never what the job's agent wrote, so the turn stays the owner's word; a turn with no answer leaves the reports for the next; of a job off obid's allowlist only its id and status are said (TASKCONV-17).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\"}",
+          "new": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "first-told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "ended": true
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-17-told-how-its-jobs-ended",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "How your jobs ended[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-17-quoted",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "<<<quoted-[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-17-obids-first-line",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "ended with nothing done[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-17-never-what-its-agent-wrote",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "\\n(?:[^N\\n]|N(?:N|oN|otN|othN|othiN|othinN|othingN|othing\\ N|othing\\ tN|othing\\ toN|othing\\ to\\ N|othing\\ to\\ dN|othing\\ to\\ doN)*(?:[^oN\\n]|o[^tN\\n]|ot[^hN\\n]|oth[^iN\\n]|othi[^nN\\n]|othin[^gN\\n]|othing[^ N\\n]|othing\\ [^tN\\n]|othing\\ t[^oN\\n]|othing\\ to[^ N\\n]|othing\\ to\\ [^dN\\n]|othing\\ to\\ d[^oN\\n]|othing\\ to\\ do[^.N\\n]))*(?:N(?:N|oN|otN|othN|othiN|othinN|othingN|othing\\ N|othing\\ tN|othing\\ toN|othing\\ to\\ N|othing\\ to\\ dN|othing\\ to\\ doN)*(?:|o|ot|oth|othi|othin|othing|othing\\ |othing\\ t|othing\\ to|othing\\ to\\ |othing\\ to\\ d|othing\\ to\\ do))?\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-17-the-turn-stays-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.second.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "untrusted": {
+              "$ne": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "second-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.second.body.jobs.0.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "second-told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "ended": true
+                },
+                2
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "no-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REFUSED ALWAYS",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^I couldn't answer:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-17-a-turn-with-no-answer-leaves-them-for-the-next",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "How your jobs ended[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-17-once",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "\\n(?:[^H\\n]|H(?:H|oH|owH|ow\\ H|ow\\ yH|ow\\ yoH|ow\\ youH|ow\\ yourH|ow\\ your\\ H|ow\\ your\\ jH|ow\\ your\\ joH|ow\\ your\\ jobH|ow\\ your\\ jobsH|ow\\ your\\ jobs\\ H|ow\\ your\\ jobs\\ eH|ow\\ your\\ jobs\\ enH|ow\\ your\\ jobs\\ endH|ow\\ your\\ jobs\\ endeH)*(?:[^oH\\n]|o[^wH\\n]|ow[^ H\\n]|ow\\ [^yH\\n]|ow\\ y[^oH\\n]|ow\\ yo[^uH\\n]|ow\\ you[^rH\\n]|ow\\ your[^ H\\n]|ow\\ your\\ [^jH\\n]|ow\\ your\\ j[^oH\\n]|ow\\ your\\ jo[^bH\\n]|ow\\ your\\ job[^sH\\n]|ow\\ your\\ jobs[^ H\\n]|ow\\ your\\ jobs\\ [^eH\\n]|ow\\ your\\ jobs\\ e[^nH\\n]|ow\\ your\\ jobs\\ en[^dH\\n]|ow\\ your\\ jobs\\ end[^eH\\n]|ow\\ your\\ jobs\\ ende[^dH\\n]))*(?:H(?:H|oH|owH|ow\\ H|ow\\ yH|ow\\ yoH|ow\\ youH|ow\\ yourH|ow\\ your\\ H|ow\\ your\\ jH|ow\\ your\\ joH|ow\\ your\\ jobH|ow\\ your\\ jobsH|ow\\ your\\ jobs\\ H|ow\\ your\\ jobs\\ eH|ow\\ your\\ jobs\\ enH|ow\\ your\\ jobs\\ endH|ow\\ your\\ jobs\\ endeH)*(?:|o|ow|ow\\ |ow\\ y|ow\\ yo|ow\\ you|ow\\ your|ow\\ your\\ |ow\\ your\\ j|ow\\ your\\ jo|ow\\ your\\ job|ow\\ your\\ jobs|ow\\ your\\ jobs\\ |ow\\ your\\ jobs\\ e|ow\\ your\\ jobs\\ en|ow\\ your\\ jobs\\ end|ow\\ your\\ jobs\\ ende))?\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "foreign",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"title\": \"STRANGERS-WORDS\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "foreign-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.foreign.body.jobs.0.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "foreign-told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.foreign.body.conversation}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "ended": true
+                },
+                1
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "after-foreign",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.foreign.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-17-a-foreign-jobs-id-and-status",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.foreign.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "Job ${state.foreign.body.jobs.0.id} ended: done\\.[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-17-and-none-of-its-words",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.foreign.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "\\n(?:[^T\\n]|T(?:T|RT|RAT|RANT|RANGT|RANGET|RANGERT|RANGERST|RANGERS\\-T|RANGERS\\-WT|RANGERS\\-WOT|RANGERS\\-WORT)*(?:[^RT\\n]|R[^AT\\n]|RA[^NT\\n]|RAN[^GT\\n]|RANG[^ET\\n]|RANGE[^RT\\n]|RANGER[^ST\\n]|RANGERS[^\\-T\\n]|RANGERS\\-[^WT\\n]|RANGERS\\-W[^OT\\n]|RANGERS\\-WO[^RT\\n]|RANGERS\\-WOR[^DT\\n]))*(?:T(?:T|RT|RAT|RANT|RANGT|RANGET|RANGERT|RANGERST|RANGERS\\-T|RANGERS\\-WT|RANGERS\\-WOT|RANGERS\\-WORT)*(?:|R|RA|RAN|RANG|RANGE|RANGER|RANGERS|RANGERS\\-|RANGERS\\-W|RANGERS\\-WO|RANGERS\\-WOR))?\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-17"
+        ]
+      }
+    }
+  ]
+}

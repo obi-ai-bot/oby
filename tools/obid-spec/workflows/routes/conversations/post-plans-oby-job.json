@@ -1,0 +1,178 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: oby_job reads one job",
+  "version": "1.0.0",
+  "description": "oby_job says what was asked and how the job stands, its text quoted, and reading it is untrusted: what the turn starts after it is marked (TASKCONV-16).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around the README\", \"kind\": \"investigate\"}",
+          "new": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-16-what-was-asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_job {\"id\": \"${state.said.body.jobs.0.id}\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "Look around the README"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-16"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-16-quoted",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.taskconv-16-what-was-asked.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$contains": "<<<quoted-"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-16"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-16-its-status",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.taskconv-16-what-was-asked.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$contains": "Status: done"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-16"
+        ]
+      }
+    },
+    {
+      "id": "after",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look again\", \"kind\": \"investigate\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-16-reading-it-is-untrusted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.after.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "untrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-16"
+        ]
+      }
+    }
+  ]
+}

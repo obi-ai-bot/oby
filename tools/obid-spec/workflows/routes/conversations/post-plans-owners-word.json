@@ -1,0 +1,580 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: the owner's signed words",
+  "version": "1.0.0",
+  "description": "oby_answer on the owner's signed word confirms a Confirm made before the turn, where unsigned words leave it waiting on its card (TASKCONV-9); oby_settings does at once what widens nothing, and what lets Oby do more waits for the owner's OK unless it's their word (TASKCONV-10); in a signed turn oby_offer makes no card and starts nothing, and its agent is told to dispatch or say it in words (TASKCONV-22).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "ask-by-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\", \"mode\": \"bypass\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": []
+          }
+        }
+      }
+    },
+    {
+      "id": "the-confirm",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm"
+          }
+        },
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-second-later",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "taskconv-9-unsigned-words-leave-it-on-its-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_answer {\"item\": \"${state.the-confirm.picked.id}\", \"answer\": \"Confirm\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for your Confirm on its card"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-9"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-9-nothing-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-9"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-9-the-owners-word-confirms-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_answer {\"item\": \"${state.the-confirm.picked.id}\", \"answer\": \"Confirm\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Confirm."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-9"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-9-the-confirm-is-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "confirm"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-9"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-9-the-bypass-task-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "mode": "bypass"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-9"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-fewer-at-once-is-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_settings {\"maxRunning\": 1}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Saved: 1 tasks at once"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-one-at-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-more-at-once-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_settings {\"maxRunning\": 3}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for your OK"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-still-one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-on-the-owners-word-it-is-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_settings {\"maxRunning\": 3}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Saved: 3 tasks at once"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-three",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 3
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "mode-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "mode": {
+              "$ne": "bypass"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-10-a-mode-that-asks-less-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_settings {\"defaultMode\": \"bypass\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for your OK"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-the-mode-as-it-was",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "${state.mode-before.body.mode}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-the-owners-word-sets-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_settings {\"defaultMode\": \"bypass\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Saved: Bypass"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-10-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-10"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-22-a-signed-offer-makes-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_offer {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\", \"title\": \"Greeting\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "The owner's own words began this turn, so Oby makes no card: start what they asked for with oby_dispatch, or say in words what you would suggest."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-22"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-22-no-start-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "start"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-22"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-22-nothing-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-22"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-22-unsigned-words-still-offer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_offer {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\", \"title\": \"Greeting\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-22-a-start-card-for-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "start"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-22"
+        ]
+      }
+    }
+  ]
+}
