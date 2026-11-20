@@ -961,7 +961,8 @@
             "CHANGES-10",
             "CHANGES-11",
             "CHANGES-12",
-            "CHANGES-13"
+            "CHANGES-13",
+            "CHANGES-15"
           ],
           "elsewhere": {
             "CHANGES-4": "Electron panel / main's open-in-editor.",
