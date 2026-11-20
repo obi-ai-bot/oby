@@ -27,7 +27,7 @@ use crate::procs;
 
 /// Every `lab.ui.*` node: its name, what it does.
 pub const NODES: &[(&str, &str)] = &[
-    ("lab.ui.serve", "Builds the browser's screens (tools/obid-spec/lab-ui/browser) into the workflow's folder and serves them on 127.0.0.1 on a free port; `api`: lane A's browser API, proxied for live mode. Skipped when the app's node_modules aren't installed."),
+    ("lab.ui.serve", "Builds the browser's screens (tools/obid-spec/lab-ui/browser) into the workflow's folder and serves them on 127.0.0.1 on a free port, first installing their packages from the lockfile (npm ci) when missing or stale; `api`: lane A's browser API, proxied for live mode. Skipped only without npm."),
     ("lab.ui.open", "Opens a board's screen (`board`: 1 to 17, `live` for lane A's API) in Chrome for Testing, headless, at the board's own size, with a profile in the workflow's folder; one helper per `name`. Skipped without Chrome for Testing."),
     ("lab.ui.click", "Clicks (or `hover`s) one element of the screen, at its middle or at `position` {x, y} in it: a target by role and name, label, text or css."),
     ("lab.ui.type", "Types `text` into the screen (into `target` first, when given); answers only how many characters."),
@@ -194,15 +194,17 @@ async fn serve(run: &Run, input: &Value) -> Result<Value> {
         Err(why) => return Ok(json!({ "skipped": why })),
     };
     let dir = app_dir(run);
-    let vite = dir.join("node_modules/vite/bin/vite.js");
-    if !vite.is_file() {
-        return Ok(
-            json!({ "skipped": format!("skipped: the screens' node_modules aren't installed: npm ci in {}", dir.display()) }),
-        );
-    }
     let folder = run.scratch.join("lab-ui");
     private_dir(&folder)?;
     with_ui(|u| u.scratch = Some(folder.clone()));
+    // the screens' packages, from the lockfile, installed here when missing or older than it: a run
+    // that skipped every workflow for want of them would prove nothing
+    let installed = match install(&dir, &folder).await? {
+        Ok(i) => i,
+        Err(why) => return Ok(json!({ "skipped": why })),
+    };
+    let vite = dir.join("node_modules/vite/bin/vite.js");
+    anyhow::ensure!(vite.is_file(), "npm ci left no {}", vite.display());
     let out = folder.join(format!("dist-{}", with_ui(|u| u.servers.len())));
     // live mode: lane A's API (the lab.browserapi.up step's output: its URL and owner token) and a
     // device of the owner's (lab.browserapi.device), held by the screens' server, never the page
@@ -298,8 +300,79 @@ async fn serve(run: &Run, input: &Value) -> Result<Value> {
     }
     with_ui(|u| u.servers.push((pid, url.clone())));
     Ok(
-        json!({ "url": url, "port": port, "pid": pid, "live": api.is_some(), "api": api, "signs": device.is_some(), "build": dir }),
+        json!({ "url": url, "port": port, "pid": pid, "live": api.is_some(), "api": api, "signs": device.is_some(), "build": dir, "installed": installed }),
     )
+}
+
+/// The file in node_modules naming the lockfile it was installed from (its sha256).
+const STAMP: &str = "node_modules/.lab-ui-lockfile.sha256";
+
+/// `npm ci` in the screens' folder (`--no-audit --no-fund`, from package-lock.json) when its
+/// node_modules is missing or was installed from another lockfile, under a lock on the folder so
+/// workflows running side by side install once. `true` when it installed, `false` when already
+/// current; a skip only when npm itself isn't there.
+async fn install(dir: &Path, folder: &Path) -> Result<std::result::Result<bool, String>> {
+    let lockfile = dir.join("package-lock.json");
+    let want = {
+        use sha2::Digest;
+        let bytes = std::fs::read(&lockfile)
+            .with_context(|| format!("{} isn't there", lockfile.display()))?;
+        hex::encode(sha2::Sha256::digest(bytes))
+    };
+    let current = || {
+        std::fs::read_to_string(dir.join(STAMP))
+            .ok()
+            .is_some_and(|s| s.trim() == want)
+            && dir.join("node_modules/vite/bin/vite.js").is_file()
+    };
+    if current() {
+        return Ok(Ok(false));
+    }
+    let Some(npm) = crate::obid::which("npm") else {
+        return Ok(Err(format!(
+            "skipped: npm isn't installed, and the screens' packages aren't ({})",
+            dir.display()
+        )));
+    };
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("node_modules.lock"))?;
+    let lock = tokio::task::spawn_blocking(move || {
+        use std::os::fd::AsRawFd;
+        // waits while another workflow installs
+        let r = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
+        (r == 0).then_some(lock)
+    })
+    .await?
+    .context("couldn't lock the screens' folder to install its packages")?;
+    if current() {
+        drop(lock);
+        return Ok(Ok(false));
+    }
+    let log = std::fs::File::create(folder.join("npm-ci.log"))?;
+    let status = tokio::time::timeout(
+        Duration::from_secs(600),
+        tokio::process::Command::new(npm)
+            .args(["ci", "--no-audit", "--no-fund"])
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log))
+            .status(),
+    )
+    .await
+    .context("npm ci didn't finish within 600 s")??;
+    anyhow::ensure!(
+        status.success(),
+        "npm ci failed in {}: {}",
+        dir.display(),
+        folder.join("npm-ci.log").display()
+    );
+    std::fs::write(dir.join(STAMP), &want)?;
+    drop(lock);
+    Ok(Ok(true))
 }
 
 /// lab.ui.open: the helper (one per name), then the board's page at the board's size.

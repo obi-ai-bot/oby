@@ -59,7 +59,9 @@ then start this app with `LAB_BROWSER_API`, `LAB_BROWSER_TOKEN` and `LAB_BROWSER
 ## The workflows
 
 `tools/obid-spec/target/debug/obid-spec run --only lab-ui --obid /usr/bin/true` (the screens need no
-obid). One per board (`01-…` to `17-…`, `LAB-UI-n`): opens its state, checks its words, its sizes
+obid). `lab.ui.serve` installs the screens' packages itself (`npm ci --no-audit --no-fund`, from the
+lockfile) when `node_modules` is missing or was installed from another lockfile, once for workflows
+running side by side; it skips only when npm itself is missing. One per board (`01-…` to `17-…`, `LAB-UI-n`): opens its state, checks its words, its sizes
 and colours (computed styles against the app's tokens), drives what the board shows, compares the
 screen with the board (every browser piece within 4px, the same words), and saves a screenshot and
 a side-by-side PNG (`OBID_SPEC_SHOTS=<folder>` keeps them). Five run live on lane A's API (`101-` to
