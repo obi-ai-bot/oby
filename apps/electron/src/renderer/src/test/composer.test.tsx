@@ -229,8 +229,7 @@ describe('drop, @ and /', () => {
 // T3 Code's own composer tests (queuedMessageEdit, ComposerPrimaryActions, composerMenuHighlight), held to Oby's contract
 describe('T3: the message box', () => {
   // queuedMessageEdit.test "keeps file-only edits when another client starts the queued run"; T3 cebdf39984, ceed427d79
-  // known bug obi-ai-bot/oby#2726: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_queue_edit_brings_back_the_files_of_the_waiting_words_too (known bug #2726)', async () => {
+  it('t3_queue_edit_brings_back_the_files_of_the_waiting_words_too', async () => {
     const queued = [{ id: 't2', text: 'Also this', files: ['shot.png'] }];
     await box({ queued, onCancelQueued: vi.fn(async () => true) });
     await click(button('Edit “Also this”'));
@@ -238,8 +237,7 @@ describe('T3: the message box', () => {
     expect([...document.querySelectorAll('.composer-tag-text')].map((t) => t.textContent)).toContain('shot.png');
   });
 
-  // known bug obi-ai-bot/oby#2726: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_queue_edit_of_files_alone_never_leaves_blank_lines_before_the_words_typed (known bug #2726)', async () => {
+  it('t3_queue_edit_of_files_alone_never_leaves_blank_lines_before_the_words_typed', async () => {
     const queued = [{ id: 't3', text: '', files: ['a.pdf'] }];
     await box({ queued, onCancelQueued: vi.fn(async () => true) });
     await type('and the footer');
