@@ -1484,7 +1484,9 @@
             "ALERTS-14",
             "ALERTS-15",
             "ALERTS-16",
-            "ALERTS-17"
+            "ALERTS-17",
+            "ALERTS-22",
+            "ALERTS-23"
           ],
           "elsewhere": {
             "ALERTS-2": "Electron notify memory; opening the app with open -g -j.",
@@ -1496,7 +1498,8 @@
             "ALERTS-18": "Electron banners and Settings.",
             "ALERTS-19": "Electron banners and Settings.",
             "ALERTS-20": "Electron banners and Settings.",
-            "ALERTS-21": "Electron banners and Settings."
+            "ALERTS-21": "Electron banners and Settings.",
+            "ALERTS-24": "Electron banners: a settled item's click sends nothing more (notify.ts pressed)."
           }
         },
         "connectors.md": {
