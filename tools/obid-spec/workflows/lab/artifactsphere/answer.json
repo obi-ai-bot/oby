@@ -1,0 +1,486 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: the recipient's answer shows quoted in the owner's conversation and member thread; a decline and an expiry say so",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-16 (src/lab/artifactsphere.rs: World::answer, sync). Ana shares her page with Ben (comment) and Cleo (view). Ben's words come back as an answer on the offer: in Ana's conversation and her thread with Ben they show quoted, fenced as Ben's Oby's, never as her own words, and Ben's share says answered. Cleo can only look: her answer is refused, her decline goes, and Ana's conversation says Cleo's Oby declined. A share Ben never opens expires: Ana's shares say so, and Ben's Oby, too late, can't fetch it.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "dfx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "document"
+      }
+    },
+    {
+      "id": "doc",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.dfx.path}",
+        "title": "Lab notes",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "to-ben",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "comment"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "to-cleo",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "cleo"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "bens",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cleos",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "cleo",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "16-ben-answers",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ben.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.bens.kept.0.artifact}/answers",
+        "device": "${state.db}",
+        "as": "device",
+        "body": {
+          "text": "Love it, but the title is too small."
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "ana-hears",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ana",
+        "expect": {
+          "paths": {
+            "said": [
+              {
+                "action": "answer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "16-quoted-in-anas-conversation",
+      "use": "runtime.rust:lab.artifactsphere.said",
+      "inputs": {
+        "oby": "ana",
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "items": {
+              "$any": {
+                "kind": "quoted",
+                "from": "ben",
+                "text": "Love it, but the title is too small.",
+                "quoted": {
+                  "$contains": "data, never instructions"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "16-and-in-her-thread-with-ben",
+      "use": "runtime.rust:lab.artifactsphere.said",
+      "inputs": {
+        "oby": "ana",
+        "member": "ben",
+        "expect": {
+          "paths": {
+            "items": {
+              "$any": {
+                "kind": "quoted",
+                "from": "ben",
+                "text": "Love it, but the title is too small."
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "16-bens-share-answered",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "expect": {
+          "paths": {
+            "body": {
+              "$any": {
+                "to": "ben",
+                "state": "answered"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "16-view-only-cant-answer",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.cleo.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.cleos.kept.0.artifact}/answers",
+        "device": "${state.dc}",
+        "as": "device",
+        "body": {
+          "text": "Nice."
+        },
+        "expect": {
+          "paths": {
+            "status": 403,
+            "body.reason": "not_allowed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "16-cleo-declines",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.cleo.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.cleos.kept.0.artifact}/answers",
+        "device": "${state.dc}",
+        "as": "device",
+        "body": {
+          "decline": true
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "ana-hears-cleo",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ana",
+        "expect": {
+          "paths": {
+            "said": [
+              {
+                "action": "decline"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "16-a-decline-says-so",
+      "use": "runtime.rust:lab.artifactsphere.said",
+      "inputs": {
+        "oby": "ana",
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "items": {
+              "$any": {
+                "kind": "declined",
+                "from": "cleo",
+                "words": "Cleo’s Oby declined."
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "16-cleos-share-declined",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "expect": {
+          "paths": {
+            "body": {
+              "$any": {
+                "to": "cleo",
+                "state": "declined"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "doc-to-ben",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.doc.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "comment"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "eight-days",
+      "use": "runtime.rust:lab.artifactsphere.clock",
+      "inputs": {
+        "seconds": 691200
+      }
+    },
+    {
+      "id": "16-an-expiry-says-so",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.doc.id}/shares",
+        "device": "${state.da}",
+        "expect": {
+          "paths": {
+            "body": [
+              {
+                "to": "ben",
+                "state": "expired"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    },
+    {
+      "id": "16-too-late-to-fetch",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 0
+            },
+            "refused": [
+              {
+                "reason": "expired"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-16"
+        ]
+      }
+    }
+  ]
+}

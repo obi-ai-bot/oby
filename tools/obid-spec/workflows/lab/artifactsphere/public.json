@@ -1,0 +1,387 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: a public link needs acknowledged; the Sphere stores only ciphertext and never the key; the viewer decrypts in the browser and shows the invite",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-17 and LAB-ARTSPHERE-22 (src/lab/artifactsphere.rs: World::make_public, unpublic, the Sphere's public pages; lab-ui/artifacts/public). Without the warning acknowledged the link isn't made. Acknowledged, Ana gets the whole link once, its key after #; her vault keeps it (0600), her artifact.json never does. The Sphere holds one age file with one wrapped key and no plaintext; nothing it ever received, the viewer's own requests included, holds the key. Opened in chrome-headless-shell, the page decrypts the page in the browser and shows it, with the invite to get Oby (the one action: no field to write in) and \"I have Oby: open it there\" (oby://open). Taken back, the Sphere holds nothing and the same link says so.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "17-not-without-the-warning",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/public",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {},
+        "expect": {
+          "paths": {
+            "status": 422,
+            "body.reason": "not_acknowledged"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-a-link-made",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/public",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "acknowledged": "anyone-with-the-link"
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.link": {
+              "$matches": "^http://127\\.0\\.0\\.1:[0-9]+/a/l-[0-9a-f]{16}#AGE-SECRET-KEY-1[0-9A-Z]+$"
+            },
+            "body.version": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-the-key-only-in-the-vault",
+      "use": "runtime.rust:lab.artifactsphere.vault",
+      "inputs": {
+        "oby": "ana",
+        "artifact": "${state.page.id}",
+        "link": "${state.17-a-link-made.body.link}",
+        "expect": {
+          "paths": {
+            "vault": [
+              "oby.artifact.${state.page.id}.link"
+            ],
+            "mode": "600",
+            "artifactJsonHoldsKey": false,
+            "keyInLink": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-only-ciphertext",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "holds": "Lab page",
+        "expect": {
+          "paths": {
+            "public": {
+              "$len": 1
+            },
+            "public.0": {
+              "age": true,
+              "stanzas": 1,
+              "owner": "ana"
+            },
+            "holds": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-opened-in-the-browser",
+      "use": "runtime.rust:lab.artifactsphere.open",
+      "inputs": {
+        "link": "${state.17-a-link-made.body.link}",
+        "name": "public",
+        "width": 1280,
+        "height": 800,
+        "ready": "window.__OBY_PUBLIC && window.__OBY_PUBLIC.ready === true",
+        "expect": {
+          "paths": {
+            "ready": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-decrypted-there",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "public",
+        "expression": "({kind: __OBY_PUBLIC.kind, title: __OBY_PUBLIC.title, error: __OBY_PUBLIC.error, files: __OBY_PUBLIC.files.length})",
+        "expect": {
+          "paths": {
+            "value": {
+              "kind": "html",
+              "title": "Lab page",
+              "error": null,
+              "files": 4
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-the-key-never-reached-the-sphere",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "holdsKeyOf": "${state.17-a-link-made.body.link}",
+        "expect": {
+          "paths": {
+            "holds": false,
+            "requests": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "22-only-the-invite",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "public",
+        "expression": "({invite: !!document.querySelector('[data-oby-invite]'), fields: document.querySelectorAll('textarea, input, select, [contenteditable]').length, get: document.querySelector('[data-oby-invite] a.get').textContent, open: document.querySelector('[data-oby-invite] a.have').getAttribute('href')})",
+        "expect": {
+          "paths": {
+            "value.invite": true,
+            "value.fields": 0,
+            "value.get": "Get Oby for Mac",
+            "value.open": {
+              "$matches": "^oby://open\\?artifact=l-[0-9a-f]{16}$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-22"
+        ]
+      }
+    },
+    {
+      "id": "22-the-invite-moves-unless-asked-not-to",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "public",
+        "expression": "getComputedStyle(document.querySelector('.invite .oby')).animationName",
+        "expect": {
+          "paths": {
+            "value": "hop"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-22"
+        ]
+      }
+    },
+    {
+      "id": "17-taken-back",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}/public",
+        "device": "${state.da}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 204
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-nothing-left",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "public": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-the-link-says-so",
+      "use": "runtime.rust:lab.artifactsphere.open",
+      "inputs": {
+        "link": "${state.17-a-link-made.body.link}",
+        "name": "after",
+        "width": 1280,
+        "height": 800,
+        "ready": "window.__OBY_PUBLIC && window.__OBY_PUBLIC.ready === true",
+        "expect": {
+          "paths": {
+            "ready": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-said-in-the-page",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "after",
+        "expression": "__OBY_PUBLIC.error",
+        "expect": {
+          "paths": {
+            "value": "This link was taken back."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    },
+    {
+      "id": "17-gone-from-the-vault",
+      "use": "runtime.rust:lab.artifactsphere.vault",
+      "inputs": {
+        "oby": "ana",
+        "artifact": "${state.page.id}",
+        "expect": {
+          "paths": {
+            "vault": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-17"
+        ]
+      }
+    }
+  ]
+}

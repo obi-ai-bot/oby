@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "T3: branch names a task can and can't take",
   "version": "1.0.0",
-  "description": "T3 Code's branch-name kind: a branch the owner names that git can't hold, or that names a ref rather than a branch, is 422 before any job, branch or worktree is made (PUBLISHING-13); one git takes is made in obid's clone and holds the task's commit. A name under a branch that exists (t3/child beside t3) ends its task at once saying why, never stuck. A branch the owner names `oby` must not stop the branches Oby names (oby/build-<id>) from being made (T3 Code's 1917c8a33a).",
+  "description": "T3 Code's branch-name kind: a branch the owner names that git can't hold, or that names a ref rather than a branch, is 422 before any job, branch or worktree is made (PUBLISHING-13); one git takes is made in obid's clone and holds the task's commit. A name under a branch that exists (t3/child beside t3) ends its task at once saying why, never stuck. A branch the owner names `oby`, in any letter case, is refused before anything starts, and a task after it gets its oby/ branch and runs (PUBLISHING-44; T3 Code's 1917c8a33a).",
   "trigger": {
     "manual": {}
   },
@@ -531,7 +531,7 @@
       }
     },
     {
-      "id": "r",
+      "id": "publishing-44-a-branch-named-oby-is-refused",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
@@ -546,45 +546,48 @@
           }
         },
         "expect": {
-          "status": 201,
-          "body": {
-            "status": {
-              "$oneOf": [
-                "queued",
-                "running"
-              ]
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "That isn't a branch name obid can create."
             }
           }
         }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
       }
     },
     {
-      "id": "r-running",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "GET",
-        "path": "/v1/jobs/${state.r.body.id}",
-        "within": 60,
-        "expect": {
-          "status": 200,
-          "body": {
-            "status": "running",
-            "branch": "oby"
-          }
-        }
-      }
-    },
-    {
-      "id": "r-stop",
+      "id": "publishing-44-in-any-letter-case",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
         "method": "POST",
-        "path": "/v1/jobs/${state.r.body.id}/stop",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "branch": "OBY"
+          }
+        },
         "expect": {
-          "status": 200
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "That isn't a branch name obid can create."
+            }
+          }
         }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-44"
+        ]
       }
     },
     {
@@ -615,7 +618,7 @@
       }
     },
     {
-      "id": "publishing-13-a-task-oby-names-still-starts",
+      "id": "publishing-44-a-task-after-it-gets-its-oby-branch-and-runs",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
@@ -632,9 +635,8 @@
       },
       "ui": {
         "proves": [
-          "PUBLISHING-13"
-        ],
-        "expectedRed": "#2659: a branch named oby blocks every oby/ branch Oby names"
+          "PUBLISHING-44"
+        ]
       }
     },
     {

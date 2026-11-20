@@ -151,7 +151,8 @@
       },
       "ui": {
         "proves": [
-          "JOBSTATE-10"
+          "JOBSTATE-10",
+          "JOBSTATE-20"
         ]
       }
     },
@@ -173,9 +174,9 @@
       },
       "ui": {
         "proves": [
-          "JOBSTATE-10"
-        ],
-        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+          "JOBSTATE-10",
+          "JOBSTATE-20"
+        ]
       }
     },
     {
@@ -191,9 +192,9 @@
       },
       "ui": {
         "proves": [
-          "JOBSTATE-10"
-        ],
-        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+          "JOBSTATE-10",
+          "JOBSTATE-20"
+        ]
       }
     },
     {
@@ -308,8 +309,7 @@
       "ui": {
         "proves": [
           "RECOVERY-2"
-        ],
-        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+        ]
       }
     },
     {
@@ -326,8 +326,7 @@
       "ui": {
         "proves": [
           "RECOVERY-2"
-        ],
-        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+        ]
       }
     },
     {
