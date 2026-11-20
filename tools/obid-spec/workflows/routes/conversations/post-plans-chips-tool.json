@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: the chip's tool, model and effort",
+  "version": "1.0.0",
+  "description": "The chip's tool is the task's where the brain left the tool auto, with the chip's model and effort; where the words named another tool, that tool stands and the chip's model and effort don't go with it (COMPOSER-5).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\"}",
+          "new": true,
+          "defaults": {
+            "agent": "claude",
+            "model": "claude-sonnet-5-5",
+            "effort": "high"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "composer-5-the-chips-tool-model-and-effort",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agent": "claude",
+            "model": "claude-sonnet-5-5",
+            "effort": "high"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-5"
+        ]
+      }
+    },
+    {
+      "id": "named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\", \"agent\": \"codex\"}",
+          "conversation": "${state.said.body.conversation}",
+          "defaults": {
+            "agent": "claude",
+            "model": "claude-sonnet-5-5",
+            "effort": "high"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "composer-5-a-named-tool-stands",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agent": "codex"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-5"
+        ]
+      }
+    },
+    {
+      "id": "composer-5-without-the-chips-model",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "model": {
+              "$ne": "claude-sonnet-5-5"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-5"
+        ]
+      }
+    }
+  ]
+}

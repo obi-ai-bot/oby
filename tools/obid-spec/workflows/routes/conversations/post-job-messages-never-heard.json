@@ -1,0 +1,205 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/messages: words a task never heard",
+  "version": "1.0.0",
+  "description": "The owner's own words told a task while it's queued are kept with it; when it ends without hearing them (it failed getting ready), they start its follow-up (TASKCONV-15).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/fixture-app",
+              "remote": "file://${run.scratch}/fixture/remote.git",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false
+            },
+            {
+              "repo": "obi-e2e/gone",
+              "remote": "file://${run.scratch}/nowhere.git",
+              "defaultBranch": "main",
+              "pullRequests": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "one-at-a-time",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 1
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "busy",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "busy-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.busy.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/gone",
+            "kind": "fix",
+            "task": "Fix it"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued"
+          }
+        }
+      }
+    },
+    {
+      "id": "told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.job.body.id}/messages",
+        "body": {
+          "text": "also end it with a period"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.busy.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "failed"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-15-its-follow-up-starts-with-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "followUpOf": "${state.job.body.id}",
+                "task": "also end it with a period"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-15"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,185 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a task's end is told once, across restarts",
+  "version": "1.0.0",
+  "description": "A task obid went down under is picked up again; when it ends, its conversation is told, once: another start tells it nothing more (TASKCONV-18).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SLEEP\", \"kind\": \"investigate\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "at-work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "stopped-by-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-18-its-end-told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "ended": true,
+                  "jobs": [
+                    "${state.said.body.jobs.0.id}"
+                  ]
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-18"
+        ]
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.again}"
+      }
+    },
+    {
+      "id": "third",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "after",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.third}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY still here",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "still here"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-18-another-start-tells-nothing-more",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.third}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "ended": true,
+                  "jobs": [
+                    "${state.said.body.jobs.0.id}"
+                  ]
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-18"
+        ]
+      }
+    }
+  ]
+}
