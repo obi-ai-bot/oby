@@ -212,8 +212,8 @@ jobs_rs_limit=6305
 tests_sleep_limit=202
 # AGENTS.md may only shrink: a cut lowers this, and raising it is the owner's word (docs/contracts/ci.md, CI-36 to 38).
 # Raised before by A00-55, the root summaries of the login, vault and Tetrix rules (owner, 2026-11-14).
-# payback: CI-69 the line on scripts/preflight.sh in "How we work" (owner, 2026-11-20, "All three CI fixes")
-agents_md_bytes_limit=29414
+# payback: CI-69 the line on scripts/preflight.sh in "How we work" (owner, 2026-11-20, "Approve it")
+agents_md_bytes_limit=29419
 # A job's check runs the base's copy of this script on the commit (PUBLISHING-7). A branch that
 # changed a limit since it started from its merge base (a cut lowers it) is held to its own number,
 # but never to one higher than the running copy's; one that didn't gets the running copy's, an
