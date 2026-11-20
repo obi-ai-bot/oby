@@ -264,22 +264,25 @@ describe('what waits on the owner', () => {
   });
 
   it('CHATFIRST-31: put off with no row: nothing lit, then back by itself when its time comes, with no event', async () => {
-    const later = new Date(Date.now() + 150).toISOString();
+    // the test's own clock, so a busy Mac never passes the minute before the first look (#2740)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true });
+    const later = new Date(Date.now() + 60_000).toISOString();
     const s = await on({ jobs: [job('j', null)], inbox: [item('i', 'permission', { job: 'j', title: 'Run this?', headline: 'Run this?', later, state: 'later' })] });
     expect(s.stack()).not.toContain('Run this?');
     expect(icon(s.side())).toBe(false);
     expect(own(s.side())).toBe(false);
-    await new Promise((r) => setTimeout(r, 900));
+    await vi.advanceTimersByTimeAsync(61_000);
     expect(s.stack()).toContain('Run this?');
     expect(own(s.side())).toBe(true);
     expect(icon(s.side())).toBe(true);
   });
 
   it('CHATFIRST-28: a Confirm put off comes back by itself when its time comes, with no event', async () => {
-    const later = new Date(Date.now() + 150).toISOString();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true });
+    const later = new Date(Date.now() + 60_000).toISOString();
     const s = await on({ conversations: [talk('c1')], inbox: [item('conf', 'confirm', { conversation: 'c1', options: ['Confirm', 'Cancel'], later, state: 'later' })] });
     expect(lit(s.side(), 'Talk c1')).toBe(false);
-    await new Promise((r) => setTimeout(r, 900));
+    await vi.advanceTimersByTimeAsync(61_000);
     expect(lit(s.side(), 'Talk c1')).toBe(true);
   });
 
