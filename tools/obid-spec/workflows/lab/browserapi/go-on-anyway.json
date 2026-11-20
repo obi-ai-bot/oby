@@ -98,7 +98,8 @@
         "token": "${state.j1.token}",
         "tool": "oby_browser_open",
         "args": {
-          "url": "${state.up.site.url}/second"
+          "url": "${state.up.site.url}/second",
+          "newTab": true
         },
         "expect": {
           "paths": {
@@ -152,6 +153,27 @@
                   "fingerprint": "${state.cert.fingerprint}"
                 }
               }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-10"
+        ]
+      }
+    },
+    {
+      "id": "two-tabs",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs": {
+              "$len": 2
             }
           }
         }
