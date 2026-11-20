@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "2",
+  "name": "Every run hears the standing rules (TASKS-15)",
+  "version": "1.0.0",
+  "description": "A job's standing rules go in Claude Code's --append-system-prompt on every run, its resumed one too, and not in its first message.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "DIE KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "two-runs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-15-in-the-system-prompt-of-both-runs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j.body.id}/.obi/args.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)--append-system-prompt.*\\n.*--resume.*--append-system-prompt|--append-system-prompt.*\\n.*--append-system-prompt.*--resume"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-15"
+        ]
+      }
+    },
+    {
+      "id": "tasks-15-its-words-are-there",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j.body.id}/.obi/args.log",
+        "expect": {
+          "text": {
+            "$contains": "Finish with a short summary."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-15"
+        ]
+      }
+    },
+    {
+      "id": "tasks-15-not-in-the-first-message",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "Finish with a short summary."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-15"
+        ]
+      }
+    }
+  ]
+}

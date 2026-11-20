@@ -1,0 +1,153 @@
+{
+  "schemaVersion": "2",
+  "name": "A running job with no session starts again from its task (JOBSTATE-15)",
+  "version": "1.0.0",
+  "description": "A job file left running with no session: obid starts again, the job runs from its own task, its prompt saying nothing of a cut, and recovery.restarts stays as it was.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/start"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "jobs/aaaa0015.json": {
+            "id": "aaaa0015",
+            "request": "KEEP PROMPTS COMMIT: a.txt",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/build-aaaa0015",
+            "base": "main",
+            "pr": null,
+            "kind": "build",
+            "task": "KEEP PROMPTS COMMIT: a.txt",
+            "title": null,
+            "status": "running",
+            "step": "",
+            "summary": "",
+            "session": null,
+            "created": 1794999600,
+            "started": 1794999800,
+            "finished": null,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-15-it-runs-its-task-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/aaaa0015",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-15"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-15-nothing-of-a-cut",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/aaaa0015/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "Your run was cut"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-15"
+        ]
+      }
+    },
+    {
+      "id": "its-own-task",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/aaaa0015/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$contains": "KEEP PROMPTS COMMIT: a.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-15-no-restart-counted",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/aaaa0015.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.restarts": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-15"
+        ]
+      }
+    }
+  ]
+}

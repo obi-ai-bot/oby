@@ -123,7 +123,7 @@ describe('POLICY-5', () => {
     await act(async () => root!.render(<Page />));
     await act(async () => { await vi.waitFor(() => expect(group()).toBeDefined()); });
     const titles = [...host.querySelectorAll('section h2')].map((h) => h.textContent);
-    expect(titles).toEqual(['Members · 1', 'Who may ask whom', 'What your Oby tells']);
+    expect(titles).toEqual(['Members · 1', 'Who may ask whom', 'What your Oby tells', 'Members’ keys', 'What your Oby does without asking']);
   });
 });
 

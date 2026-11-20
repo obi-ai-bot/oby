@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-4: a personal login's own organization is no org",
+  "version": "1.0.0",
+  "description": "Claude Code names a personal login's organization `<someone>'s Organization`: obid keeps no org for it, and the account takes its name from its plan.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.a.body.id}/who.json",
+        "content": "{\"email\": \"sam@x.dev\", \"plan\": \"max\", \"org\": \"sam@x.dev's Organization\"}"
+      }
+    },
+    {
+      "id": "a-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-in-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-4-a-personal-org-is-no-org",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "email": "sam@x.dev",
+                "plan": "max",
+                "org": {
+                  "$exists": false
+                },
+                "name": "Max"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-4"
+        ]
+      }
+    }
+  ]
+}

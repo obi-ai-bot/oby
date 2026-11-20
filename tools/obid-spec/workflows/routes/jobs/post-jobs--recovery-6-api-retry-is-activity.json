@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "2",
+  "name": "Claude Code's own API retrying is activity (RECOVERY-6)",
+  "version": "1.0.0",
+  "description": "A run that only says Claude Code's system/api_retry for 5 seconds, past its 3-second quiet window, isn't cut: it shows as trying again and ends done in one turn.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "API RETRY: 5000 KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-6-it-runs-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "Retried.",
+            "stalled": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-6"
+        ]
+      }
+    },
+    {
+      "id": "recovery-6-no-cut",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.r.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-6"
+        ]
+      }
+    },
+    {
+      "id": "recovery-6-shows-its-retry",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 2,
+        "expect": {
+          "paths": {
+            "id": "${state.r.body.id}",
+            "status": "running",
+            "step": "Trying again in 8 seconds (1 of 10)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-6"
+        ]
+      }
+    },
+    {
+      "id": "recovery-6-shows-the-api-error",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 2,
+        "expect": {
+          "paths": {
+            "id": "${state.r.body.id}",
+            "step": "Trying again in 8 seconds (3 of 10): overloaded"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-6"
+        ]
+      }
+    }
+  ]
+}

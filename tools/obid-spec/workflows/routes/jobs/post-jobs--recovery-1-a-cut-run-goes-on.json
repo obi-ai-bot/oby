@@ -1,0 +1,433 @@
+{
+  "schemaVersion": "2",
+  "name": "A cut run goes on in its session (RECOVERY-1, 5)",
+  "version": "1.0.0",
+  "description": "A CLI that ends with no result goes on in its same session with the marked message, 3 tries in a row, then ends interrupted with the real reason and Try again; while it waits it shows as running, its step saying when, the real error only from the third try; a login isn't retried; Stop ends a wait.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "DIE KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-1-once-goes-on-to-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.once.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "recovery-1-continued-once-in-its-session",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "recovery-1-told-why-marked-not-the-owners",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)<<<end of prompt>>>.*not the owner's words.*stopped without finishing.*check what really ran"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "always",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "DIE ALWAYS KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-1-three-tries-then-the-real-reason",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.always.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again"
+          },
+          "paths": {
+            "reason": {
+              "$contains": "stopped without finishing"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "recovery-1-four-prompts-in-all",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.always.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){4}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "recovery-5-waiting-shows-as-running",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 5,
+        "expect": {
+          "paths": {
+            "id": "${state.always.body.id}",
+            "status": "running",
+            "finished": null,
+            "step": {
+              "$matches": "^Trying again in 3 seconds \\(1 of 3\\)$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "recovery-5-the-real-error-from-the-third",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 5,
+        "expect": {
+          "paths": {
+            "id": "${state.always.body.id}",
+            "status": "running",
+            "step": {
+              "$matches": "^Trying again in 3 seconds \\(3 of 3\\): .*stopped without finishing"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "recovery-5-no-error-before-the-third",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 2,
+        "expect": {
+          "paths": {
+            "id": "${state.always.body.id}",
+            "step": {
+              "$matches": "^Trying again in 3 seconds \\([12] of 3\\): "
+            }
+          }
+        },
+        "none": true
+      }
+    },
+    {
+      "id": "login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "DIE LOGIN KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-1-a-login-isnt-retried",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.login.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted"
+          },
+          "paths": {
+            "reason": {
+              "$contains": "Not logged in"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "recovery-1-one-prompt-for-a-login",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.login.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-1"
+        ]
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 600
+        }
+      }
+    },
+    {
+      "id": "waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "DIE ALWAYS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "its-minute-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.waits.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "step": {
+              "$matches": "^Trying again in 1 minute \\(1 of 3\\)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-5-stop-ends-a-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.waits.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "recovery-5-it-stays-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.waits.body.id}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped",
+            "step": ""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-5"
+        ]
+      }
+    }
+  ]
+}

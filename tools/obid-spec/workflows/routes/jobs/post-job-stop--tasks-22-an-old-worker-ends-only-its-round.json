@@ -1,0 +1,191 @@
+{
+  "schemaVersion": "2",
+  "name": "A worker ends only the round it runs (TASKS-22, JOBSTATE-18)",
+  "version": "1.0.0",
+  "description": "A job stopped while its worker wraps up after its agent's turn (held reading teammates' pull requests), then tried again: when the old worker lets go, round 2 runs and only its own run ends the job.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/stop"
+    }
+  },
+  "steps": [
+    {
+      "id": "p",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "p-stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.p}"
+      }
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/fixture-app",
+              "remote": "file://${state.p.folder}/../fixture/remote.git",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "hold",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "github/hold",
+        "content": ""
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "COMMIT: notes.txt AGAIN: Tried again."
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "reading-teammates-prs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.o.person}"
+        },
+        "path": "github/calls",
+        "within": 60,
+        "expect": {
+          "text": {
+            "$contains": "pr list"
+          }
+        }
+      }
+    },
+    {
+      "id": "wrapping-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "round": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "tried-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "round": 2,
+            "status": "queued"
+          }
+        }
+      }
+    },
+    {
+      "id": "let-go",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "remove",
+        "path": "github/hold",
+        "in": "person"
+      }
+    },
+    {
+      "id": "tasks-22-round-2-ends-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "round": 2,
+            "status": "done",
+            "summary": "Tried again.",
+            "summaries": [
+              "Added notes.txt.",
+              "Tried again."
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-22",
+          "JOBSTATE-18"
+        ]
+      }
+    }
+  ]
+}
