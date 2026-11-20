@@ -33,6 +33,8 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | The merge queue (`merge_group`) | the same as `full-suite`, over the group's whole diff (`merge_group.base_sha..head_sha`) |
 | Nightly at 03:17 UTC on `dev`, and on demand (`workflow_dispatch`) | every job: every lane is reached |
 
+**Which label.** A pull request whose change touches Rust under `core/` (a `.rs` file, a `Cargo.toml` or `Cargo.lock`) or `tools/obid-spec/` gets `full-suite` before the push that should run it, and before it's armed, so its own run is its first full one (every Rust test, CI-63, and every obid-spec workflow, CI-67) and a test the affected set would miss fails on the pull request, not in the merge queue with the group behind it. An app-only or docs pull request gets `full-ci`. The ship skill (`.claude/skills/ship/SKILL.md`) says when.
+
 A newer push to the same pull request cancels the run it supersedes; merge queue, nightly and on-demand runs always run to the end. A push to `dev` or `main` starts no run. On demand: `gh workflow run ci.yml --ref dev`.
 
 **Lanes.** `plan` reads `git diff --name-only` of the run's range and prints the lane set to its log. The first row a path matches decides:
