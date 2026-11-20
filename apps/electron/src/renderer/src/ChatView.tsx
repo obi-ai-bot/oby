@@ -10,6 +10,7 @@ import StatusDot, { TaskMark } from './StatusDot';
 import { AskBlock, resultLine } from './TaskCard';
 import DecisionBar, { type Pending } from './DecisionBar';
 import { BrowserAsks } from './browser/Asks';
+import { MacCard } from './browser/Mac';
 import { useScrollThumb } from './useScrollThumb';
 import TaskMenu from './TaskMenu';
 import TaskLog from './TaskLog';
@@ -374,6 +375,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       <DecisionBar key={openings} pending={pending} />
       {/* what this conversation's agents ask of the owner in the browser (docs/contracts/browser-app.md, BROWSERAPP-11 to 13) */}
       <BrowserAsks jobs={talk ? tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id) : task ? [task.id] : []} />
+      {/* an agent using the Mac: its card and Stop (BROWSERAPP-19) */}
+      <MacCard />
       {/* what obid refused of a click here, until dismissed; and the account it goes to, when that
           can't run (CHATSTATE-1 to 4) */}
       <Refusals where={talk ? [talk.id, ...tasks.filter((t) => t.job.conversation === talk.id).map((t) => t.id)] : task ? [task.id] : []} />

@@ -45,8 +45,11 @@ def read(id, target, proves=None, **expect):
     return s
 
 
-def measure(id, target, proves=None, **expect):
-    return step(id, "app.measure", proves, app=APP, target=target, expect={"paths": expect})
+def measure(id, target, proves=None, within=None, **expect):
+    s = step(id, "app.measure", proves, app=APP, target=target, expect={"paths": expect})
+    if within:
+        s["inputs"]["within"] = within
+    return s
 
 
 def click(id, target, hover=False):
@@ -532,6 +535,56 @@ def board_13():
     )
 
 
+def board_15():
+    pill = {"css": "[data-browser=pill]", "window": "macpill"}
+    workflow(
+        "browser-15-the-mac.json",
+        "App: an agent uses the Mac, Oby's pill over the screen and Stop (board 15)",
+        "The real app on its demo data with the design's board 15 (BROWSERAPP-19): while Claude Code has the Mac, main "
+        "shows Oby's pill in a window of its own over the screen (who, what it's doing, esc esc, Stop) and an orange frame "
+        "in another, click-through; the conversation shows the card with Stop. The pill's Stop puts the pill, the frame and "
+        "the card away. Board 15 draws the Mac's own screen around them: here the pill is checked in its window, word by "
+        "word. Esc twice is main's global shortcut, which only macOS can press (desktop.*, the contract's Open list).",
+        [
+            launch(15, 1440, 900),
+            read("card", {"css": "[data-browser=mac-card] .decision-card"}, "BROWSERAPP-19", count=1, text="Claude Code has your Mac. Press Esc twice to stop it. Stop"),
+            step("card-over-the-box", "app.measure", "BROWSERAPP-19", app=APP, target={"css": "[data-browser=mac-card] .decision-card"},
+                 against={"box": {"css": ".chat-layer:not(.is-covered) .composer"}}, expect={"paths": {"box.overlap": False}}),
+            read("pill", pill, "BROWSERAPP-19", count=1, text="Claude Code is using your Mac · Typing in TextEdit esc esc Stop", within=15),
+            read("frame", {"css": "[data-browser=mac-frame]", "window": "macframe"}, "BROWSERAPP-19", count=1, within=15),
+            *pictures(15, "Desktop", "board 15 (the Mac's screen): the card in Oby"),
+            click("stop", {"role": "button", "name": "Stop", "window": "macpill"}),
+            read("card-gone", {"css": "[data-browser=mac-card]"}, "BROWSERAPP-19", count=0, within=5),
+            close(),
+        ],
+    )
+
+
+def board_16():
+    workflow(
+        "browser-16-first-time-mac.json",
+        "App: the first time, Oby says why macOS will ask, once (board 16)",
+        "The real app on its demo data at the design's board 16 (BROWSERAPP-20): before an agent first uses the Mac, Oby's "
+        "sheet says what that means (it sees the screen, it clicks and types, you stop it any time) and that macOS asks "
+        "next, for agent-desktop, and never Oby itself; Continue closes it.",
+        [
+            launch(16, 1280, 800),
+            read("title", {"css": ".modal-title"}, "BROWSERAPP-20", count=1, text="Let agents use your Mac?"),
+            read("wants", {"css": ".modal-text"}, None, count=1, text="Claude Code wants to type in TextEdit. Agents use other apps through agent-desktop, the same way you do."),
+            read("three-points", {"css": ".modal-list li"}, None, count=3),
+            read("macos-next", {"css": ".steps"}, "BROWSERAPP-20", count=1,
+                 text="Next, macOS asks you, once. Allow agent-desktop in System Settings › Privacy & Security, under Accessibility and then Screen Recording. Oby never asks macOS for these itself."),
+            # the app's modal grows in (modal-in): measured once it has settled
+            measure("centred", {"css": "[data-browser=mac-sheet] .modal"}, "BROWSERAPP-20", within=5, **{"box.width": 480, "box.x": 400}),
+            compare("DesktopPermission", "BROWSERAPP-20"),
+            *pictures(16, "DesktopPermission", "board 16"),
+            click("continue", {"role": "button", "name": "Continue"}),
+            read("closed", {"css": "[data-browser=mac-sheet]"}, "BROWSERAPP-20", count=0, within=5),
+            close(),
+        ],
+    )
+
+
 # obid's browser routes aren't served yet: they come with browser port 1's routes pull request
 # (4b; docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608 and core #2610 merged). Every step that
 # needs them is expected red until then; the pull request that lands them removes these marks.
@@ -603,5 +656,7 @@ if __name__ == "__main__":
     board_12()
     board_13()
     board_14()
+    board_15()
+    board_16()
     board_17()
     live_101()

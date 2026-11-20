@@ -66,6 +66,13 @@ declare global {
       // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
       sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
       sphereAddSignin?(provider: string): Promise<string | null>;
+      // an agent using the Mac: main's pill and frame (preload, main/macPill.ts, BROWSERAPP-19)
+      mac?: {
+        pill(use: { agent: string; action: string } | null): Promise<boolean | null>;
+        onStopped(fn: () => void): () => void;
+        onPill(fn: (use: import('./browser/Mac').MacUse) => void): () => void;
+        stop(): void;
+      };
       // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, and a
       // tab's frames; each a function that stops listening
       browser?: {

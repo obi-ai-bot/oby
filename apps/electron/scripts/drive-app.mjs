@@ -20,7 +20,17 @@ let page = null;
 let scratch = null;
 const errors = [];
 
-function locate(target, root = page) {
+// window: another of the app's windows, by the word its page's address carries after ? (macpill:
+// the Mac's pill, BROWSERAPP-19); none, the main window
+function windowOf(target) {
+  if (!target?.window) return page;
+  if (!/^[a-z]+$/.test(target.window)) throw new Error('window: a word, as its address has it after ?');
+  const w = app.windows().find((p) => new URL(p.url()).searchParams.has(target.window));
+  if (!w) throw new Error(`no window of the app's at ?${target.window}`);
+  return w;
+}
+
+function locate(target, root = windowOf(target)) {
   if (!target || typeof target !== 'object') throw new Error('a target is an object: role and name, label, text or css');
   let scope = target.within ? locate(target.within, root) : root;
   const exact = target.exact ?? true;
