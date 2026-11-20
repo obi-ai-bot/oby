@@ -62,7 +62,7 @@ type Live = ObidState & {
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
-  previews: Record<string, { name: string; shown: string; preview?: string }[]>;
+  previews: Record<string, { name: string; shown: string; preview?: string; path?: string }[]>;
   // clicks obid refused (a Stop, an answer), by the thread they belong to: a conversation's app id
   // or a job's id. Shown there until dismissed (docs/contracts/conversation-states.md, CHATSTATE-4)
   refused: { id: number; where: string; text: string }[];
@@ -906,7 +906,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
   const paths = files.map((f) => f.path!);
   void (async () => {
     try {
-      if (files.length) set({ previews: { ...state.previews, [turn]: files.map((f) => ({ name: f.path!.split('/').pop()!, shown: f.name, preview: f.preview })) } });
+      if (files.length) set({ previews: { ...state.previews, [turn]: files.map((f) => ({ name: f.path!.split('/').pop()!, shown: f.name, preview: f.preview, path: f.path })) } });
       // the working folders go with words that start a conversation, once obid takes them (an
       // older one refuses the key); a conversation's own are obid's already (sendFoldersBy). So does
       // the project chosen for it, once obid has projects (docs/api/projects.md)
@@ -955,6 +955,13 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
   })();
   return id;
 }
+// The files of words waiting their turn, as this app sent them: the name shown and where obid keeps
+// the upload, which the conversation still holds once the words are cancelled (ATTACH-12), so Edit
+// puts them back as they went (COMPOSER-10). No path: not sent from this app since it opened
+export const queuedFiles = (turn: string, names: string[]) => names.map((name) => {
+  const p = state.previews[turn]?.find((f) => f.name === name);
+  return p ? { name: p.shown, path: p.path } : { name };
+});
 // Files picked or pasted are uploaded before their words go (POST /v1/attachments), each then
 // with the path obid kept. One refused (over 25 MB, say) takes those uploaded before it away
 // again, says why, and answers null: the box keeps the words and the files. Off obid, as they are.
@@ -962,7 +969,11 @@ export async function uploadFiles<F extends { name: string; file?: File; path?: 
   if (!onObid) return files;
   const done: F[] = [];
   try {
-    for (const f of files) done.push(f.file && !f.path ? { ...f, path: (await api.upload(f.file, f.name)).path } : f);
+    for (const f of files) {
+      // one Edit put back whose upload this app doesn't know: never sent without it
+      if (!f.file && !f.path) throw new Error(`${f.name} can’t go again from here: remove it and attach it again.`);
+      done.push(f.file && !f.path ? { ...f, path: (await api.upload(f.file, f.name)).path } : f);
+    }
     return done;
   } catch (e) {
     forgetUploads(done.flatMap((f) => (f.file && f.path ? [f.path] : [])));

@@ -283,8 +283,8 @@ clippy_step() {
             done
         fi
         [[ "$ws" == core && ${#args[@]} -eq 0 ]] && args=(--workspace)
-        say "preflight: clippy: $ws ${args[*]} (it compiles what it checks: minutes in a fresh worktree)"
-        if ! cargo clippy --quiet --manifest-path "$ws/Cargo.toml" "${args[@]}" --all-targets --locked -- -D warnings >"$tmp" 2>&1; then
+        say "preflight: clippy: $ws ${args[*]:-} (it compiles what it checks: minutes in a fresh worktree)"
+        if ! cargo clippy --quiet --manifest-path "$ws/Cargo.toml" ${args[@]+"${args[@]}"} --all-targets --locked -- -D warnings >"$tmp" 2>&1; then
             grep -E '^(error|warning)|^ *--> ' "$tmp" | grep -v '^error: could not compile' | sed -E "s#--> #--> $ws/#" | head -40
             fix "clear each warning above in $ws (CI's lint job runs clippy with -D warnings)"
             bad=1
@@ -301,7 +301,7 @@ done
 
 say ""
 say "preflight:"
-for line in "${summary[@]}"; do say "  $line"; done
+for line in ${summary[@]+"${summary[@]}"}; do say "  $line"; done
 if [[ $failed -ne 0 ]]; then
     say "preflight: fix what's above before you push (GitHub fails the pull request on it)"
     exit 1

@@ -1,0 +1,729 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/github/work/{id}/start: Fix CI on the owner's red pull request",
+  "version": "1.0.0",
+  "description": "Fix CI on the owner's own red pull request starts the fix job on its branch in a conversation named after it, with Oby's line and its card and no owner turn; its quoted file holds each check's name and result and the last lines of each failed GitHub Actions log of that repository, as data, timestamps and escapes taken out (TASKCONV-29); its goal is the fix committed, not GitHub's checks (TASKCONV-30); its commits go straight onto the pull request's own branch as a fast-forward: no oby/ branch, no pull request opened or edited (TASKCONV-31); the task names the branch its commits went to (TASKCONV-32).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/github/work/{id}/start"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1",
+          "OBID_RERUN_SETTLE_SECONDS": "0"
+        },
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 5,
+                    "title": "Thing 5",
+                    "updatedAt": "2026-10-18T08:05:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "alex"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": []
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "statusCheckRollup": {
+                              "state": "SUCCESS"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isCrossRepository": false
+                  }
+                ]
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          },
+          "github/view.json": {
+            "title": "Login fix",
+            "body": "COMMIT: fixed.txt",
+            "author": {
+              "login": "alex"
+            },
+            "labels": [],
+            "comments": [],
+            "headRefName": "fix-login",
+            "isCrossRepository": false,
+            "statusCheckRollup": [
+              {
+                "__typename": "CheckRun",
+                "name": "test",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/obi-e2e/fixture-app/actions/runs/11/job/22"
+              },
+              {
+                "__typename": "CheckRun",
+                "name": "lint",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "detailsUrl": "https://github.com/obi-e2e/fixture-app/actions/runs/11/job/23"
+              },
+              {
+                "__typename": "CheckRun",
+                "name": "elsewhere",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/someone/else/actions/runs/1/job/99"
+              }
+            ]
+          },
+          "github/logs/22": "2026-11-17T12:00:00.0000000Z line 1\n2026-11-17T12:00:00.0000000Z line 2\n2026-11-17T12:00:00.0000000Z line 3\n2026-11-17T12:00:00.0000000Z line 4\n2026-11-17T12:00:00.0000000Z line 5\n2026-11-17T12:00:00.0000000Z line 6\n2026-11-17T12:00:00.0000000Z line 7\n2026-11-17T12:00:00.0000000Z line 8\n2026-11-17T12:00:00.0000000Z line 9\n2026-11-17T12:00:00.0000000Z line 10\n2026-11-17T12:00:00.0000000Z line 11\n2026-11-17T12:00:00.0000000Z line 12\n2026-11-17T12:00:00.0000000Z line 13\n2026-11-17T12:00:00.0000000Z line 14\n2026-11-17T12:00:00.0000000Z line 15\n2026-11-17T12:00:00.0000000Z line 16\n2026-11-17T12:00:00.0000000Z line 17\n2026-11-17T12:00:00.0000000Z line 18\n2026-11-17T12:00:00.0000000Z line 19\n2026-11-17T12:00:00.0000000Z line 20\n2026-11-17T12:00:00.0000000Z line 21\n2026-11-17T12:00:00.0000000Z line 22\n2026-11-17T12:00:00.0000000Z line 23\n2026-11-17T12:00:00.0000000Z line 24\n2026-11-17T12:00:00.0000000Z line 25\n2026-11-17T12:00:00.0000000Z line 26\n2026-11-17T12:00:00.0000000Z line 27\n2026-11-17T12:00:00.0000000Z line 28\n2026-11-17T12:00:00.0000000Z line 29\n2026-11-17T12:00:00.0000000Z line 30\n2026-11-17T12:00:00.0000000Z line 31\n2026-11-17T12:00:00.0000000Z line 32\n2026-11-17T12:00:00.0000000Z line 33\n2026-11-17T12:00:00.0000000Z line 34\n2026-11-17T12:00:00.0000000Z line 35\n2026-11-17T12:00:00.0000000Z line 36\n2026-11-17T12:00:00.0000000Z line 37\n2026-11-17T12:00:00.0000000Z line 38\n2026-11-17T12:00:00.0000000Z line 39\n2026-11-17T12:00:00.0000000Z line 40\n2026-11-17T12:00:00.0000000Z line 41\n2026-11-17T12:00:00.0000000Z line 42\n2026-11-17T12:00:00.0000000Z line 43\n2026-11-17T12:00:00.0000000Z line 44\n2026-11-17T12:00:00.0000000Z line 45\n2026-11-17T12:00:00.0000000Z line 46\n2026-11-17T12:00:00.0000000Z line 47\n2026-11-17T12:00:00.0000000Z line 48\n2026-11-17T12:00:00.0000000Z line 49\n2026-11-17T12:00:00.0000000Z line 50\n2026-11-17T12:00:00.0000000Z line 51\n2026-11-17T12:00:00.0000000Z line 52\n2026-11-17T12:00:00.0000000Z line 53\n2026-11-17T12:00:00.0000000Z line 54\n2026-11-17T12:00:00.0000000Z line 55\n2026-11-17T12:00:00.0000000Z line 56\n2026-11-17T12:00:00.0000000Z line 57\n2026-11-17T12:00:00.0000000Z line 58\n2026-11-17T12:00:00.0000000Z line 59\n2026-11-17T12:00:00.0000000Z line 60\n2026-11-17T12:00:00.0000000Z line 61\n2026-11-17T12:00:00.0000000Z line 62\n2026-11-17T12:00:00.0000000Z line 63\n2026-11-17T12:00:00.0000000Z line 64\n2026-11-17T12:00:00.0000000Z line 65\n2026-11-17T12:00:00.0000000Z line 66\n2026-11-17T12:00:00.0000000Z line 67\n2026-11-17T12:00:00.0000000Z line 68\n2026-11-17T12:00:00.0000000Z line 69\n2026-11-17T12:00:00.0000000Z line 70\n2026-11-17T12:00:00.0000000Z line 71\n2026-11-17T12:00:00.0000000Z line 72\n2026-11-17T12:00:00.0000000Z line 73\n2026-11-17T12:00:00.0000000Z line 74\n2026-11-17T12:00:00.0000000Z line 75\n2026-11-17T12:00:00.0000000Z line 76\n2026-11-17T12:00:00.0000000Z line 77\n2026-11-17T12:00:00.0000000Z line 78\n2026-11-17T12:00:00.0000000Z line 79\n2026-11-17T12:00:00.0000000Z line 80\n2026-11-17T12:00:00.0000000Z line 81\n2026-11-17T12:00:00.0000000Z line 82\n2026-11-17T12:00:00.0000000Z line 83\n2026-11-17T12:00:00.0000000Z line 84\n2026-11-17T12:00:00.0000000Z line 85\n2026-11-17T12:00:00.0000000Z line 86\n2026-11-17T12:00:00.0000000Z line 87\n2026-11-17T12:00:00.0000000Z line 88\n2026-11-17T12:00:00.0000000Z line 89\n2026-11-17T12:00:00.0000000Z line 90\n2026-11-17T12:00:00.0000000Z line 91\n2026-11-17T12:00:00.0000000Z line 92\n2026-11-17T12:00:00.0000000Z line 93\n2026-11-17T12:00:00.0000000Z line 94\n2026-11-17T12:00:00.0000000Z line 95\n2026-11-17T12:00:00.0000000Z line 96\n2026-11-17T12:00:00.0000000Z line 97\n2026-11-17T12:00:00.0000000Z line 98\n2026-11-17T12:00:00.0000000Z line 99\n2026-11-17T12:00:00.0000000Z line 100\n2026-11-17T12:00:00.0000000Z line 101\n2026-11-17T12:00:00.0000000Z line 102\n2026-11-17T12:00:00.0000000Z line 103\n2026-11-17T12:00:00.0000000Z line 104\n2026-11-17T12:00:00.0000000Z line 105\n2026-11-17T12:00:00.0000000Z line 106\n2026-11-17T12:00:00.0000000Z line 107\n2026-11-17T12:00:00.0000000Z line 108\n2026-11-17T12:00:00.0000000Z line 109\n2026-11-17T12:00:00.0000000Z line 110\n2026-11-17T12:00:00.0000000Z line 111\n2026-11-17T12:00:00.0000000Z line 112\n2026-11-17T12:00:00.0000000Z line 113\n2026-11-17T12:00:00.0000000Z line 114\n2026-11-17T12:00:00.0000000Z line 115\n2026-11-17T12:00:00.0000000Z line 116\n2026-11-17T12:00:00.0000000Z line 117\n2026-11-17T12:00:00.0000000Z line 118\n2026-11-17T12:00:00.0000000Z line 119\n2026-11-17T12:00:00.0000000Z line 120\n2026-11-17T12:00:00.0000000Z line 121\n2026-11-17T12:00:00.0000000Z line 122\n2026-11-17T12:00:00.0000000Z line 123\n2026-11-17T12:00:00.0000000Z line 124\n2026-11-17T12:00:00.0000000Z line 125\n2026-11-17T12:00:00.0000000Z line 126\n2026-11-17T12:00:00.0000000Z line 127\n2026-11-17T12:00:00.0000000Z line 128\n2026-11-17T12:00:00.0000000Z line 129\n2026-11-17T12:00:00.0000000Z line 130\n2026-11-17T12:00:00.0000000Z line 131\n2026-11-17T12:00:00.0000000Z line 132\n2026-11-17T12:00:00.0000000Z line 133\n2026-11-17T12:00:00.0000000Z line 134\n2026-11-17T12:00:00.0000000Z line 135\n2026-11-17T12:00:00.0000000Z line 136\n2026-11-17T12:00:00.0000000Z line 137\n2026-11-17T12:00:00.0000000Z line 138\n2026-11-17T12:00:00.0000000Z line 139\n2026-11-17T12:00:00.0000000Z line 140\n2026-11-17T12:00:00.0000000Z line 141\n2026-11-17T12:00:00.0000000Z line 142\n2026-11-17T12:00:00.0000000Z line 143\n2026-11-17T12:00:00.0000000Z line 144\n2026-11-17T12:00:00.0000000Z line 145\n2026-11-17T12:00:00.0000000Z line 146\n2026-11-17T12:00:00.0000000Z line 147\n2026-11-17T12:00:00.0000000Z line 148\n2026-11-17T12:00:00.0000000Z line 149\n2026-11-17T12:00:00.0000000Z line 150\n2026-11-17T12:00:00.0000000Z line 151\n2026-11-17T12:00:00.0000000Z line 152\n2026-11-17T12:00:00.0000000Z line 153\n2026-11-17T12:00:00.0000000Z line 154\n2026-11-17T12:00:00.0000000Z line 155\n2026-11-17T12:00:00.0000000Z line 156\n2026-11-17T12:00:00.0000000Z line 157\n2026-11-17T12:00:00.0000000Z line 158\n2026-11-17T12:00:00.0000000Z line 159\n2026-11-17T12:00:00.0000000Z line 160\n2026-11-17T12:00:00.0000000Z line 161\n2026-11-17T12:00:00.0000000Z line 162\n2026-11-17T12:00:00.0000000Z line 163\n2026-11-17T12:00:00.0000000Z line 164\n2026-11-17T12:00:00.0000000Z line 165\n2026-11-17T12:00:00.0000000Z line 166\n2026-11-17T12:00:00.0000000Z line 167\n2026-11-17T12:00:00.0000000Z line 168\n2026-11-17T12:00:00.0000000Z line 169\n2026-11-17T12:00:00.0000000Z line 170\n2026-11-17T12:00:00.0000000Z line 171\n2026-11-17T12:00:00.0000000Z line 172\n2026-11-17T12:00:00.0000000Z line 173\n2026-11-17T12:00:00.0000000Z line 174\n2026-11-17T12:00:00.0000000Z line 175\n2026-11-17T12:00:00.0000000Z line 176\n2026-11-17T12:00:00.0000000Z line 177\n2026-11-17T12:00:00.0000000Z line 178\n2026-11-17T12:00:00.0000000Z line 179\n2026-11-17T12:00:00.0000000Z line 180\n2026-11-17T12:00:00.0000000Z line 181\n2026-11-17T12:00:00.0000000Z line 182\n2026-11-17T12:00:00.0000000Z line 183\n2026-11-17T12:00:00.0000000Z line 184\n2026-11-17T12:00:00.0000000Z line 185\n2026-11-17T12:00:00.0000000Z line 186\n2026-11-17T12:00:00.0000000Z line 187\n2026-11-17T12:00:00.0000000Z line 188\n2026-11-17T12:00:00.0000000Z line 189\n2026-11-17T12:00:00.0000000Z line 190\n2026-11-17T12:00:00.0000000Z line 191\n2026-11-17T12:00:00.0000000Z line 192\n2026-11-17T12:00:00.0000000Z line 193\n2026-11-17T12:00:00.0000000Z line 194\n2026-11-17T12:00:00.0000000Z line 195\n2026-11-17T12:00:00.0000000Z line 196\n2026-11-17T12:00:00.0000000Z line 197\n2026-11-17T12:00:00.0000000Z line 198\n2026-11-17T12:00:00.0000000Z line 199\n2026-11-17T12:00:00.0000000Z line 200\n2026-11-17T12:00:00.0000000Z line 201\n2026-11-17T12:00:00.0000000Z line 202\n2026-11-17T12:00:00.0000000Z line 203\n2026-11-17T12:00:00.0000000Z line 204\n2026-11-17T12:00:00.0000000Z line 205\n2026-11-17T12:00:00.0000000Z line 206\n2026-11-17T12:00:00.0000000Z line 207\n2026-11-17T12:00:00.0000000Z line 208\n2026-11-17T12:00:00.0000000Z line 209\n2026-11-17T12:00:00.0000000Z line 210\n2026-11-17T12:00:00.0000000Z line 211\n2026-11-17T12:00:00.0000000Z line 212\n2026-11-17T12:00:00.0000000Z line 213\n2026-11-17T12:00:00.0000000Z line 214\n2026-11-17T12:00:00.0000000Z line 215\n2026-11-17T12:00:00.0000000Z line 216\n2026-11-17T12:00:00.0000000Z line 217\n2026-11-17T12:00:00.0000000Z line 218\n2026-11-17T12:00:00.0000000Z line 219\n2026-11-17T12:00:00.0000000Z line 220\n2026-11-17T12:00:00.0000000Z line 221\n2026-11-17T12:00:00.0000000Z line 222\n2026-11-17T12:00:00.0000000Z line 223\n2026-11-17T12:00:00.0000000Z line 224\n2026-11-17T12:00:00.0000000Z line 225\n2026-11-17T12:00:00.0000000Z line 226\n2026-11-17T12:00:00.0000000Z line 227\n2026-11-17T12:00:00.0000000Z line 228\n2026-11-17T12:00:00.0000000Z line 229\n2026-11-17T12:00:00.0000000Z line 230\n2026-11-17T12:00:00.0000000Z line 231\n2026-11-17T12:00:00.0000000Z line 232\n2026-11-17T12:00:00.0000000Z line 233\n2026-11-17T12:00:00.0000000Z line 234\n2026-11-17T12:00:00.0000000Z line 235\n2026-11-17T12:00:00.0000000Z line 236\n2026-11-17T12:00:00.0000000Z line 237\n2026-11-17T12:00:00.0000000Z line 238\n2026-11-17T12:00:00.0000000Z line 239\n2026-11-17T12:00:00.0000000Z line 240\n2026-11-17T12:00:00.0000000Z line 241\n2026-11-17T12:00:00.0000000Z line 242\n2026-11-17T12:00:00.0000000Z line 243\n2026-11-17T12:00:00.0000000Z line 244\n2026-11-17T12:00:00.0000000Z line 245\n2026-11-17T12:00:00.0000000Z line 246\n2026-11-17T12:00:00.0000000Z line 247\n2026-11-17T12:00:00.0000000Z line 248\n2026-11-17T12:00:00.0000000Z line 249\n2026-11-17T12:00:00.0000000Z line 250\n2026-11-17T12:00:00.0000000Z line 251\n2026-11-17T12:00:00.0000000Z line 252\n2026-11-17T12:00:00.0000000Z line 253\n2026-11-17T12:00:00.0000000Z line 254\n2026-11-17T12:00:00.0000000Z line 255\n2026-11-17T12:00:00.0000000Z line 256\n2026-11-17T12:00:00.0000000Z line 257\n2026-11-17T12:00:00.0000000Z line 258\n2026-11-17T12:00:00.0000000Z line 259\n2026-11-17T12:00:00.0000000Z line 260\n2026-11-17T12:00:00.0000000Z line 261\n2026-11-17T12:00:00.0000000Z line 262\n2026-11-17T12:00:00.0000000Z line 263\n2026-11-17T12:00:00.0000000Z line 264\n2026-11-17T12:00:00.0000000Z line 265\n2026-11-17T12:00:00.0000000Z line 266\n2026-11-17T12:00:00.0000000Z line 267\n2026-11-17T12:00:00.0000000Z line 268\n2026-11-17T12:00:00.0000000Z line 269\n2026-11-17T12:00:00.0000000Z line 270\n2026-11-17T12:00:00.0000000Z line 271\n2026-11-17T12:00:00.0000000Z line 272\n2026-11-17T12:00:00.0000000Z line 273\n2026-11-17T12:00:00.0000000Z line 274\n2026-11-17T12:00:00.0000000Z line 275\n2026-11-17T12:00:00.0000000Z line 276\n2026-11-17T12:00:00.0000000Z line 277\n2026-11-17T12:00:00.0000000Z line 278\n2026-11-17T12:00:00.0000000Z line 279\n2026-11-17T12:00:00.0000000Z line 280\n2026-11-17T12:00:00.0000000Z line 281\n2026-11-17T12:00:00.0000000Z line 282\n2026-11-17T12:00:00.0000000Z line 283\n2026-11-17T12:00:00.0000000Z line 284\n2026-11-17T12:00:00.0000000Z line 285\n2026-11-17T12:00:00.0000000Z line 286\n2026-11-17T12:00:00.0000000Z line 287\n2026-11-17T12:00:00.0000000Z line 288\n2026-11-17T12:00:00.0000000Z line 289\n2026-11-17T12:00:00.0000000Z line 290\n2026-11-17T12:00:00.0000000Z line 291\n2026-11-17T12:00:00.0000000Z line 292\n2026-11-17T12:00:00.0000000Z line 293\n2026-11-17T12:00:00.0000000Z line 294\n2026-11-17T12:00:00.0000000Z line 295\n2026-11-17T12:00:00.0000000Z line 296\n2026-11-17T12:00:00.0000000Z line 297\n2026-11-17T12:00:00.0000000Z line 298\n2026-11-17T12:00:00.0000000Z line 299\n2026-11-17T12:00:00.0000000Z line 300\n2026-11-17T12:00:01.0000000Z \u001b[31;1mFAILED\u001b[0m test_calc.py::test_negate - assert 1 == -1\n",
+          "github/logs/23": "a passed check's log\n",
+          "github/logs/99": "not this repository's\n"
+        }
+      }
+    },
+    {
+      "id": "branch",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "branch",
+          "fix-login",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "pull-ref",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "update-ref",
+          "refs/pull/5/head",
+          "fix-login"
+        ]
+      }
+    },
+    {
+      "id": "started-at",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "fix-login"
+        ]
+      }
+    },
+    {
+      "id": "green-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "now-red",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 1,
+              "nodes": [
+                {
+                  "number": 5,
+                  "title": "Thing 5",
+                  "updatedAt": "2026-10-18T08:05:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "alex"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": []
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                          "statusCheckRollup": {
+                            "state": "FAILURE"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isCrossRepository": false
+                }
+              ]
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "red",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "pick": {
+          "from": "mine",
+          "where": {
+            "number": 5
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/${state.work.picked.id}/start",
+        "expect": {
+          "status": 201,
+          "body": {
+            "kind": "fix",
+            "pr": 5,
+            "base": "fix-login",
+            "conversation": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-a-conversation-named-after-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.started.body.conversation}",
+              "title": "${state.started.body.title}"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-no-owner-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.started.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "who": "user"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-obys-line-with-its-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.started.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "jobs": [
+                  "${state.started.body.id}"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-each-checks-result-quoted",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.started.body.id}/.obi/inputs/github-fixture-app-5.md",
+        "expect": {
+          "text": {
+            "$contains": "test: FAILURE"
+          }
+        },
+        "within": 30
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-the-failed-logs-end",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.started.body.id}/.obi/inputs/github-fixture-app-5.md",
+        "expect": {
+          "text": {
+            "$contains": "FAILED test_calc.py::test_negate - assert 1 == -1"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-its-last-line",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.started.body.id}/.obi/inputs/github-fixture-app-5.md",
+        "expect": {
+          "text": {
+            "$contains": "line 300\n"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-only-its-end",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.started.body.id}/.obi/inputs/github-fixture-app-5.md",
+        "expect": {
+          "text": {
+            "$matches": "^# Pull request #5 in obi-e2e/fixture-app, as GitHub had it at (?:[^l]|l(?:l|il|inl|inel|ine\\ l|ine\\ 2l|ine\\ 20l|ine\\ 200l)*(?:[^il]|i[^nl]|in[^el]|ine[^ l]|ine\\ [^2l]|ine\\ 2[^0l]|ine\\ 20[^0l]|ine\\ 200[^\nl]))*(?:l(?:l|il|inl|inel|ine\\ l|ine\\ 2l|ine\\ 20l|ine\\ 200l)*(?:|i|in|ine|ine\\ |ine\\ 2|ine\\ 20|ine\\ 200))?$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-no-timestamps",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.started.body.id}/.obi/inputs/github-fixture-app-5.md",
+        "expect": {
+          "text": {
+            "$matches": "^# Pull request #5 in obi-e2e/fixture-app, as GitHub had it at (?:[^T]|T(?:T|1T|12T|12:T|12:0T|12:00T|12:00:T)*(?:[^1T]|1[^2T]|12[^:T]|12:[^0T]|12:0[^0T]|12:00[^:T]|12:00:[^0T]))*(?:T(?:T|1T|12T|12:T|12:0T|12:00T|12:00:T)*(?:|1|12|12:|12:0|12:00|12:00:))?$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-no-escapes",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.started.body.id}/.obi/inputs/github-fixture-app-5.md",
+        "expect": {
+          "text": {
+            "$matches": "^# Pull request #5 in obi-e2e/fixture-app, as GitHub had it at (?:[^\u001b]|\u001b(?:)*(?:))*(?:\u001b(?:)*(?:))?$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-29-only-its-own-repositorys-logs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.started.body.id}/.obi/inputs/github-fixture-app-5.md",
+        "expect": {
+          "text": {
+            "$matches": "^# Pull request #5 in obi-e2e/fixture-app, as GitHub had it at (?:[^p]|p(?:p|op|osp|osip|ositp|ositop|ositorp|ositoryp|ository'p)*(?:[^op]|o[^sp]|os[^ip]|osi[^tp]|osit[^op]|osito[^rp]|ositor[^yp]|ository[^'p]|ository'[^sp]))*(?:p(?:p|op|osp|osip|ositp|ositop|ositorp|ositoryp|ository'p)*(?:|o|os|osi|osit|osito|ositor|ository|ository'))?$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-29"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-30-the-goal-is-the-fix-committed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "task": {
+              "$matches": "^Fix what makes the failed checks on pull request #5 in obi-e2e/fixture-app fail, and commit the fix\\. Add commits on top of it; never rewrite or drop the ones it has\\."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-30"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-30-githubs-checks-arent-part-of-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "task": {
+              "$contains": "seeing them pass there isn't part of your goal"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-30"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-30-it-names-the-quoted-file",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "task": {
+              "$contains": "the end of each failed check's log are quoted in .obi/inputs/github-fixture-app-5.md"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-30"
+        ]
+      }
+    },
+    {
+      "id": "done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-31-pushed-onto-its-branch-nothing-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "pushed": 1,
+            "published": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-31"
+        ]
+      }
+    },
+    {
+      "id": "last",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "log",
+          "-1",
+          "--format=%s",
+          "fix-login"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-31-the-fix-on-the-pull-requests-branch",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.last.out}",
+        "expect": {
+          "paths": {
+            "$": "Fix fixed.txt"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-31"
+        ]
+      }
+    },
+    {
+      "id": "parent",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "fix-login~1"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-31-a-fast-forward",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.parent.out}",
+        "expect": {
+          "paths": {
+            "$": "${state.started-at.out}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-31"
+        ]
+      }
+    },
+    {
+      "id": "oby-branches",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "for-each-ref",
+          "refs/heads/oby/"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-31-no-oby-branch",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.oby-branches.out}",
+        "expect": {
+          "paths": {
+            "$": ""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-31"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-31-no-pull-request-opened",
+      "use": "runtime.rust:conversations.person-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/calls",
+        "expect": {
+          "text": {
+            "$matches": "^api user\\n(?:[^p]|p(?:p|rp|r\\ p|r\\ cp|r\\ crp|r\\ crep|r\\ creap|r\\ creatp)*(?:[^rp]|r[^ p]|r\\ [^cp]|r\\ c[^rp]|r\\ cr[^ep]|r\\ cre[^ap]|r\\ crea[^tp]|r\\ creat[^ep]))*(?:p(?:p|rp|r\\ p|r\\ cp|r\\ crp|r\\ crep|r\\ creap|r\\ creatp)*(?:|r|r\\ |r\\ c|r\\ cr|r\\ cre|r\\ crea|r\\ creat))?$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-31"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-31-nor-edited",
+      "use": "runtime.rust:conversations.person-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/calls",
+        "expect": {
+          "text": {
+            "$matches": "^api user\\n(?:[^p]|p(?:p|rp|r\\ p|r\\ ep|r\\ edp|r\\ edip)*(?:[^rp]|r[^ p]|r\\ [^ep]|r\\ e[^dp]|r\\ ed[^ip]|r\\ edi[^tp]))*(?:p(?:p|rp|r\\ p|r\\ ep|r\\ edp|r\\ edip)*(?:|r|r\\ |r\\ e|r\\ ed|r\\ edi))?$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-31"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-32-the-branch-its-commits-went-to",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "outgoing": {
+              "$any": {
+                "action": "push",
+                "branch": "fix-login"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-32"
+        ]
+      }
+    }
+  ]
+}

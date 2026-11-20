@@ -1,0 +1,215 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a new Codex conversation finds its Codex and thread started",
+  "version": "1.0.0",
+  "description": "After the owner's turn, the next new conversation's Codex is started ahead with its thread, and no turn runs on it; that conversation's first turn is a turn/start on that very thread, resuming nothing and starting no other (CONVERSATION-AGENT-51).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "conversation": {
+            "agent": "codex"
+          },
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        },
+        "env": {
+          "OBID_PRESTART": "on"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "first-thread",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "next",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/next-id",
+        "expect": {
+          "exists": true
+        },
+        "within": 30
+      }
+    },
+    {
+      "id": "conversation-agent-51-a-thread-started-ahead",
+      "use": "runtime.rust:conversations.list-dir",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/codex/threads",
+        "expect": {
+          "paths": {
+            "count": 2,
+            "stems": {
+              "$contains": "${state.first-thread.json.session}"
+            }
+          }
+        },
+        "within": 30
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-51"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-51-no-turn-ran-on-it",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.next.text}",
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-51"
+        ]
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.next.text}",
+            "text": {
+              "$matches": "^resume="
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "second-thread",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.next.text}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": {
+                "$ne": "${state.first-thread.json.session}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-51-its-first-turn-on-the-thread-started-before-its-words",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.conversation-agent-51-a-thread-started-ahead.stems}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$contains": "${state.second-thread.json.session}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-51"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-51-a-turn-start-resuming-nothing",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.next.text}",
+        "expect": {
+          "paths": {
+            "heard": [
+              {
+                "last": "REMEMBER",
+                "resumed": null
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-51"
+        ]
+      }
+    }
+  ]
+}

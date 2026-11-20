@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: words with a skill to Codex",
+  "version": "1.0.0",
+  "description": "Words sent with a skill to the owner's Codex conversation reach Codex as $name and the words (SKILLS-7).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "codex"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}",
+          "accounts/codex/skills/pdf/SKILL.md": "---\nname: pdf\ndescription: Reads PDFs.\n---\n"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "read the manual",
+          "new": true,
+          "skill": "pdf"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "skills-7-codex-heard-dollar-name-and-the-words",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "$pdf read the manual"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SKILLS-7"
+        ]
+      }
+    }
+  ]
+}
