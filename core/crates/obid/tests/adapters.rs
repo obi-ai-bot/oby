@@ -1866,7 +1866,14 @@ fn codex_asks_the_owner_only_what_its_mode_keeps() {
 #[test]
 fn codex_and_cursor_park_and_resume_with_the_answer() {
     let folder = Folder::new("park-tools");
-    let (obid, _) = obid_with(&folder, false, json!({"parkAfter": 1}));
+    // The answers are read from the worktrees once the jobs end: a cleanup pass would free the
+    // done ones' first (CLEANUP-3), which on a busy machine came before the test read them.
+    let (obid, _) = obid_with_env(
+        &folder,
+        false,
+        json!({"parkAfter": 1}),
+        &[("OBID_TEST_CLEAN_FIRST_SECONDS", "3600")],
+    );
     let jobs: Vec<(String, Value)> = [
         ("codex", "ASK: node --test", json!({"decision": "allow"})),
         (
