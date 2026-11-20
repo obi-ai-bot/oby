@@ -745,7 +745,7 @@ impl Jobs {
                 }
                 // LANES-18: a Codex session made in the other lane's folder can't go on in this one.
                 if let Some(note) = self.other_lane(id, tool) {
-                    renew = Some((note, "its mode changed its sandbox"));
+                    renew = Some((note, "it moved to another sandbox"));
                 }
                 let job = self.get(id).ok_or("the job is gone")?;
                 // A new session has heard nothing: obid's note, all it's first told, what it was last sent.
@@ -843,9 +843,12 @@ impl Jobs {
                 let tetrix = self.tetrix_mcp(&job);
                 // Oby's own server, where Codex and Cursor ask the owner (`oby_ask_owner`); Claude
                 // Code asks with its own tool. Connected apps went with the strip to a dispatcher.
+                // An own run is on the host: it reaches obid on loopback (LANES-26).
+                let on_host = super::lanes::launches_own(&job, tool, &account);
                 let broker = match tool {
                     Tool::Claude => None,
-                    Tool::Codex | Tool::Cursor => self.ask_mcp(id),
+                    Tool::Codex | Tool::Cursor => (self.ask_mcp(id))
+                        .map(|(url, token)| (Self::agent_api(&url, on_host), token)),
                 };
                 // Being given Tetrix's tools leaves the job the owner's; what a call answers marks
                 // it where it's read (MERGING-30, the owner's decision of 2026-11-06).
@@ -1043,8 +1046,9 @@ impl Jobs {
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
                 }
-                // LANES-18: its mode left Bypass under an own Codex run, which was ended: boxed now.
-                if !turn.succeeded() && self.left_own_lane(id, tool) {
+                // LANES-18: its mode narrowed under an own Codex run, which was ended: it goes on
+                // under the new mode's settings.
+                if !turn.succeeded() && self.narrowed_own_run(id, tool) {
                     continue;
                 }
                 if launch_tries < RETRY_WAITS.len()

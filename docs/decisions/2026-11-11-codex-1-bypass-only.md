@@ -1,9 +1,9 @@
 # CODEX-1: the owner's Codex jobs in Bypass run in the own lane
 
 - **Date:** 2026-11-11
-- **Status:** In force
+- **Status:** Replaced by [2026-11-19-codex-like-t3.md](2026-11-19-codex-like-t3.md)
 - **Replaced:** Nothing AGENTS.md names
-- **Changed by:** [2026-11-15-codex-builds-in-the-box.md](2026-11-15-codex-builds-in-the-box.md)
+- **Changed by:** [2026-11-15-codex-builds-in-the-box.md](2026-11-15-codex-builds-in-the-box.md), [2026-11-19-codex-like-t3.md](2026-11-19-codex-like-t3.md)
 - **Contracts and scenarios:** [lanes.md](../contracts/lanes.md) (LANES-18)
 
 ## The owner's words

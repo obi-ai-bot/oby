@@ -1166,7 +1166,6 @@
             "LANES-12",
             "LANES-13",
             "LANES-18",
-            "LANES-19",
             "LANES-21",
             "LANES-23",
             "LANES-24"
@@ -1178,6 +1177,7 @@
             "LANES-15": "unit test.",
             "LANES-16": "unit/process test (could be obid via leftover pid check).",
             "LANES-17": "unit test.",
+            "LANES-19": "retired by the owner's \"Yes, match T3\" (docs/decisions/2026-11-19-codex-like-t3.md): builds aren't boxed.",
             "LANES-20": "real network/listen behaviour.",
             "LANES-22": "unit (process::tests).",
             "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see.",

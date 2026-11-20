@@ -24,10 +24,26 @@ fn obid(name: &str, signed_in: bool) -> (Folder, Obid) {
 }
 
 /// [`obid`] with `bin` as Codex, and `login` as the account's auth.json when there is one. In Ask,
-/// so its conversations stay in Oby's box (LANES-13), what these tests are about; [`mode`] sets
-/// another.
+/// where the owner's own conversation runs in the own lane on Ask's settings (LANES-13, the
+/// owner's "Yes, match T3"); [`mode`] sets another.
 fn obid_with(name: &str, signed_in: bool, bin: &str, login: Option<Value>) -> (Folder, Obid) {
     obid_env(name, signed_in, bin, login, &[])
+}
+
+/// [`obid_with`], holding a conversation another Oby started (ASK-16), whose turns stay in Oby's
+/// box whatever the mode (LANES-13): where the box's own tests talk. Its id.
+fn obid_boxed(
+    name: &str,
+    signed_in: bool,
+    bin: &str,
+    login: Option<Value>,
+) -> (Folder, Obid, String) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let thread = json!({"id": id, "title": "Questions from other Obys", "pinned": false,
+        "created": "2026-11-10T00:00:00Z", "sequence": 1, "turns": [], "foreign": null,
+        "readUntrusted": true, "fromObys": true});
+    let (folder, obid) = obid_kept(name, signed_in, bin, login, &[], Some((&id, thread)));
+    (folder, obid, id)
 }
 
 /// [`obid_with`], with `env` set over what a test's obid is given.
@@ -38,7 +54,24 @@ fn obid_env(
     login: Option<Value>,
     env: &[(&str, &str)],
 ) -> (Folder, Obid) {
+    obid_kept(name, signed_in, bin, login, env, None)
+}
+
+/// [`obid_env`], with a conversation `kept` in obid's home before it starts.
+fn obid_kept(
+    name: &str,
+    signed_in: bool,
+    bin: &str,
+    login: Option<Value>,
+    env: &[(&str, &str)],
+    kept: Option<(&str, Value)>,
+) -> (Folder, Obid) {
     let folder = Folder::new(name);
+    if let Some((id, thread)) = kept {
+        let dir = folder.0.join("home/conversations");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), thread.to_string()).unwrap();
+    }
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agent("fake-harness"));
     config["conversation"] = json!({"agent": "codex"});
@@ -56,7 +89,7 @@ fn obid_env(
 }
 
 /// obid whose next new conversation's Codex is started ahead (crate::brain::harness::prestart),
-/// in Ask: Oby's box.
+/// in Ask: the own lane, on Ask's settings (LANES-13).
 fn obid_ahead(name: &str) -> (Folder, Obid) {
     obid_env(
         name,
@@ -71,12 +104,28 @@ fn obid_ahead(name: &str) -> (Folder, Obid) {
 /// both are there (CONVERSATION-AGENT-51): the stand-in keeps a thread in its `CODEX_HOME`.
 fn started_ahead(obid: &Obid) -> (String, String) {
     let conversations = obid.home.join("conversations");
+    // An own conversation's threads are in the account's own folder (LANES-13), beside every other
+    // conversation's: its thread is the one no conversation holds yet.
+    let threads = obid.home.join("accounts/codex/threads");
     within(30, "the next conversation's Codex and its thread", || {
         let next = std::fs::read_to_string(conversations.join("next-id")).ok()?;
-        let threads = conversations.join(&next).join("config/threads");
-        let thread = std::fs::read_dir(threads).ok()?.flatten().next()?;
-        let thread = thread.path().file_stem()?.to_string_lossy().into_owned();
-        codex_running(&next).then_some((next, thread))
+        let held: Vec<String> = std::fs::read_dir(&conversations)
+            .ok()?
+            .flatten()
+            .filter_map(|c| std::fs::read(c.path().join("session.json")).ok())
+            .filter_map(|kept| serde_json::from_slice::<Value>(&kept).ok())
+            .filter_map(|kept| kept["session"].as_str().map(str::to_owned))
+            .collect();
+        let thread = std::fs::read_dir(&threads)
+            .ok()?
+            .flatten()
+            .filter_map(|t| Some(t.path().file_stem()?.to_string_lossy().into_owned()))
+            .find(|t| !held.contains(t))?;
+        // obid has it waiting, not only started.
+        let waiting = obid
+            .log()
+            .contains("the next conversation's Codex is waiting");
+        (waiting && codex_running(&next)).then_some((next, thread))
     })
 }
 
@@ -172,9 +221,9 @@ fn inbox(obid: &Obid) -> Vec<Value> {
 /// its arguments and the turn's token only in its environment.
 #[test]
 fn a_codex_turn_streams_its_words_and_ends_in_a_turn() {
-    let (_folder, obid) = obid("codex-conv-stream", true);
+    let (_folder, obid, boxed) = obid_boxed("codex-conv-stream", true, "fake-codex-harness", None);
     let events = follow_events(&obid);
-    let answer = said(&obid, json!({"said": "HELLO", "new": true}));
+    let answer = said(&obid, json!({"said": "HELLO", "conversation": boxed}));
     let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
     assert_eq!(answer.body["kind"], "reply", "{}", answer.text);
     assert_eq!(answer.body["text"], "Hello there.", "{}", answer.text);
@@ -300,8 +349,8 @@ fn a_codex_turn_streams_its_words_and_ends_in_a_turn() {
 /// next run.
 #[test]
 fn what_codex_plants_for_its_next_run_is_taken_out() {
-    let (_folder, obid) = obid("codex-conv-scrub", true);
-    let planted = said(&obid, json!({"said": "PLANT", "new": true}));
+    let (_folder, obid, boxed) = obid_boxed("codex-conv-scrub", true, "fake-codex-harness", None);
+    let planted = said(&obid, json!({"said": "PLANT", "conversation": boxed}));
     let conversation = planted.body["conversation"].as_str().unwrap().to_owned();
     assert_eq!(planted.body["text"], "planted", "{}", planted.text);
     let look = said(&obid, json!({"said": "LOOK", "conversation": conversation}));
@@ -319,7 +368,7 @@ fn what_codex_plants_for_its_next_run_is_taken_out() {
 /// The tokens of Codex's login and the turn's MCP token never reach what obid sends (F3, F6).
 #[test]
 fn codex_tokens_never_reach_what_obid_sends() {
-    let (_folder, obid) = obid("codex-conv-leak", true);
+    let (_folder, obid, boxed) = obid_boxed("codex-conv-leak", true, "fake-codex-harness", None);
     let (access, refresh, id, key) = (
         access_token(10 * 24 * 3600),
         format!("rt_{}", "b".repeat(40)),
@@ -334,7 +383,7 @@ fn codex_tokens_never_reach_what_obid_sends() {
     )
     .unwrap();
     let events = follow_events(&obid);
-    let answer = said(&obid, json!({"said": "LEAK", "new": true}));
+    let answer = said(&obid, json!({"said": "LEAK", "conversation": boxed}));
     let seen = until_oby_turn(&events, 30);
     let sent = format!("{} {seen:?}", answer.text);
     assert!(sent.contains("leak: "), "{sent}");
@@ -352,11 +401,11 @@ fn codex_tokens_never_reach_what_obid_sends() {
 /// picked up again, and obid says why (G1).
 #[test]
 fn a_command_ends_a_codex_turn() {
-    let (_folder, obid) = obid("codex-conv-command", true);
+    let (_folder, obid, boxed) = obid_boxed("codex-conv-command", true, "fake-codex-harness", None);
     let answer = said(
         &obid,
         json!({"said": r#"RUN OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
-               "new": true}),
+               "conversation": boxed}),
     );
     let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
     assert!(
@@ -409,7 +458,7 @@ fn assert_untrusted(obid: &Obid, answer: &Answer) {
 /// item before it, a hook, an MCP call to a server that isn't Oby's), the turn ends (findings 2-4).
 #[test]
 fn whatever_runs_outside_obys_tools_ends_a_codex_turn() {
-    let (_folder, obid) = obid("codex-conv-fatal", true);
+    let (_folder, obid, boxed) = obid_boxed("codex-conv-fatal", true, "fake-codex-harness", None);
     for (words_said, why) in [
         ("HELPERRUN", "Codex ran a command (echo helper)"),
         ("OUTPUT", "Codex ran a command"),
@@ -430,7 +479,7 @@ fn whatever_runs_outside_obys_tools_ends_a_codex_turn() {
             "Codex sent somethingNew/started",
         ),
     ] {
-        let answer = said(&obid, json!({"said": words_said, "new": true}));
+        let answer = said(&obid, json!({"said": words_said, "conversation": boxed}));
         assert!(
             words(&answer).ends_with(&format!(
                 "I couldn't answer: {why}, which a conversation never does, so obid stopped it."
@@ -471,8 +520,8 @@ fn codex_that_keeps_a_feature_on_is_refused() {
         ("fake-codex-on-hooks", "hooks"),
         ("fake-codex-on-image_generation", "image_generation"),
     ] {
-        let (_folder, obid) = obid_with(&format!("codex-conv-{feature}"), true, bin, None);
-        let answer = said(&obid, json!({"said": "HELLO", "new": true}));
+        let (_folder, obid, boxed) = obid_boxed(&format!("codex-conv-{feature}"), true, bin, None);
+        let answer = said(&obid, json!({"said": "HELLO", "conversation": boxed}));
         assert!(
             words(&answer).ends_with(&format!(
                 "I couldn't answer: Codex's features list says {feature} is on whatever obid sets, so a conversation doesn't run on it."
@@ -493,13 +542,13 @@ fn codex_login_copies_have_no_refresh_token() {
                "tokens": {"access_token": access_token(seconds), "refresh_token": format!("rt_{}", "r".repeat(40)),
                           "id_token": access_token(seconds), "account_id": "acct"}})
     };
-    let (_folder, obid) = obid_with(
+    let (_folder, obid, boxed) = obid_boxed(
         "codex-conv-copy",
         true,
         "fake-codex-harness",
         Some(login(10 * 24 * 3600)),
     );
-    let copy = said(&obid, json!({"said": "COPY", "new": true}));
+    let copy = said(&obid, json!({"said": "COPY", "conversation": boxed}));
     assert_eq!(
         copy.body["text"], "copy: access=yes refresh=no",
         "{}",
@@ -511,7 +560,7 @@ fn codex_login_copies_have_no_refresh_token() {
         login(60).to_string(),
     )
     .unwrap();
-    let ending = said(&obid, json!({"said": "COPY", "new": true}));
+    let ending = said(&obid, json!({"said": "COPY", "conversation": boxed}));
     assert!(
         words(&ending).ends_with(
             "I couldn't answer: The Mac's Codex login for Codex stub needs refreshing: run codex once."
@@ -736,12 +785,11 @@ fn conversation_agent_52_a_codex_started_ahead_ends_with_its_accounts_change() {
     });
 }
 
-/// CONVERSATION-AGENT-52: a Codex started ahead in Oby's box isn't the first turn's once the owner's
-/// Bypass moves that turn to the own lane (LANES-13): it ends, and the turn starts Codex on the
-/// account's own folder, in a thread of its own.
-#[cfg(target_os = "macos")]
+/// CONVERSATION-AGENT-52: a Codex started ahead on Ask's settings isn't the first turn's once the
+/// owner's Bypass gives that turn other settings (LANES-13): it ends, and the turn starts Codex on
+/// Bypass's, in a thread of its own.
 #[test]
-fn conversation_agent_52_a_codex_started_ahead_never_serves_another_lane() {
+fn conversation_agent_52_a_codex_started_ahead_never_serves_another_mode() {
     let (_folder, obid) = obid_ahead("codex-conv-ahead-lane");
     said(&obid, json!({"said": "HELLO", "new": true}));
     let (next, thread) = started_ahead(&obid);
@@ -755,7 +803,7 @@ fn conversation_agent_52_a_codex_started_ahead_never_serves_another_lane() {
     );
     let recorded = turns(&obid);
     assert_eq!(recorded.len(), 2, "{recorded:?}");
-    assert_eq!(recorded[1]["approvalPolicy"], "never", "{recorded:?}");
+    assert_eq!(recorded[1]["approvalPolicy"], full_access(), "{recorded:?}");
     let session = obid.home.join(format!("conversations/{next}/session.json"));
     let kept: Value = serde_json::from_slice(&std::fs::read(&session).unwrap()).unwrap();
     assert_ne!(kept["session"], thread.as_str(), "{kept}");
@@ -931,13 +979,13 @@ fn codex_reads_the_room_through_oby_read() {
     assert_eq!(kept(other)["web"], false);
 }
 
-/// Codex's approvals are answered by the conversation's own rule: no command at all, not even one
-/// in the room (F1); a write inside the room yes, outside and in repos/ no; never the owner's to
-/// answer.
+/// A boxed Codex conversation's approvals are answered by the conversation's own rule: no command
+/// at all, not even one in the room (F1); a write inside the room yes, outside and in repos/ no;
+/// never the owner's to answer.
 #[test]
 fn codex_approvals_follow_the_conversation_rule() {
-    let (_folder, obid) = obid("codex-conv-perms", true);
-    let perms = said(&obid, json!({"said": "PERMS", "new": true}));
+    let (_folder, obid, boxed) = obid_boxed("codex-conv-perms", true, "fake-codex-harness", None);
+    let perms = said(&obid, json!({"said": "PERMS", "conversation": boxed}));
     assert_eq!(
         perms.body["text"],
         "perms: inside=decline write=accept outside=decline repos=decline secret=decline",
@@ -1042,17 +1090,14 @@ fn settings(turn: &Value) -> Vec<String> {
         .collect()
 }
 
-/// LANES-13 (docs/contracts/lanes.md, the owner's CODEX-2, "Same as jobs"): on macOS, the owner's
-/// Codex conversation in Bypass runs as an own Bypass Codex job does (LANES-18): on the account's
-/// own folder as `CODEX_HOME`, with no login copy, its shell on and its commands in Codex's own
-/// sandbox under obid's profile, with no network, writing only its room (never `repos/`) and its
-/// temporary folder, `approval_policy` `never`, no hooks, no `notify`, the room an untrusted
-/// project, and Codex asked which settings hold before each thread. A command runs and the turn
-/// goes on; what it read marks the conversation, which stays own (CONVO-1): the job it starts is
-/// `untrusted`, and its next turn resumes the same thread, in the same profile.
-#[cfg(target_os = "macos")]
+/// LANES-13 (docs/contracts/lanes.md, the owner's "Yes, match T3"): the owner's Codex conversation
+/// in Bypass runs as an own Codex job does (LANES-18): on the account's own folder as `CODEX_HOME`,
+/// with no login copy, its shell on, under T3's full access (no sandbox, Codex asks nobody) and
+/// nothing of obid's own (no profile, trust or `notify`), Codex asked which settings hold before
+/// each thread. A command runs and the turn goes on; what it read marks the conversation, which
+/// stays own (CONVO-1): the job it starts is `untrusted`, and its next turn resumes the same thread.
 #[test]
-fn lanes_13_an_own_bypass_codex_conversation_runs_its_shell_in_codexs_sandbox() {
+fn lanes_13_an_own_bypass_codex_conversation_runs_its_shell_on_t3s_settings() {
     let (folder, obid) = obid("codex-conv-own", true);
     mode(&obid, "bypass");
     let answer = said(
@@ -1070,7 +1115,6 @@ fn lanes_13_an_own_bypass_codex_conversation_runs_its_shell_in_codexs_sandbox() 
     assert_ne!(words(&again), "resume=none", "{}", again.text);
     let account = folder.0.join("home/accounts/codex");
     let place = obid.home.join(format!("conversations/{conversation}"));
-    let real = |p: PathBuf| json!(p.canonicalize().unwrap()).to_string();
     let recorded = turns(&obid);
     assert_eq!(recorded.len(), 2, "{recorded:?}");
     for turn in &recorded {
@@ -1079,38 +1123,18 @@ fn lanes_13_an_own_bypass_codex_conversation_runs_its_shell_in_codexs_sandbox() 
             Some(account.clone()),
             "{turn}"
         );
-        assert_eq!(turn["approvalPolicy"], "never", "{turn}");
-        assert_eq!(turn["permissions"], "oby_own", "{turn}");
+        assert_eq!(turn["approvalPolicy"], full_access(), "{turn}");
+        assert_eq!(turn["permissions"], ":danger-full-access", "{turn}");
         assert!(turn["sandbox"].is_null(), "{turn}");
         let set = settings(turn);
-        for want in [
-            r#"approval_policy="never""#.to_owned(),
-            r#"default_permissions="oby_own""#.into(),
-            "permissions.oby_own.network.enabled=false".into(),
-            "features.hooks=false".into(),
-            "features.shell_snapshot=false".into(),
-            "notify=[]".into(),
-            format!(
-                "projects={{{} = {{trust_level = \"untrusted\"}}}}",
-                real(place.join("room"))
-            ),
-        ] {
-            assert!(set.contains(&want), "{want}: {set:?}");
-        }
+        assert!(
+            set.contains(&r#"default_permissions=":danger-full-access""#.to_owned()),
+            "{set:?}"
+        );
+        assert!(set.contains(&"features.shell_snapshot=false".to_owned()));
         assert!(!set.contains(&"features.shell_tool=false".to_owned()));
-        let profile = set
-            .iter()
-            .find_map(|s| s.strip_prefix("permissions.oby_own.filesystem="))
-            .unwrap();
-        for (path, access) in [
-            (place.join("room"), "write"),
-            (place.join("room/repos"), "read"),
-            (place.join("home"), "write"),
-            (obid.home.clone(), "none"),
-            (account.clone(), "none"),
-        ] {
-            let entry = format!("{} = \"{access}\"", real(path));
-            assert!(profile.contains(&entry), "{entry} in {profile}");
+        for gone in ["oby_own", "projects=", "notify="] {
+            assert!(!set.iter().any(|s| s.contains(gone)), "{gone}: {set:?}");
         }
     }
     // No login copy: Codex reads and refreshes the account's own.
@@ -1124,12 +1148,17 @@ fn lanes_13_an_own_bypass_codex_conversation_runs_its_shell_in_codexs_sandbox() 
     }
 }
 
+/// T3's full-access approvals, as an own Bypass Codex thread is held to them (LANES-13).
+fn full_access() -> Value {
+    json!({"granular": {"mcp_elicitations": true, "request_permissions": false, "rules": false,
+        "sandbox_approval": false, "skill_approval": false}})
+}
+
 /// LANES-21 (docs/contracts/lanes.md, #2425): the owner's Codex conversation in Bypass runs Oby's
-/// own tools under `approval_policy = "never"`: Codex asks nobody there, and codex-cli 0.163 refuses
-/// any MCP call that would need approval, so obid approves Oby's server before the run and no other
-/// server. Words become a task (`oby_dispatch` starts its job), and another server's tool is still
-/// Codex's to refuse.
-#[cfg(target_os = "macos")]
+/// own tools: Codex asks nobody there, and codex-cli 0.163 refuses any MCP call that would need
+/// approval with nobody to ask, so obid approves Oby's server before the run and no other server.
+/// Words become a task (`oby_dispatch` starts its job), and another server's tool is still Codex's
+/// to refuse.
 #[test]
 fn lanes_21_an_own_codex_conversation_starts_a_task_with_obys_own_tool() {
     let (_folder, obid) = obid("codex-conv-own-tools", true);
@@ -1171,12 +1200,13 @@ fn lanes_21_an_own_codex_conversation_starts_a_task_with_obys_own_tool() {
     }
 }
 
-/// LANES-21: in Ask the conversation stays boxed, every MCP call asked of obid as before, so obid
-/// approves no server's tools before the run.
+/// LANES-21: a boxed conversation (another Oby's) asks obid about every MCP call, as before, so
+/// obid approves no server's tools before the run.
 #[test]
 fn lanes_21_a_boxed_codex_conversation_approves_no_server_before_the_run() {
-    let (_folder, obid) = obid("codex-conv-boxed-tools", true);
-    let answer = said(&obid, json!({"said": "TOOLS", "new": true}));
+    let (_folder, obid, boxed) =
+        obid_boxed("codex-conv-boxed-tools", true, "fake-codex-harness", None);
+    let answer = said(&obid, json!({"said": "TOOLS", "conversation": boxed}));
     assert!(words(&answer).starts_with("tools: "), "{}", answer.text);
     for turn in turns(&obid) {
         assert!(
@@ -1186,49 +1216,41 @@ fn lanes_21_a_boxed_codex_conversation_approves_no_server_before_the_run() {
     }
 }
 
-/// LANES-13: the owner's Codex conversation in any other mode stays in Oby's box, as before: its
-/// `CODEX_HOME` the conversation's own with a login copy, `danger-full-access` with every approval
-/// obid's, its shell off and Codex asked nothing first, so a command it runs anyway ends the turn.
+/// LANES-13 (the owner's "Yes, match T3"): the owner's Codex conversation in Ask runs in the own
+/// lane too, on Ask's settings (a sandbox that writes nothing, approvals asked on request): on the
+/// account's own folder, its shell on, Codex asked which settings hold first; a command it runs is
+/// part of its turn, which goes on.
 #[test]
-fn lanes_13_an_ask_codex_conversation_stays_boxed() {
+fn lanes_13_an_ask_codex_conversation_runs_own_on_read_only() {
     let (folder, obid) = obid("codex-conv-ask", true);
     let answer = said(&obid, json!({"said": "RUN HELLO", "new": true}));
-    assert!(
-        words(&answer).ends_with(
-            "Codex ran a command (echo hi), which a conversation never does, so obid stopped it."
-        ),
-        "{}",
-        answer.text
-    );
-    let conversation = answer.body["conversation"].as_str().unwrap();
+    assert_eq!(words(&answer), "Hello there.", "{}", answer.text);
     let recorded = turns(&obid);
     assert_eq!(recorded.len(), 1, "{recorded:?}");
+    let account = folder.0.join("home/accounts/codex");
     assert_eq!(
         recorded[0]["codexHome"].as_str().map(PathBuf::from),
-        Some(
-            obid.home
-                .join(format!("conversations/{conversation}/config"))
-        )
+        Some(account.clone())
     );
-    assert_eq!(recorded[0]["sandbox"], "danger-full-access");
-    assert_eq!(recorded[0]["approvalPolicy"], "untrusted");
+    assert!(recorded[0]["sandbox"].is_null(), "{recorded:?}");
+    assert_eq!(recorded[0]["approvalPolicy"], "on-request");
+    assert_eq!(recorded[0]["permissions"], ":read-only");
     let set = settings(&recorded[0]);
     assert!(
-        set.contains(&"features.shell_tool=false".to_owned()),
+        !set.contains(&"features.shell_tool=false".to_owned()),
         "{set:?}"
     );
     assert!(
-        !set.iter().any(|s| s.starts_with("approval_policy=")),
+        set.contains(&r#"approval_policy="on-request""#.to_owned()),
         "{set:?}"
     );
-    assert!(!folder.0.join("home/accounts/codex/asked.jsonl").exists());
+    assert!(account.join("asked.jsonl").exists());
 }
 
 /// LANES-13 (CONVO-1): every command an own Codex conversation runs is an untrusted read, one Codex
 /// shows as a read of a file outside the room, one whose output alone obid saw, an item obid
 /// doesn't know, and another server's tool call obid saw only end, too: the mark
 /// outlives a restart, and the job a later turn starts is `untrusted`.
-#[cfg(target_os = "macos")]
 #[test]
 fn lanes_13_an_own_codex_conversations_read_marks_it() {
     for (case, (said_first, answered)) in [
@@ -1258,12 +1280,11 @@ fn lanes_13_an_own_codex_conversations_read_marks_it() {
     }
 }
 
-/// LANES-13, as LANES-18's jobs (the owner's CODEX-2, "Same as jobs"): an own Codex turn asks obid
-/// nothing, so leaving Bypass ends it within a second, saying why, and the next turn runs boxed,
-/// in a new thread (the own one is in the account's `CODEX_HOME`).
-#[cfg(target_os = "macos")]
+/// LANES-13, as LANES-18's jobs: an own Codex turn in Bypass asks obid nothing, so a mode that lets
+/// it go less far ends it within a second, saying why, and the next turn runs own under the new
+/// mode's settings, on the same thread (the account's `CODEX_HOME` keeps it).
 #[test]
-fn lanes_13_leaving_bypass_ends_an_own_codex_turn() {
+fn lanes_13_a_narrower_mode_ends_an_own_codex_turn() {
     let (_folder, obid) = obid("codex-conv-own-leave", true);
     mode(&obid, "bypass");
     let obid = std::sync::Arc::new(obid);
@@ -1278,9 +1299,9 @@ fn lanes_13_leaving_bypass_ends_an_own_codex_turn() {
     mode(&obid, "ask");
     let answer = answered
         .recv_timeout(Duration::from_secs(3))
-        .expect("the turn went on after the owner left Bypass");
+        .expect("the turn went on after the owner narrowed the mode");
     assert!(
-        words(&answer).ends_with("Your next message runs in Oby's box."),
+        words(&answer).ends_with("Your next message runs under the new mode."),
         "{}",
         answer.text
     );
@@ -1289,9 +1310,11 @@ fn lanes_13_leaving_bypass_ends_an_own_codex_turn() {
         &obid,
         json!({"said": "REMEMBER", "conversation": conversation}),
     );
-    assert_eq!(words(&again), "resume=none", "{}", again.text);
+    assert!(words(&again).starts_with("resume="), "{}", again.text);
+    assert_ne!(words(&again), "resume=none", "{}", again.text);
     let recorded = turns(&obid);
     assert_eq!(recorded.len(), 2, "{recorded:?}");
-    assert_eq!(recorded[1]["sandbox"], "danger-full-access");
-    assert_eq!(recorded[1]["approvalPolicy"], "untrusted");
+    assert!(recorded[1]["sandbox"].is_null(), "{recorded:?}");
+    assert_eq!(recorded[1]["approvalPolicy"], "on-request");
+    assert_eq!(recorded[1]["permissions"], ":read-only");
 }
