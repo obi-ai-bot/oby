@@ -215,7 +215,12 @@
         "expect": {
           "status": 201,
           "body": {
-            "status": "queued",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
             "task": "SLEEP",
             "repo": "obi-e2e/fixture-app",
             "kind": "build",

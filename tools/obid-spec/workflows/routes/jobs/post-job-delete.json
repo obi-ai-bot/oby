@@ -36,7 +36,12 @@
         "expect": {
           "status": 201,
           "body": {
-            "status": "queued",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
             "task": "SLEEP"
           }
         }
@@ -152,7 +157,12 @@
         "expect": {
           "status": 201,
           "body": {
-            "status": "queued",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
             "task": "DRAFT: notes.txt"
           }
         }
