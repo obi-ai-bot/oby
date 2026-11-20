@@ -1,0 +1,157 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 settings: a save with one wrong value keeps nothing",
+  "version": "1.0.0",
+  "description": "T3 Code's settings tests (serverSettings 'deep merges nested settings updates without dropping siblings', b2e86d7902 an invalid setting refused at its field): a jobs settings save mixing a good value and a wrong one is 422 and keeps neither, and the settings already saved stay, across a restart too (AGENTS-9: 'A 422 keeps nothing', 'the rest stays').",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "saved",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 3,
+          "accountFailover": false
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 3,
+            "accountFailover": false
+          }
+        }
+      }
+    },
+    {
+      "id": "agents-9-half-right-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 5,
+          "defaultAccount": "nobody"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-nothing-of-it-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 3,
+            "accountFailover": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "a-wrong-type-beside-a-good-one-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "accountFailover": true,
+          "maxRunning": "five"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "one-value-alone-keeps-the-rest",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 4
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 4,
+            "accountFailover": false
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "agents-9-kept-across-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 4,
+            "accountFailover": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    }
+  ]
+}
