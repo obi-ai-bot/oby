@@ -188,7 +188,7 @@ describe('Continue with ChatGPT', () => {
 
   it('CHATGPT-20: a task waiting for the yes says it whole, with what to do; any other wait as it did', async () => {
     const { chatgpt } = await load();
-    const step = 'Waiting for your OK: you can allow it on your Mac, in Settings › Agents.';
+    const step = 'Waiting for your OK: you can allow it on your Mac, in Settings › Accounts.';
     expect(chatgpt.waitSays({ step, waiting: { text: 'your OK', reserved: [] } })).toBe(step);
     expect(chatgpt.waitSays({ step: 'Waiting for a free slot', waiting: { text: 'a slot opens' } })).toBe('a slot opens');
     expect(chatgpt.waitSays({ step: 'Waiting for room', waiting: { text: 'an account with room', reserved: ['a1'] } })).toBe('an account with room');

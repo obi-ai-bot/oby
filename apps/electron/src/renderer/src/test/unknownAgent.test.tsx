@@ -109,7 +109,7 @@ describe('PROVIDERS-5: an agent this build doesn’t know shows under its id', (
     await act(async () => root.unmount());
     root = createRoot(host);
 
-    // Settings › Agents: its card, under its name, with its id and mark
+    // Settings › Accounts: its card, under its name, with its id and mark
     await agents();
     const gemCard = card('Gem')!;
     expect(gemCard).toBeTruthy();
@@ -139,7 +139,7 @@ describe('PROVIDERS-6: an agent this build doesn’t know is listed disabled, an
     await act(async () => root.unmount());
     root = createRoot(host);
 
-    // Settings › Agents: no model, effort or sign-in; both choices list it, disabled
+    // Settings › Accounts: no model, effort or sign-in; both choices list it, disabled
     await agents();
     let gemCard = card('Gem')!;
     expect(gemCard.textContent).not.toContain('Model');

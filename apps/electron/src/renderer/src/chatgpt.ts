@@ -50,7 +50,7 @@ export const welcomed = () => api.setChatgptWelcomed();
 export const waitSays = (j: { step?: string; waiting?: { text?: string; reserved?: string[] | null } | null }) =>
   (j.waiting?.reserved?.length === 0 ? j.step : j.waiting?.text) || j.step;
 export const BACKGROUND_TITLE = 'Can work I run by myself use this plan?';
-export const backgroundWords = (name: string) => `Routines, my own reviews and anything else nobody’s watching would use the ChatGPT plan on ${name}. You can turn this off in Settings › Agents.`;
+export const backgroundWords = (name: string) => `Routines, my own reviews and anything else nobody’s watching would use the ChatGPT plan on ${name}. You can turn this off in Settings › Accounts.`;
 export const BACKGROUND_LABEL = 'Work I run by myself can use this plan';
 export const backgroundDue = (status: Pick<Status, 'accounts'> | null | undefined) =>
   status?.accounts.find((a) => a.login === 'chatgpt' && a.signedIn && a.backgroundConsent === undefined);

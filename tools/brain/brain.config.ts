@@ -45,8 +45,8 @@ export const config: BrainConfig = {
   // What Sangam's app keeps itself. "obid": a choice obid owes him (the issue that takes it over); "app": a per-viewer
   // convenience that belongs in the app.
   local: [
-    { key: 'agent.default', owner: 'app', note: 'Settings › Agents › New tasks go to: obid\'s `defaultAccount` since #1606; kept here only for an older obid, moved to obid on first sight' },
-    { key: 'models.mine', owner: 'app', note: 'Settings › Agents: model and effort per account, obid\'s since #1606; kept here only for an older obid, moved to obid on first sight' },
+    { key: 'agent.default', owner: 'app', note: 'Settings › Accounts › New tasks go to: obid\'s `defaultAccount` since #1606; kept here only for an older obid, moved to obid on first sight' },
+    { key: 'models.mine', owner: 'app', note: 'Settings › Accounts: model and effort per account, obid\'s since #1606; kept here only for an older obid, moved to obid on first sight' },
     { key: 'oby.folders', owner: 'app', note: 'Working folders, per conversation: obid\'s since #1601; kept here only for an older obid, and for what obid refused when moving them' },
     { key: 'oby.sphereNames', owner: 'app', note: 'The names of the Obyspheres joined, as their invite links gave them (#1610); obid keeps only the slug' },
     { key: 'oby.archiveAfter', owner: 'obid', issue: 1580, note: 'Home › Archive completed after…' },

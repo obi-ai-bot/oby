@@ -841,7 +841,7 @@ fn consent_wait(account: &crate::config::Account, agent: Option<&str>) -> Waitin
     Waiting {
         kind: "limit".into(),
         text: format!(
-            "{}: you can allow it on your Mac, in Settings › Agents",
+            "{}: you can allow it on your Mac, in Settings › Accounts",
             consent_words(&account.name)
         ),
         reserved: Some(Vec::new()),
@@ -8797,7 +8797,11 @@ mod tests {
         assert!(!jobs.lock().workers.contains_key("q"));
         assert_eq!(queued.status, Status::Queued);
         assert!(queued.waiting.as_ref().is_some_and(Waiting::for_consent));
-        assert!(queued.step.contains("Settings › Agents"), "{}", queued.step);
+        assert!(
+            queued.step.contains("Settings › Accounts"),
+            "{}",
+            queued.step
+        );
         assert!(jobs.lock().workers.contains_key("mine"));
     }
 

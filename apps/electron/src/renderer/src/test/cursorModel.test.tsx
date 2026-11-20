@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CursorGroup } from '../obid';
 
-// Settings › Agents' Cursor Model row (docs/contracts/agents.md, AGENTS-11): Cursor's models once
+// Settings › Accounts' Cursor Model row (docs/contracts/agents.md, AGENTS-11): Cursor's models once
 // each, the chosen one's efforts and Fast apart, every choice one id Cursor listed.
 const GROUPS: CursorGroup[] = [
   { base: 'auto', name: 'Auto', default: 'auto', variants: [{ id: 'auto', fast: false }] },

@@ -183,7 +183,7 @@ What each row holds, where it shows and what stands in its place on obid. None h
 | `mac.rules` | General, Permissions on this Mac (the mock's rules) | `?everything`, a browser | obid's saved rules, on the same page. | no task yet |
 | `remote.on`, `remote.forgot` | Remote access (the mock) | a browser | Pairing (Pair a device, Paired devices) through the owner's Obysphere. | no task yet |
 | `share.mac`, `share.when`, `share.who`, `share.chosen`, `share.jobs`, `share.size`, `share.work`, `share.guests`, `share.grants` | Sharing | `?everything` | Nothing: Sharing is hidden at launch, and obid's side of it went with the strip to a dispatcher. | no task yet |
-| `claude.model`, `claude.effort`, `claude.complexEffort`, `codex.model`, `codex.effort`, `codex.complexEffort`, `cursor.model` | Models, and the mock's models on Agents | `?everything`, a browser | Settings › Agents, each account's model and efforts kept by obid. | no task yet |
+| `claude.model`, `claude.effort`, `claude.complexEffort`, `codex.model`, `codex.effort`, `codex.complexEffort`, `cursor.model` | Models, and the mock's models on Agents | `?everything`, a browser | Settings › Accounts, each account's model and efforts kept by obid. | no task yet |
 | `vault` | Vault | `?everything` | Nothing: Vault is hidden for launch. | no task yet |
 | `updates.auto` | About (the mock) | a browser | Main's own `updatesAuto` in the same file ([updates.md](updates.md)). | no task yet |
 | `connected` | Connectors (the mock) | a browser | obid's GitHub and Tetrix. | no task yet |

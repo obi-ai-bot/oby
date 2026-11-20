@@ -45,7 +45,7 @@ export type PairedDevice = { id: string; name: string; created: string; expiresA
 export const qrText = (i: Invitation) => JSON.stringify({ url: i.url, link: JSON.parse(i.link), secret: i.secret })
   .replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
-// Each tool's model and efforts, as status.models has them (Settings › Agents), and the choices:
+// Each tool's model and efforts, as status.models has them (Settings › Accounts), and the choices:
 // Claude Code's efforts are the tool's, Codex's each model's own; Cursor has a model and no effort
 export type Models = {
   claude: { model: string; effort: string; complexEffort: string };
@@ -230,7 +230,7 @@ export const api = {
   renameAccount: (a: string, name: string) => call<Account>('PATCH', `/v1/accounts/${id(a)}`, { name }),
   // (a ChatGPT login OpenAI didn't confirm ending: {revoked: false}, and it's gone all the same)
   removeAccount: (a: string) => call<null | { revoked: boolean }>('DELETE', `/v1/accounts/${id(a)}`),
-  // obid only, Settings › Agents: an account's model and efforts (null: the tool's own), the
+  // obid only, Settings › Accounts: an account's model and efforts (null: the tool's own), the
   // choices, and the account new tasks go to (null: routing's own order)
   tuneAccount: (a: string, change: { model?: string | null; effort?: string | null; complexEffort?: string | null }) =>
     call<Account>('PATCH', `/v1/accounts/${id(a)}`, change),

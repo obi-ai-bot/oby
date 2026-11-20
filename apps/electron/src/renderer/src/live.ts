@@ -775,7 +775,7 @@ function snapshot(s: LiveSnapshot) {
   // what the room missed while the stream was away
   lookAgain();
   lookAgainAtThreads();
-  // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
+  // Settings › Accounts' choices kept here before obid kept them: moved to it once (AGENTS-7)
   if (obid.status) void moveKeptChoices(obid.status).then((moved) => { if (moved) lookAtUsage(); });
   // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
   void api.repos().then(({ repos }) => set({ repos }), () => {});

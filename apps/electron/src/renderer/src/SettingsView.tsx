@@ -38,8 +38,10 @@ const LEAVE_MS = 220;
 // gear at the icons' foot (the account menu, with ?everything), then the side panel's Settings list.
 // Sharing, Remote access and Vault are left out of v1 (Sangam, 2026-10-28) and come
 // back later: only with ?everything (lean.ts)
-// Agents takes Accounts' and Models' place: each agent's accounts with its model and efforts,
-// and which one new tasks go to (the old two stay with ?everything)
+// Accounts (id `agents`) takes the design's Accounts and Models pages' place: each agent's accounts
+// with its model and efforts, and which one new tasks go to. The owner named it Accounts (2026-11-19);
+// the design's older two stay with ?everything, that Accounts page as "Accounts (earlier)" so the
+// list never shows the name twice
 // On obid, Remote access shows only pairing an iPhone (Pairing), as the Swift Mac app's Settings › Runner had it;
 // the owner's order of 2026-11-01: no word a person sees says Runner, so that page went.
 // Hidden on obid too while the iPhone app is off the table (the owner's word, 2026-11-18): it comes back
@@ -47,12 +49,12 @@ const LEAVE_MS = 220;
 const LATER = new Set(['remote', 'sharing', 'vault', 'accounts', 'models']);
 export const SETTINGS_PAGES = [
   { id: 'general', label: 'General' },
-  { id: 'agents', label: 'Agents' },
+  { id: 'agents', label: 'Accounts' },
   // joining one from its invite link (SphereSettings.tsx, SPHEREAPP-4)
   { id: 'obysphere', label: 'Obysphere' },
   { id: 'sharing', label: 'Sharing' },
   { id: 'remote', label: 'Remote access' },
-  { id: 'accounts', label: 'Accounts' },
+  { id: 'accounts', label: 'Accounts (earlier)' },
   { id: 'models', label: 'Models' },
   { id: 'connectors', label: 'Connectors' },
   // ours until Sangam's screens come: a repository's setup command (SETUP-4), and the routines obid
@@ -872,7 +874,7 @@ export async function moveKeptChoices(status: Status): Promise<boolean> {
   }
   return moved;
 }
-// Sign in from a conversation's line (CHATSTATE-2): Settings › Agents opens and starts that
+// Sign in from a conversation's line (CHATSTATE-2): Settings › Accounts opens and starts that
 // account's own sign-in, as its Sign In does; one obid doesn't sign in (the tool's own login on this
 // Mac) opens at its row, which says how
 let signInNext: string | null = null;
@@ -1336,7 +1338,7 @@ export function Row({ label, about, children }: { label: React.ReactNode; about?
 
 // A model and, after it in grey, its effort: one button, and one menu with the models, then
 // Effort (its pick on the right), which opens the efforts beside it, as macOS's submenus do: on
-// hover, or a click. none: models only, as Cursor's (Settings › Agents). A long list (Cursor's)
+// hover, or a click. none: models only, as Cursor's (Settings › Accounts). A long list (Cursor's)
 // scrolls under the Model label, Effort staying below it, all inside the window (Menu)
 export function ModelPicker({ label, models, model, onModel, efforts, effort, onEffort }: {
   label: string;
@@ -1424,7 +1426,7 @@ export function Switch({ on, onChange, label }: { on: boolean; onChange: (on: bo
 }
 
 // A pop-up menu: the system's own (a native select)
-// wide: 240px, as every control on Settings › Agents is; an option's third, true: listed, not chosen
+// wide: 240px, as every control on Settings › Accounts is; an option's third, true: listed, not chosen
 export function Select({ value, options, onChange, label, wide = false }: { value: string; options: readonly (readonly [string, string, boolean?])[]; onChange: (v: string) => void; label: string; wide?: boolean }) {
   return (
     <span className={`set-select${wide ? ' is-wide' : ''}`}>

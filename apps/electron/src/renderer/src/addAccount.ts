@@ -1,7 +1,7 @@
 import type { Agent } from './view';
 import { ApiError, api, type SignIn, type Status } from './obid';
 
-// Settings › Agents' Add account, what isn't the sheet's (docs/contracts/accounts.md): a row per
+// Settings › Accounts' Add account, what isn't the sheet's (docs/contracts/accounts.md): a row per
 // tool with how many it has and the logins found on this Mac; picking a tool makes its account,
 // with no name (obid's first sign-in names it), and starts its own sign-in at once.
 const TOOLS: Agent[] = ['claude', 'codex', 'cursor'];
@@ -14,7 +14,7 @@ export const toolRows = (accounts: { agent: string }[], found: Found[]) => TOOLS
 }));
 
 // a try ended: its sign-in ended at obid and the account it made taken off, so only what was
-// connected shows in Settings › Agents
+// connected shows in Settings › Accounts
 export async function stopAdding(account: string) {
   await api.endSignIn(account).catch(() => { /* ended already */ });
   await api.removeAccount(account).catch(() => { /* gone already, or Settings shows it signed out */ });

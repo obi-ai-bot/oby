@@ -73,7 +73,7 @@ function Mock() {
 
 // On obid: GitHub (obid's gh, with GitHub's own device sign-in) and Tetrix (obid is its OAuth
 // client), docs/runner-api.md. The launch shows these two only (AGENTS.md); the agents' logins
-// are Settings › Agents. Read when the page opens, then every 2 seconds while a sign-in is under
+// are Settings › Accounts. Read when the page opens, then every 2 seconds while a sign-in is under
 // way (obid sends no event for GitHub's). Nothing here holds a token: obid keeps them.
 // Each row is just its name, its line and its buttons; what a connector needs beyond that opens
 // in a window of its own: Tetrix's server and sign-in (Connect, Edit), GitHub's way out.
@@ -302,7 +302,7 @@ export function CommandWindow({ brand, title, text, command, onClose }: { brand:
   );
 }
 
-// A window asking before something that can't be undone here (Settings › Agents' and Accounts'
+// A window asking before something that can't be undone here (Settings › Accounts' and Accounts'
 // Remove): what it does, Cancel (focused, as SphereSettings' confirm), and the red button that does it
 export function ConfirmWindow({ brand, title, text, action, onConfirm, onClose }: {
   brand: Brand; title: string; text: string; action: string; onConfirm: () => void; onClose: () => void;

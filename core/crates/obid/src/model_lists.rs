@@ -103,7 +103,7 @@ impl ModelLists {
     }
 }
 
-/// Today's fixed list, as Settings › Agents offered before each account's own was read.
+/// Today's fixed list, as Settings › Accounts offered before each account's own was read.
 pub fn fallback(tool: Tool) -> Vec<Offered> {
     settings::models(tool)
         .iter()

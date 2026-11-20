@@ -840,11 +840,11 @@ function UsageGauge({ ref, open, onClick }: { ref: React.Ref<HTMLButtonElement>;
   );
 }
 
-// Each account's use, over the box like the + panel, as Settings › Agents has it: its agent
+// Each account's use, over the box like the + panel, as Settings › Accounts has it: its agent
 // and name, when its 5-hour session starts over and how much of it is used on one line, the
 // session's bar under them (yellow past 80%, red past 90%), and the week in words under that
-// (an account with no session figure: the bar is what it has, as in Settings › Agents); a gear at the top right goes to
-// Settings › Agents, and takes the focus on opening. Esc, a click outside or Tab out of it
+// (an account with no session figure: the bar is what it has, as in Settings › Accounts); a gear at the top right goes to
+// Settings › Accounts, and takes the focus on opening. Esc, a click outside or Tab out of it
 // closes it.
 export function UsagePanel({ anchor, onClose, onBlur }: { anchor?: React.RefObject<HTMLButtonElement | null>; onClose: () => void; onBlur: (e: React.FocusEvent) => void }) {
   const [accounts] = useAccounts();

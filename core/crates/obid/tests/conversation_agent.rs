@@ -832,7 +832,7 @@ fn accounts_35_a_task_named_to_a_signed_out_account_is_refused() {
             .join(".credentials.json"),
     )
     .unwrap();
-    let why = "Claude Code isn't signed in, so this task didn't start: sign it in from Settings › Agents, or ask for another account.";
+    let why = "Claude Code isn't signed in, so this task didn't start: sign it in from Settings › Accounts, or ask for another account.";
     let named = post_task(&obid, json!({"account": CLAUDE}));
     assert_eq!(named.status, 422, "{}", named.text);
     assert!(named.text.contains(why), "{}", named.text);

@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// A login another profile holds is named in Settings › Agents (docs/contracts/profiles.md, PROFILES-50):
+// A login another profile holds is named in Settings › Accounts (docs/contracts/profiles.md, PROFILES-50):
 // an account is in one profile only (B00-40), so this profile is told where the Mac's own login is
 // and that Add account signs in another.
 

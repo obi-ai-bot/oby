@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { liveBridge } from './liveBridge';
 
-// Settings › Agents' choices kept on this Mac before obid kept them (docs/contracts/agents.md,
+// Settings › Accounts' choices kept on this Mac before obid kept them (docs/contracts/agents.md,
 // AGENTS-7): moved to obid once, then forgotten here, so nobody's choice is lost.
 
 // hold: obid answers only once it's settled (an event can come meanwhile)
@@ -36,7 +36,7 @@ async function load(kept: Record<string, unknown>) {
   // main's one follower of obid's events, as the page meets it: fed by the test
   bridge = liveBridge();
   vi.stubGlobal('window', { app: { obid: { call, ...bridge.obid } } });
-  // Settings › Agents' hooks called as a render would, with no DOM: state as first drawn, effects
+  // Settings › Accounts' hooks called as a render would, with no DOM: state as first drawn, effects
   // not run, a store read as it is
   vi.doMock('react', async (actual) => ({
     ...(await actual<typeof import('react')>()),
@@ -54,7 +54,7 @@ const account = (id: string) => ({ id, agent: 'claude', name: id, signedIn: true
 const status = (more: Record<string, unknown> = {}) =>
   ({ runner: { version: '0.2.0', host: 'mac' }, accounts: [account('a1'), account('a2')], models: {}, maxRunning: 6, running: 0, ...more }) as never;
 
-describe('Settings › Agents on obid', () => {
+describe('Settings › Accounts on obid', () => {
   beforeEach(() => { answers = {}; });
   afterEach(() => { vi.unstubAllGlobals(); vi.doUnmock('react'); });
 

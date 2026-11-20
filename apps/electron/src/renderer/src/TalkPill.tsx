@@ -50,7 +50,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   // its model, after its name: none for a tool this build doesn't know, which it has no list of
   const modelWords = (a: Account) => (isAgent(a.agent) ? ` · ${modelOf(a).name}` : '');
   // the efforts its model takes, under its models (COMPOSER-17): Cursor's are in its model's name
-  // (AGENTS-11), so none; and the one it runs on, as Settings › Agents has it
+  // (AGENTS-11), so none; and the one it runs on, as Settings › Accounts has it
   const effortsOf = (a: Account): string[] => {
     if (a.agent === 'cursor' || !isAgent(a.agent)) return [];
     const tool = options[a.agent];

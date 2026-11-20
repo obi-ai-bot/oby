@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Status } from '../obid';
 
-// Sign out and the binaries (docs/contracts/accounts.md, ACCOUNTS-23 to 28) in Settings › Agents:
+// Sign out and the binaries (docs/contracts/accounts.md, ACCOUNTS-23 to 28) in Settings › Accounts:
 // an account obid signs in has Sign out beside Remove, which asks obid for the tool's own logout and
 // keeps the row; each tool with an account has its binary, set or taken back to the default.
 
@@ -50,7 +50,7 @@ async function agents(accounts: unknown[]) {
 const card = (title: string) => Array.from(host.querySelectorAll('section.set-group')).find((s) => s.querySelector('h2')?.textContent === title);
 const button = (within: Element | undefined, words: string) => Array.from(within?.querySelectorAll('button') ?? []).find((b) => b.textContent === words);
 
-describe('ACCOUNTS-23 to 25: Sign out in Settings › Agents', () => {
+describe('ACCOUNTS-23 to 25: Sign out in Settings › Accounts', () => {
   it('accounts_23_sign_out_asks_obid_for_the_tools_own_logout_and_keeps_the_row', async () => {
     await agents([row('w', 'claude', 'Work')]);
     const out = button(card('Work'), 'Sign out');
@@ -68,7 +68,7 @@ describe('ACCOUNTS-23 to 25: Sign out in Settings › Agents', () => {
   });
 });
 
-describe('ACCOUNTS-26 to 28: each tool’s binary in Settings › Agents', () => {
+describe('ACCOUNTS-26 to 28: each tool’s binary in Settings › Accounts', () => {
   const field = (name: string) => host.querySelector<HTMLInputElement>(`input[aria-label="${name} binary"]`)!;
   const type = async (input: HTMLInputElement, value: string) => {
     const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;

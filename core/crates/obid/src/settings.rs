@@ -115,7 +115,7 @@ pub const AUTO_FIX_CHECKS: bool = true;
 pub struct Settings {
     #[serde(default = "default_agent")]
     pub default_agent: String,
-    /// The account new tasks go to (Settings › Agents › New tasks go to, #1573), by id: routing
+    /// The account new tasks go to (Settings › Accounts › New tasks go to, #1573), by id: routing
     /// tries it first while it's signed in with room ([`crate::jobs::Jobs`]'s `pick`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_account: Option<String>,
@@ -126,7 +126,7 @@ pub struct Settings {
     /// docs/contracts/conversation-agent.md), by id; none (or `auto`) is Auto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub talk_account: Option<String>,
-    /// Each account's model and efforts (Settings › Agents, #1574), by account id.
+    /// Each account's model and efforts (Settings › Accounts, #1574), by account id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tuning: BTreeMap<String, Tuning>,
     /// How many jobs run at once (`status.maxRunning`).
@@ -237,7 +237,7 @@ pub fn account_model(
         .to_owned()
 }
 
-/// The efforts each tool takes, as Settings › Agents offers them (`GET /v1/settings/models/options`):
+/// The efforts each tool takes, as Settings › Accounts offers them (`GET /v1/settings/models/options`):
 /// Claude Code's `--effort`, Codex's turn `effort`; Cursor takes none.
 pub fn efforts(tool: crate::agent::Tool) -> &'static [&'static str] {
     tool.row().efforts

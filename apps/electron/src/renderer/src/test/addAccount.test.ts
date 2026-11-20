@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Settings › Agents' Add account (docs/contracts/accounts.md, ACCOUNTS-10 to ACCOUNTS-15): what the
+// Settings › Accounts' Add account (docs/contracts/accounts.md, ACCOUNTS-10 to ACCOUNTS-15): what the
 // sheet asks of obid, and what a card shows of an account.
 
 type Answer = { status: number; body?: unknown };
