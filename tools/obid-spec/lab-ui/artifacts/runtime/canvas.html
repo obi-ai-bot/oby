@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Canvas</title>
+<!--
+  Oby's canvas host (Apache-2.0): every board of a Claude Design canvas, panned and zoomed, with its
+  name strip, its pages, its notes and Play. Written from the format alone. obid builds it for a
+  version (`__canvas.html`), never stores it, and puts canvas.json in #oby-canvas below. Each board
+  is a sandboxed frame of its own (`sandbox="allow-scripts"`, obid's artifact CSP): a board can't
+  reach this page, another board, or the app. This page draws canvas.json's words as text only.
+-->
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#0b0b0b;color:#ececec;font:13px -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
+#bar{position:fixed;left:0;right:0;top:0;height:40px;display:flex;align-items:center;gap:6px;padding:0 12px;background:#111;border-bottom:1px solid rgba(255,255,255,.08);z-index:3}
+#bar button{font:inherit;color:#a3a3a8;background:none;border:0;padding:6px 10px;border-radius:6px;cursor:pointer}
+#bar button[aria-pressed=true]{color:#ececec;background:rgba(255,255,255,.1)}
+#zoom{margin-left:auto;color:#6e6e74}
+#view{position:absolute;inset:40px 0 0 0;overflow:hidden;cursor:grab;background-color:#070707;background-image:radial-gradient(rgba(255,255,255,.06) 1px,transparent 1px);background-size:20px 20px}
+#stage{position:absolute;left:0;top:0;transform-origin:0 0}
+.board{position:absolute}
+.board .name{position:absolute;left:0;bottom:100%;margin-bottom:8px;display:flex;gap:8px;align-items:center;white-space:nowrap;color:#a3a3a8;font-size:14px}
+.board .name button{font:inherit;font-size:12px;color:#64a8ff;background:none;border:0;cursor:pointer;padding:0}
+.board iframe{display:block;border:0;background:#fff;border-radius:2px;box-shadow:0 0 0 1px rgba(255,255,255,.1)}
+.note{position:absolute;white-space:pre-line;padding:14px 16px;border-radius:12px;line-height:1.45;color:#161617;font-size:15px}
+.note.title1{background:none;color:#ececec;font-size:40px;font-weight:600;padding:0}
+#play{position:fixed;inset:40px 0 0 0;background:#0b0b0b;z-index:2;display:none}
+#play iframe{width:100%;height:100%;border:0;background:#fff}
+#play button{position:absolute;right:12px;top:12px;z-index:1}
+</style>
+</head>
+<body>
+<div id="bar" role="toolbar" aria-label="Canvas"></div>
+<div id="view"><div id="stage"></div></div>
+<div id="play"><button type="button" id="close">Back to the canvas</button></div>
+<script type="application/json" id="oby-canvas">{{CANVAS_JSON}}</script>
+<script>
+(function () {
+  'use strict';
+  var canvas = JSON.parse(document.getElementById('oby-canvas').textContent);
+  var boards = canvas.boards || {};
+  var order = (canvas.order || []).filter(function (b) { return boards[b]; });
+  Object.keys(boards).forEach(function (b) { if (order.indexOf(b) < 0) order.push(b); });
+  var pages = canvas.pages || [];
+  var launch = canvas.launch || {};
+  var search = new URLSearchParams(location.search);
+  var state = (window.__OBY_CANVAS = { ready: false, frames: {}, errors: [], asked: [], page: null, scale: 1, playing: null });
+  var FILL = { orange: '#ffcf99', blue: '#cfe3ff', green: '#cdeccf', teal: '#c6ece6', yellow: '#fff0a8', pink: '#ffd3e0', purple: '#e3d6ff', gray: '#e4e4e7' };
+  var bar = document.getElementById('bar');
+  var view = document.getElementById('view');
+  var stage = document.getElementById('stage');
+  var play = document.getElementById('play');
+  var x = 0, y = 0;
+
+  function el(tag, attrs, text) {
+    var n = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function num(v, d) { return typeof v === 'number' && isFinite(v) ? v : d; }
+  function onPage(item) { return !pages.length || (item.page || pages[0].id) === state.page; }
+  function place() { stage.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + state.scale + ')'; document.getElementById('zoom').textContent = Math.round(state.scale * 100) + '%'; }
+
+  function frame(file, w, h) {
+    var f = el('iframe', { src: '/' + file.split('/').map(encodeURIComponent).join('/'), sandbox: 'allow-scripts', title: file, width: String(w), height: String(h) });
+    return f;
+  }
+
+  function draw() {
+    stage.textContent = '';
+    state.frames = {};
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    order.forEach(function (file) {
+      var b = boards[file];
+      if (!onPage(b)) return;
+      var bx = num(b.x, 0), by = num(b.y, 0), bw = num(b.w, 800), bh = num(b.h, 600);
+      var box = el('div', { class: 'board', 'data-board': file });
+      box.style.left = bx + 'px'; box.style.top = by + 'px'; box.style.width = bw + 'px'; box.style.height = bh + 'px';
+      var name = el('div', { class: 'name' });
+      name.appendChild(el('span', null, b.title || file));
+      if (b.is_interactive) {
+        var p = el('button', { type: 'button', 'data-play': file }, 'Play');
+        p.addEventListener('click', function () { focus(file); });
+        name.appendChild(p);
+      }
+      box.appendChild(name);
+      box.appendChild(frame(file, bw, bh));
+      stage.appendChild(box);
+      state.frames[file] = { ready: false };
+      minX = Math.min(minX, bx); minY = Math.min(minY, by - 40); maxX = Math.max(maxX, bx + bw); maxY = Math.max(maxY, by + bh);
+    });
+    Object.keys(canvas.notes || {}).forEach(function (id) {
+      var n = canvas.notes[id];
+      if (!onPage(n)) return;
+      var d = el('div', { class: 'note ' + (n.kind || ''), 'data-note': id }, String(n.text || ''));
+      d.style.left = num(n.x, 0) + 'px'; d.style.top = num(n.y, 0) + 'px';
+      if (n.w || n.maxW) d.style.width = num(n.w || n.maxW, 400) + 'px';
+      if (n.kind !== 'title1') d.style.background = FILL[n.fill] || FILL.yellow;
+      stage.appendChild(d);
+      minX = Math.min(minX, num(n.x, 0)); minY = Math.min(minY, num(n.y, 0)); maxX = Math.max(maxX, num(n.x, 0) + num(n.w || n.maxW, 400)); maxY = Math.max(maxY, num(n.y, 0) + 80);
+    });
+    if (minX === Infinity) { minX = minY = 0; maxX = maxY = 1; }
+    var vw = view.clientWidth, vh = view.clientHeight, pad = 48;
+    state.scale = Math.min(1, (vw - pad * 2) / (maxX - minX), (vh - pad * 2) / (maxY - minY));
+    x = pad - minX * state.scale; y = pad - minY * state.scale;
+    place();
+    check();
+  }
+
+  function check() {
+    var files = Object.keys(state.frames);
+    state.ready = files.every(function (f) { return state.frames[f].ready; });
+    if (state.ready) document.documentElement.setAttribute('data-oby-canvas', 'ready');
+  }
+
+  function focus(file) {
+    var old = play.querySelector('iframe');
+    if (old) old.remove();
+    play.appendChild(frame(file, '100%', '100%'));
+    play.style.display = 'block';
+    state.playing = file;
+  }
+  document.getElementById('close').addEventListener('click', function () {
+    var f = play.querySelector('iframe');
+    if (f) f.remove();
+    play.style.display = 'none';
+    state.playing = null;
+  });
+
+  // What the boards say: each frame only of itself, by the window it is.
+  window.addEventListener('message', function (e) {
+    var m = e.data || {};
+    if (typeof m.oby !== 'string') return;
+    var file = null;
+    Array.prototype.forEach.call(document.querySelectorAll('iframe'), function (f) { if (f.contentWindow === e.source) file = f.getAttribute('title'); });
+    if (file === null) return;
+    if (m.oby === 'ready' && state.frames[file]) { state.frames[file].ready = true; state.frames[file].size = { width: m.width, height: m.height }; check(); }
+    if (m.oby === 'error') state.errors.push({ board: file, message: String(m.message || '') });
+    if (m.oby === 'open-outside' && typeof m.url === 'string') {
+      // The app stops this and asks the person first; the canvas never leaves.
+      state.asked.push(m.url);
+      try { location.href = m.url; } catch (_) {}
+    }
+  });
+
+  // Pages.
+  if (pages.length) {
+    var first = launch.page || (boards[launch.file] && boards[launch.file].page) || pages[0].id;
+    state.page = search.get('page') || first;
+    pages.forEach(function (p) {
+      var b = el('button', { type: 'button', 'data-page': p.id, 'aria-pressed': String(p.id === state.page) }, p.name || p.id);
+      b.addEventListener('click', function () {
+        state.page = p.id;
+        Array.prototype.forEach.call(bar.querySelectorAll('[data-page]'), function (o) { o.setAttribute('aria-pressed', String(o.getAttribute('data-page') === p.id)); });
+        draw();
+      });
+      bar.appendChild(b);
+    });
+  }
+  bar.appendChild(el('span', { id: 'zoom' }));
+
+  // Pan by dragging the ground, zoom with the wheel about the pointer.
+  var drag = null;
+  view.addEventListener('pointerdown', function (e) { if (e.target === view || e.target === stage) { drag = { x: e.clientX - x, y: e.clientY - y }; view.setPointerCapture(e.pointerId); } });
+  view.addEventListener('pointermove', function (e) { if (drag) { x = e.clientX - drag.x; y = e.clientY - drag.y; place(); } });
+  view.addEventListener('pointerup', function () { drag = null; });
+  view.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var r = view.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    var next = Math.max(0.05, Math.min(4, state.scale * Math.exp(-e.deltaY / 500)));
+    x = px - (px - x) * (next / state.scale); y = py - (py - y) * (next / state.scale);
+    state.scale = next; place();
+  }, { passive: false });
+
+  draw();
+  if (launch.view === 'focused' && boards[launch.file] && search.get('view') !== 'canvas') focus(launch.file);
+})();
+</script>
+</body>
+</html>
