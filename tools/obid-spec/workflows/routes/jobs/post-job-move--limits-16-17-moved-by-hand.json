@@ -1,0 +1,283 @@
+{
+  "schemaVersion": "2",
+  "name": "A job moved by hand goes on there, handed over (LIMITS-16, 17)",
+  "version": "1.0.0",
+  "description": "A running job moved to Codex keeps its round and branch, lists the move with why, and its round goes on there; a finished one moved and tried again hears a handoff in its worktree with what each earlier round reported, the files changed so far and its task.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/move"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "browser": true
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "r-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-16-a-running-job-moves",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.r.body.id}/move",
+        "body": {
+          "account": "codex",
+          "why": "Claude keeps looping"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agent": "codex",
+            "account": "codex",
+            "round": "${state.r-running.body.round}",
+            "branch": "${state.r-running.body.branch}",
+            "moves": [
+              {
+                "from": "Claude Code · Stand-in",
+                "to": "Codex · Codex",
+                "why": "Claude keeps looping"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-16"
+        ]
+      }
+    },
+    {
+      "id": "limits-16-its-round-goes-on-there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "agent": "codex"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-16"
+        ]
+      }
+    },
+    {
+      "id": "r-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.r.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "d",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "Look around"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.d.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "left-changed",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.d.body.id}/README.md",
+        "text": "changed by the first agent\n"
+      }
+    },
+    {
+      "id": "moved",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.d.body.id}/move",
+        "body": {
+          "agent": "codex"
+        },
+        "within": 60,
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "moves.0.handoff": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-17"
+        ]
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.d.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": [
+            200,
+            201
+          ]
+        }
+      }
+    },
+    {
+      "id": "limits-17-the-handoff-each-rounds-report",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.d.body.id}/.obi/inputs/handoff.md",
+        "within": 60,
+        "expect": {
+          "text": {
+            "$contains": "## What each earlier round reported"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-17"
+        ]
+      }
+    },
+    {
+      "id": "limits-17-the-handoff-its-files-and-task",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.d.body.id}/.obi/inputs/handoff.md",
+        "expect": {
+          "text": {
+            "$matches": "(?s)README\\.md.*Look around|Look around.*README\\.md"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-17"
+        ]
+      }
+    }
+  ]
+}

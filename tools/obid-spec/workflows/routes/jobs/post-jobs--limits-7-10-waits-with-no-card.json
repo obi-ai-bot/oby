@@ -1,0 +1,412 @@
+{
+  "schemaVersion": "2",
+  "name": "A limit's wait: no card, and it survives a restart (LIMITS-7, 10)",
+  "version": "1.0.0",
+  "description": "A weekly limit, one with no reset and one past five hours each wait queued with no card and no decision; a five-hour wait keeps its time, step and wait across an obid restart, with no restart counted and no prompt sent again, and runs on once it's over.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "w0",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LIMITED WEEK: 86400"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-10-0-waits-queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.w0.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "accountLimit": null,
+            "reason": null,
+            "waiting": {
+              "kind": "cap"
+            }
+          },
+          "paths": {
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-10"
+        ]
+      }
+    },
+    {
+      "id": "w1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LIMITED NO RESET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-10-1-waits-queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.w1.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "accountLimit": null,
+            "reason": null,
+            "waiting": {
+              "kind": "cap"
+            }
+          },
+          "paths": {
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-10"
+        ]
+      }
+    },
+    {
+      "id": "w2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LIMITED: 21600"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-10-2-waits-queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.w2.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "accountLimit": null,
+            "reason": null,
+            "waiting": {
+              "kind": "cap"
+            }
+          },
+          "paths": {
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-10"
+        ]
+      }
+    },
+    {
+      "id": "limits-10-no-decision",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-10"
+        ]
+      }
+    },
+    {
+      "id": "limits-10-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "limit"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-10"
+        ]
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LIMITED ONCE: 300 KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "r-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.p}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued"
+          },
+          "paths": {
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p-down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.p}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "p",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "limits-7-the-same-wait-after-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.r.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "resumesAt": "${state.r-waits.body.resumesAt}",
+            "step": "${state.r-waits.body.step}",
+            "waiting": "${state.r-waits.body.waiting}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-7"
+        ]
+      }
+    },
+    {
+      "id": "limits-7-no-restart-counted",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "jobs/${state.r.body.id}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.restarts": {
+                "$oneOf": [
+                  0,
+                  null
+                ]
+              },
+              "crashResumes": {
+                "$oneOf": [
+                  null,
+                  []
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-7"
+        ]
+      }
+    },
+    {
+      "id": "limits-7-nothing-sent-again",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "worktrees/${state.r.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){1}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-7"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,175 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a waiting Codex that died",
+  "version": "1.0.0",
+  "description": "A Codex conversation's app-server that died while it waited isn't given the next turn: the turn starts Codex again and picks its thread up with thread/resume, and the answer goes on from that thread (CONVERSATION-AGENT-45).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "conversation": {
+            "agent": "codex"
+          },
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "thread",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first-turn-a-new-thread",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": [
+              {
+                "resumed": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "died",
+      "use": "runtime.rust:conversations.kill-agent",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "within": 10
+      }
+    },
+    {
+      "id": "conversation-agent-45-the-next-turn-answers-on-its-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=${state.thread.json.session}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-45"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-45-a-new-codex-resumed-the-thread",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": [
+              {
+                "resumed": null
+              },
+              {
+                "last": "REMEMBER",
+                "resumed": "${state.thread.json.session}"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-45"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-45-the-same-thread-kept",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": "${state.thread.json.session}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-45"
+        ]
+      }
+    }
+  ]
+}

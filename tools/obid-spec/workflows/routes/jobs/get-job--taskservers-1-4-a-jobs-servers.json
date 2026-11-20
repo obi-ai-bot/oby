@@ -1,0 +1,345 @@
+{
+  "schemaVersion": "2",
+  "name": "A running job lists the servers its agent started (TASKSERVERS-1, 2, 3, 4)",
+  "version": "1.0.0",
+  "description": "A job whose agent's child listens on 127.0.0.1 lists that port in servers with its name and when it was first seen, with a job event; once it stops listening the port goes while the job runs; two jobs list only their own; a stopped job lists none.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SERVE PORT"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-serving",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.a.body.id}/.obi/serving",
+        "within": 60,
+        "expect": {
+          "text": {
+            "$matches": "^[0-9]+$"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskservers-1-its-port-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "servers": {
+              "$len": 1
+            },
+            "servers.0.port": {
+              "$type": "number"
+            },
+            "servers.0.process": {
+              "$matches": "node"
+            },
+            "servers.0.firstSeen": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKSERVERS-1"
+        ]
+      }
+    },
+    {
+      "id": "taskservers-1-the-agents-own-port",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.taskservers-1-its-port-listed.body.servers.0.port}",
+        "expect": {
+          "body": {
+            "$type": "number"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKSERVERS-1"
+        ]
+      }
+    },
+    {
+      "id": "taskservers-1-a-job-event-says-so",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 5,
+        "expect": {
+          "paths": {
+            "id": "${state.a.body.id}",
+            "servers": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKSERVERS-1"
+        ]
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SERVE PORT"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "b-serving",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.b.body.id}/.obi/serving",
+        "within": 60,
+        "expect": {
+          "text": {
+            "$matches": "^[0-9]+$"
+          }
+        }
+      }
+    },
+    {
+      "id": "taskservers-4-b-lists-only-its-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "servers": {
+              "$len": 1
+            },
+            "servers.0.port": {
+              "$ne": "${state.taskservers-1-its-port-listed.body.servers.0.port}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKSERVERS-4"
+        ]
+      }
+    },
+    {
+      "id": "taskservers-4-a-still-only-its-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "servers": {
+              "$len": 1
+            },
+            "servers.0.port": "${state.taskservers-1-its-port-listed.body.servers.0.port}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKSERVERS-4"
+        ]
+      }
+    },
+    {
+      "id": "a-stops-serving",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.a.body.id}/.obi/stop-serving",
+        "text": ""
+      }
+    },
+    {
+      "id": "a-served",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.a.body.id}/.obi/served",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "taskservers-2-the-port-goes-while-it-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "servers": {
+              "$oneOf": [
+                null,
+                []
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKSERVERS-2"
+        ]
+      }
+    },
+    {
+      "id": "b-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskservers-3-an-ended-job-has-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          },
+          "paths": {
+            "servers": {
+              "$oneOf": [
+                null,
+                []
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKSERVERS-3"
+        ]
+      }
+    },
+    {
+      "id": "a-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

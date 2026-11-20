@@ -163,6 +163,8 @@ fn options(
         plan_mode: "plan".into(),
         agent_mode: "agent".into(),
         mcp,
+        // A conversation's agent gets the browser with the rest of BROWSER-17.
+        browser: None,
         quiet_load: true,
     }
 }

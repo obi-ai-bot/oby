@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/attachments: only on the Mac",
+  "version": "1.0.0",
+  "description": "Files are uploaded only on the Mac: a paired phone's request through the gateway can't upload one, while its words to Oby still go (ATTACH-9).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/attachments"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "paired",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Test phone"
+        },
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "attach-9-no-upload-through-the-gateway",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.paired.body.token}"
+        },
+        "method": "POST",
+        "path": "/v1/attachments?name=a.txt",
+        "raw": "a",
+        "as": "token",
+        "token": "${state.paired.body.token}",
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": "That route isn't available through the gateway."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-9"
+        ]
+      }
+    },
+    {
+      "id": "attach-9-words-through-the-gateway-still-go",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.paired.body.token}"
+        },
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hi",
+          "new": true
+        },
+        "as": "token",
+        "token": "${state.paired.body.token}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "hi"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-9"
+        ]
+      }
+    },
+    {
+      "id": "attach-9-the-mac-uploads",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=a.txt",
+        "raw": "a",
+        "expect": {
+          "status": 201
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-9"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a task routed to another agent says why",
+  "version": "1.0.0",
+  "description": "A task the conversation starts on an agent that can't take it now goes where routing puts it, and the turn is told where and why in obid's own words; the task's card carries the same line (CONVERSATION-AGENT-40).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "clock",
+      "use": "runtime.rust:clock",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}",
+          "usage.json": {
+            "stand-in": {
+              "fiveHour": 0.1,
+              "sevenDay": 0.97,
+              "fiveHourResets": 4102444800,
+              "sevenDayResets": 4102444800,
+              "fiveHourObservedAt": "${state.clock.now}",
+              "sevenDayObservedAt": "${state.clock.now}"
+            },
+            "codex": {
+              "fiveHour": 0.1,
+              "sevenDay": 0.05,
+              "fiveHourResets": 4102444800,
+              "sevenDayResets": 4102444800,
+              "fiveHourObservedAt": "${state.clock.now}",
+              "sevenDayObservedAt": "${state.clock.now}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "chose-claude",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "stand-in"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-40-the-turn-says-where-and-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\", \"agent\": \"claude\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "On it\\. Codex is building fixture-app on Codex\\. Claude Code is at 97% of its week until [^\\n]+, so this runs on Codex · Codex\\."
+            },
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-40"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-40-it-runs-on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.conversation-agent-40-the-turn-says-where-and-why.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "agent": "codex",
+            "routed": {
+              "$matches": "^Claude Code is at 97% of its week until .+, so this runs on Codex · Codex\\.$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-40"
+        ]
+      }
+    }
+  ]
+}

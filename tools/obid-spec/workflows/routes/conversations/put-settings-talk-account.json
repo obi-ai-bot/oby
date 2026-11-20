@@ -1,0 +1,381 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/settings/jobs: the account new conversations talk on, and its model",
+  "version": "1.0.0",
+  "description": "Settings' account for new conversations: a new conversation's first turn runs on that choice (CONVERSATION-AGENT-14); a turn uses its account's model, otherwise the tool's model in status.models, and the choices survive a restart and leave the tools' defaults intact (CONVERSATION-AGENT-21).",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "defaults",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "models.codex.model": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "claude-model",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": "claude-haiku-5-5"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "codex-model",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/codex",
+        "body": {
+          "model": "gpt-6-astra"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-21-tool-defaults-intact",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "models": "${state.defaults.body.models}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-21"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-21-choices-survive-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "codex",
+                "model": "gpt-6-astra"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-21"
+        ]
+      }
+    },
+    {
+      "id": "on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "talkAccount": "codex"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "codex-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-14-the-first-turn-on-that-choice",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.codex-first.body.conversation}",
+              "talkedOn": "codex"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-14"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-21-codex-on-its-accounts-model",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "conversations/${state.codex-first.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "\"model\":\"gpt-6-astra\""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-21"
+        ]
+      }
+    },
+    {
+      "id": "on-claude",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "talkAccount": "stand-in"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "claude-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-14-and-on-the-next-choice",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.claude-first.body.conversation}",
+                "talkedOn": "stand-in"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-14"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-21-claude-on-its-accounts-model",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "conversations/${state.claude-first.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "\"--model\",\"claude-haiku-5-5\""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-21"
+        ]
+      }
+    },
+    {
+      "id": "codex-default-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PATCH",
+        "path": "/v1/accounts/codex",
+        "body": {
+          "model": null
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "on-codex-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "talkAccount": "codex"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "codex-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-21-none-chosen-the-tools-model",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "conversations/${state.codex-default.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "\"model\":\"${state.defaults.body.models.codex.model}\""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-21"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,197 @@
+{
+  "schemaVersion": "2",
+  "name": "PROFILES-30: with one profile, projects are kept as before",
+  "version": "1.0.0",
+  "description": "A home with one profile, a project and a conversation in it: after a restart projects.json is as it was, and GET, POST, PATCH and DELETE with no header behave as before; no profiles folder is made.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/projects"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "Errands"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hi",
+          "new": true,
+          "project": "${state.p.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "projects",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "projects.json",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "profiles-30-after-start-projects-json-is-as-it-was",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "projects.json",
+        "expect": {
+          "text": "${state.projects.text}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-30"
+        ]
+      }
+    },
+    {
+      "id": "profiles-30-get-with-no-header-as-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/projects",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "${state.p.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-30"
+        ]
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/projects",
+        "body": {
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-30"
+        ]
+      }
+    },
+    {
+      "id": "profiles-30-patch-as-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PATCH",
+        "path": "/v1/projects/${state.q.body.id}",
+        "body": {
+          "name": "Work things"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": "Work things"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-30"
+        ]
+      }
+    },
+    {
+      "id": "profiles-30-delete-as-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "DELETE",
+        "path": "/v1/projects/${state.q.body.id}",
+        "expect": {
+          "status": [
+            200,
+            204
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-30"
+        ]
+      }
+    },
+    {
+      "id": "profiles-30-no-profiles-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "profiles",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "PROFILES-30"
+        ]
+      }
+    }
+  ]
+}
