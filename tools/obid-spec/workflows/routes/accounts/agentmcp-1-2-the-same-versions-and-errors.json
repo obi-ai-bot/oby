@@ -1,0 +1,274 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTMCP-1 and 2: obid's agent MCP servers answer alike",
+  "version": "1.0.0",
+  "description": "A job's broker (its own broker token) and a conversation's tools server (from its own agent's session) each answer `initialize` with 2025-03-26 when asked for it and with obid's newest, 2025-06-18, for a version they don't know, and a method they don't serve with JSON-RPC -32601 `<server> doesn't answer <its first 64 characters>.` in the same shape: jsonrpc, id and error, which holds only code and message. (Tetrix's two servers need a Tetrix stand-in: obid's own tests prove them.)",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/agent/mcp/{job}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "agentmcp-1-the-broker-answers-a-version-it-knows",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/mcp/${state.job.job}",
+        "as": "token",
+        "token": "${state.job.token}",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {
+              "name": "obid-spec",
+              "version": "1"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "result.protocolVersion": "2025-03-26"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-1"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-1-and-its-newest-for-one-it-doesnt",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/mcp/${state.job.job}",
+        "as": "token",
+        "token": "${state.job.token}",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": "1999-01-01",
+            "capabilities": {},
+            "clientInfo": {
+              "name": "obid-spec",
+              "version": "1"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "result.protocolVersion": "2025-06-18"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-1"
+        ]
+      }
+    },
+    {
+      "id": "agentmcp-2-a-method-it-doesnt-serve-is-32601",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/mcp/${state.job.job}",
+        "as": "token",
+        "token": "${state.job.token}",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 3,
+          "method": "x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "params": {}
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "error": {
+              "code": -32601,
+              "message": "Oby's broker doesn't answer x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa."
+            }
+          },
+          "paths": {
+            "$": {
+              "$len": 3
+            },
+            "error": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-2"
+        ]
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hi",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "tools-known",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MCP oby initialize {\"protocolVersion\": \"2025-03-26\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"obid-spec\", \"version\": \"1\"}}",
+          "conversation": "${state.c.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "agentmcp-1-the-conversations-tools-answer-the-same",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.c.body.conversation}/room/mcp-answer.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "result.protocolVersion": "2025-03-26"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-1"
+        ]
+      }
+    },
+    {
+      "id": "tools-unknown",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MCP oby initialize {\"protocolVersion\": \"1999-01-01\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"obid-spec\", \"version\": \"1\"}}",
+          "conversation": "${state.c.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "agentmcp-1-and-their-newest-the-same",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.c.body.conversation}/room/mcp-answer.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "result.protocolVersion": "2025-06-18"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-1"
+        ]
+      }
+    },
+    {
+      "id": "tools-unserved",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MCP oby x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {}",
+          "conversation": "${state.c.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "agentmcp-2-the-same-error-from-the-conversations-tools",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.c.body.conversation}/room/mcp-answer.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "error.code": -32601,
+              "error.message": "Oby's tools server doesn't answer x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.",
+              "$": {
+                "$len": 3
+              },
+              "error": {
+                "$len": 2
+              },
+              "jsonrpc": "2.0"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTMCP-2"
+        ]
+      }
+    }
+  ]
+}

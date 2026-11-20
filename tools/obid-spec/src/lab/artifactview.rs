@@ -1311,6 +1311,12 @@ const READY: &str = "(window.__OBY_CANVAS ? window.__OBY_CANVAS.ready === true :
 
 async fn open(run: &Run, input: &Value, label: &str, path: &str) -> Result<Value> {
     let (_, port) = view()?;
+    open_at(run, input, &origin_of(port, label), path).await
+}
+
+/// A page of `origin` (a version's view, or the Sphere's public link page) in Chrome, the app's
+/// navigation rule holding it to that origin: drawn, then pictured once still.
+pub(crate) async fn open_at(run: &Run, input: &Value, origin: &str, path: &str) -> Result<Value> {
     let mut guard = match chrome(run).await? {
         Ok(g) => g,
         Err(why) => return Ok(json!({"skipped": why})),
@@ -1319,8 +1325,7 @@ async fn open(run: &Run, input: &Value, label: &str, path: &str) -> Result<Value
     let name = input["name"].as_str().unwrap_or("main").to_string();
     let width = input["width"].as_u64().unwrap_or(1280);
     let height = input["height"].as_u64().unwrap_or(800);
-    let origin = origin_of(port, label);
-    let session = c.page(&name, &origin, width, height).await?;
+    let session = c.page(&name, origin, width, height).await?;
     let from = c.cdp.events.lock().unwrap().len();
     let url = format!("{origin}/{}", path.trim_start_matches('/'));
     c.cdp
@@ -1355,7 +1360,15 @@ async fn open(run: &Run, input: &Value, label: &str, path: &str) -> Result<Value
             "Promise.race([Promise.all(document.getAnimations().filter(a => a.effect && a.effect.getComputedTiming().endTime !== Infinity).map(a => a.finished.catch(() => null))), new Promise(r => setTimeout(r, 3000))]).then(() => true)",
         )
         .await?;
-    let shot = format!("{}-{}.png", name, path.replace(['/', '?', '=', '&'], "_"));
+    // Never the part after `#`: a public link's key is there.
+    let shot = format!(
+        "{}-{}.png",
+        name,
+        path.split('#')
+            .next()
+            .unwrap_or("")
+            .replace(['/', '?', '=', '&'], "_")
+    );
     let picture = c.picture(&session, &shot).await?;
     let fits = match (
         input["within"]["width"].as_u64(),
@@ -1369,7 +1382,7 @@ async fn open(run: &Run, input: &Value, label: &str, path: &str) -> Result<Value
     };
     Ok(json!({
         "ready": drawn,
-        "url": url,
+        "url": url.split('#').next().unwrap_or(""),
         "errors": state["errors"],
         "size": state["size"],
         "title": state["title"],
@@ -1539,6 +1552,7 @@ async fn check(run: &Run, input: &Value) -> Result<Value> {
         bytes: files.values().map(|b| b.len() as u64).sum(),
         blobs,
         job: None,
+        by: None,
     };
     let boards: Vec<String> = match input["board"].as_str() {
         Some(b) => vec![b.to_string()],
@@ -1773,6 +1787,7 @@ mod tests {
             bytes: 0,
             blobs: BTreeMap::from([("abc".to_string(), "assets/a.png".to_string())]),
             job: None,
+            by: None,
         };
         (v, files)
     }
@@ -1880,6 +1895,7 @@ mod tests {
                     bytes: 0,
                     blobs: BTreeMap::new(),
                     job: None,
+                    by: None,
                 })
                 .collect(),
             profile: None,

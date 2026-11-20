@@ -195,6 +195,44 @@
       }
     },
     {
+      "id": "never-the-vault",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "expect": {
+          "paths": {
+            "status": 404
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-8"
+        ]
+      }
+    },
+    {
+      "id": "never-pairing",
+      "use": "runtime.rust:lab.remote.call",
+      "inputs": {
+        "computer": "box",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "expect": {
+          "paths": {
+            "status": 404
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-REMOTE-8"
+        ]
+      }
+    },
+    {
       "id": "narrower-needs-no-words",
       "use": "runtime.rust:lab.remote.call",
       "inputs": {
@@ -395,13 +433,12 @@
       }
     },
     {
-      "id": "revoke-on-that-computer",
-      "use": "runtime.rust:lab.remote.local-call",
+      "id": "remove-this-computer-with-its-own-token",
+      "use": "runtime.rust:lab.remote.call",
       "inputs": {
-        "machine": "${state.box}",
-        "obid": "${state.obid}",
+        "computer": "box",
         "method": "DELETE",
-        "path": "/v1/pairing/devices/${state.pair.computer.pairing}",
+        "path": "/v1/pairing",
         "expect": {
           "paths": {
             "status": 204

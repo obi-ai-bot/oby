@@ -1,0 +1,339 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 approvals: a card answered twice, from two places, or after Stop",
+  "version": "1.0.0",
+  "description": "T3 Code's request fixes (4cfcfaf2fd an answer sent twice, 85168744f7 an answer after the run stopped, its RuntimeRequestService and ComposerPendingUserInputPanel tests: only a request still open takes an answer): a permission answered once from the window takes no second answer, Allow or Deny (409); one answered from its inbox item takes none from the job's route, nor its item again; a permission whose job was stopped takes no answer from either; and the agent hears exactly one answer per card (docs/api/permissions.md 409, docs/api/inbox.md).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "mode": "ask",
+            "task": "KEEP PROMPTS ASKS: [{\"tool\":\"Bash\",\"input\":{\"command\":\"swift test\"}},{\"tool\":\"Bash\",\"input\":{\"command\":\"make\"}}]"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.id": {
+              "$type": "string"
+            },
+            "permission.title": {
+              "$contains": "swift test"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "allowed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/permission",
+        "body": {
+          "id": "${state.first.body.permission.id}",
+          "decision": "allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "allow-again-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/permission",
+        "body": {
+          "id": "${state.first.body.permission.id}",
+          "decision": "allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That permission isn't waiting any more."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-15"
+        ]
+      }
+    },
+    {
+      "id": "deny-after-allow-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/permission",
+        "body": {
+          "id": "${state.first.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That permission isn't waiting any more."
+          }
+        }
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.title": {
+              "$contains": "make"
+            },
+            "permission.id": {
+              "$ne": "${state.first.body.permission.id}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "denied-from-the-inbox",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.j.body.id}-permission-${state.second.body.permission.id}/answer",
+        "body": {
+          "answer": "Deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "the-jobs-route-after-the-inbox-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.j.body.id}/permission",
+        "body": {
+          "id": "${state.second.body.permission.id}",
+          "decision": "allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That permission isn't waiting any more."
+          }
+        }
+      }
+    },
+    {
+      "id": "the-item-again-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.j.body.id}-permission-${state.second.body.permission.id}/answer",
+        "body": {
+          "answer": "Allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That item is done already."
+          }
+        }
+      }
+    },
+    {
+      "id": "it-ends",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "permission": null
+          }
+        }
+      }
+    },
+    {
+      "id": "the-agent-heard-one-answer-per-card",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j.body.id}/.obi/answers.log",
+        "expect": {
+          "exists": true,
+          "text": "allow\ndeny\n"
+        }
+      }
+    },
+    {
+      "id": "k",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "mode": "ask",
+            "task": "KEEP PROMPTS ASKS: [{\"tool\":\"Bash\",\"input\":{\"command\":\"swift test\"}},{\"tool\":\"Bash\",\"input\":{\"command\":\"make\"}}]"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "k-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.k.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "permission.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "k-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.k.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "after-stop-the-jobs-route-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.k.body.id}/permission",
+        "body": {
+          "id": "${state.k-waits.body.permission.id}",
+          "decision": "allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "That permission isn't waiting any more."
+          }
+        }
+      }
+    },
+    {
+      "id": "after-stop-its-item-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.k.body.id}-permission-${state.k-waits.body.permission.id}/answer",
+        "body": {
+          "answer": "Allow"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "after-stop-the-agent-heard-nothing",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.k.body.id}/.obi/answers.log",
+        "expect": {
+          "exists": false
+        }
+      }
+    }
+  ]
+}

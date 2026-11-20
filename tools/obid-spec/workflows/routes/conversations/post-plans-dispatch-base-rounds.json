@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: oby_dispatch takes a base branch and rounds",
+  "version": "1.0.0",
+  "description": "oby_dispatch takes the owner's base branch and rounds: the task is on that base with that many rounds; none named, the repository's default and one round; an epic isn't offered (TASKCONV-13).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "release",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "branch",
+          "release",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\", \"base_branch\": \" release \", \"rounds\": 3}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-13-on-the-owners-base-with-their-rounds",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "release",
+            "rounds": 3
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-13"
+        ]
+      }
+    },
+    {
+      "id": "plain",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-13-none-named-the-default-and-one-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.plain.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "main",
+            "rounds": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-13"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-13-an-epic-isnt-offered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"x\", \"epic\": 12}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^oby: refused: "
+            },
+            "jobs": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-13"
+        ]
+      }
+    }
+  ]
+}

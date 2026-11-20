@@ -1,0 +1,320 @@
+{
+  "schemaVersion": "2",
+  "name": "A shell's grouping words don't change what a command does (PERMISSIONS-6)",
+  "version": "1.0.0",
+  "description": "In Sandbox, printenv asks plain and inside { }, if, ( ) and a function's body alike, while the same words as another command's arguments stay plain text and run.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/permission"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Bash\", \"input\": {\"command\": \"echo if printenv\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"git log --grep '{ x'\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"printenv\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"{ printenv; }\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"if true; then printenv; fi\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"( printenv )\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"f() { printenv; }; f\"}}]",
+            "mode": "sandbox"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "b-0-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "printenv"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "b-0-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/permission",
+        "body": {
+          "id": "${state.b-0-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "b-1-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "{ printenv; }"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "b-1-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/permission",
+        "body": {
+          "id": "${state.b-1-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "b-2-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "if true; then printenv; fi"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "b-2-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/permission",
+        "body": {
+          "id": "${state.b-2-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "b-3-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "( printenv )"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "b-3-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/permission",
+        "body": {
+          "id": "${state.b-3-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "b-4-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "f() { printenv; }; f"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "b-4-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/permission",
+        "body": {
+          "id": "${state.b-4-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "b-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "permissions-6-0-plain-text-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "echo if printenv",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-6"
+        ]
+      }
+    },
+    {
+      "id": "permissions-6-1-plain-text-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "git log --grep '{ x'",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-6"
+        ]
+      }
+    }
+  ]
+}

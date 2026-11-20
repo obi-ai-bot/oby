@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "2",
+  "name": "Unsigned words take a task out of the owner's own work (MERGING-53)",
+  "version": "1.0.0",
+  "description": "A task the owner's app signed, that hears unsigned words while it runs, is no longer their own work: approved by Oby's review, it doesn't merge by itself but asks, Ready to merge.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLOW: hello.txt"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "t-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "unsigned-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/messages",
+        "body": {
+          "text": "Also keep it short."
+        },
+        "expect": {
+          "status": [
+            200,
+            201,
+            202
+          ]
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "merging-53-it-asks-instead-of-merging",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "merge",
+                "job": "${state.t.body.id}",
+                "title": {
+                  "$matches": "^Ready to merge: "
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-53"
+        ]
+      }
+    },
+    {
+      "id": "merging-53-not-merged-by-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mergedBy": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-53"
+        ]
+      }
+    },
+    {
+      "id": "merging-53-its-description-says-the-owners-word",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.o.github}"
+        },
+        "path": "calls.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "Oby merges it only when its owner says so."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-53"
+        ]
+      }
+    }
+  ]
+}

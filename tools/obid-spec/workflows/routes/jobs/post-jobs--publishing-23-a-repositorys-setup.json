@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "2",
+  "name": "A repository's setup runs before the agent (PUBLISHING-23)",
+  "version": "1.0.0",
+  "description": "The owner's setup line for a repository runs in the job's worktree before its agent starts, and the job's report says so.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/fixture-app",
+              "remote": "file://${run.scratch}/fixture/remote.git",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false,
+              "setup": "touch setup-ran"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SEES: setup-ran"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-23-it-ran-before-the-agent",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "sees setup-ran: true"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-23"
+        ]
+      }
+    },
+    {
+      "id": "publishing-23-its-report-says-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "changes": {
+              "$any": {
+                "what": "Ran its repository's setup, `touch setup-ran`."
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-23"
+        ]
+      }
+    }
+  ]
+}

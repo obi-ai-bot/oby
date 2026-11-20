@@ -863,6 +863,22 @@ impl Jobs {
             .find(|(name, _)| name == process::CLAUDE_TMPDIR)
             .map(|(_, temp)| std::path::PathBuf::from(temp));
         let job = self.get(id).ok_or("the job is gone")?;
+        // A Cursor job of the owner's is given obid's browser server, and its tools' rules beside
+        // the job's (BROWSER-17); Claude Code's and Codex's come with their own configuration.
+        let browser = (tool == Tool::Cursor && !obi_review)
+            .then(|| self.browser_server(&job))
+            .flatten();
+        let with_browser: Vec<String>;
+        let mcp_rules = if browser.is_some() {
+            with_browser = mcp_rules
+                .iter()
+                .cloned()
+                .chain(crate::browser::AgentServer::rules())
+                .collect();
+            &with_browser[..]
+        } else {
+            mcp_rules
+        };
         let jobs = self;
         // In Claude Code's own sandbox its tools run unboxed (LANES-14, `own_reach`).
         let own = launch.own_sandbox;
@@ -1113,6 +1129,7 @@ impl Jobs {
                             .filter_map(|(name, server)| server.map(|(url, token)| json!({"type": "http", "name": name, "url": url,
                                 "headers": [{"name": "Authorization", "value": format!("Bearer {token}")}]})))
                             .collect(),
+                        browser: browser.clone(),
                         quiet_load: false,
                     };
                     acp::run_turn(

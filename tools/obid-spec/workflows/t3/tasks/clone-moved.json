@@ -201,8 +201,7 @@
       "ui": {
         "proves": [
           "RECOVERY-2"
-        ],
-        "expectedRed": "#2657: a worktree gone from under its task is never made again"
+        ]
       }
     },
     {

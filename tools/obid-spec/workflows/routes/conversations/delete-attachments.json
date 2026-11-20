@@ -106,8 +106,7 @@
       "ui": {
         "proves": [
           "ATTACH-12"
-        ],
-        "expectedRed": "#2544: a second take-back of the same upload answers 422, not 204"
+        ]
       }
     },
     {

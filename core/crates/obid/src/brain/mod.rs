@@ -1259,17 +1259,22 @@ pub async fn unload(
 }
 
 /// The folder `path` was uploaded into (`attachments/app/<uuid>/`), when it's one of those and no
-/// link: what goes with it. Anything else, none.
+/// link: what goes with it. One already gone is still an upload's, with nothing left to remove, so
+/// taking it back again is `204` (ATTACH-12). Anything else, none.
 fn upload_folder(home: &Path, path: &str) -> Option<PathBuf> {
     let app = home.join("attachments/app");
     let file = Path::new(path);
     let folder = file.parent()?;
     let named = folder.file_name()?.to_str()?;
+    let there = match folder.symlink_metadata() {
+        Ok(meta) => meta.is_dir(),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
     (folder.parent()? == app
         && !named.is_empty()
         && named.chars().all(|c| c.is_ascii_hexdigit())
-        && folder.symlink_metadata().is_ok_and(|m| m.is_dir()))
-    .then(|| folder.to_owned())
+        && there)
+        .then(|| folder.to_owned())
 }
 
 /// Whether a conversation, or a job that hasn't ended, still holds the file `path`.

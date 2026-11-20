@@ -32,3 +32,12 @@ describe('the box’s input', () => {
     expect(noCommands('Codex')).toMatch(/^Codex’s own commands can’t be listed here yet/);
   });
 });
+
+// T3 Code's workspaceFileDrop test "ignores clipboard file items that cannot provide a file"
+describe('T3: a drop', () => {
+  it('t3_drop_an_item_that_gives_no_file_is_passed_over', () => {
+    const a = new File(['a'], 'a.png');
+    const items = [{ kind: 'file', getAsFile: () => null, webkitGetAsEntry: () => null }, { kind: 'file', getAsFile: () => a, webkitGetAsEntry: () => ({ isDirectory: false }) }];
+    expect(dropped({ types: ['Files'], files: [a], items })).toEqual({ files: [a], folders: 0 });
+  });
+});

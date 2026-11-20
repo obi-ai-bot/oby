@@ -99,8 +99,7 @@
       "ui": {
         "proves": [
           "COMPOSER-4"
-        ],
-        "expectedRed": "#2543: a Bypass chip on unsigned words waits for a Confirm though Bypass is the default"
+        ]
       }
     },
     {
