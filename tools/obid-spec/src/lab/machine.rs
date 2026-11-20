@@ -442,16 +442,17 @@ CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR="$HOME/target" ca
     made
 }
 
-/// Node as CI runs it (22), for `arch`: nodejs.org's own build, fetched once into the lab's cache
+/// Node as CI runs it (22), for `os` (`linux`, `darwin`) and `arch`: nodejs.org's own build, fetched once into the lab's cache
 /// and checked against nodejs.org's SHASUMS256.txt.
-async fn node_tarball(arch: &str) -> Result<PathBuf> {
+pub async fn node_tarball(os: &str, arch: &str) -> Result<PathBuf> {
+    anyhow::ensure!(os == "linux" || os == "darwin", "no Node for {os}");
     const VERSION: &str = "v22.12.0";
     let arch = match arch {
         "aarch64" | "arm64" => "arm64",
         "x86_64" | "amd64" => "x64",
         other => bail!("no Node for {other}"),
     };
-    let name = format!("node-{VERSION}-linux-{arch}.tar.gz");
+    let name = format!("node-{VERSION}-{os}-{arch}.tar.gz");
     let dir = cache_dir();
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(&name);
@@ -522,7 +523,7 @@ async fn obid(run: &Run, input: &Value) -> Result<Value> {
     .await?;
     anyhow::ensure!(status == 0, "git and bubblewrap on {machine}: {out}{err}");
     // The stand-in agents are Node scripts written for CI's Node 22; Ubuntu's own is 18.
-    let node = node_tarball(arch.trim()).await?;
+    let node = node_tarball("linux", arch.trim()).await?;
     push(run, &machine, &node, "/home/oby/.oby/node.tar.gz").await?;
     let (status, out, err) = run_with(
         &machine,
