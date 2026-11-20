@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: every browser process the workflow started is gone at its end",
+  "version": "1.0.0",
+  "description": "What the lab starts it stops (src/lab/browser.rs, cleanup): two agents' agent-browser daemons and their Chrome processes are alive while they work, and none is left once the browsers are closed. The suite's cleanup runs the same code whatever a workflow ended in.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "agent-c1",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-c2",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c2",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "c1-open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "c2-open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "alive",
+      "use": "runtime.rust:lab.browser.processes",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "any": true,
+            "daemons": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:lab.browser.down",
+      "inputs": {}
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:lab.browser.processes",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "alive": 0,
+            "processes": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-9"
+        ]
+      }
+    }
+  ]
+}

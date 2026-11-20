@@ -13,11 +13,12 @@
 //! `lanes` (Linux lanes, Codex as T3 runs it), `sphere` (the Obysphere around them).
 
 use anyhow::{bail, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::obid::Run;
 
 pub mod browser;
+pub mod desktop;
 pub mod lanes;
 pub mod machine;
 pub mod remote;
@@ -28,10 +29,11 @@ pub const AREA_PREFIX: &str = "lab-";
 /// The tag every lab workflow carries.
 pub const TAG: &str = "lab";
 
-const FEATURES: [&[(&str, &str)]; 5] = [
+const FEATURES: [&[(&str, &str)]; 6] = [
     machine::NODES,
     remote::NODES,
     browser::NODES,
+    desktop::NODES,
     lanes::NODES,
     sphere::NODES,
 ];
@@ -53,6 +55,8 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
         remote::run_node(run, name, input).await
     } else if owns(browser::NODES) {
         browser::run_node(run, name, input).await
+    } else if owns(desktop::NODES) {
+        desktop::run_node(run, name, input).await
     } else if owns(lanes::NODES) {
         lanes::run_node(run, name, input).await
     } else if owns(sphere::NODES) {
@@ -62,10 +66,11 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
     }
 }
 
-/// What the lab made for this workflow and must take down at its end (the machines), whatever
-/// the workflow ended in.
+/// What the lab made for this workflow and must take down at its end (the browsers, then the
+/// machines), whatever the workflow ended in.
 pub async fn cleanup() -> Value {
-    machine::cleanup().await
+    // Browsers first: one running on a lab machine is closed before its machine goes.
+    json!({"browsers": browser::cleanup().await, "machines": machine::cleanup().await})
 }
 
 #[cfg(test)]

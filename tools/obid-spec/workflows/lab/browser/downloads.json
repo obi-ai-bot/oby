@@ -1,0 +1,163 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: a download the agent starts stays in its profile; one the person starts while holding the tab is delivered",
+  "version": "1.0.0",
+  "description": "The download rule (src/lab/browser.rs, download_rule): each agent's browser saves into its own profile's Downloads folder; a click of the agent's leaves the file there, delivered to nobody; the same link clicked by the person through the live stream, while they hold the tab, is delivered to them.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "agent-c1",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-clicks",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "link",
+          "name": "Download file"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "stays",
+      "use": "runtime.rust:lab.browser.downloads",
+      "inputs": {
+        "conversation": "c1",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "inProfile": [
+              "lab-file-1.txt"
+            ],
+            "delivered": [],
+            "downloadsAreInTheProfile": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-6"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.browser.take",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.open.result.tab}",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "person-clicks",
+      "use": "runtime.rust:lab.browser.person",
+      "inputs": {
+        "person": "owner",
+        "tab": "${state.open.result.tab}",
+        "selector": "#dl",
+        "downloadWithin": 10,
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.delivered": [
+              "lab-file-2.txt"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-6"
+        ]
+      }
+    },
+    {
+      "id": "after",
+      "use": "runtime.rust:lab.browser.downloads",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "inProfile": [
+              "lab-file-1.txt"
+            ],
+            "delivered": [
+              "lab-file-2.txt"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-6"
+        ]
+      }
+    }
+  ]
+}

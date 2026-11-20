@@ -1,0 +1,259 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: a command against the slow page times out within its limit, isn't replayed, and leaves the other agent's browser working",
+  "version": "1.0.0",
+  "description": "Per-command deadlines (src/lab/browser.rs, Browsers::timed_out and may_replay): a navigation to a page that takes 8 s, given 2 s, answers timed_out within its limit; the tab settles in the background while the agent's next call on it is refused at once rather than queued; the other agent's browser answers meanwhile; and the fixture site served the slow page exactly once, before and after the tab settled.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "site",
+      "use": "runtime.rust:lab.browser.site",
+      "inputs": {}
+    },
+    {
+      "id": "agent-c1",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c1",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "agent-c2",
+      "use": "runtime.rust:lab.browser.agent",
+      "inputs": {
+        "conversation": "c2",
+        "expect": {
+          "paths": {
+            "agentBrowser.pinned": true,
+            "profileInWorkflow": true
+          }
+        }
+      }
+    },
+    {
+      "id": "c1-open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "c2-open",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "slow",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/slow?ms=8000",
+          "deadlineMs": 2000
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "timed_out",
+            "error.message": {
+              "$contains": "won't be run again"
+            },
+            "withinDeadline": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-5"
+        ]
+      }
+    },
+    {
+      "id": "not-queued",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {
+          "deadlineMs": 2000
+        },
+        "expect": {
+          "paths": {
+            "ok": false,
+            "error.code": "settling",
+            "withinDeadline": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-5"
+        ]
+      }
+    },
+    {
+      "id": "status-settling",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_status",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.tabs.0.settling": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-5"
+        ]
+      }
+    },
+    {
+      "id": "other-agent",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c2",
+        "tool": "oby_browser_snapshot",
+        "args": {
+          "deadlineMs": 3000
+        },
+        "expect": {
+          "paths": {
+            "ok": true,
+            "withinDeadline": true,
+            "result.outside.data.tree": {
+              "$contains": "Lab fixture"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-5"
+        ]
+      }
+    },
+    {
+      "id": "settled",
+      "use": "runtime.rust:lab.browser.settle",
+      "inputs": {
+        "tab": "${state.c1-open.result.tab}",
+        "within": 40,
+        "expect": {
+          "paths": {
+            "settled": true
+          }
+        }
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:lab.browser.hits",
+      "inputs": {
+        "site": "${state.site}",
+        "path": "/slow",
+        "expect": {
+          "paths": {
+            "hits": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-5"
+        ]
+      }
+    },
+    {
+      "id": "c1-again",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "ok": true,
+            "result.url": {
+              "$contains": "/slow"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-5"
+        ]
+      }
+    },
+    {
+      "id": "c1-acts",
+      "use": "runtime.rust:lab.browser.tool",
+      "inputs": {
+        "conversation": "c1",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/second"
+        },
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "still-once",
+      "use": "runtime.rust:lab.browser.hits",
+      "inputs": {
+        "site": "${state.site}",
+        "path": "/slow",
+        "expect": {
+          "paths": {
+            "hits": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSER-5"
+        ]
+      }
+    }
+  ]
+}
