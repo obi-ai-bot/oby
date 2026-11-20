@@ -5,6 +5,7 @@ import { useState, type ReactNode } from 'react';
 import { Hand, KeyRound, Lock, ShieldCheck } from 'lucide-react';
 import { Logo, Sheen, agentName } from './pieces';
 import { YouMark } from './Panel';
+import { composing } from '../shortcuts';
 import type { AgentId } from './view';
 
 export function Card({ label, kind, blue, head, from, count, children }: { label: string; kind: string; blue?: boolean; head: ReactNode; from?: string; count?: ReactNode; children?: ReactNode }) {
@@ -69,7 +70,7 @@ export function PasswordCard({ agent, host, onFill, onCancel, preview = 0 }: { a
           <input
             type="password" autoComplete="off" spellCheck={false} data-browser="secret-input" value={value}
             onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && value) { onFill(value); setValue(''); } }}
+            onKeyDown={(e) => { if (!composing(e) && e.key === 'Enter' && value) { onFill(value); setValue(''); } }}
             style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', border: 0, padding: 0, background: 'none', color: 'transparent' }}
             aria-label="Password"
           />
