@@ -492,6 +492,46 @@ def board_14():
     )
 
 
+def board_13():
+    browser = {"role": "switch", "name": "Agents can use the browser"}
+    mac = {"role": "switch", "name": "Agents can use this Mac"}
+    checked = lambda id, target, value, proves=None: step(id, "app.read", proves, app=APP, target=target, attributes=["aria-checked"], expect={"paths": {"attributes.aria-checked": value}})
+    workflow(
+        "browser-13-settings.json",
+        "App: Settings › General, two switches for the browser, on by default (board 13)",
+        "The real app on its demo data at the design's board 13 (BROWSERAPP-18): Settings › General has a Browser group, "
+        "marked New, after Permissions on this Mac, with Agents can use the browser and Agents can use this Mac, both on, "
+        "each with the board's words, and its footer; turned off, the browser's globe goes from the title bar; on again, "
+        "it's back. The page is today's Settings, with more groups than the board draws: the group is checked by its words, "
+        "switches and place after Permissions, not by the board's places.",
+        [
+            launch(13, 1200, 860, sidebar=True),
+            # Settings by its own shortcut (⌘,: on the demo data it sits in the account menu)
+            step("settings", "app.press", app=APP, keys="Meta+Comma"),
+            click("general", {"css": ".sidebar-item", "hasText": "General"}),
+            read("head", {"css": "[data-browser=settings] .set-head"}, "BROWSERAPP-18", count=1, text="BrowserNew", within=10),
+            read("rows", {"css": "[data-browser=settings] .set-card"}, "BROWSERAPP-18", count=1,
+                 text="Agents can use the browser They open pages, click and type; you watch beside the conversation and take control any time. "
+                      "Agents can use this Mac Other apps too, through agent-desktop. macOS asks you once."),
+            checked("browser-on", browser, "true", "BROWSERAPP-18"),
+            checked("mac-on", mac, "true"),
+            read("on-is-ink", browser, None, styles={"background-color": "--ink"}, **{"styles.background-color.matches": True}),
+            read("foot", {"css": "[data-browser=settings] .set-foot"}, None, count=1, text="A password you type in Oby goes straight to the page. No agent sees it."),
+            step("after-permissions", "app.measure", "BROWSERAPP-18", app=APP, target={"css": "[data-browser=settings]"},
+                 against={"permissions": {"css": ".set-group", "hasText": "Permissions on this Mac"}}, expect={"paths": {"permissions.overlap": False}}),
+            *pictures(13, "SettingsBrowser", "board 13"),
+            read("globe-there", {"css": "[data-browser=globe]"}, None, count=1),
+            click("browser-off", browser),
+            checked("browser-is-off", browser, "false", "BROWSERAPP-18"),
+            read("globe-gone", {"css": "[data-browser=globe]"}, "BROWSERAPP-18", count=0, within=5),
+            click("browser-on-again", browser),
+            checked("browser-on-again-reads", browser, "true"),
+            read("globe-back", {"css": "[data-browser=globe]"}, None, count=1, within=5),
+            close(),
+        ],
+    )
+
+
 # obid's browser routes aren't served yet: they come with browser port 1's routes pull request
 # (4b; docs/contracts/browser.md, BROWSER-1 to 25; its contract #2608 and core #2610 merged). Every step that
 # needs them is expected red until then; the pull request that lands them removes these marks.
@@ -561,6 +601,7 @@ if __name__ == "__main__":
     board_10()
     board_11()
     board_12()
+    board_13()
     board_14()
     board_17()
     live_101()

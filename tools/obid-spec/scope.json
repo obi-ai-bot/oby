@@ -2113,7 +2113,7 @@
             "BROWSERAPP-15": "the Electron app's script mark (scriptRun, browser/live.ts): browserLive.test.ts; in the real app workflows/app/browser-11-script.json; no obid API of its own",
             "BROWSERAPP-16": "the Electron app's downloads shelf, Save a copy signed (shared/words.ts) and Show in Finder (main/browser.ts browser-reveal): browserLive.test.ts, ipc.test.ts; in the real app workflows/app/browser-12-downloads.json; no obid API of its own",
             "BROWSERAPP-17": "the Electron app's browser on another computer (browser/BrowserPane.tsx): in the real app workflows/app/browser-14-another-computer.json; no obid API of its own",
-            "BROWSERAPP-18": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
+            "BROWSERAPP-18": "the Electron app's Settings › General Browser group (browser/Settings.tsx), switches signed by their labels (shared/words.ts, the preload's switch label): browserLive.test.ts, preload.test.ts; in the real app workflows/app/browser-13-settings.json; no obid API of its own",
             "BROWSERAPP-19": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/",
             "BROWSERAPP-20": "proposed: the Electron app's browser, proven by its app.* workflow in the pull request that builds it (docs/contracts/browser-app.md, Status); obid's half is the lab's browser API, ported in core/"
           }

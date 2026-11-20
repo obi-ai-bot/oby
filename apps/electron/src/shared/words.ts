@@ -49,6 +49,9 @@ export const SKIP = 'Skip';
 const SKIP_LABELS = [SKIP, 'Skip this page'];
 export const FILL_IN = 'Fill in';
 const BROWSER_ANSWER = /^\/v1\/browser\/asks\/[^/]+\/answer$/;
+// Settings › General's two browser switches (BROWSERAPP-18): PUT /v1/browser/settings with one key, a
+// boolean, signed by that switch's own label (its aria-label: a switch has no words of its own)
+export const BROWSER_SWITCHES = { agentsUseBrowser: 'Agents can use the browser', agentsUseMac: 'Agents can use this Mac' } as const;
 // An agent's download copied into the owner's Downloads (BROWSERAPP-16): an empty body, by its button's label
 export const SAVE_A_COPY = 'Save a copy';
 const BROWSER_SAVE = /^\/v1\/browser\/downloads\/[^/]+\/saveCopy$/;
@@ -77,6 +80,11 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   // a browser tab's take or give back: an empty body, nothing else
   const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
   if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;
+  if (method === 'PUT' && p === '/v1/browser/settings') {
+    const keys = Object.keys(body);
+    const key = keys[0] as keyof typeof BROWSER_SWITCHES;
+    return keys.length === 1 && key in BROWSER_SWITCHES && typeof body[key] === 'boolean' ? [BROWSER_SWITCHES[key]] : null;
+  }
   if (method === 'POST' && BROWSER_SAVE.test(p)) return Object.keys(body).length === 0 ? [SAVE_A_COPY] : null;
   if (method === 'POST' && BROWSER_ANSWER.test(p)) {
     if (Object.keys(body).length === 0) return [SKIP];
