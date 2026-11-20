@@ -1,9 +1,9 @@
-//! Putting the browser's engine in place, once (BROWSER-23): agent-browser first, then Chrome for
-//! Testing, each downloaded into a `.partial-*` folder of `<home>/browser/`, checked against its
-//! pin before it is unpacked, unpacked there, its executable checked (agent-browser's against its
-//! own pin), then renamed into place so a half-done install is never seen. One install at a time
-//! (an async mutex), in a task of its own: a caller that gives up (`browser_up`'s allowance) leaves
-//! it running, and the next call finds it done or still going.
+//! Putting the browser's engine in place, once (BROWSER-23): agent-browser first, then
+//! chrome-headless-shell, each downloaded into a `.partial-*` folder of `<home>/browser/`, checked
+//! against its pin before it is unpacked, unpacked there, its executable checked (agent-browser's
+//! against its own pin), then renamed into place so a half-done install is never seen. One install
+//! at a time (an async mutex), in a task of its own: a caller that gives up (`browser_up`'s
+//! allowance) leaves it running, and the next call finds it done or still going.
 //!
 //! It owns `<home>/browser/` but `jobs/`, `live/` and the sockets, which are the driver's; it never
 //! runs what it downloads and writes nothing outside `<home>/browser/`.
@@ -55,7 +55,7 @@ impl Installer {
             .map_err(|e| format!("can't make {}: {e}", root.display()))?;
         remove_partials(&root);
         tracing::info!(
-            "installing the browser's engine (agent-browser and Chrome for Testing) into {}",
+            "installing the browser's engine (agent-browser and chrome-headless-shell) into {}",
             root.display()
         );
         let client = reqwest::Client::new();
@@ -455,7 +455,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            why.contains("Chrome for Testing has no build for linux-arm64"),
+            why.contains("chrome-headless-shell has no build for linux-arm64"),
             "{why}"
         );
         let _ = std::fs::remove_dir_all(home);

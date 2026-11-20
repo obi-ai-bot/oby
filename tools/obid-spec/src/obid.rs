@@ -182,7 +182,7 @@ pub struct StartInput {
     /// Files to put in its scratch HOME (the person's home, for its stand-ins: `github/work.json`
     /// for the fake gh) before it starts.
     pub person: Option<serde_json::Map<String, Value>>,
-    /// The browser's engine (agent-browser and Chrome for Testing) put in its home from obid-spec's
+    /// The browser's engine (agent-browser and chrome-headless-shell) put in its home from obid-spec's
     /// cache before it starts, cloned so it costs no disk; with the cache empty, obid downloads and
     /// checks it on its first browser call, and the cleanup keeps it in the cache
     /// ([`keep_browser_engine`]).
@@ -191,7 +191,10 @@ pub struct StartInput {
 
 /// The browser's engine as obid installs it under `<home>/browser/` (core/crates/obid/src/browser/
 /// install/pins.rs): its two folders, each put in place only once checked against its pin.
-pub const BROWSER_ENGINE: [&str; 2] = ["agent-browser-0.43.0", "chrome-158.0.8127.36"];
+pub const BROWSER_ENGINE: [&str; 2] = [
+    "agent-browser-0.43.0",
+    "chrome-headless-shell-158.0.8127.36",
+];
 
 /// The homes of this workflow's obids given the browser, for [`keep_browser_engine`].
 static BROWSER_HOMES: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
