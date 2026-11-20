@@ -542,3 +542,133 @@ describe('TERMINAL-8: a real shell', () => {
     }
   });
 });
+
+// T3 Code's terminal tests and fixes, held to Oby's own contract (docs/contracts/terminal.md)
+describe('T3: the terminal', () => {
+  // T3 e101cae1b9, Manager.test "keeps a startup failure in the snapshot": a shell that can't start says why
+  it('t3_terminal_a_shell_that_cant_start_says_why_and_nothing_runs', async () => {
+    const dir = worktree('j1');
+    const failing = new Terminals(() => () => { throw new Error('posix_spawnp failed.'); }, (p, ...a) => (p as unknown as Page | null)?.send(...(a as Sent)), () => ENV);
+    const p = page();
+    expect(failing.start(p as never, 'task', 'j1', dir, 80, 24)).toEqual({ error: 'The shell didn’t start: posix_spawnp failed.' });
+    expect(failing.open).toBe(0);
+    expect(p.sent).toEqual([]);
+  });
+
+  // T3 8a227eba4e: a project folder gone since it was listed gives words, not a crash
+  it('t3_terminal_a_folder_gone_since_says_so_and_starts_nothing', () => {
+    const gone = mkdtempSync(join(tmpdir(), 'oby-term-gone-'));
+    rmSync(gone, { recursive: true });
+    expect(terms.start(page() as never, 'task', 'j1', gone, 80, 24)).toEqual({ error: 'Its folder isn’t on this Mac any more.' });
+    expect(spawned).toHaveLength(0);
+  });
+
+  // TERMINAL-2: "a conversation's starts in its first folder as obid lists it"; a folder gone since says so
+  // known bug obi-ai-bot/oby#2723: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_terminal_a_conversation_whose_first_folder_went_never_opens_in_its_second (known bug #2723)', async () => {
+    const gone = mkdtempSync(join(tmpdir(), 'oby-term-first-'));
+    rmSync(gone, { recursive: true });
+    const b = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-second-')));
+    the.state.conversations = [{ id: 'c1', folders: [gone, b] }];
+    input();
+    const a = await open(page(), 'conversation', 'c1');
+    expect(a.cwd).toBeUndefined();
+    expect(spawned.map((s) => s.opts.cwd)).not.toContain(b);
+  });
+
+  // T3 fe949fe1bc (threads with long ids): obid's own ids, a 36-character UUID, open a shell
+  it('t3_terminal_a_conversation_with_obids_own_uuid_id_opens_its_shell', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-uuid-')));
+    const uuid = '0f8e2b7c-3a41-4d0e-9b5f-6c2d1e8a9b70';
+    the.state.conversations = [{ id: uuid, folders: [dir] }];
+    input();
+    expect((await open(page(), 'conversation', uuid)).cwd).toBe(dir);
+    expect(spawned.map((s) => s.opts.cwd)).toEqual([dir]);
+  });
+
+  // NodePtyAdapter.test "replays an exit to late subscribers and respects unsubscription"; TERMINAL-4: nothing comes after its close
+  // known bug obi-ai-bot/oby#2724: it.fails until it's fixed, then the fix removes .fails
+  it.fails('t3_terminal_nothing_at_all_comes_after_a_close_not_even_its_exit (known bug #2724)', async () => {
+    worktree('j1');
+    const p = page();
+    input();
+    const { term } = await open(p, 'task', 'j1');
+    spawned[0].data!('late');
+    the.handlers.get('terminal-close')!({ sender: p }, term);
+    await flush();
+    expect(p.sent.filter((s) => s[1] === term)).toEqual([]);
+  });
+
+  // a paste with control sequences in it (a coloured log line): exactly the clipboard's text, as xterm.js 6.0.0 brackets it
+  it('t3_terminal_a_bracketed_paste_holding_an_escape_reaches_the_shell_as_copied', async () => {
+    worktree('j1');
+    input();
+    const { term } = await open(page(), 'task', 'j1');
+    the.clip = 'a\x1b[31mred\x1b[0m\nb';
+    key('v', { meta: true });
+    write(term!, '\x1b[200~a\x1b[31mred\x1b[0m\rb\x1b[201~');
+    await flush();
+    expect(spawned[0].written).toEqual(['\x1b[200~a\x1b[31mred\x1b[0m\rb\x1b[201~']);
+  });
+});
+
+describe('T3: a real shell', () => {
+  const bash = '/bin/bash';
+  const real = () => {
+    const out: string[] = [];
+    const t = new Terminals(nodePty, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); }, () => {
+      const who = userInfo();
+      return { shell: bash, env: cleanEnv(process.env, { home: who.homedir, user: who.username, shell: bash }, '1.2.3') };
+    }, 300);
+    return { t, text: () => out.join('') };
+  };
+  const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
+  const started = (t: InstanceType<typeof Terminals>, dir: string) => { const o = t.start(null, 'task', 'j1', dir, 80, 24); expect('term' in o).toBe(true); return (o as { term: string }).term; };
+
+  // T3's e2e scenarios, real-Mac step 2 (⌃C): the key's byte stops what runs in the foreground, and the shell goes on
+  it('t3_terminal_ctrl_c_stops_the_running_program_and_the_shell_goes_on', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-int-')));
+    const { t, text } = real();
+    const term = started(t, dir);
+    // `&&`, not `;`: macOS's bash 3.2 runs the rest of a `;` list after its foreground job dies of SIGINT
+    t.write(term, 'sleep 30 && echo SL""EPT\r');
+    await new Promise((r) => setTimeout(r, 300));
+    t.write(term, '\x03');
+    t.write(term, 'echo AF""TER\r');
+    await until(() => /AFTER/.test(text()), 5000);
+    expect(text()).not.toContain('SLEPT');
+    t.close(term);
+    t.killLeft();
+  });
+
+  // T3 Manager.test "joins surrogate pairs across chunk boundaries": 4-byte characters split between reads arrive whole
+  it('t3_terminal_four_byte_characters_split_between_reads_arrive_whole', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-emoji-')));
+    const { t, text } = real();
+    const term = started(t, dir);
+    t.write(term, 'printf "\\360\\237\\230\\200%.0s" $(seq 1 2000); printf "\\nEN""D\\n"\r');
+    await until(() => /\r\nEND\r\n/.test(text()));
+    expect(text()).toContain('😀'.repeat(2000));
+    expect(text()).not.toContain('�');
+    t.close(term);
+    t.killLeft();
+  });
+
+  // T3 8dba23e420, e2e terminal-large-paste-reaches-program: a large paste reaches the program byte for byte
+  it('t3_terminal_a_large_paste_reaches_the_program_byte_for_byte', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-paste-')));
+    const line = 'const answer = 42; // é ü 日本 😀 tab\there\r';
+    const paste = line.repeat(Math.ceil(300_000 / line.length));
+    const want = Buffer.from(paste);
+    const { t, text } = real();
+    const term = started(t, dir);
+    t.write(term, `stty raw -echo; head -c ${want.length} > got.bin; stty sane; echo GO""T\r`);
+    await new Promise((r) => setTimeout(r, 300));
+    t.write(term, paste);
+    await until(() => /GOT/.test(text()), 20_000);
+    const { readFileSync } = await import('node:fs');
+    expect(readFileSync(join(dir, 'got.bin')).equals(want)).toBe(true);
+    t.close(term);
+    t.killLeft();
+  });
+});
