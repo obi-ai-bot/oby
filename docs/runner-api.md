@@ -117,3 +117,4 @@ The runner API is documented per area in `docs/api/<area>.md`. A change to the A
   - [obid only: teammate approval](api/teammate-review.md)
   - [obid only: sorting the inbox](api/inbox.md)
   - [obid only: artifacts](api/artifacts.md)
+  - [obid only: other computers](api/remote.md)

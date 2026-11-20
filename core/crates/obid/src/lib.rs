@@ -70,6 +70,7 @@ pub mod publish;
 pub mod push;
 pub mod receipts;
 pub mod relay;
+pub mod remote;
 pub mod repos;
 pub mod review;
 pub mod routes;
@@ -367,6 +368,14 @@ pub async fn serve(
         },
         None => (None, None),
     };
+    // Where this obid answers, for `obid pair-computer` (crate::remote::addresses, COMPUTERS-9).
+    let answering = remote::addresses::Addresses {
+        api: bound,
+        gateway: gateway.as_ref().and_then(|l| l.local_addr().ok()),
+    };
+    if let Err(e) = remote::addresses::keep(&config.mac_home, &answering) {
+        tracing::warn!("can't keep obid's addresses for `obid pair-computer`: {e}");
+    }
     stopwatch.lap("listen");
     // The API answers from now on: `GET /v1/status` says obid is starting, and how far it got,
     // and every other call waits until it's ready (Door).
