@@ -1,0 +1,272 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: a failed navigation marks the tab failed, in the list and the events, and a good one afterwards clears it, even to the same address",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-1, board 10 (src/lab/browserapi.rs, Api::failed and sync_job): the agent's navigate to a refused address (127.0.0.1:2), without naming its tab, fails; GET /v1/browser and the events stream both say the tab is failed. Navigating back to the very address it was on before succeeds and the tab is ready again, in the list and the events. The same with the tab named.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "bad",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "http://127.0.0.1:2/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "failed",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs.0.id": "${state.open.structured.result.tab}",
+            "body.tabs.0.state": "failed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "failed-event",
+      "use": "runtime.rust:lab.browserapi.events",
+      "inputs": {
+        "api": "${state.up}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.tab": {
+              "$any": {
+                "tab": {
+                  "id": "${state.open.structured.result.tab}",
+                  "state": "failed"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "ready-again",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs.0.state": "ready",
+            "body.tabs.0.url": "${state.up.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "ready-event",
+      "use": "runtime.rust:lab.browserapi.events",
+      "inputs": {
+        "api": "${state.up}",
+        "ms": 500,
+        "after": "${state.failed-event.events.0.seq}",
+        "expect": {
+          "paths": {
+            "of.tab": {
+              "$any": {
+                "tab": {
+                  "id": "${state.open.structured.result.tab}",
+                  "state": "ready"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "bad-named",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "http://127.0.0.1:2/",
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "id": "failed-named",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs.0.state": "failed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    },
+    {
+      "id": "back-named",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.up.site.url}/",
+          "tab": "${state.open.structured.result.tab}"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "ready-named",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs.0.state": "ready"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-1"
+        ]
+      }
+    }
+  ]
+}
