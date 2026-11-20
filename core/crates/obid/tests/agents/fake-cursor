@@ -91,7 +91,8 @@ const ask = (method, params) => new Promise((done) => {
 });
 let session = null;
 let state = null;
-// The MCP servers obid gave the session: only Oby's own (`oby`, `tetrix`), on obid's port.
+// The MCP servers obid gave the session: only its own (`oby`, `tetrix`, and `browser` for a job of
+// the owner's, BROWSER-17), on obid's port.
 let servers = [];
 let cancelled = null;
 
@@ -305,7 +306,10 @@ rl.on("line", (line) => {
       if (!signedIn) return send({ id, error: { code: -32000, message: "Authentication required" } });
       mkdirSync(sessions, { recursive: true });
       servers = params.mcpServers ?? [];
-      if (servers.some((s) => !["oby", "tetrix"].includes(s.name) || !s.url.includes("/v1/agent/")))
+      // Only obid's own servers: Oby's and Tetrix's under /v1/agent/, and Oby's browser at its own
+      // path, given to a job of the owner's (BROWSER-17).
+      if (servers.some((s) => !(["oby", "tetrix"].includes(s.name) && s.url.includes("/v1/agent/"))
+          && !(s.name === "browser" && s.url.endsWith("/v1/browser/mcp"))))
         return send({ id, error: { code: -32602, message: `obid gave MCP servers: ${JSON.stringify(servers.map((s) => s.name))}` } });
       if (method === "session/load") {
         const file = join(sessions, `${params.sessionId}.json`);
