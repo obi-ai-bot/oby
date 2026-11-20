@@ -73,7 +73,12 @@ impl Defaults {
     ) -> NewJob {
         let Some(d) = defaults else { return new };
         let mode = match d.mode.as_deref() {
+            // Unsigned words (a script's, oby-mcp's) don't widen trust by a chip: the brain's
+            // mode stands. Where Bypass is the owner's default, the chip names that default, so
+            // the mode is left out as `planned_job` leaves it, and nothing waits for a Confirm
+            // the default itself wouldn't (#2543).
             Some("bypass") if !signed && bypass_widens => new.mode,
+            Some("bypass") if !signed => None,
             Some(mode) => Some(mode.to_owned()),
             None => new.mode,
         };
@@ -136,9 +141,10 @@ mod tests {
         let job = Defaults::apply(Some(&bypass), planned("auto", None), false, true);
         assert_eq!(job.mode, None);
         assert!(!Defaults::owners_bypass(Some(&bypass), false));
-        // Where Bypass is the owner's default, it's the default either way.
+        // Where Bypass is the owner's default, it's the default either way: left out, so the
+        // job takes it with no Confirm.
         let job = Defaults::apply(Some(&bypass), planned("auto", None), false, false);
-        assert_eq!(job.mode.as_deref(), Some("bypass"));
+        assert_eq!(job.mode, None);
         // No chips: the brain's plan as it was.
         let job = Defaults::apply(None, planned("codex", Some("ask")), true, true);
         assert_eq!(
