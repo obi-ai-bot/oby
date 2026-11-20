@@ -33,6 +33,9 @@ jiff.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The browser's pinned downloads (src/browser/install): SHA-256 over a stream, already in the tree
+# through obi-protocol.
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
