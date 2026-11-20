@@ -2094,6 +2094,41 @@
           }
         }
       }
+    },
+    "browser": {
+      "routes": [],
+      "contracts": {
+        "browser.md": {
+          "obid": [
+            "BROWSER-1",
+            "BROWSER-2",
+            "BROWSER-3",
+            "BROWSER-4",
+            "BROWSER-5",
+            "BROWSER-6",
+            "BROWSER-7",
+            "BROWSER-8",
+            "BROWSER-9",
+            "BROWSER-10",
+            "BROWSER-11",
+            "BROWSER-12",
+            "BROWSER-13",
+            "BROWSER-14",
+            "BROWSER-15",
+            "BROWSER-16",
+            "BROWSER-17",
+            "BROWSER-18",
+            "BROWSER-19",
+            "BROWSER-20",
+            "BROWSER-21",
+            "BROWSER-22",
+            "BROWSER-23",
+            "BROWSER-24",
+            "BROWSER-25"
+          ],
+          "elsewhere": {}
+        }
+      }
     }
   },
   "triggers": {
