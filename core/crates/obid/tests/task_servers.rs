@@ -15,8 +15,8 @@ fn agents() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents")
 }
 
-/// obid with Claude Code's stand-in (the owner's own work runs in its own lane: unboxed) and
-/// Codex's (in Sandbox, as these tests start, Codex runs in Oby's box).
+/// obid with Claude Code's stand-in and Codex's (the owner's own work runs in its own lane, on
+/// either: unboxed, LANES-1 and LANES-18).
 fn obid(folder: &Folder) -> Obid {
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
@@ -139,12 +139,32 @@ fn taskservers_3_and_4_only_its_own_and_none_once_it_ends() {
 /// TASKSERVERS-6: a job in Oby's box lists its server only where the Mac reaches it. On macOS the
 /// box shares the Mac's network, and Seatbelt leaves a listen alone: listed. On Linux the box has a
 /// network namespace of its own, which the host doesn't reach: never listed. The own-lane job's
-/// server, read on the same tick after the boxed one listened, shows the reading came after.
+/// server, read on the same tick after the boxed one listened, shows the reading came after. The
+/// boxed one is a Codex job marked untrusted (LANES-1: the owner's own Codex work is own, LANES-18),
+/// kept before obid starts, which runs it.
 #[test]
 fn taskservers_6_a_boxed_jobs_server_is_listed_only_where_the_mac_reaches_it() {
     let folder = Folder::new("servers-boxed");
+    let boxed = "aaaa0601".to_owned();
+    let mut kept = obid::job::Job::new(
+        boxed.clone(),
+        "obi-e2e/fixture-app".into(),
+        "research".into(),
+        "SERVE PORT".into(),
+        "codex".into(),
+        "work".into(),
+    );
+    kept.branch = format!("oby/research-{boxed}");
+    kept.check = Some("true".into());
+    kept.untrusted = true;
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(
+        jobs.join(format!("{boxed}.json")),
+        serde_json::to_vec(&kept).unwrap(),
+    )
+    .unwrap();
     let obid = obid(&folder);
-    let boxed = serve(&obid, "codex");
     let boxed_port = serving(&obid, &boxed);
     assert_eq!(job(&obid, &boxed)["agent"], "codex");
     let own = serve(&obid, "claude");

@@ -1,19 +1,17 @@
-//! Lane choice (docs/contracts/lanes.md, LANES-1, LANES-18, LANES-19): which job's agent runs
-//! unboxed on the owner's own login. Any job: any kind and mode string up to 6 bytes (every kind
-//! the decision reads, `build`, `fix`, `test` and `review`, every mode that moves it, `bypass`, and
-//! any other string, which decides as an unknown one does), with or without another Oby, a review,
-//! a mark, an untrusted read or a parked plan, on every tool. The job is forgotten, not dropped:
+//! Lane choice (docs/contracts/lanes.md, LANES-1, LANES-18): which job's agent runs unboxed on the
+//! owner's own login. Any job: any kind and mode string up to 6 bytes (`review`, the one kind the
+//! decision reads, and any other string), with or without another Oby, a review, a mark, an
+//! untrusted read or a parked plan, on every tool. The job is forgotten, not dropped:
 //! dropping its hundred fields is what CBMC would spend its time on, and proves nothing.
 //! Proves: core/crates/obid/src/jobs/lanes.rs
 //! Proves: core/crates/obid/src/jobs/permission_asks.rs
-//! Proves: core/crates/obid/src/jobs/codex_plan.rs
 //! Proves: core/crates/obid/src/job.rs
 
 use super::any_str;
 use crate::agent::Tool;
 use crate::job::{Job, ObiRef};
-use crate::jobs::{COMMITTING, Jobs};
-use crate::permissions::{Mode, Parked};
+use crate::jobs::Jobs;
+use crate::permissions::Parked;
 
 fn any_job() -> Job {
     let mut job = Job {
@@ -52,8 +50,8 @@ fn any_tool() -> Tool {
     }
 }
 
-/// Another Oby's job, an untrusted one, a review and any Cursor run are always boxed; an own
-/// Codex run is Bypass on macOS, never a build, nor the rest of a run its plan card resumed.
+/// Another Oby's job, an untrusted one, a review and any Cursor run are always boxed; the owner's
+/// Codex job is own as their Claude Code one is, in any mode (the owner's "Yes, match T3").
 #[kani::proof]
 #[kani::unwind(10)]
 fn foreign_untrusted_or_review_work_never_runs_unboxed() {
@@ -61,16 +59,12 @@ fn foreign_untrusted_or_review_work_never_runs_unboxed() {
     if Jobs::own_lane(&job, tool) {
         assert!(job.obi.is_none() && !job.untrusted && job.review_of.is_none());
         assert!(tool != Tool::Cursor);
-        if tool == Tool::Codex {
-            assert!(cfg!(target_os = "macos"));
-            assert_eq!(Jobs::mode_of(&job), Mode::Bypass);
-            assert!(!COMMITTING.contains(&job.kind.as_str()));
-            assert!(
-                !job.parked
-                    .as_ref()
-                    .is_some_and(|p| p.ended_turn && p.answered)
-            );
-        }
+    }
+    if tool != Tool::Cursor {
+        assert_eq!(
+            Jobs::own_lane(&job, tool),
+            Jobs::own_lane(&job, Tool::Claude)
+        );
     }
     std::mem::forget(job);
 }

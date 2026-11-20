@@ -136,7 +136,7 @@ pub(crate) async fn own_refs(admin: &Path, common: &Path, worktree: &Path) -> st
         std::os::unix::fs::symlink(to, shared.join(name))?;
     }
     // Relative, as git writes it: the clone's folder can move (a marked clone made again).
-    write_fresh(
+    swap_fresh(
         &admin.join("commondir"),
         format!("{OWN_COMMON}\n").as_bytes(),
     )?;
@@ -148,7 +148,7 @@ pub(crate) async fn own_refs(admin: &Path, common: &Path, worktree: &Path) -> st
     if git::is_branch_name(branch.strip_prefix("refs/heads/").unwrap_or_default())
         && head_of(admin) == resolved(admin, common, worktree, branch).await
     {
-        write_fresh(&admin.join("HEAD"), format!("ref: {branch}\n").as_bytes())?;
+        swap_fresh(&admin.join("HEAD"), format!("ref: {branch}\n").as_bytes())?;
     }
     Ok(())
 }
@@ -177,9 +177,22 @@ pub(crate) async fn settle_own_refs(
             true => format!("{commit}\n"),
             false => format!("ref: {UNBORN}\n"),
         };
-        write_fresh(&admin.join("HEAD"), detached.as_bytes())?;
+        swap_fresh(&admin.join("HEAD"), detached.as_bytes())?;
     }
-    write_fresh(&pointer, b"../..\n")
+    swap_fresh(&pointer, b"../..\n")
+}
+
+/// Writes `path` afresh, as `write_fresh` does, all at once: a new file beside it renamed over it,
+/// so git, which reads every worktree's `commondir` and `HEAD` in the clone (another job's
+/// `git worktree add`), never reads one that's missing or empty (LANES-8: two own jobs of one
+/// clone starting together). A rename replaces a link at `path` itself, never what it leads to.
+fn swap_fresh(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let next = path.with_file_name(format!(".{name}.oby-{}", uuid::Uuid::new_v4()));
+    write_fresh(&next, bytes)?;
+    std::fs::rename(&next, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&next);
+    })
 }
 
 /// `name`'s commit as the worktree sees it now, or nothing.

@@ -29,7 +29,7 @@ The skills of the agent that would get the owner's next words there, and only wh
 - `?job=<id>`: the task's agent and account, while it's at work (`running`): a running task takes words at once (TASKCONV-33 to 37).
 - `?account=<id>`: the account's agent's own skills, wherever its turns would run (none of a project's; `[]` for Cursor).
 - Neither: a new conversation of the current profile (Home's box).
-- `skills` is `[]`, with `why` (one sentence for the owner), where skills wouldn't run: the turn or task runs in Oby's box (another Oby's conversation, a task marked untrusted, Oby's review, Codex outside Bypass or on a ChatGPT login, Cursor), the task isn't at work, or no account can talk. `tool` and `account` are `null` when no account would. `404` for a conversation, job or account obid doesn't have (or another profile's).
+- `skills` is `[]`, with `why` (one sentence for the owner), where skills wouldn't run: the turn or task runs in Oby's box (another Oby's conversation, a task marked untrusted, Oby's review, Codex on a ChatGPT login, Cursor), the task isn't at work, or no account can talk. `tool` and `account` are `null` when no account would. `404` for a conversation, job or account obid doesn't have (or another profile's).
 - Read from the account's own folder only, never another's: Claude Code's `configDir` (or `~/.claude`), with its `settings.json`, its `plugins/installed_plugins.json` and each plugin's `.claude-plugin/plugin.json`, the Mac's managed folder, and a task's worktree's `.claude/skills`; Codex's own `skills/list`, from an `app-server` on the account's own `CODEX_HOME`, as its own run would have it. Kept until any of those files change.
 
 ## `skill` on `POST /v1/plans` and `POST /v1/jobs/{id}/messages`
