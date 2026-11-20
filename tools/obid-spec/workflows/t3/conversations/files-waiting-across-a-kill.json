@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: words with files waiting when obid is killed",
+  "version": "1.0.0",
+  "description": "T3 Code's 0acca1de27 (resume keeps unaccepted replacement images) and 997b304dd6: words with a file wait behind a turn when obid is killed. After the restart they are answered by a turn of their own (DELIVERY-8), with their file in the conversation's room and named in the prompt (ATTACH-4), as their replays entry kept them.",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "notes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=notes.txt",
+        "raw": "the plan in short",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 60000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-0000000000b1"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "files",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "FILES",
+          "conversation": "${state.said.body.conversation}",
+          "attachments": [
+            "${state.notes.body.path}"
+          ],
+          "id": "7a3e0000-0000-4000-8000-0000000000b2"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "they-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-0000000000b2",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "delivery-8-answered-after-the-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-0000000000b2",
+                "delivery": {
+                  "status": "answered"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-8"
+        ]
+      }
+    },
+    {
+      "id": "attach-4-its-file-reached-the-agent-named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "text": {
+                  "$matches": "files: attachments/[^ ]*notes\\.txt named=true"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-4",
+          "DELIVERY-8"
+        ]
+      }
+    }
+  ]
+}
