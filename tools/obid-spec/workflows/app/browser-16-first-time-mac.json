@@ -1,0 +1,201 @@
+{
+  "schemaVersion": "2",
+  "name": "App: the first time, Oby says why macOS will ask, once (board 16)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 16 (BROWSERAPP-20): before an agent first uses the Mac, Oby's sheet says what that means (it sees the screen, it clicks and types, you stop it any time) and that macOS asks next, for agent-desktop, and never Oby itself; Continue closes it.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=16",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "title",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".modal-title"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Let agents use your Mac?"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-20"
+        ]
+      }
+    },
+    {
+      "id": "wants",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".modal-text"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Claude Code wants to type in TextEdit. Agents use other apps through agent-desktop, the same way you do."
+          }
+        }
+      }
+    },
+    {
+      "id": "three-points",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".modal-list li"
+        },
+        "expect": {
+          "paths": {
+            "count": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "macos-next",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".steps"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Next, macOS asks you, once. Allow agent-desktop in System Settings › Privacy & Security, under Accessibility and then Screen Recording. Oby never asks macOS for these itself."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-20"
+        ]
+      }
+    },
+    {
+      "id": "centred",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=mac-sheet] .modal"
+        },
+        "expect": {
+          "paths": {
+            "box.width": 480,
+            "box.x": 400
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-20"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "DesktopPermission",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-20"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-16"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "DesktopPermission",
+        "name": "browser-16-beside-board",
+        "label": "board 16"
+      }
+    },
+    {
+      "id": "continue",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Continue"
+        }
+      }
+    },
+    {
+      "id": "closed",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=mac-sheet]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-20"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

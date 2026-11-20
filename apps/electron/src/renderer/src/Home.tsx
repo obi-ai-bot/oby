@@ -40,6 +40,7 @@ import { panelFit } from './panelFit';
 import { useBrowser } from './browser/store';
 import { browserFit } from './browser/fit';
 import { BrowserGlobe, BrowserPane } from './browser/BrowserPane';
+import { MacSheet, useMacPill } from './browser/Mac';
 import { registerCommands } from './shortcuts';
 import { ComputerLine, ComputerStage, useComputerStage } from './computers/ComputerHome';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
@@ -314,6 +315,8 @@ export default function Home() {
   // beside the browser the conversation keeps 420px, and the side panel floats where it wouldn't
   // fit beside both (browser/fit.ts, BROWSERAPP-3)
   const browser = useBrowser();
+  // an agent using the Mac: main's pill and frame over the screen follow it (BROWSERAPP-19)
+  useMacPill();
   const browserShown = browser.offered && browser.ui.open;
   const sideFit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
   const besideBrowser = browserShown && !browser.ui.full ? browserFit(windowWidth, sideFit.docked && sidebar ? sideFit.width : 0, browser.ui.width) : null;
@@ -652,6 +655,8 @@ export default function Home() {
     </div>
       {/* the browser, beside the conversation or across the window (docs/contracts/browser-app.md) */}
       <BrowserPane width={besideBrowser?.width ?? browser.ui.width} />
+      {/* the first time an agent would use the Mac: Oby's sheet before macOS asks (BROWSERAPP-20) */}
+      <MacSheet />
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,
           so coming after the title bar keeps its click from being taken as a drag */}

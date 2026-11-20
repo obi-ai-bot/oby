@@ -1,0 +1,178 @@
+{
+  "schemaVersion": "2",
+  "name": "App: an agent uses the Mac, Oby's pill over the screen and Stop (board 15)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data with the design's board 15 (BROWSERAPP-19): while Claude Code has the Mac, main shows Oby's pill in a window of its own over the screen (who, what it's doing, esc esc, Stop) and an orange frame in another, click-through; the conversation shows the card with Stop. The pill's Stop puts the pill, the frame and the card away. Board 15 draws the Mac's own screen around them: here the pill is checked in its window, word by word. Esc twice is main's global shortcut, which only macOS can press (desktop.*, the contract's Open list).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=15",
+        "size": {
+          "width": 1440,
+          "height": 900
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "card",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=mac-card] .decision-card"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Claude Code has your Mac. Press Esc twice to stop it. Stop"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-19"
+        ]
+      }
+    },
+    {
+      "id": "card-over-the-box",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=mac-card] .decision-card"
+        },
+        "against": {
+          "box": {
+            "css": ".chat-layer:not(.is-covered) .composer"
+          }
+        },
+        "expect": {
+          "paths": {
+            "box.overlap": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-19"
+        ]
+      }
+    },
+    {
+      "id": "pill",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=pill]",
+          "window": "macpill"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Claude Code is using your Mac · Typing in TextEdit esc esc Stop"
+          }
+        },
+        "within": 15
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-19"
+        ]
+      }
+    },
+    {
+      "id": "frame",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=mac-frame]",
+          "window": "macframe"
+        },
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        },
+        "within": 15
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-19"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-15"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Desktop",
+        "name": "browser-15-beside-board",
+        "label": "board 15 (the Mac's screen): the card in Oby"
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Stop",
+          "window": "macpill"
+        }
+      }
+    },
+    {
+      "id": "card-gone",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=mac-card]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-19"
+        ]
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}
