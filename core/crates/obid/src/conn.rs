@@ -202,7 +202,10 @@ impl Conn {
                 .map_err(std::io::Error::other)?;
             // PUBLISHING-30: a job's agent, and all it starts, runs below obid's checks, which
             // decide publishing. Its first program, `obid __session`, sets it before anything runs.
-            command.env(process::NICE, AGENT_NICE.to_string());
+            // A conversation's agent, recorded too (DELIVERY-12), keeps its own pace.
+            if group.is_job() {
+                command.env(process::NICE, AGENT_NICE.to_string());
+            }
         }
         let set = |name: &str| {
             let value = launch.env.iter().rev().find(|(set, _)| set == name);
