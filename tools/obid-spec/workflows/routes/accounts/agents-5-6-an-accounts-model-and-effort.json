@@ -1,0 +1,494 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTS-5 and 6: each account's model and effort",
+  "version": "1.0.0",
+  "description": "`PATCH /v1/accounts/{id}` takes `model`, `effort` and `complexEffort`, each checked against the tool's choices (never another tool's model, an effort's name as a model, or a refused name beside them: 422, nothing changes), carried on the account and kept across a restart, and cleared with null. A job with no model of its own runs on its account's, at its effort; a model the job names wins; with none set, the tool default from status.models and no effort.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/accounts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "agents-5-refused-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "effort": "ultra"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-refused-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "complexEffort": "huge"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-refused-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": "a b"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-refused-4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": "--dangerously-skip-permissions"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-refused-5",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": "gpt-6.1-sol"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-refused-6",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": "high"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-refused-7",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "effort": 3
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-refused-8",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "name": "",
+          "model": "claude-sonnet-5-5"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-a-refusal-changes-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "model": {
+                  "$exists": false
+                },
+                "effort": {
+                  "$exists": false
+                },
+                "complexEffort": {
+                  "$exists": false
+                },
+                "name": "Stand-in"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-model-and-efforts-are-set",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": "claude-sonnet-5-5",
+          "effort": "high",
+          "complexEffort": "max"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "model": "claude-sonnet-5-5",
+            "effort": "high",
+            "complexEffort": "max",
+            "name": "Stand-in"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-the-account-carries-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "model": "claude-sonnet-5-5",
+                "effort": "high",
+                "complexEffort": "max"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "plain",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "SHOW_MODEL"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "agents-6-a-job-runs-on-its-accounts-model-and-effort",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.plain.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "model=claude-sonnet-5-5 effort=high",
+            "model": "claude-sonnet-5-5",
+            "effort": "high"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-6"
+        ]
+      }
+    },
+    {
+      "id": "named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "SHOW_MODEL",
+            "model": "claude-haiku-5-5"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "agents-6-a-model-the-job-names-wins",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "model=claude-haiku-5-5 effort=high"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-6"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "agents-5-kept-across-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "stand-in",
+                "model": "claude-sonnet-5-5",
+                "effort": "high"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "agents-5-null-is-the-tools-own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": null,
+          "effort": null,
+          "complexEffort": null
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "model": {
+              "$exists": false
+            },
+            "effort": {
+              "$exists": false
+            },
+            "complexEffort": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-5"
+        ]
+      }
+    },
+    {
+      "id": "models",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "models.claude.model": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bare",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "task": "SHOW_MODEL"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "agents-6-with-none-it-runs-the-tool-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.bare.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": "model=${state.models.body.models.claude.model} effort=none"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-6"
+        ]
+      }
+    }
+  ]
+}

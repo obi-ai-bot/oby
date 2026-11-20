@@ -1,0 +1,427 @@
+{
+  "schemaVersion": "2",
+  "name": "AGENTS-9: the owner's own ceilings are settings",
+  "version": "1.0.0",
+  "description": "`limits` on GET and PUT /v1/settings/jobs: rounds 10, maxRunning 20, folders 20, routines 20, accounts 32 by default; each set to a whole number from 1 (past what the Mac holds, a string, an unknown key or a non-object is 422 and keeps nothing), a lower maxRunning ceiling lowers maxRunning, a job with more rounds than the ceiling is refused; kept across a restart, and null is the default again.",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/settings/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "agents-9-each-ceiling-at-its-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "limits": {
+              "rounds": 10,
+              "maxRunning": 20,
+              "folders": 20,
+              "routines": 20,
+              "accounts": 32
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-past-a-ceiling-is-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 30
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-refused-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "rounds": 0
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-refused-2",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "rounds": "many"
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-refused-3",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "tokens": 5
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-refused-4",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": 5
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-refused-5",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "maxRunning": 65
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-refused-6",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "rounds": 101
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-refused-7",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "maxRunning": 40
+          },
+          "maxRunning": 50
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-a-refusal-kept-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": {
+              "$ne": 50
+            },
+            "limits": {
+              "maxRunning": 20
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-raised",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "rounds": 25,
+            "maxRunning": 40
+          },
+          "maxRunning": 30
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 30,
+            "limits": {
+              "rounds": 25,
+              "maxRunning": 40,
+              "folders": 20
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-past-the-rounds-ceiling-is-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "fix",
+            "check": "true",
+            "task": "x",
+            "rounds": 26
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-at-it-is-taken",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "fix",
+            "check": "true",
+            "task": "x",
+            "rounds": 25
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-a-lower-ceiling-lowers-maxrunning",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "maxRunning": 8
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 8,
+            "limits": {
+              "maxRunning": 8
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "agents-9-kept-across-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 8,
+            "limits": {
+              "rounds": 25,
+              "maxRunning": 8
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    },
+    {
+      "id": "agents-9-null-is-its-default-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "limits": {
+            "rounds": null
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "limits": {
+              "rounds": 10,
+              "maxRunning": 8
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AGENTS-9"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-6: as obid starts, each signed-in account says who it is",
+  "version": "1.0.0",
+  "description": "As obid starts it asks every signed-in account who it is, a tool's own login (Cursor's, in the person's home) too: its email and org show, and its name stays the tool's own. A login changed outside Oby while obid was down shows at the next start, and the account keeps its name.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "person": {
+          ".cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\", \"apiKey\": \"obid-spec-key\"}",
+          ".config/cursor/auth.json": "{\"accessToken\": \"obid-spec-cursor\", \"apiKey\": \"obid-spec-key\"}",
+          "who.json": "{\"email\": \"me@x.dev\", \"org\": \"Deskree\"}"
+        }
+      }
+    },
+    {
+      "id": "accounts-6-the-tools-own-login-says-who-it-is-at-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "cursor",
+                "email": "me@x.dev",
+                "org": "Deskree",
+                "name": "Cursor"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-6"
+        ]
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.a.body.id}/who.json",
+        "content": "{\"email\": \"w@x.dev\", \"plan\": \"plus\"}"
+      }
+    },
+    {
+      "id": "a-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "email": "w@x.dev"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a-who-now",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.a.body.id}/who.json",
+        "content": "{\"email\": \"w2@x.dev\", \"plan\": \"pro\"}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "accounts-6-a-login-changed-outside-oby-shows-at-the-next-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "email": "w2@x.dev",
+                "plan": "pro",
+                "name": "Work"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-6"
+        ]
+      }
+    }
+  ]
+}

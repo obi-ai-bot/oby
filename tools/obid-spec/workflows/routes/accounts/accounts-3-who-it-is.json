@@ -1,0 +1,261 @@
+{
+  "schemaVersion": "2",
+  "name": "ACCOUNTS-3: an account says only who its tool says",
+  "version": "1.0.0",
+  "description": "Before its first sign-in an account has no email, plan or org; after, exactly what `claude auth status --json` said of each, and nothing else of what it printed (the stand-in prints a made-up secret beside them) in the answer, accounts.json (0600) or obid's log; kept across a restart.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "accounts-3-none-of-the-keys-before-it-signs-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "email": {
+                  "$exists": false
+                },
+                "plan": {
+                  "$exists": false
+                },
+                "org": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-3"
+        ]
+      }
+    },
+    {
+      "id": "a-who",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.a.body.id}/who.json",
+        "content": "{\"email\": \"me@deskree.com\", \"plan\": \"team\", \"org\": \"Deskree\"}"
+      }
+    },
+    {
+      "id": "a-in-start",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-in-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "accounts-3-email-plan-and-org-from-the-tool",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "email": "me@deskree.com",
+                "plan": "team",
+                "org": "Deskree",
+                "name": "Team"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-3"
+        ]
+      }
+    },
+    {
+      "id": "accounts-3-nothing-else-it-said-is-in-the-answer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "FAKE-LOGIN-SECRET-7f3a9c"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-3"
+        ]
+      }
+    },
+    {
+      "id": "accounts-3-nothing-else-it-said-is-in-accounts-json",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600",
+          "json": {
+            "paths": {
+              "identities": {
+                "$exists": true
+              }
+            }
+          },
+          "text": {
+            "$not": {
+              "$contains": "FAKE-LOGIN-SECRET-7f3a9c"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-3"
+        ]
+      }
+    },
+    {
+      "id": "log",
+      "use": "runtime.rust:accounts.log",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "accounts-3-nothing-else-it-said-is-in-obids-log",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.log.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$not": {
+                "$contains": "FAKE-LOGIN-SECRET-7f3a9c"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-3"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "accounts-3-kept-across-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "email": "me@deskree.com",
+                "plan": "team",
+                "org": "Deskree"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ACCOUNTS-3"
+        ]
+      }
+    }
+  ]
+}
