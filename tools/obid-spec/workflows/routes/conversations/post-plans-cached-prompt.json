@@ -1,0 +1,95 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: the orientation's cached part",
+  "version": "1.0.0",
+  "description": "The orientation's lists are alphabetical, whatever order the repositories come in, so a push doesn't change the prompt's cached part; the room's path stays out of that part: Claude Code is told to leave its dynamic sections out of the cached system prompt (CONVERSATION-AGENT-17).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "repos": [
+            {
+              "repo": "obi-e2e/fixture-app",
+              "remote": "file://${run.scratch}/fixture/remote.git",
+              "defaultBranch": "main",
+              "check": "node --test",
+              "pullRequests": false
+            },
+            {
+              "repo": "obi-e2e/aardvark",
+              "remote": "file://${run.scratch}/fixture/remote.git",
+              "defaultBranch": "main",
+              "pullRequests": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-17-alphabetical",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "The owner's repositories: obi-e2e/aardvark (repos/obi-e2e/aardvark), obi-e2e/fixture-app (repos/obi-e2e/fixture-app)."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-17"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-17-the-rooms-path-out-of-the-cached-prompt",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "\"--exclude-dynamic-system-prompt-sections\""
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-17"
+        ]
+      }
+    }
+  ]
+}

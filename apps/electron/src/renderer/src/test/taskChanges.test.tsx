@@ -167,8 +167,7 @@ describe('CHANGES-14: Undo this round… in the menu', () => {
 
 // T3 Code's diffRendering tests ("diff lines drawn as what they are"), held to CHANGES-4: the diff, every changed line of it
 describe('T3: the diff as git wrote it', () => {
-  // known bug obi-ai-bot/oby#2730: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_changes_a_changed_line_that_starts_with_dashes_or_pluses_still_shows (known bug #2730)', async () => {
+  it('t3_changes_a_changed_line_that_starts_with_dashes_or_pluses_still_shows', async () => {
     const diff = [
       'diff --git a/query.sql b/query.sql', 'index 1111111..2222222 100644', '--- a/query.sql', '+++ b/query.sql',
       '@@ -1,2 +1,2 @@', '--- old comment', '+-- new comment', ' select 1;',

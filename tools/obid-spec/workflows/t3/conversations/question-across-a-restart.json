@@ -1,0 +1,131 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: the agent's question answered after a restart",
+  "version": "1.0.0",
+  "description": "T3 Code's 867112cda0 (agent questions stay answerable after a server restart) and 08a40a9d6e: a conversation's agent asks with choices (CONVERSATION-AGENT-47); obid restarts; the owner's pick is the next turn, in the same agent session, which hears it.",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "ASK English or French? | English | French",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "question",
+            "question": {
+              "text": "English or French?",
+              "options": [
+                "English",
+                "French"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "picked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "French",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-47-the-pick-reaches-the-same-session",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.again}",
+        "conversation": "${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "heard": {
+              "$len": 3
+            },
+            "heard.2.resumed": {
+              "$type": "string"
+            },
+            "heard.2.last": {
+              "$contains": "French"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-47"
+        ]
+      }
+    }
+  ]
+}
