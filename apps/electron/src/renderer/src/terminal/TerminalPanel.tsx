@@ -4,7 +4,7 @@ import { useChangesOpen } from '../ChangesPanel';
 import { useBrowser } from '../browser/store';
 import { makeScreen, type Screen } from './xterm';
 import {
-  addTerminal, bridge, closeTab, closeTerminalPanel, follow, hideTerminal, opened, read, showTab, unfollow, useTerminals,
+  addTerminal, bridge, closeTab, closeTerminalPanel, follow, forgetTerminals, hideTerminal, opened, read, showTab, unfollow, useTerminals,
   type Place, type Tab,
 } from './store';
 import './terminal.css';
@@ -94,7 +94,8 @@ export default function TerminalPanel() {
   const { shown, sessions } = useTerminals();
   const changes = useChangesOpen();
   const browser = useBrowser();
-  useEffect(() => { follow(); return unfollow; }, []);
+  // gone from the page: its shells end with their views, and their tabs with them
+  useEffect(() => { follow(); return () => { unfollow(); forgetTerminals(); }; }, []);
   // one panel at the window's right at a time (BROWSERAPP-3): Changes or the browser opening puts the
   // terminal away (its shells keep going), and the terminal opening puts the browser away
   useEffect(() => { if (changes) hideTerminal(); }, [changes]);
