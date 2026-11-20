@@ -255,6 +255,11 @@ impl Driver {
     /// follows), then SIGKILL for whatever of it is left, its file and sockets go, its place frees,
     /// and the core forgets it. Its profile stays (its downloads), until the job is cleaned up.
     pub async fn end(&self, job: &str) {
+        self.end_within(job, self.options.end_grace).await;
+    }
+
+    /// [`Driver::end`] with `grace` from SIGTERM to SIGKILL ([`super::STOP_GRACE`] when obid stops).
+    pub async fn end_within(&self, job: &str, grace: std::time::Duration) {
         for task in self
             .settling
             .lock()
@@ -288,7 +293,7 @@ impl Driver {
         for &d in &daemons {
             pids.extend(procs::children(d).await);
         }
-        procs::stop(&pids, &self.root(), self.options.end_grace).await;
+        procs::stop(&pids, &self.root(), grace).await;
         LiveFile::remove(home, job);
         let _ = std::fs::remove_dir_all(&socket_dir);
         // Its place frees only now, once its processes are gone.

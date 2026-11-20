@@ -748,8 +748,9 @@ pub async fn serve(
             shared.sign_ins.kill_all();
             shared.github.kill();
             shared.harness.end_all_warm();
-            jobs.shutdown(JOBS_GRACE).await;
-            shared.browser.end_all().await;
+            // The browsers stop alongside the jobs, not after them: both fit in ENDING_GRACE
+            // (BROWSER-25), and a browser outliving obid would keep its record and its Chrome.
+            tokio::join!(jobs.shutdown(JOBS_GRACE), shared.browser.end_all());
             let _ = tokio::task::spawn_blocking(|| conn::sweeps_done(JOBS_GRACE)).await;
         })
     };
