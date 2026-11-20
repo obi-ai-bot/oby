@@ -57,7 +57,7 @@ const EMPTY: BrowserState = { tabs: [], active: null, asks: [], downloads: [], s
 // outside a BrowserProvider (a screen drawn on its own, in a test): no browser offered
 const OFF: Browser = {
   offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined, frame: () => null,
-  api: { take: NONE, giveBack: NONE, secret: NONE, saveCopy: NONE, setSettings: NONE, select: NONE },
+  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, setSettings: NONE, select: NONE },
 };
 const Ctx = createContext<Browser>(OFF);
 export const useBrowser = () => useContext(Ctx);
@@ -90,7 +90,7 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       state: (next) => setS((o) => ({ ...next, active: o.active && next.tabs.some((t) => t.id === o.active) ? o.active : next.active })),
       frame: (tab, url, size) => setFrames((f) => ({ ...f, [tab]: { url, ...size } })),
       problem: (why) => { if (why) console.warn(`The browser: ${why}`); },
-    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), watch: (tab, fn) => browser.watch(tab, fn) });
+    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), watch: (tab, fn) => browser.watch(tab, fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask) });
     conn.current = c;
     return () => { c.close(); conn.current = null; };
   }, [onLive]);
@@ -102,7 +102,10 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       return {
         take: (t) => conn.current?.take(t) ?? Promise.resolve(),
         giveBack: async (t) => { await conn.current?.giveBack(t); setUi({ gaveBack: true }); },
-        secret: NONE, saveCopy: NONE, setSettings: NONE,
+        // the password or code goes to main, which fills it on your click and keeps nothing (BROWSERAPP-12)
+        secret: async (t, field, value, ask) => { setUi({ card: null, typed: 0 }); const at = await conn.current?.fill(t, field, value, ask); if (at === true) setUi({ filled: { tab: t, field, length: value.length } }); },
+        answer: (a, choice) => conn.current?.answer(a, choice) ?? Promise.resolve(),
+        saveCopy: NONE, setSettings: NONE,
         select: async (t) => setS((o) => ({ ...o, active: t })),
         input: (t, e) => conn.current?.input(t, e) ?? Promise.resolve(),
       };
@@ -116,6 +119,7 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
         setUi({ filled: { tab: id, field, length: value.length }, card: null, typed: 0 });
         setS((o) => ({ ...o, asks: o.asks.filter((a) => a.tab !== id) }));
       },
+      answer: async (id) => setS((o) => ({ ...o, asks: o.asks.filter((a) => a.id !== id) })),
       saveCopy: async (id) => setS((o) => ({ ...o, downloads: o.downloads.map((d) => (d.id === id ? { ...d, saved: true } : d)) })),
       setSettings: async (x) => setS((o) => ({ ...o, settings: { ...o.settings, ...x } })),
       select: async (id) => setS((o) => ({ ...o, active: id })),

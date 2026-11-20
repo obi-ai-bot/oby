@@ -4,7 +4,7 @@
 // frame only. Main holds obid's token and follows the streams (window.app.browser); calls go through
 // window.app.obid, the owner's acts signed by main on their own click (shared/words.ts).
 import {
-  BROWSER_DOWNLOADS, BROWSER_PATH, browserTabPath,
+  BROWSER_DOWNLOADS, BROWSER_PATH, browserAskPath, browserTabPath,
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent, type BrowserFrame, type BrowserInput,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
@@ -15,6 +15,10 @@ export type Live = {
   giveBack(tab: string): Promise<void>;
   /** your mouse and keys on the page while you hold the tab (POST …/input), sent in order */
   input(tab: string, e: BrowserInput): Promise<void>;
+  /** a password or code into the page's field, through main on your click; true once filled */
+  fill(tab: string, field: string, value: string, ask?: string): Promise<boolean>;
+  /** an ask answered: a choice, or none (Skip) */
+  answer(ask: string, choice?: string): Promise<void>;
   close(): void;
 };
 
@@ -31,6 +35,8 @@ type Calls = {
   call: (method: string, path: string, body?: unknown) => Promise<{ status: number; text: string }>;
   follow: (fn: (m: { name: string; data: string }) => void) => () => void;
   watch: (tab: string, fn: (data: string) => void) => () => void;
+  /** main fills the field on the owner's click (main/browser.ts): null once filled, else why not */
+  fill: (tab: string, field: string, value: string, ask?: string) => Promise<string | null>;
 };
 
 const AGENTS: AgentId[] = ['codex', 'claude', 'cursor'];
@@ -69,7 +75,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     return (a.text ? JSON.parse(a.text) : null) as T;
   };
 
-  const askOf = (t: BrowserTab, a: BrowserAsk) => ({ id: a.id, tab: t.id, kind: a.kind, agent: t.owner.kind === 'agent' ? agentOf(t.owner.agent) : 'codex' as AgentId, host: shown(t.url).split('/')[0], field: a.field });
+  const askOf = (t: BrowserTab, a: BrowserAsk) => ({ id: a.id, tab: t.id, kind: a.kind, agent: t.owner.kind === 'agent' ? agentOf(t.owner.agent) : 'codex' as AgentId, host: shown(t.url).split('/')[0], field: a.field, reason: a.reason, choices: a.choices, job: a.job });
   const view = (): BrowserState => {
     const jobAgent = new Map(tabs.flatMap((t) => (t.owner.kind === 'agent' ? [[t.owner.job, agentOf(t.owner.agent)] as const] : [])));
     const mine: Tab[] = tabs.map((t) => {
@@ -184,6 +190,16 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     input: (t, e) => {
       inputs = inputs.catch(() => undefined).then(() => call('POST', browserTabPath(t, 'input'), e)).catch((err) => { sinks.problem((err as Error).message); });
       return inputs.then(() => undefined);
+    },
+    fill: async (t, field, value, ask) => {
+      const why = await calls.fill(t, field, value, ask);
+      sinks.problem(why);
+      await refresh();
+      return why === null;
+    },
+    answer: async (a, choice) => {
+      try { await call('POST', browserAskPath(a), choice === undefined ? {} : { choice }); sinks.problem(null); } catch (e) { sinks.problem((e as Error).message); }
+      await refresh();
     },
     close: () => { closed = true; following?.(); for (const stop of streams.values()) stop(); streams.clear(); },
   };

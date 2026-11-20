@@ -36,8 +36,11 @@ export type Tab = {
   hold?: number;
 };
 
-/** An agent's ask (7–9). `field`: the page's field a secret goes into. */
-export type Ask = { id: string; tab: string; kind: BrowserAskKind; agent: AgentId; host: string; field?: string | null };
+/**
+ * An agent's ask (7–9). `reason`: the agent's words, whose first sentence heads its card; `choices`
+ * for a choice; `field`: the page's field a secret goes into; `job`: on obid, the agent's job.
+ */
+export type Ask = { id: string; tab: string; kind: BrowserAskKind; agent: AgentId; host: string; field?: string | null; reason?: string; choices?: string[]; job?: string };
 
 export type Download = {
   id: string;
@@ -63,8 +66,10 @@ export type BrowserState = {
 export interface BrowserApi {
   take(tab: string): Promise<void>;
   giveBack(tab: string): Promise<void>;
-  /** typed in Oby's card, put straight into the page's field; never logged or kept */
-  secret(tab: string, field: string, value: string): Promise<void>;
+  /** typed in Oby's card, put straight into the page's field (the ask it answers, if any); never logged or kept */
+  secret(tab: string, field: string, value: string, ask?: string): Promise<void>;
+  /** an ask answered: a choice, or none (Skip) */
+  answer(ask: string, choice?: string): Promise<void>;
   saveCopy(download: string): Promise<void>;
   setSettings(s: Partial<BrowserSettings>): Promise<void>;
   select(tab: string): Promise<void>;

@@ -149,7 +149,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Codex opened this tab · idle"
+            "words": "Codex opened this tab · idle"
           }
         },
         "within": 15
@@ -192,7 +192,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "You have this tab. Codex waits until you give it back."
+            "words": "You have this tab. Codex waits until you give it back."
           }
         },
         "within": 15
@@ -312,7 +312,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Codex opened this tab · idle"
+            "words": "Codex opened this tab · idle"
           }
         },
         "within": 15

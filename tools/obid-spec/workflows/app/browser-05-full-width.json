@@ -72,7 +72,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Sign-up flow works end to end · Signed up and in; now inviting a teammate\nShow the conversation"
+            "words": "Sign-up flow works end to end · Signed up and in; now inviting a teammate Show the conversation"
           }
         }
       },
