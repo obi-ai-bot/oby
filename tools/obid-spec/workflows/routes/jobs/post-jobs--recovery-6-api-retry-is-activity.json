@@ -79,7 +79,8 @@
       "ui": {
         "proves": [
           "RECOVERY-6"
-        ]
+        ],
+        "flaky": "#2760: obid cuts a talking agent as quiet when its own reader was held up (a waiting line loses to the quiet timer)"
       }
     },
     {
@@ -97,7 +98,8 @@
       "ui": {
         "proves": [
           "RECOVERY-6"
-        ]
+        ],
+        "flaky": "#2760: obid cuts a talking agent as quiet when its own reader was held up (a waiting line loses to the quiet timer)"
       }
     },
     {
