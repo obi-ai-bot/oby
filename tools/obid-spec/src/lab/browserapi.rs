@@ -847,6 +847,14 @@ impl Api {
         }
     }
 
+    /// A page loaded in the tab: whatever failed before is over, even at the same address (the
+    /// next [`Api::sync_job`] says it's ready).
+    pub fn loaded(&mut self, tab: &str) {
+        if let Some(t) = self.tabs.get_mut(tab) {
+            t.last_error = None;
+        }
+    }
+
     /// A command on a tab failed: what the page shows now.
     pub fn failed(&mut self, tab: &str, message: &str) {
         let state = failure_state(message);
@@ -2066,6 +2074,12 @@ async fn call_tool(shared: &Arc<Shared>, job: &str, name: &str, args: &Value) ->
                 .as_str()
                 .map(str::to_string)
                 .or(tab.clone());
+            // A page that loaded clears the tab's failure, even at the address it failed from.
+            if ok && matches!(name, "oby_browser_open" | "oby_browser_navigate") {
+                if let Some(t) = &the_tab {
+                    shared.api(|a| a.loaded(t));
+                }
+            }
             let _ = sync(shared, job).await;
             if !ok {
                 let code = v["error"]["code"].as_str().unwrap_or("browser");
@@ -2210,6 +2224,9 @@ fn act_event(
 
 // ── The events stream ────────────────────────────────────────────────────────────────────────
 
+/// How long the events stream stays silent before it says it's still there.
+const SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
+
 fn sse(kind: &str, seq: Option<u64>, data: &Value) -> String {
     let id = seq.map(|s| format!("id: {s}\n")).unwrap_or_default();
     format!("{id}event: {kind}\ndata: {data}\n\n")
@@ -2238,7 +2255,18 @@ async fn events_stream(
         }
     }
     loop {
-        match rx.recv().await {
+        // A comment line when nothing happened for a while: a proxy between keeps the stream
+        // open, and a reader that went away is noticed (its write fails) rather than kept.
+        let next = match tokio::time::timeout(SSE_KEEP_ALIVE, rx.recv()).await {
+            Ok(next) => next,
+            Err(_) => {
+                if conn.write_all(b": keep-alive\n\n").await.is_err() {
+                    return;
+                }
+                continue;
+            }
+        };
+        match next {
             Ok(e) if e.seq > last => {
                 last = e.seq;
                 let v = serde_json::to_value(&e).unwrap_or_default();
@@ -3578,6 +3606,26 @@ mod tests {
         assert_eq!(a.events_after(0).len(), n, "no change, no event");
         a.sync_job("j1", &[], &json!({}));
         assert_eq!(a.events_after(0).last().unwrap().body.kind(), "tabClosed");
+        // A failure, then a good load at the same address: ready again.
+        a.sync_job(
+            "j1",
+            &[json!({"tab": "tab-2", "url": "http://x/"})],
+            &json!({}),
+        );
+        a.failed("tab-2", "Navigation failed: net::ERR_CONNECTION_REFUSED");
+        a.sync_job(
+            "j1",
+            &[json!({"tab": "tab-2", "url": "http://x/"})],
+            &json!({}),
+        );
+        assert_eq!(a.tab("tab-2").unwrap().state, c::TabState::Failed);
+        a.loaded("tab-2");
+        a.sync_job(
+            "j1",
+            &[json!({"tab": "tab-2", "url": "http://x/"})],
+            &json!({}),
+        );
+        assert_eq!(a.tab("tab-2").unwrap().state, c::TabState::Ready);
         assert_eq!(
             failure_state("net::ERR_CERT_AUTHORITY_INVALID"),
             c::TabState::Certificate
