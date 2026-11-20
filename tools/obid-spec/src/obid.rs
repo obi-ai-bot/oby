@@ -177,11 +177,19 @@ pub struct StartInput {
     pub config: Option<Value>,
     /// Over the environment this node gives it.
     pub env: Option<serde_json::Map<String, Value>>,
-    /// Files to put in its home before it starts: relative path → text.
+    /// Files to put in its home before it starts: relative path → text, or `{"fixture": "<path>"}`
+    /// for the text of tools/obid-spec/fixtures/<path> (so `person` and `github` too).
     pub files: Option<serde_json::Map<String, Value>>,
     /// Files to put in its scratch HOME (the person's home, for its stand-ins: `github/work.json`
     /// for the fake gh) before it starts.
     pub person: Option<serde_json::Map<String, Value>>,
+    /// GitHub as obid's recording stand-in answers it (core/crates/obid/tests/fakes/gh, its routes
+    /// as core/crates/obid/tests/github_recorded/README.md says): put first on its `PATH`, before
+    /// the stand-ins' own `gh`, with these files (relative path → text: `routes.json` and what its
+    /// routes name) in its folder, `gh-recording` beside the scratch HOME, where it also writes
+    /// `calls.jsonl`; the fixture's pushes then get pull requests (`pullRequests`). Never the real
+    /// GitHub.
+    pub github: Option<serde_json::Map<String, Value>>,
     /// The browser's engine (agent-browser and Chrome for Testing) put in its home from obid-spec's
     /// cache before it starts, cloned so it costs no disk; with the cache empty, obid downloads and
     /// checks it on its first browser call, and the cleanup keeps it in the cache
@@ -349,6 +357,10 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
             .or_insert(json!({"OPENAI_API_KEY": "fake-codex"}));
     }
     let files = Some(files);
+    // With GitHub's recording stand-in, the fixture's pushes get their pull requests there.
+    if input.github.is_some() {
+        config["repos"][0]["pullRequests"] = json!(true);
+    }
     if let Some(over) = &input.config {
         merge(&mut config, over);
     }
@@ -362,7 +374,23 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
     }
     let config_path = folder.join("config.json");
     private_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
-    for (base, files) in [(&home, &files), (&person, &input.person)] {
+    let recording = folder.join("gh-recording");
+    let mut path_first = vec![];
+    if input.github.is_some() {
+        private_dir(&recording)?;
+        let bin = folder.join("gh-bin");
+        private_dir(&bin)?;
+        let _ = std::fs::remove_file(bin.join("gh"));
+        let fake = run.agents().with_file_name("fakes").join("gh");
+        anyhow::ensure!(fake.is_file(), "no recording gh at {}", fake.display());
+        std::os::unix::fs::symlink(&fake, bin.join("gh"))?;
+        path_first.push(bin);
+    }
+    for (base, files) in [
+        (&home, &files),
+        (&person, &input.person),
+        (&recording, &input.github),
+    ] {
         for (rel, text) in files.iter().flatten() {
             anyhow::ensure!(
                 !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."),
@@ -372,6 +400,18 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
             private_dir(path.parent().unwrap())?;
             let text = match text {
                 Value::String(s) => s.clone(),
+                // `{"fixture": "<path>"}`: the text of tools/obid-spec/fixtures/<path>.
+                Value::Object(o)
+                    if o.len() == 1 && o.get("fixture").is_some_and(Value::is_string) =>
+                {
+                    let rel = o["fixture"].as_str().unwrap_or_default();
+                    anyhow::ensure!(
+                        !rel.starts_with('/') && !rel.split('/').any(|p| p == ".."),
+                        "{rel} isn't a path inside tools/obid-spec/fixtures"
+                    );
+                    let file = run.root.join("tools/obid-spec/fixtures").join(rel);
+                    std::fs::read_to_string(&file).with_context(|| format!("{}", file.display()))?
+                }
                 other => other.to_string(),
             };
             private_file(&path, &text)?;
@@ -382,14 +422,14 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         seeded = seed_browser(&home)?;
         BROWSER_HOMES.lock().unwrap().push(home.clone());
     }
-    let path = std::env::join_paths([
+    let path = std::env::join_paths(path_first.into_iter().chain([
         run.agents(),
         tools(run)?,
         "/usr/bin".into(),
         "/bin".into(),
         "/usr/sbin".into(),
         "/sbin".into(),
-    ])?;
+    ]))?;
     // obid reads the owner's login shell's environment for the CLIs it runs (LANES-4): the real
     // one's `/etc/zprofile` puts `/opt/homebrew/bin` and the like on `PATH`, where the person's own
     // claude, codex and gh live. A stand-in shell answers this obid's own `PATH` and nothing else.
@@ -489,6 +529,7 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         "token": token, "home": home, "folder": folder, "person": person, "log": log,
         "owner": config["owner"], "restarted": restart, "gatewayBase": gateway,
         "browserSeeded": seeded,
+        "github": input.github.is_some().then_some(recording),
     }))
 }
 
