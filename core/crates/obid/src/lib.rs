@@ -16,6 +16,7 @@ pub mod approval;
 pub mod artifacts;
 pub mod autofix;
 pub mod brain;
+pub mod browser;
 pub mod chatgpt;
 pub mod chatgpt_relay;
 pub mod clear;

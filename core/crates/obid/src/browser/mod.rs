@@ -1,0 +1,24 @@
+//! Oby's browser: agents drive a browser of their own, the person watches it and takes a tab
+//! over, and what a page says reaches the agent as quoted outside data. Its contract is
+//! [docs/contracts/browser.md](../../../../../docs/contracts/browser.md) (BROWSER-1 to 25).
+//!
+//! This module is the browser's pure core, ported from the lab (`tools/obid-spec/src/lab/`,
+//! `browser.rs`, `browser_contract.rs` and `browserapi.rs`, their first halves) where it was
+//! built and proven:
+//!
+//! - [`engine`]: the tool surface, tab ownership per conversation and take control, refs that die
+//!   on navigation, a new snapshot or a handover, per-command deadlines never replayed after a
+//!   timeout, page data marked as outside data, the download rule and the latest-frame slot.
+//! - [`contract`]: the wire types, routes and reasons the browser's screens and the agents' tools
+//!   talk to, add-only like the rest of obid's API.
+//! - [`api`]: the browser's API over the engine: holds with their generation, asks, downloads,
+//!   settings and the event log, and bringing a job's browser up within its own allowance.
+//!
+//! It is pure: no IO, no files, no processes, no clock of its own (the caller passes the time, and
+//! [`api::browser_up`] waits on tokio's clock only). It keeps every rule on; the lab's switches
+//! that turn one off for a red proof stay in the lab. The routes, agent-browser as the engine's
+//! driver, and the agents' MCP server come in later pull requests (BROWSER-2 to 16, then 17).
+
+pub mod api;
+pub mod contract;
+pub mod engine;
