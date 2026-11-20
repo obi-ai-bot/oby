@@ -1,0 +1,213 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: Go back, signed, only by the device that holds the tab, brings the page before back",
+  "version": "1.0.0",
+  "description": "BROWSER-26 (core/crates/obid/src/browser/routes.rs, way_out; driver/person_page.rs): the agent opens the fixture's home page, then navigates to its second page. POST …/back unsigned is refused (unsigned); signed on a tab nobody holds it is refused (not_held); once the device takes, another device is refused (not_holder); the holder's back answers the tab, ready, on the home page, and the agent's snapshot reads the home page live.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/tabs/{id}/back"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "d2",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d2"
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        },
+        "within": 300
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.site.url}/second"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "back-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "back-not-held",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "status": 409,
+          "paths": {
+            "reason": "not_held"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "take-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "heldBy": "${state.d1.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "back-other-device",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "device": "${state.d2}",
+        "as": "device",
+        "expect": {
+          "status": 403,
+          "paths": {
+            "reason": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "state": "ready",
+            "url": "${state.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    },
+    {
+      "id": "went-back",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.o}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.url": "${state.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-26"
+        ]
+      }
+    }
+  ]
+}

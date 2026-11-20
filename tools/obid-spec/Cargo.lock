@@ -1111,6 +1111,7 @@ dependencies = [
  "hex",
  "hyper-util",
  "libc",
+ "memchr",
  "p256",
  "rand",
  "regex",
