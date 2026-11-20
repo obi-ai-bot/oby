@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/jobs/{id}/transcript/{n} (copy 2)",
+  "version": "1.0.0",
+  "description": "One transcript entry: 422 for an n that isn't a number, 404 for an entry or a job obid doesn't have, the first entry as listed.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs/{id}/transcript/{n}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "COMMIT: hello.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/transcript/0",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "n-not-a-number-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/transcript/x",
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "n is a number."
+          }
+        }
+      }
+    },
+    {
+      "id": "no-such-entry-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/transcript/99999",
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": "The transcript has no such entry."
+          }
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/transcript",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "the-first-entry",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/transcript/${state.listed.body.entries.0.n}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "${state.listed.body.entries.0.kind}"
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/deadbeef/transcript/0",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

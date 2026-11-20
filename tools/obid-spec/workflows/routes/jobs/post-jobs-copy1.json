@@ -1,0 +1,361 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs (copy 1)",
+  "version": "1.0.0",
+  "description": "Starts a task: 400 for a body that isn't JSON, 422 for each field obid refuses (repo, kind, task, title, mode), 201 queued with its own conversation (TASKCONV-1), kept 0600 with a job event; the same request key answers the same job (RECEIPTS-5) and another body under it is 409 (RECEIPTS-6).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "x"
+          }
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "raw": "{",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "not-a-job-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "task": "x"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "no-task-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "A job needs repo, kind and task."
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-repo-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "someone/else",
+            "kind": "build",
+            "task": "x"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "isn't a repository obid knows"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-kind-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "paint",
+            "task": "x"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "kind is one of review, fix, build, test, investigate, research."
+          }
+        }
+      }
+    },
+    {
+      "id": "title-too-long-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "x",
+            "title": "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "title is one line of 1 to 60 characters."
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-mode-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "x",
+            "mode": "yolo"
+          }
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "nothing-made-by-refusals",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "taskconv-1-queued-in-its-own-conversation",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "clientRequestId": "k-1"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP",
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "conversation": {
+              "$type": "string"
+            },
+            "id": {
+              "$matches": "^[0-9a-f]{8}$"
+            },
+            "clientRequestId": "k-1"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-1"
+        ]
+      }
+    },
+    {
+      "id": "a-job-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "expect": {
+          "body": {
+            "id": "${state.taskconv-1-queued-in-its-own-conversation.body.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-0600",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.taskconv-1-queued-in-its-own-conversation.body.id}.json",
+        "expect": {
+          "exists": true,
+          "mode": "0600"
+        }
+      }
+    },
+    {
+      "id": "taskconv-1-its-conversation-holds-the-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.taskconv-1-queued-in-its-own-conversation.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "text": {
+                  "$contains": "SLEEP"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-1"
+        ]
+      }
+    },
+    {
+      "id": "receipts-5-the-same-key-the-same-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "clientRequestId": "k-1"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.taskconv-1-queued-in-its-own-conversation.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-5"
+        ]
+      }
+    },
+    {
+      "id": "receipts-6-another-body-under-the-key-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP and more",
+            "clientRequestId": "k-1"
+          }
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-6"
+        ]
+      }
+    },
+    {
+      "id": "one-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}

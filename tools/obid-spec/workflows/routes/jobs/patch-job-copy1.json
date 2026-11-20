@@ -1,0 +1,143 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/jobs/{id} (copy 1)",
+  "version": "1.0.0",
+  "description": "Renames a task: 400 for another key or nothing, 422 for a title that isn't one line of 1 to 60, 404 for one obid doesn't have; 200 renamed, with Renamed by you in its changes.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/jobs/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "body": {
+          "title": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "nothing-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "body": {},
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "another-key-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "body": {
+          "task": "x"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "title-too-long-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "body": {
+          "title": "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/jobs/deadbeef",
+        "body": {
+          "title": "x"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "renamed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "body": {
+          "title": "Billing retries"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "title": "Billing retries",
+            "changes": {
+              "$any": {
+                "what": "Renamed by you"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

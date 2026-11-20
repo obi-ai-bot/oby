@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/failures/{id}/fix (copy 3)",
+  "version": "1.0.0",
+  "description": "Fix a failure: 404 for one obid doesn't have, 409 while obid hasn't studied it.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/failures/{id}/fix"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/failures/x/fix",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/failures/nope/fix",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "FAIL"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "id": "f-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "interrupted",
+                "failed"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/failures",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "not-studied-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/failures/${state.listed.body.0.id}/fix",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "Oby hasn't studied this failure yet."
+          }
+        }
+      }
+    }
+  ]
+}

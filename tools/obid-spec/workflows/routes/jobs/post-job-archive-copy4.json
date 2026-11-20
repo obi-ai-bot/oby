@@ -1,0 +1,171 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/archive (copy 4)",
+  "version": "1.0.0",
+  "description": "Archives a task once it ended: 409 while it runs, 422 for another body, 404 for one obid doesn't have; archived and unarchived, each in its changes.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/archive"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/archive",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "running-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/archive",
+        "expect": {
+          "status": 409
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/deadbeef/archive",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "another-body-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/archive",
+        "body": {
+          "archive": "yes"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "archived",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/archive",
+        "expect": {
+          "status": 200,
+          "body": {
+            "archived": {
+              "$type": "string"
+            },
+            "changes": {
+              "$any": {
+                "what": "Archived by you"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unarchived",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/archive",
+        "body": {
+          "archived": false
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "archived": null,
+            "changes": {
+              "$any": {
+                "what": "Unarchived by you"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

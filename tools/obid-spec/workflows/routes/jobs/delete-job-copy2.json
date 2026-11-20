@@ -1,0 +1,170 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/jobs/{id} (copy 2)",
+  "version": "1.0.0",
+  "description": "Deletes a task: 409 while it runs, 404 for one obid doesn't have; once stopped, 204, its file gone and a deleted event.",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/jobs/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "running-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "It's still running: stop it first."
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/jobs/deadbeef",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "deleted-204",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "a-deleted-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "expect": {
+          "body": {
+            "id": "${state.s.body.id}",
+            "deleted": true
+          }
+        }
+      }
+    },
+    {
+      "id": "its-file-gone",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.s.body.id}.json",
+        "expect": {
+          "exists": false
+        }
+      }
+    },
+    {
+      "id": "gone-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

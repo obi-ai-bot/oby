@@ -1,0 +1,194 @@
+{
+  "schemaVersion": "2",
+  "name": "Restart recovery: a task cut by obid going down (copy 3)",
+  "version": "1.0.0",
+  "description": "obid killed while a task works (RECOVERY-2): after it starts again the task goes on in its session, told its run was cut; a clean stop and start goes on too, costing no try.",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP KEEP PROMPTS"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "prompted-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "first-prompt",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.obi/prompts.log",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "recovery-2-it-goes-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "recovery-2-told-its-run-was-cut",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "worktrees/${state.s.body.id}/.obi/prompts.log",
+        "within": 30,
+        "expect": {
+          "text": {
+            "$contains": "Your run was cut"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "stopped-cleanly",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.again}"
+      }
+    },
+    {
+      "id": "third",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "recovery-2-a-clean-restart-goes-on-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.third}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-2"
+        ]
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.third}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    }
+  ]
+}

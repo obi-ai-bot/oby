@@ -1,0 +1,143 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/obid/sharing/offer (copy 5)",
+  "version": "1.0.0",
+  "description": "Opens the card that asks which repositories to share: 422 for a repository that isn't the owner's; 201 a share_status Confirm offering the owner's repositories, nothing ticked and nothing shared until its signed Confirm.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/obid/sharing/offer"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "offered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {},
+        "expect": {
+          "status": 201,
+          "body": {
+            "kind": "confirm",
+            "confirm": {
+              "action": "share_status",
+              "payload": {
+                "offered": {
+                  "$contains": "obi-e2e/fixture-app"
+                },
+                "repos": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-stranger-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {
+          "repos": [
+            "someone/else"
+          ]
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "ticked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/obid/sharing/offer",
+        "body": {
+          "repos": [
+            "obi-e2e/fixture-app"
+          ]
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "confirm": {
+              "payload": {
+                "repos": [
+                  "obi-e2e/fixture-app"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "nothing-shared-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/obid/sharing",
+        "expect": {
+          "status": 200,
+          "body": {
+            "rules": []
+          }
+        }
+      }
+    }
+  ]
+}

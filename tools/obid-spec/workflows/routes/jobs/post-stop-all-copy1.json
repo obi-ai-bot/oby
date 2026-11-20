@@ -1,0 +1,150 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/stop-all (copy 1)",
+  "version": "1.0.0",
+  "description": "Stops every task under way: the count and the jobs, then 0 when nothing runs.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/stop-all"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "a-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "b-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "two-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200,
+          "body": {
+            "stopped": 2
+          },
+          "paths": {
+            "jobs": {
+              "$len": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "now-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200,
+          "body": {
+            "stopped": 0,
+            "jobs": []
+          }
+        }
+      }
+    }
+  ]
+}

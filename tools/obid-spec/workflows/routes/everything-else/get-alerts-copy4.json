@@ -1,0 +1,207 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/alerts (copy 4)",
+  "version": "1.0.0",
+  "description": "What should reach the owner now: nothing at first; a task waiting for a permission is an urgent alert with Allow and Deny (ALERTS-1, 16); a finished task shows only with fyi=finished (ALERTS-12, 17).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/alerts"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/alerts",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/alerts",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "mode": "ask",
+            "task": "ASKS: [{\"tool\":\"Bash\",\"input\":{\"command\":\"swift test\"}}]"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "alerts-1-a-permission-alert",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/alerts",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "key": "${state.asks.body.id}",
+                "what": {
+                  "$matches": "^permission:"
+                },
+                "urgent": true,
+                "answers": [
+                  "Allow",
+                  "Deny"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ALERTS-1",
+          "ALERTS-16"
+        ]
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.asks.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around the code."
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "Look around the code."
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "alerts-17-no-fyi-no-finished",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/alerts",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "fyi": "finished"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ALERTS-17"
+        ]
+      }
+    },
+    {
+      "id": "alerts-12-finished-with-fyi",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/alerts?fyi=finished",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "fyi": "finished",
+                "title": {
+                  "$matches": "^Done: "
+                },
+                "urgent": false,
+                "answers": []
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ALERTS-12"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,124 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/jobs/{id}/undo (copy 1)",
+  "version": "1.0.0",
+  "description": "What undoing a task's last round would do: 409 when nothing it did is left to undo (CHANGES-9), 404 for a job obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs/{id}/undo"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/undo",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "changes-9-nothing-to-undo-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/undo",
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-9"
+        ]
+      }
+    },
+    {
+      "id": "changes-9-unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/deadbeef/undo",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-9"
+        ]
+      }
+    }
+  ]
+}

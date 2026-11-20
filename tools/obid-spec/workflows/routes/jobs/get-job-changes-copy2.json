@@ -1,0 +1,136 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/jobs/{id}/changes (copy 2)",
+  "version": "1.0.0",
+  "description": "What a task changed (TASKS-23): its files with additions, and the diff; 422 for a whitespace that isn't ignore (CHANGES-3); 404 for a job obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs/{id}/changes"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "COMMIT: hello.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "changes-3-whitespace-other-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes?whitespace=all",
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-3"
+        ]
+      }
+    },
+    {
+      "id": "tasks-23-its-files-and-diff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "body": {
+            "files": [
+              {
+                "path": "hello.txt",
+                "additions": {
+                  "$type": "number"
+                }
+              }
+            ],
+            "diff": {
+              "$contains": "hello.txt"
+            },
+            "truncated": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/deadbeef/changes",
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

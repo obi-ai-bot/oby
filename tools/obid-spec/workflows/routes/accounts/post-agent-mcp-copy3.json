@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/agent/mcp/{job} (copy 3)",
+  "version": "1.0.0",
+  "description": "An agent's own route: only that run's broker token reaches it, so no token, another token and even the owner's own token are 401.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/agent/mcp/{job}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/mcp/${state.s.body.id}",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "a-wrong-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/mcp/${state.s.body.id}",
+        "body": {},
+        "as": "wrong",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "the-owners-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/mcp/${state.s.body.id}",
+        "body": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/list"
+        },
+        "expect": {
+          "status": 401
+        }
+      }
+    }
+  ]
+}

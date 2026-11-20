@@ -1,0 +1,100 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/agent/chatgpt/{run}/models (copy 5)",
+  "version": "1.0.0",
+  "description": "An agent's own route: only that run's broker token reaches it, so no token, another token and even the owner's own token are 401.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/agent/chatgpt/{run}/models"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/agent/chatgpt/${state.s.body.id}/models",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "a-wrong-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/agent/chatgpt/${state.s.body.id}/models",
+        "as": "wrong",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "the-owners-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/agent/chatgpt/${state.s.body.id}/models",
+        "expect": {
+          "status": 401
+        }
+      }
+    }
+  ]
+}
