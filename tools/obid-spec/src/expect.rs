@@ -12,7 +12,7 @@
 //! the same way, arrays by length and element by element). A value in `paths` or `body` that is an
 //! object with one `$` key is a matcher: `$exists`, `$ne`, `$contains` (a substring, or an array
 //! element that matches), `$len`, `$type`, `$matches` (a regular expression), `$any` (an array
-//! element matching a subset), `$none` (no array element matching a subset), `$oneOf`, `$count` (`[subset, n]`: exactly n elements match), `$not`.
+//! element matching a subset), `$none` (no array element matching a subset), `$oneOf`, `$count` (`[subset, n]`: exactly n elements match), `$not`, `$sorted` (`true`: an array of strings in ascending order, whatever it holds).
 
 use serde_json::Value;
 
@@ -139,6 +139,14 @@ pub fn matches(path: &str, want: &Value, got: &Value, failures: &mut Vec<String>
                 (op == "$any") == any
             }
             "$oneOf" => arg.as_array().is_some_and(|a| a.contains(got)),
+            // An add-only list (`capabilities`) proven in order without copying it: `{"$sorted": true}`.
+            "$sorted" => {
+                let strings: Option<Vec<&str>> = got
+                    .as_array()
+                    .and_then(|a| a.iter().map(Value::as_str).collect());
+                let sorted = strings.is_some_and(|s| s.windows(2).all(|w| w[0] <= w[1]));
+                sorted == arg.as_bool().unwrap_or(true)
+            }
             // How many array elements match a subset: `{"$count": [{…}, 1]}`.
             "$count" => match (got.as_array(), arg.as_array().map(Vec::as_slice)) {
                 (Some(items), Some([want, n])) => {
@@ -250,6 +258,29 @@ mod tests {
         .is_empty());
         assert!(!check(&json!({"paths": {"a": {"$contains": "nope"}}}), &got, "").is_empty());
         assert!(!check(&json!({"text": {"$contains": "x"}}), &got, "y").is_empty());
+    }
+
+    #[test]
+    fn sorted_passes_any_ascending_list_and_fails_one_out_of_order() {
+        let sorted = json!({"body": {"caps": {"$sorted": true}}});
+        for ok in [
+            json!([]),
+            json!(["a-v1", "b-v1"]),
+            json!(["a-v1", "b-v1", "c-v1"]),
+        ] {
+            assert!(check(&sorted, &json!({"caps": ok}), "").is_empty(), "{ok}");
+        }
+        for bad in [
+            json!(["b-v1", "a-v1"]),
+            json!(["a-v1", 1]),
+            json!("a-v1"),
+            json!(null),
+        ] {
+            assert!(
+                !check(&sorted, &json!({"caps": bad}), "").is_empty(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

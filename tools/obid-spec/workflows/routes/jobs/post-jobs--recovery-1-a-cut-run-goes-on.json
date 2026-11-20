@@ -295,7 +295,7 @@
           },
           "paths": {
             "reason": {
-              "$contains": "Not logged in"
+              "$matches": "(?i)(not logged in|login was refused)"
             }
           }
         }
