@@ -161,15 +161,11 @@ fn flag(turn: &Value, flag: &str) -> String {
     argv[argv.iter().position(|a| a == flag).unwrap() + 1].clone()
 }
 
-/// What `helper`'s conversation's MCP configuration says now.
+/// What `helper`'s conversation's MCP configuration says now: an own session's is in its `login`
+/// folder, on macOS and Linux alike (LANES-12, LANES-26).
 fn mcp(obid: &Obid, helper: &Value) -> Value {
-    let folder = if cfg!(target_os = "macos") {
-        "login"
-    } else {
-        "home"
-    };
     let file = obid.home.join(format!(
-        "conversations/{}/{folder}/oby-mcp.json",
+        "conversations/{}/login/oby-mcp.json",
         helper["conversation"].as_str().unwrap()
     ));
     serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()

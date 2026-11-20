@@ -1559,8 +1559,7 @@ impl Jobs {
         self.tetrix_for(job)?;
         let (url, token) = self.connections.get()?.open_tetrix(&job.id);
         let own = matches!(self.job_account(job), Ok((tool, _)) if Self::own_lane(job, tool));
-        let host = if own { "//127.0.0.1:" } else { "//10.0.2.2:" }; // an own run is on the host
-        Some((url.replace("//10.0.2.2:", host), token))
+        Some((Self::agent_api(&url, own), token))
     }
 
     /// Notes what the agent of job `id` got from Tetrix through obid.
