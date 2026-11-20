@@ -1,0 +1,267 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: binary files and a diff past a mebibyte",
+  "version": "1.0.0",
+  "description": "T3 Code's large-output and binary kinds: a task's commit with a binary file, a 1.3 MB text file and a name with a space. Its changes list the binary file with 0 and 0 and git's own Binary files line, cut the diff on the cap with truncated true (TASKS-24), and find the spaced name by its exact path.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-worktree",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "binary",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.s.body.id}/logo.png",
+        "hex": "89504e470d0a1a0a0000000d494844520000000100000001080600000000ff00fe00"
+      }
+    },
+    {
+      "id": "large",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.s.body.id}/big.txt",
+        "text": "0123456789 the quick brown fox jumps over the lazy dog 0123456\n",
+        "repeat": 21000
+      }
+    },
+    {
+      "id": "spaced",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.s.body.id}/notes with space.txt",
+        "text": "spaced\n"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.s.body.id}",
+        "args": [
+          "add",
+          "--all"
+        ]
+      }
+    },
+    {
+      "id": "committed",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.s.body.id}",
+        "args": [
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-q",
+          "-m",
+          "Binary, large and spaced"
+        ]
+      }
+    },
+    {
+      "id": "head",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.s.body.id}",
+        "args": [
+          "rev-parse",
+          "HEAD"
+        ]
+      }
+    },
+    {
+      "id": "tasks-24-the-whole-change-cut-at-the-cap",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "head": "${state.head.out}",
+            "truncated": true,
+            "files": {
+              "$len": 3
+            }
+          },
+          "paths": {
+            "files": {
+              "$any": {
+                "path": "logo.png",
+                "status": "added",
+                "additions": 0,
+                "deletions": 0
+              }
+            },
+            "diff": {
+              "$matches": "^diff --git "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-24"
+        ]
+      }
+    },
+    {
+      "id": "tasks-24-cut-at-a-mebibyte",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.tasks-24-the-whole-change-cut-at-the-cap.body}",
+        "expect": {
+          "paths": {
+            "diff": {
+              "$len": 1048576
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-binary-file-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes?path=logo.png",
+        "expect": {
+          "status": 200,
+          "body": {
+            "truncated": false,
+            "files": [
+              {
+                "path": "logo.png",
+                "additions": 0,
+                "deletions": 0
+              }
+            ]
+          },
+          "paths": {
+            "diff": {
+              "$contains": "Binary files"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-spaced-name-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes?path=notes%20with%20space.txt",
+        "expect": {
+          "status": 200,
+          "body": {
+            "truncated": false,
+            "files": [
+              {
+                "path": "notes with space.txt",
+                "status": "added",
+                "additions": 1
+              }
+            ]
+          },
+          "paths": {
+            "diff": {
+              "$contains": "+spaced"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "s-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}
