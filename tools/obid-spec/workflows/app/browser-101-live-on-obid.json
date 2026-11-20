@@ -26,6 +26,9 @@
         "size": {
           "width": 1280,
           "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
         }
       }
     },
@@ -94,7 +97,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "No pages yet.\nWhen an agent opens one, you see it here, live."
+            "words": "No pages yet. When an agent opens one, you see it here, live."
           }
         }
       },

@@ -219,3 +219,115 @@ async fn computers_8_a_computers_invitation_never_goes_through_the_obysphere() {
     });
     assert_eq!(no_url.status, 400, "{}", no_url.text);
 }
+
+/// What `GET /v1/status` says of obid's first direct address: its address and its pin.
+fn direct_of(obid: &Obid) -> (String, obid::remote::pin::Pin) {
+    let direct = within(30, "obid's direct address", || {
+        let status = call(obid, "GET", "/v1/status", None);
+        Some(status.body["gateway"]["direct"][0].clone()).filter(|d| !d.is_null())
+    });
+    assert_eq!(direct["state"], "listening", "{direct}");
+    (
+        direct["address"].as_str().unwrap().to_owned(),
+        obid::remote::pin::Pin::parse(direct["pin"].as_str().unwrap()).unwrap(),
+    )
+}
+
+/// obid's configuration with a gateway and a direct address, both on ports the system picks.
+fn with_direct(folder: &Folder) -> Value {
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    config["gateway"] = json!("127.0.0.1:0");
+    config["direct"] = json!(["127.0.0.1:0"]);
+    config
+}
+
+/// COMPUTERS-10 and 11: obid serves its gateway over HTTPS with a certificate of its own, kept
+/// across starts; a computer pairs and calls it there through the pinned client; any other pin is
+/// refused, and so is the old pin once the certificate is made anew.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn computers_10_obid_serves_its_gateway_over_https_with_its_own_pinned_certificate() {
+    use obid::remote::pinned;
+    let folder = Folder::new("remote-direct");
+    let config = tokio::task::block_in_place(|| with_direct(&folder));
+    let obid = tokio::task::block_in_place(|| start(&folder.0, &config, None));
+    let (address, pin) = tokio::task::block_in_place(|| direct_of(&obid));
+    let base = format!("https://{address}");
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join("addresses.json")).unwrap()).unwrap();
+    assert_eq!(kept["direct"][0], address.as_str(), "{kept}");
+
+    // A computer pairs over the direct address, its certificate pinned.
+    let invitation = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/pairing/invite",
+            Some(&json!({"url": base, "name": "Studio Mac", "computer": true})),
+        )
+    });
+    assert_eq!(invitation.status, 200, "{}", invitation.text);
+    let client = pinned::client(pin, Duration::from_secs(30)).unwrap();
+    let redeemed = client
+        .post(format!("{base}/v1/pairing"))
+        .json(&json!({"credential": invitation.body["code"], "name": "Studio Mac"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redeemed.status(), 200);
+    let token = redeemed.json::<Value>().await.unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let status = client
+        .get(format!("{base}/v1/status"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status.status(), 200);
+    // Only the gateway's routes: the pairing endpoints aren't there.
+    let minted = client
+        .post(format!("{base}/v1/pairing/invite"))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(minted.status(), 404);
+
+    // Another pin: refused before anything is sent.
+    let other = pinned::client(obid::remote::pin::Pin([7; 32]), Duration::from_secs(30)).unwrap();
+    let refused = other
+        .get(format!("{base}/v1/status"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        pinned::said(&refused).starts_with(pinned::NOT_THE_PINNED),
+        "{refused}"
+    );
+
+    // The certificate is kept across a start, and its pin with it.
+    drop(obid);
+    let obid = tokio::task::block_in_place(|| start(&folder.0, &config, None));
+    let (_, again) = tokio::task::block_in_place(|| direct_of(&obid));
+    assert_eq!(again, pin, "the same certificate after a start");
+
+    // Made anew, it's another computer as far as the old pin goes.
+    drop(obid);
+    for file in ["direct-certificate.der", "direct-key.p8"] {
+        std::fs::remove_file(folder.0.join("home/keys").join(file)).unwrap();
+    }
+    let obid = tokio::task::block_in_place(|| start(&folder.0, &config, None));
+    let (address, fresh) = tokio::task::block_in_place(|| direct_of(&obid));
+    assert_ne!(fresh, pin);
+    let refused = client
+        .get(format!("https://{address}/v1/status"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap_err();
+    let said = pinned::said(&refused);
+    assert!(said.contains(&fresh.to_string()), "{said}");
+}

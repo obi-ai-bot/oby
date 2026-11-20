@@ -26,7 +26,7 @@ The business behavior contract for using the skills the owner installed for thei
 
 ### Where they're offered (SKILLS-5)
 
-- Only where they'd run: the turn or task whose agent runs on the owner's own settings: their Claude Code conversation on macOS (LANES-12), their Codex conversation in Bypass on a `codex login` (LANES-13), a Claude Code task at work that's theirs (LANE-1), a Codex one in Bypass (LANES-18). Anywhere else (another Oby's conversation, a task marked untrusted, Oby's review, Codex outside Bypass or on a ChatGPT login, Cursor, a task not at work) obid lists none and says why in one sentence.
+- Only where they'd run: the turn or task whose agent runs on the owner's own settings: their Claude Code conversation (LANES-12, on macOS and Linux), their Codex conversation in Bypass on a `codex login` (LANES-13), a Claude Code task at work that's theirs (LANE-1), a Codex one in Bypass (LANES-18). Anywhere else (another Oby's conversation, a task marked untrusted, Oby's review, Codex outside Bypass or on a ChatGPT login, Cursor, a task not at work) obid lists none and says why in one sentence.
 - A conversation's are those of the account its next turn would talk through: the one the owner chose, else the one its session is on, else whichever has room, of its profile's. Home's box with no conversation yet: a new conversation's.
 
 ### The words with a skill (SKILLS-6 to 8, 11, 12)

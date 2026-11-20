@@ -368,10 +368,24 @@ pub async fn serve(
         },
         None => (None, None),
     };
+    // The gateway over HTTPS for the owner's other computers, with this computer's own
+    // certificate (crate::remote::direct, COMPUTERS-10).
+    let (direct, direct_state) = match &gateway {
+        Some(_) => remote::direct::bind(&config.mac_home, &config.direct).await,
+        None => (Vec::new(), Vec::new()),
+    };
+    let mut gateway_state = gateway_state;
+    if let Some(state) = gateway_state.as_mut().filter(|_| !direct_state.is_empty()) {
+        state["direct"] = serde_json::Value::Array(direct_state);
+    }
     // Where this obid answers, for `obid pair-computer` (crate::remote::addresses, COMPUTERS-9).
     let answering = remote::addresses::Addresses {
         api: bound,
         gateway: gateway.as_ref().and_then(|l| l.local_addr().ok()),
+        direct: direct
+            .iter()
+            .filter_map(|d| axum::serve::Listener::local_addr(d).ok())
+            .collect(),
     };
     if let Err(e) = remote::addresses::keep(&config.mac_home, &answering) {
         tracing::warn!("can't keep obid's addresses for `obid pair-computer`: {e}");
@@ -697,6 +711,7 @@ pub async fn serve(
         println!("obid gateway listening on http://{address}");
         tracing::info!(%address, "obid gateway listening");
         let app = gateway::router(shared.clone(), app.clone());
+        remote::direct::serve(direct, &app, &stopping_rx);
         let mut stopping = stopping_rx.clone();
         tokio::spawn(async move {
             let stopped = async move {
@@ -907,7 +922,7 @@ impl Door {
                 if !agent_route
                     && let Err(error) = api::admit(request.uri(), request.headers(), &door.token)
                 {
-                    return sealed(error.into_response());
+                    return sealed(api::after_body(request, error.into_response()).await);
                 }
                 match now {
                     Some(Err(why)) => return closed(why),

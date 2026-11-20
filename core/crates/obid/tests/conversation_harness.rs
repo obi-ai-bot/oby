@@ -238,13 +238,9 @@ fn a_turn_streams_its_words_and_ends_in_a_turn() {
     }
     assert!(!argv.contains(&"--resume"), "{argv:?}");
     // The owner's conversation is in the own lane, with its own Bash but no other code-runner
-    // (LANES-12); a boxed one's tools name none (the_room_cannot_write_outside_itself).
-    // Own on macOS only for now; boxed elsewhere (LANES-12).
-    assert_eq!(
-        ran_own(&obid, &recorded[0]),
-        cfg!(target_os = "macos"),
-        "{argv:?}"
-    );
+    // (LANES-12); a boxed one's tools name none (the_room_cannot_write_outside_itself). On macOS
+    // and Linux alike (LANES-26).
+    assert!(ran_own(&obid, &recorded[0]), "{argv:?}");
     let tools = argv[argv.iter().position(|a| *a == "--tools").unwrap() + 1];
     assert!(
         tools.contains("Read") && tools.contains("WebFetch"),
@@ -465,8 +461,7 @@ fn a_new_conversation_finds_its_claude_code_started() {
 
     // Its token connects and lists the tools, and calls none; another token is refused.
     let config: Value = serde_json::from_slice(
-        &std::fs::read(conversations.join(format!("{next}/{}/oby-mcp.json", mcp_folder())))
-            .unwrap(),
+        &std::fs::read(conversations.join(format!("{next}/login/oby-mcp.json"))).unwrap(),
     )
     .unwrap();
     let token = config["mcpServers"]["oby"]["headers"]["Authorization"]
@@ -526,8 +521,6 @@ fn a_new_conversation_finds_its_claude_code_started() {
 /// CONVERSATION-AGENT-25 (docs/contracts/conversation-agent.md): the next new conversation's Claude
 /// Code, started ahead, ran the owner's `SessionStart` hooks as it started and wrote their lines
 /// before any prompt; it still takes that conversation's first turn, with Oby's tools.
-// Own conversations, which run the owner's hooks, are macOS-only for now (LANES-12).
-#[cfg(target_os = "macos")]
 #[test]
 fn conversation_agent_25_a_claude_code_started_ahead_that_ran_its_hooks_takes_the_turn() {
     let (_folder, obid) = obid_env(
@@ -3227,16 +3220,6 @@ fn the_taint_lasts_across_resumed_turns() {
     started_untrusted(&obid, &answer);
 }
 
-/// Where an owner's conversation's `oby-mcp.json` is: its `login` folder in the own lane (macOS),
-/// its `HOME` boxed (LANES-12).
-fn mcp_folder() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "login"
-    } else {
-        "home"
-    }
-}
-
 /// Whether `turn` ran in the own lane (LANES-12): on the account's own folder, with every
 /// settings source and the owner's MCP servers (LANES-23), Claude Code's own Bash, and obid's
 /// `--settings` with no sandbox of obid's.
@@ -3259,8 +3242,6 @@ fn ran_own(obid: &Obid, turn: &Value) -> bool {
 /// LANES-12 (docs/contracts/lanes.md): the owner's conversation runs on its account's own folder
 /// and login with the owner's settings and MCP servers, and `git status` runs through Claude Code's
 /// own Bash in its room.
-// Own conversations are macOS-only for now (LANES-12).
-#[cfg(target_os = "macos")]
 #[test]
 fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
     let (_folder, obid) = obid("harness-lanes-12-bash", true);
@@ -3283,8 +3264,6 @@ fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
 /// without waiting for the owner's own MCP servers, as their terminal does: one of theirs that
 /// takes 20 s to answer doesn't hold the first turn, and Oby's own tools are there on it. The
 /// stand-in holds the first turn as Claude Code 2.1.325 does (tests/agents/fake-harness).
-// Own conversations are macOS-only for now (LANES-12).
-#[cfg(target_os = "macos")]
 #[test]
 fn conversation_agent_24_a_new_conversation_doesnt_wait_for_the_owners_mcp_servers() {
     let (_folder, obid) = obid("harness-agent-24", true);
@@ -3308,8 +3287,6 @@ fn conversation_agent_24_a_new_conversation_doesnt_wait_for_the_owners_mcp_serve
 
 /// LANES-12, F-M2-63: a waiting Claude Code started with other flags (another model) ends, taking
 /// its `oby-mcp.json` with it, and the new one the turn starts still has the file, with Oby's tools.
-// Own conversations are macOS-only for now (LANES-12).
-#[cfg(target_os = "macos")]
 #[test]
 fn lanes_12_a_new_claude_code_after_a_stale_one_has_its_mcp_configuration() {
     let (_folder, obid) = obid("harness-lanes-12-stale-mcp", true);
@@ -3344,8 +3321,6 @@ fn lanes_12_a_new_claude_code_after_a_stale_one_has_its_mcp_configuration() {
 
 /// LANES-12, CONVO-1: after the conversation reads something untrusted, its next turn is still in
 /// the own lane, with its own Bash, and the mark stays, so what it starts still waits for the owner.
-// Own conversations are macOS-only for now (LANES-12).
-#[cfg(target_os = "macos")]
 #[test]
 fn lanes_12_after_an_untrusted_read_the_turn_stays_own_and_the_mark_stays() {
     let (_folder, obid) = obid("harness-lanes-12-taint", true);
@@ -4746,8 +4721,6 @@ fn oby_github_lists_the_owners_pull_requests_and_dispatch_takes_one() {
 
 /// The owner's own servers the stand-in's `init` names after Oby's (tests/agents/fake-harness):
 /// a claude.ai connector, one that needs its sign-in, and a server of theirs that failed.
-// Only the macOS-only scenarios use it (own conversations, LANES-12).
-#[cfg(target_os = "macos")]
 fn own_servers(obid: &Obid) {
     std::fs::write(
         obid.home.join("accounts/stub/mcp-servers.json"),
@@ -4763,8 +4736,6 @@ fn own_servers(obid: &Obid) {
 
 /// CONNECTORS-1 (docs/contracts/connectors.md): an own Claude Code conversation keeps the
 /// connectors its session named, names and statuses only, but obid's own `oby`.
-// Own conversations are macOS-only for now (LANES-12).
-#[cfg(target_os = "macos")]
 #[test]
 fn connectors_1_an_own_conversation_keeps_its_claude_codes_connectors() {
     let (_folder, obid) = obid("harness-connectors-1", true);
@@ -4808,8 +4779,6 @@ fn connectors_2_none_before_any_was_seen() {
 }
 
 /// CONNECTORS-3: a boxed session's list (obid's servers only) never replaces the own one's.
-// Own conversations are macOS-only for now (LANES-12).
-#[cfg(target_os = "macos")]
 #[test]
 fn connectors_3_a_boxed_session_never_replaces_them() {
     let (_folder, obid, obys) = obid_with_obys_conversation("harness-connectors-3");

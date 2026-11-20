@@ -132,7 +132,15 @@ async fn run_main() -> Result<i32> {
             Ok(0)
         }
         "nodes" => {
-            for (n, d) in NODES.iter().copied().chain(obid_spec::lab::nodes()) {
+            for (n, d) in NODES
+                .iter()
+                .copied()
+                .chain(obid_spec::lab::nodes())
+                .chain(obid_spec::t3_conversations::NODES.iter().copied())
+            {
+                println!("runtime.rust:{n:<16} {d}");
+            }
+            for (n, d) in obid_spec::t3_tasks::NODES {
                 println!("runtime.rust:{n:<16} {d}");
             }
             Ok(0)

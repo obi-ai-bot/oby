@@ -1,0 +1,308 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: a conversation deleted while its turn runs",
+  "version": "1.0.0",
+  "description": "T3 Code's lifecycle fixes (archiving or deleting a thread didn't cancel its run, which then wrote it back): a conversation deleted while its turn runs stays deleted: the turn's request still answers, with its conversation, and so does the request of words waiting behind it (none: expected red, #2648), Oby's words aren't kept, nothing is written back, and words to it are refused; another conversation goes on (docs/api/conversations.md).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Elsewhere.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Elsewhere."
+          }
+        }
+      }
+    },
+    {
+      "id": "lingering",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "LINGER 3000",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000061"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "under-way",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "delivery": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "waiting",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Queued.",
+          "conversation": "${state.said.body.conversation}",
+          "id": "7a3e0000-0000-4000-8000-000000000062"
+        },
+        "background": true
+      }
+    },
+    {
+      "id": "it-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "7a3e0000-0000-4000-8000-000000000062",
+                "delivery": {
+                  "status": "queued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deleted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "the-turn-still-answers",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.lingering}",
+        "seconds": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      }
+    },
+    {
+      "id": "the-waiting-words-answer-too",
+      "use": "runtime.rust:call-wait",
+      "inputs": {
+        "call": "${state.waiting}",
+        "seconds": 20,
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "none",
+            "conversation": "${state.said.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "expectedRed": "#2648: deleting a conversation leaves the words waiting behind its turn unanswered forever"
+      }
+    },
+    {
+      "id": "then-a-moment",
+      "use": "runtime.rust:t3.trail",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.other.body.conversation}",
+        "settle": 2000
+      }
+    },
+    {
+      "id": "it-stays-deleted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.said.body.conversation}",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "not-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "id": "${state.said.body.conversation}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "nothing-written-back",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}.json",
+        "expect": {
+          "exists": false
+        }
+      }
+    },
+    {
+      "id": "its-delete-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "conversation",
+        "expect": {
+          "paths": {
+            "id": "${state.said.body.conversation}",
+            "deleted": true
+          }
+        }
+      }
+    },
+    {
+      "id": "and-no-turn-after-it",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "turn",
+        "none": true,
+        "seconds": 1,
+        "expect": {
+          "paths": {
+            "conversation": "${state.said.body.conversation}",
+            "who": "oby",
+            "text": "waited"
+          }
+        }
+      }
+    },
+    {
+      "id": "words-to-it-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Hello?",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "the-other-goes-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Still.",
+          "conversation": "${state.other.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Still."
+          }
+        }
+      }
+    }
+  ]
+}

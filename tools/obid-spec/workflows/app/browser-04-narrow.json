@@ -78,7 +78,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Codex is using this tab · Typing in Email"
+            "words": "Codex is using this tab · Typing in Email"
           }
         }
       }

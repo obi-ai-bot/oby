@@ -85,6 +85,10 @@ struct File {
     /// Where the gateway listens (crate::gateway), on 127.0.0.1; left out, there's none.
     #[serde(default)]
     gateway: Option<String>,
+    /// Where the gateway is also served over HTTPS, for the owner's other computers
+    /// (crate::remote::direct); left out, nowhere.
+    #[serde(default)]
+    direct: Vec<String>,
     /// Whether obid copies Claude Code's login from the macOS Keychain (crate::jobs, keychain_login);
     /// left out, obid decides when it starts (crate::jobs::keychain_wanted).
     #[serde(default)]
@@ -263,6 +267,11 @@ pub struct Config {
     /// Where paired phones reach obid (crate::gateway): `gateway`, an address on 127.0.0.1; none
     /// when it is left out.
     pub gateway: Option<SocketAddr>,
+    /// `direct`: the addresses, on any of this machine's interfaces, where the gateway is also
+    /// served over HTTPS with this computer's own certificate, pinned by the owner's other
+    /// computers (crate::remote::direct, docs/contracts/remote.md, COMPUTERS-10). Empty when left
+    /// out; it needs a `gateway`.
+    pub direct: Vec<SocketAddr>,
     /// `claudeKeychain`: obid copies Claude Code's macOS Keychain login into a boxed run's place
     /// for it (crate::jobs, keychain_login). `Some` as the owner set it; `None` when it's left out,
     /// and then obid turns it on by itself on macOS when Claude Code's default login is only in the
@@ -492,6 +501,26 @@ impl Config {
                 ));
             }
         };
+        let mut direct = Vec::new();
+        for text in &file.direct {
+            match text.parse::<SocketAddr>() {
+                Ok(address) => direct.push(address),
+                Err(_) => {
+                    return invalid(format!(
+                        "direct has {text:?}: each is an address with a port, like 0.0.0.0:8443 or 192.168.1.20:8443."
+                    ));
+                }
+            }
+        }
+        if direct.len() > 8 {
+            return invalid("direct has more than 8 addresses.".into());
+        }
+        if !direct.is_empty() && gateway.is_none() {
+            return invalid(
+                "direct serves the gateway over HTTPS: give gateway too, like 127.0.0.1:8810."
+                    .into(),
+            );
+        }
 
         let stall_after = file.stall_after.unwrap_or(15 * 60);
         if !(1..=86_400).contains(&stall_after) {
@@ -576,6 +605,7 @@ impl Config {
             job_ceiling: std::time::Duration::from_secs(job_ceiling_hours * 3600),
             job_token_budget,
             gateway,
+            direct,
             claude_keychain: file.claude_keychain,
             ignored: file.ignored.into_keys().chain(inside).collect(),
             cursor_keychain: file.cursor_keychain,
@@ -1004,6 +1034,36 @@ mod tests {
             let text = with(serde_json::json!({ "gateway": gateway }));
             assert!(problem(&text).contains("gateway"), "{gateway}");
         }
+    }
+
+    #[test]
+    fn computers_10_direct_addresses_are_any_interfaces_and_need_a_gateway() {
+        assert!(
+            Config::parse(&with(serde_json::json!({})))
+                .unwrap()
+                .direct
+                .is_empty()
+        );
+        let config = Config::parse(&with(serde_json::json!({
+            "gateway": "127.0.0.1:8810", "direct": ["0.0.0.0:8443", "[::]:8443", "100.64.0.1:8443"]
+        })))
+        .unwrap();
+        assert_eq!(config.direct.len(), 3);
+        assert!(
+            problem(&with(serde_json::json!({"direct": ["0.0.0.0:8443"]})))
+                .contains("give gateway")
+        );
+        for wrong in ["0.0.0.0", "box.local:8443", "8443"] {
+            let text = with(serde_json::json!({"gateway": "127.0.0.1:8810", "direct": [wrong]}));
+            assert!(problem(&text).contains("direct"), "{wrong}");
+        }
+        let many = vec!["0.0.0.0:8443"; 9];
+        assert!(
+            problem(&with(
+                serde_json::json!({"gateway": "127.0.0.1:8810", "direct": many})
+            ))
+            .contains("more than 8")
+        );
     }
 
     #[test]

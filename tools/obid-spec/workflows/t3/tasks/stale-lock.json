@@ -1,0 +1,343 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: a lock file a crash left in obid's clone",
+  "version": "1.0.0",
+  "description": "T3 Code's lock-file kind: obid goes down mid-fetch and leaves git's ref lock in its clone, and main moves meanwhile. The next task can't fetch its base: it ends saying so, never stuck queued or running; once the lock is gone, Try again runs the same task in its next round from main as it is now (TASKS-20). git's index.lock left beside it stops nothing.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "killed",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}",
+        "kill": true
+      }
+    },
+    {
+      "id": "lock-left",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "clones/obi-e2e/fixture-app/.git/refs/remotes/origin/main.lock",
+        "text": ""
+      }
+    },
+    {
+      "id": "index-lock-left",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "clones/obi-e2e/fixture-app/.git/index.lock",
+        "text": ""
+      }
+    },
+    {
+      "id": "m-file",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "m-tree/b.txt",
+        "in": "person",
+        "text": "moved\n"
+      }
+    },
+    {
+      "id": "m-read",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "--work-tree=${state.o.person}/m-tree",
+          "read-tree",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "m-add",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "--work-tree=${state.o.person}/m-tree",
+          "add",
+          "b.txt"
+        ]
+      }
+    },
+    {
+      "id": "m-commit",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "-c",
+          "user.name=teammate",
+          "-c",
+          "user.email=teammate@example.invalid",
+          "--work-tree=${state.o.person}/m-tree",
+          "commit",
+          "-q",
+          "-m",
+          "The base moved"
+        ]
+      }
+    },
+    {
+      "id": "m-main",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "rev-parse",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: b2.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-20-it-ends-saying-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "failed",
+                "interrupted"
+              ]
+            },
+            "session": null
+          },
+          "paths": {
+            "reason": {
+              "$contains": "Couldn't get obi-e2e/fixture-app ready"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-20"
+        ]
+      }
+    },
+    {
+      "id": "the-lock-is-still-there",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "clones/obi-e2e/fixture-app/.git/refs/remotes/origin/main.lock",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "lock-gone",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.again}",
+        "op": "remove",
+        "path": "clones/obi-e2e/fixture-app/.git/refs/remotes/origin/main.lock"
+      }
+    },
+    {
+      "id": "tasks-20-try-again-is-its-next-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.b.body.id}",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-20"
+        ]
+      }
+    },
+    {
+      "id": "tasks-20-it-runs-now",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-20"
+        ]
+      }
+    },
+    {
+      "id": "tasks-23-from-main-as-it-is-now",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "files": [
+              {
+                "path": "b2.txt",
+                "status": "added"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "b-has-the-moved-main",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.again}",
+        "path": "worktrees/${state.b.body.id}/b.txt",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

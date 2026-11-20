@@ -895,8 +895,9 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 /// an own Codex job (LANES-13, LANES-18), the owner's Codex conversation on `account`, unless it's
 /// a ChatGPT login: on its own `CODEX_HOME`, with its own shell in Codex's sandbox. Another Oby's
 /// conversation, Codex's in any other mode, and Cursor's stay boxed. What it read doesn't move it:
-/// its untrusted mark and the owner's Confirm guard what goes out (CONVO-1). Only on macOS for now:
-/// elsewhere it stays boxed until it's proven there ([`own_conversation`]). Decided at each turn.
+/// its untrusted mark and the owner's Confirm guard what goes out (CONVO-1). On macOS and Linux
+/// alike (LANES-26, the owner's "Extend the lanes to Linux too"); [`Jobs::codex_own`] still keeps
+/// Codex's to macOS. Decided at each turn.
 fn own_lane(
     shared: &Shared,
     tool: Tool,
@@ -906,7 +907,7 @@ fn own_lane(
     let from_obys = shared.conversations.is_from_obys(conversation);
     let codex = crate::jobs::Jobs::codex_own(shared.jobs.default_mode())
         && !crate::jobs::Jobs::relayed(tool, account);
-    own_conversation(cfg!(target_os = "macos"), tool, from_obys, codex)
+    own_conversation(tool, from_obys, codex)
 }
 
 /// Whether an own Codex session may no longer run: the mode left Bypass (LANES-13, LANES-18).
@@ -918,17 +919,15 @@ fn left_bypass(shared: &Shared) -> bool {
 const LEFT_BYPASS: &str =
     "You left Bypass, so this turn ended here. Your next message runs in Oby's box.";
 
-/// [`own_lane`]'s choice: the owner's Claude Code conversation, on macOS, and their Codex one when
-/// `codex` may leave the box.
-// ponytail: macOS only; on Linux every own session "failed twice" (tetrix-lab, 2026-11-11), so it
-// stays boxed there until the own lane is proven on Linux.
-fn own_conversation(macos: bool, tool: Tool, from_obys: bool, codex: bool) -> bool {
+/// [`own_lane`]'s choice: the owner's Claude Code conversation, on every OS, and their Codex one
+/// when `codex` may leave the box.
+fn own_conversation(tool: Tool, from_obys: bool, codex: bool) -> bool {
     let lane = match tool {
         Tool::Claude => true,
         Tool::Codex => codex,
         Tool::Cursor => false,
     };
-    macos && lane && !from_obys
+    lane && !from_obys
 }
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
@@ -1064,7 +1063,9 @@ fn mcp_config(
     own: bool,
     helper: Option<&Told>,
 ) -> Result<(PathBuf, String, Option<String>), String> {
-    let api = shared.connections.api_url();
+    // An own session runs on the host, so it reaches obid on loopback, never at the address only
+    // Linux's box reaches (LANES-26).
+    let api = crate::jobs::Jobs::agent_api(shared.connections.api_url(), own);
     let granted = helper.is_none_or(|h| may_use(h.granted, Connector::Tetrix));
     let tetrix = (shared.tetrix.usable() && granted)
         .then(|| format!("{api}/v1/agent/tetrix/conversation-{conversation}"));
@@ -4668,20 +4669,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// LANES-12 (docs/contracts/lanes.md): the owner's Claude Code conversation is own on macOS
-    /// only; elsewhere, another Oby's and Cursor's stay boxed. LANES-13: so is the owner's Codex
-    /// conversation where Codex may leave the box (Bypass, not a ChatGPT login), never another
-    /// Oby's or one off macOS.
+    /// LANES-12, LANES-26 (docs/contracts/lanes.md): the owner's Claude Code conversation is own,
+    /// on macOS and Linux alike; another Oby's and Cursor's stay boxed. LANES-13: so is the owner's
+    /// Codex conversation where Codex may leave the box (Bypass, not a ChatGPT login, macOS),
+    /// never another Oby's.
     #[test]
-    fn lanes_12_only_the_owners_claude_conversation_on_macos_is_own() {
-        assert!(own_conversation(true, Tool::Claude, false, false));
-        assert!(!own_conversation(false, Tool::Claude, false, true));
-        assert!(!own_conversation(true, Tool::Claude, true, true));
-        assert!(!own_conversation(true, Tool::Codex, false, false));
-        assert!(own_conversation(true, Tool::Codex, false, true));
-        assert!(!own_conversation(true, Tool::Codex, true, true));
-        assert!(!own_conversation(false, Tool::Codex, false, true));
-        assert!(!own_conversation(true, Tool::Cursor, false, true));
+    fn lanes_12_only_the_owners_claude_conversation_is_own() {
+        assert!(own_conversation(Tool::Claude, false, false));
+        assert!(!own_conversation(Tool::Claude, true, true));
+        assert!(!own_conversation(Tool::Codex, false, false));
+        assert!(own_conversation(Tool::Codex, false, true));
+        assert!(!own_conversation(Tool::Codex, true, true));
+        assert!(!own_conversation(Tool::Cursor, false, true));
         use crate::permissions::Mode;
         assert_eq!(
             crate::jobs::Jobs::codex_own(Mode::Bypass),
@@ -4870,16 +4869,15 @@ mod tests {
             );
         }
         assert!(super::super::harness_codex::OFF.contains(&"shell_tool"));
-        // Every conversation but the owner's own Claude Code on macOS, and their own Codex in
-        // Bypass there, is boxed.
-        for (macos, tool, from_obys, codex) in [
-            (false, Tool::Claude, false, true),
-            (true, Tool::Claude, true, true),
-            (true, Tool::Codex, false, false),
-            (true, Tool::Codex, true, true),
-            (true, Tool::Cursor, false, true),
+        // Every conversation but the owner's own Claude Code, and their own Codex in Bypass on
+        // macOS, is boxed.
+        for (tool, from_obys, codex) in [
+            (Tool::Claude, true, true),
+            (Tool::Codex, false, false),
+            (Tool::Codex, true, true),
+            (Tool::Cursor, false, true),
         ] {
-            assert!(!own_conversation(macos, tool, from_obys, codex), "{tool:?}");
+            assert!(!own_conversation(tool, from_obys, codex), "{tool:?}");
         }
         assert!(ORIENTATION.contains(NO_SHELL));
         assert!(NO_SHELL.contains("no commands") && NO_SHELL.contains("job"));

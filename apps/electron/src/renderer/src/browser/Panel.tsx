@@ -123,7 +123,7 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
   }
   return (
     <div className="br-control" role="status" data-browser="control">
-      <span className="br-control-text">{logo}<span>{tab.action ? <><b>{who}</b> is using this tab · <Sheen>{tab.action}</Sheen></> : idle ?? <><b>{who}</b> opened this tab · idle</>}</span></span>
+      <span className="br-control-text">{logo}<span>{tab.action ? <><b>{who}</b> is using this tab · <Sheen>{tab.action}</Sheen></> : idle ?? (tab.ran ? <><b>{who}</b> ran a script in this page · done</> : <><b>{who}</b> opened this tab · idle</>)}</span></span>
       {take}
     </div>
   );
@@ -131,11 +131,15 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
 
 /** A page that didn't simply load (board 10's words), in the panel's middle; its way out. */
 export function PageState({ tab }: { tab: Tab }) {
-  const { api } = useBrowser();
+  const { api, mode } = useBrowser();
   const host = tab.url.split('/')[0];
   const who = tab.owner.kind === 'agent' ? agentName(tab.owner.agent) : '';
+  // On obid the ways out (Try again, Reload, Go back, Go on anyway, a dialog's Leave and Stay) wait for
+  // routes obid doesn't have for the owner yet: there, the state's words show alone, and the agent,
+  // told every time, acts (BROWSERAPP-14). On the demo data they show as the board does.
+  const ways = mode !== 'obid';
   const box = (icon: ReactNode, title: string, text: string, way: ReactNode) => (
-    <div className="br-state" data-browser={`page-${tab.state}`}>{icon}<span className="br-state-title">{title}</span><span className="br-state-text">{text}</span><div className="tc-options">{way}</div></div>
+    <div className="br-state" data-browser={`page-${tab.state}`}>{icon}<span className="br-state-title">{title}</span><span className="br-state-text">{text}</span>{ways && <div className="tc-options">{way}</div>}</div>
   );
   const again = <button className="tc-option is-sm">Try again</button>;
   switch (tab.state) {
@@ -149,11 +153,11 @@ export function PageState({ tab }: { tab: Tab }) {
         <div className="br-over" role="dialog" aria-label="The page asks" data-browser="page-dialog">
           <span className="br-over-kind">{host} asks</span>
           <p className="br-over-text">{tab.dialog}</p>
-          <div className="tc-options" style={{ marginTop: 10 }}>
+          {ways && <div className="tc-options" style={{ marginTop: 10 }}>
             <button className="tc-option is-sm" disabled={!held} style={held ? undefined : { opacity: 0.4 }}>Leave</button>
             <button className="tc-option is-sm" disabled={!held} style={held ? undefined : { opacity: 0.4 }}>Stay</button>
             {!held && <button className="tc-option is-sm is-primary" style={{ marginLeft: 'auto' }} onClick={() => api.take(tab.id)}>Take control to answer</button>}
-          </div>
+          </div>}
         </div>
       );
     }
@@ -199,12 +203,12 @@ export function View({ tab, label, page, children, className = '', style }: { ta
   const live = mode === 'obid' ? frame(tab.id) : null;
   return (
     <div className={`br-view${held ? ' is-held' : ''} ${className}`.trim()} role="img" aria-label={label} style={style} data-browser="view">
-      {mode === 'obid' && STOPPED.includes(tab.state)
+      {STOPPED.includes(tab.state)
         ? <div className="br-view is-blank" style={{ position: 'absolute', inset: 0 }}><PageState tab={tab} /></div>
         : mode === 'obid'
         ? (live ? <LiveFrame tab={tab} url={live.url} size={live} /> : <div className="br-state"><span className="br-state-text"><Sheen>Waiting for the page</Sheen></span></div>)
         : page}
-      {mode === 'obid' && tab.state === 'dialog' && <PageState tab={tab} />}
+      {tab.state === 'dialog' && <PageState tab={tab} />}
       {children}
     </div>
   );
@@ -228,7 +232,7 @@ export function FileRow({ id }: { id: string }) {
       </span>
       {agent && !d.saved
         ? <button className="tc-option is-sm" onClick={() => api.saveCopy(d.id)}>Save a copy</button>
-        : <button className="tc-option is-sm">Show in Finder</button>}
+        : <button className="tc-option is-sm" onClick={() => api.reveal(d.id)}>Show in Finder</button>}
     </div>
   );
 }

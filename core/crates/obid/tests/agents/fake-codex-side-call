@@ -1,0 +1,127 @@
+#!/usr/bin/env node
+// A stand-in for `codex app-server` as the brain's side calls run it (crate::brain::calls, B00-15):
+// one ephemeral thread told obid's instructions, one turn with an output schema, the quoted file
+// read only through obid's Read tool. It checks the call's contract first, and a call that breaks
+// it fails its turn, so obid has no answer:
+//   - no Claude Code, Anthropic or GitHub variable and no obid token in its environment, and a
+//     CODEX_HOME holding only its login copy;
+//   - its native tools off (`features.shell_tool=false`, `features.apply_patch_freeform=false`,
+//     `web_search="disabled"`), a thread in obid's box (`danger-full-access`, `untrusted`),
+//     ephemeral, with obid's own instructions;
+//   - with a quoted file, Read its only tool, on work.md alone: a Read of the login is refused;
+//   - an output schema and low effort on the turn.
+// Then it answers the schema it was given: the inbox's sorts (every item `fyi`), the recap
+// ("Codex wrote this recap. One item waits for you."), or memory's candidates (none).
+// `codex --version` and `codex features list` answer as codex-cli does.
+import { readdirSync } from "node:fs";
+import { createInterface } from "node:readline";
+
+const args = process.argv.slice(2);
+if (args[0] === "--version") {
+  process.stdout.write("codex-cli 0.170.0\n");
+  process.exit(0);
+}
+const off = args.filter((a) => /^features\..+=false$/.test(a)).map((a) => a.slice(9, -6));
+if (args.slice(-2).join(" ") === "features list") {
+  for (const name of off) process.stdout.write(`${name}  stable  false\n`);
+  process.exit(0);
+}
+if (args.at(-1) !== "app-server") {
+  process.stderr.write("fake-codex-side-call: run as `fake-codex-side-call app-server`\n");
+  process.exit(2);
+}
+
+const RECAP = "Codex wrote this recap. One item waits for you.";
+const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+const reply = (id, result) => emit({ id, result });
+const refuse = (id) => emit({ id, error: { code: -32601, message: "unknown method" } });
+const notice = (method, params) => emit({ method, params });
+const pending = new Map();
+let next = 100;
+const ask = (method, params) => new Promise((resolve) => {
+  const id = next++;
+  pending.set(id, resolve);
+  emit({ id, method, params });
+});
+
+const problems = [];
+const check = (yes, why) => { if (!yes) problems.push(why); };
+const leaked = Object.keys(process.env).filter((name) =>
+  name === "CLAUDECODE" || name.startsWith("CLAUDE_CODE_") || name.startsWith("ANTHROPIC_") ||
+  name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
+check(!leaked.length, `its environment holds ${leaked.join(", ")}`);
+const home = process.env.CODEX_HOME;
+check(home && readdirSync(home).every((name) => name === "auth.json"), "its CODEX_HOME holds more than its login copy");
+for (const name of ["shell_tool", "apply_patch_freeform", "code_mode_host", "multi_agent", "browser_use"]) {
+  check(off.includes(name), `${name} isn't off`);
+}
+check(args.includes('web_search="disabled"'), "web search isn't off");
+
+let thread = null;
+let reads = false;
+const answer = (schema, user) => {
+  const properties = schema?.properties ?? {};
+  if (properties.items) {
+    const count = Number(/its (\d+) items/.exec(user)?.[1] ?? 0);
+    return { items: Array.from({ length: count }, (_, n) => ({ n: n + 1, as: "fyi" })) };
+  }
+  if (properties.recap) return { recap: RECAP };
+  if (properties.candidates) return { candidates: [] };
+  return {};
+};
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", async (line) => {
+  const msg = JSON.parse(line);
+  if (!msg.method) {
+    const resolve = pending.get(msg.id);
+    pending.delete(msg.id);
+    resolve?.(msg.result ?? { refused: true });
+    return;
+  }
+  const p = msg.params ?? {};
+  switch (msg.method) {
+    case "initialize": reply(msg.id, {}); break;
+    case "initialized": break;
+    case "thread/start": {
+      check(p.ephemeral === true, "its thread isn't ephemeral");
+      check(p.sandbox === "danger-full-access" && p.approvalPolicy === "untrusted", "its thread isn't in obid's box");
+      check(typeof p.baseInstructions === "string" && p.baseInstructions.length > 0, "no instructions of obid's");
+      const tools = p.dynamicTools ?? [];
+      reads = tools.length > 0;
+      check(tools.length <= 1 && tools.every((t) => t.name === "Read" && t.type === "function"
+        && JSON.stringify(t.inputSchema.properties.file_path.enum) === '["work.md"]'), "a tool besides Read on work.md");
+      thread = "side-thread";
+      reply(msg.id, { thread: { id: thread } });
+      break;
+    }
+    case "turn/start": {
+      check(p.threadId === thread, "a turn on another thread");
+      check(p.outputSchema && typeof p.outputSchema === "object", "no output schema");
+      check(p.effort === "low", "not low effort");
+      reply(msg.id, { turn: { id: "side-turn" } });
+      const user = p.input?.[0]?.text ?? "";
+      if (reads) {
+        const login = await ask("item/tool/call", { threadId: thread, tool: "Read", arguments: { file_path: "../login/auth.json" } });
+        check(login.success !== true, "a Read of its login was served");
+        const work = await ask("item/tool/call", { threadId: thread, tool: "Read", arguments: { file_path: "work.md" } });
+        check(work.success === true && work.contentItems?.[0]?.text?.length > 0, "work.md wasn't read");
+      }
+      notice("thread/tokenUsage/updated", { threadId: thread, tokenUsage: {
+        total: { inputTokens: 1200, cachedInputTokens: 200, outputTokens: 30 },
+        last: { inputTokens: 1200, cachedInputTokens: 200, outputTokens: 30 } } });
+      if (problems.length) {
+        process.stderr.write(`fake-codex-side-call: ${problems.join("; ")}\n`);
+        notice("turn/completed", { threadId: thread, turn: { id: "side-turn", status: "failed",
+          error: { message: problems.join("; ") } } });
+        break;
+      }
+      const text = JSON.stringify(answer(p.outputSchema, user));
+      notice("item/completed", { threadId: thread, item: { type: "agentMessage", id: "m1", text } });
+      notice("turn/completed", { threadId: thread, turn: { id: "side-turn", status: "completed" } });
+      break;
+    }
+    case "config/read": reply(msg.id, { config: {}, origins: {} }); break;
+    default: refuse(msg.id);
+  }
+});

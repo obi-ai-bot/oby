@@ -37,11 +37,24 @@ export const VAULT_REMOVE = 'Remove Secret';
 
 // The owner's hold on a browser tab (docs/contracts/browser-app.md, BROWSERAPP-9): Take control and
 // Give back, each signed by its own button's label, an empty body. A take is also the page dialog's
-// Take control to answer, and the sign-in card's Type the password (the hold the password goes in under).
+// Take control to answer, and a choice's I'll choose in the page.
 export const TAKE_CONTROL = 'Take control';
-export const TAKE_LABELS = [TAKE_CONTROL, 'Take control to answer', 'Type the password'];
+export const TAKE_LABELS = [TAKE_CONTROL, 'Take control to answer', 'I’ll choose in the page'];
 export const GIVE_BACK = 'Give back';
 const BROWSER_TAB = /^\/v1\/browser\/tabs\/[^/]+\/(take|giveBack)$/;
+// An agent's ask answered (BROWSERAPP-13): a choice by its own button's label, `{choice}`; none by
+// Skip (or the CAPTCHA card's Skip this page), `{}`. A password or code never goes here: Fill in
+// (FILL_IN) has main put it in the page itself (main/device.ts, fillSecret), never as words.
+export const SKIP = 'Skip';
+const SKIP_LABELS = [SKIP, 'Skip this page'];
+export const FILL_IN = 'Fill in';
+const BROWSER_ANSWER = /^\/v1\/browser\/asks\/[^/]+\/answer$/;
+// Settings › General's two browser switches (BROWSERAPP-18): PUT /v1/browser/settings with one key, a
+// boolean, signed by that switch's own label (its aria-label: a switch has no words of its own)
+export const BROWSER_SWITCHES = { agentsUseBrowser: 'Agents can use the browser', agentsUseMac: 'Agents can use this Mac' } as const;
+// An agent's download copied into the owner's Downloads (BROWSERAPP-16): an empty body, by its button's label
+export const SAVE_A_COPY = 'Save a copy';
+const BROWSER_SAVE = /^\/v1\/browser\/downloads\/[^/]+\/saveCopy$/;
 
 // whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
 const named = (words: string, owner: string) =>
@@ -67,6 +80,16 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   // a browser tab's take or give back: an empty body, nothing else
   const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
   if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;
+  if (method === 'PUT' && p === '/v1/browser/settings') {
+    const keys = Object.keys(body);
+    const key = keys[0] as keyof typeof BROWSER_SWITCHES;
+    return keys.length === 1 && key in BROWSER_SWITCHES && typeof body[key] === 'boolean' ? [BROWSER_SWITCHES[key]] : null;
+  }
+  if (method === 'POST' && BROWSER_SAVE.test(p)) return Object.keys(body).length === 0 ? [SAVE_A_COPY] : null;
+  if (method === 'POST' && BROWSER_ANSWER.test(p)) {
+    if (Object.keys(body).length === 0) return [SKIP];
+    return text(body.choice) && body.choice.trim() && shaped(body, { choice: text }) ? [body.choice] : null;
+  }
   const id = text, flag = (v: unknown) => v === true;
   if ((method === 'POST' && /^\/v1\/jobs\/[^/]+\/mode$/.test(p)) || (method === 'PUT' && p === '/v1/settings/permissions')) {
     return text(body.mode) && [...MODES, SANDBOX].some((m) => m.id === body.mode) && shaped(body, { mode: text }) ? [modeLabel(body.mode)] : null;
@@ -125,7 +148,8 @@ export function owners(method: string, path: string, body: unknown, held: string
     const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
     const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
     const take = w === TAKE_CONTROL && /\/take$/.test(path.split('?')[0]);
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h)))));
+    const skip = w === SKIP && BROWSER_ANSWER.test(path.split('?')[0]);
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h)))));
     if (at < 0) return null;
     used.push(at);
   }

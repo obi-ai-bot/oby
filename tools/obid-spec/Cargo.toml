@@ -47,6 +47,8 @@ regex = { version = "1", default-features = false, features = ["std", "unicode-p
 # The browser's secret scan (src/browser.rs, `browser-scan`): every file under a scratch obid's
 # home, its browser engine's hundreds of MB included, searched for each secret in well under a second.
 memchr = "2"
+# Oby Artifacts in the lab (src/lab/artifacts.rs): Claude Design's project zip, out and in.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"
