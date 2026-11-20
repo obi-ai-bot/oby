@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP, SAVE_A_COPY, BROWSER_SWITCHES } from '../../../shared/words';
 import { mayInput, sawInput } from '../../../main/browserInput';
+import { downloadsFile } from '../../../main/reveal';
 import { connectLive, LINGER_MS, type Sinks } from '../browser/live';
 import type { BrowserState } from '../browser/view';
 import type { BrowserTab } from '../../../shared/obid-wire';
@@ -227,5 +228,15 @@ describe('BROWSERAPP-18: Settings › General\'s two switches', () => {
     await settle(); await settle();
     await live.setSettings({ agentsUseBrowser: false });
     expect(o.calls).toContainEqual({ method: 'PUT', path: '/v1/browser/settings', body: { agentsUseBrowser: false } });
+  });
+});
+
+describe('BROWSERAPP-16: Show in Finder reaches only a file in Downloads', () => {
+  it('browserapp_16: a name keeps only its last part; empty, . and .. reach nothing', () => {
+    const D = '/Users/someone/Downloads';
+    expect(downloadsFile(D, 'invoices (1).csv')).toBe(`${D}/invoices (1).csv`);
+    expect(downloadsFile(D, '../../etc/passwd')).toBe(`${D}/passwd`);
+    expect(downloadsFile(D, '/Users/someone/Documents/plan.md')).toBe(`${D}/plan.md`);
+    for (const none of ['', '.', '..', '/', 'a/..', './', '../']) expect(downloadsFile(D, none)).toBeNull();
   });
 });

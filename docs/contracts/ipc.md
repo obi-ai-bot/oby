@@ -85,7 +85,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `browser.ts` | `browser-watch` | `handle` | `string` (a tab's id) | `null` |
 | `browser.ts` | `browser-unwatch` | `handle` | `string` | `null` |
 | `browser.ts` | `browser-fill` | `handle` | `string` (tab), `string` (field), `string` (the value), `string` (the ask, or empty), `flag` (Fill in pressed) | `'Not this app’s page.'` (with no click main saw: `Filling in takes your own click.`, [browser-app.md](browser-app.md) BROWSERAPP-12) |
-| `browser.ts` | `browser-reveal` | `handle` | `string` (a download's name: only its last part, in the owner's Downloads) | `false` ([browser-app.md](browser-app.md), BROWSERAPP-16) |
+| `browser.ts` | `browser-reveal` | `handle` | `string` (a download's name: only its last part, in the owner's Downloads; never `.` or `..`) | `false` ([browser-app.md](browser-app.md), BROWSERAPP-16) |
 
 ### Failures and recovery
 
