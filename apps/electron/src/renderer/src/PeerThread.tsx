@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Composer, { typingIn } from './Composer';
 import { box as draftBox } from './drafts';
-import { askFromBox, boxShut, lineUnder, nextQuiet, openThread, useThreads, whoseOby, withWords } from './peers';
+import { askFromBox, boxShut, lineUnder, nextQuiet, openThread, plainId, useThreads, whoseOby, withWords } from './peers';
+import { notThem } from './askable';
 import { atEnd } from './room';
 import { QuestionBlock } from './QuestionCard';
 import { ReviewBlock } from './ReviewRequestCard';
@@ -77,6 +78,8 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
       <div className="chat-scroll">
         <section ref={list} className="chat" aria-label={who} role="log" onScroll={(e) => { onScroll(); following.current = atEnd(e.currentTarget); }}>
           <div className="chat-column">
+            {/* an owner id that looks like another's, named at the head of the thread (SPHERE-12) */}
+            {t?.lookalike?.length ? <p className="room-state peer-lookalike" role="note">{notThem(t.lookalike.map(plainId))}</p> : null}
             {posts.length > 0 && <RoomThread posts={posts} obi={sphere?.obi} standing={(i) => lineUnder(posts, i, t!, Date.now())} />}
           </div>
           {t && !posts.length && (
