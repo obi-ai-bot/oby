@@ -803,13 +803,16 @@ const NO_SETTINGS: [(&str, &str); 2] = [
 /// (a job's own, kept across its checks), it's reset to `head` and everything that check left is
 /// removed, ignored files too and whatever `.gitignore` it wrote, but for the folders in `keep`
 /// (the repository's `checkKeep`: its builds), which can still carry what an earlier check's code
-/// wrote there. obid's git here reads none of the person's own git settings.
+/// wrote there. obid's git here reads none of the person's own git settings. `clone_lock` is the
+/// clone's own (`Jobs::preparing`): its `git worktree add` waits for any other worktree being made
+/// or removed there, which git can't take at the same time (#2626).
 pub async fn fresh_checkout(
     agent: &Spec,
     base: &str,
     head: &str,
     at: &Path,
     keep: &[String],
+    clone_lock: &tokio::sync::Mutex<()>,
 ) -> Result<Spec, String> {
     let common = agent
         .git_common
@@ -865,6 +868,7 @@ pub async fn fresh_checkout(
     .await
     .map_err(|_| fail("copying its commits"))?;
     if !again {
+        let _one = clone_lock.lock().await;
         let objects_text = objects.to_string_lossy().into_owned();
         crate::git::run(
             &clone,
@@ -949,11 +953,16 @@ fn pinned_to(admin: &Path, common: &Path, worktree: &Path) -> Vec<(&'static str,
 }
 
 /// Removes a checkout [`fresh_checkout`] made, and its folder `at`: what the check wrote goes with
-/// it. Why it couldn't, otherwise.
-pub async fn remove_checkout(check: &Spec, at: &Path) -> Result<(), String> {
+/// it. Why it couldn't, otherwise. Its git folder goes under `clone_lock`, as it came (#2626).
+pub async fn remove_checkout(
+    check: &Spec,
+    at: &Path,
+    clone_lock: &tokio::sync::Mutex<()>,
+) -> Result<(), String> {
     if let Some(common) = &check.git_common
         && let Some(clone) = common.parent()
     {
+        let _one = clone_lock.lock().await;
         let _ = crate::git::run(
             clone,
             &[
@@ -1849,6 +1858,48 @@ required = false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #2626: the check's checkout is added, and removed, only while no other worktree of its clone
+    /// is being made or removed (git can't take two at once): under the clone's lock, which a job's
+    /// start holds as it adds its own worktree.
+    #[tokio::test]
+    async fn the_checks_checkout_waits_for_its_clones_lock() {
+        let dir = std::env::temp_dir().join(format!("obid-secretspec-lock-{}", std::process::id()));
+        let (_clone, base) = record_fixture(&dir).await;
+        let job = job_worktree(&dir, "job", "origin/main");
+        as_job(
+            &job,
+            &format!("echo x > x.txt && git add x.txt && {COMMIT} -m mine"),
+        );
+        let head = head_of(&job).await.unwrap();
+        let at = dir.join("checks/job-1");
+        let admin = job
+            .git_common
+            .as_ref()
+            .unwrap()
+            .join("worktrees/check-job-1");
+        let lock = tokio::sync::Mutex::new(());
+        let wait = std::time::Duration::from_secs(2);
+        // Another worktree of the clone is being made: the checkout waits for it.
+        let held = lock.lock().await;
+        let mut adding = Box::pin(fresh_checkout(&job, &base, &head, &at, &[], &lock));
+        let waited = tokio::time::timeout(wait, &mut adding).await;
+        assert!(waited.is_err(), "it waits on the lock: {waited:?}");
+        assert!(!admin.exists(), "no git folder of its own yet");
+        drop(held);
+        let check = adding.await.unwrap();
+        assert!(admin.is_dir());
+        // Its removal waits the same way.
+        let held = lock.lock().await;
+        let mut removing = Box::pin(remove_checkout(&check, &at, &lock));
+        let waited = tokio::time::timeout(wait, &mut removing).await;
+        assert!(waited.is_err(), "it waits on the lock: {waited:?}");
+        assert!(admin.is_dir(), "its git folder stays meanwhile");
+        drop(held);
+        removing.await.unwrap();
+        assert!(!admin.exists() && !at.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The check's own checkout is HEAD's commits and nothing else of the job's: not a file left
     /// uncommitted, not one a `.gitignore` hides, not what a process the turn left behind writes
     /// into the job's worktree after the gate; and it's gone after.
@@ -1867,7 +1918,10 @@ required = false
         );
         let head = head_of(&job).await.unwrap();
         let at = dir.join("checks/job-1");
-        let check = fresh_checkout(&job, &base, &head, &at, &[]).await.unwrap();
+        let lock = tokio::sync::Mutex::new(());
+        let check = fresh_checkout(&job, &base, &head, &at, &[], &lock)
+            .await
+            .unwrap();
         // After the gate: what a survivor would write into the job's worktree.
         std::fs::write(job.worktree.join("run.sh"), "echo REWRITTEN\n").unwrap();
         assert!(!check.worktree.starts_with(&job.worktree) && !check.temp.starts_with(&job.temp));
@@ -1889,7 +1943,7 @@ required = false
             )
             .is_ok_and(|a| a.contains("job"))
         );
-        remove_checkout(&check, &at).await.unwrap();
+        remove_checkout(&check, &at, &lock).await.unwrap();
         assert!(!at.exists() && !check.git_admin.unwrap().exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

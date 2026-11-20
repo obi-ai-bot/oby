@@ -95,8 +95,10 @@ impl Jobs {
         if failed.is_none() && !stopped {
             return Ok(checkout);
         }
+        let lock = self.checkout_lock(id);
         if at != self.check_home(id)
-            && let Err(why) = Box::pin(crate::secretspec::remove_checkout(&checkout.0, at)).await
+            && let Err(why) =
+                Box::pin(crate::secretspec::remove_checkout(&checkout.0, at, &lock)).await
         {
             tracing::warn!("job {id}: {why}");
         }

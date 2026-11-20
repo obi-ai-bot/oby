@@ -1766,26 +1766,6 @@ impl Jobs {
         self.config.home.join("checks").join(id)
     }
 
-    /// Removes job `id`'s own check checkout and what its checks built there, once its worker
-    /// ended: never another job's (cargo could run another checkout's binary).
-    async fn drop_checkout(&self, id: &str) {
-        let at = self.check_home(id);
-        let Some(job) = self.get(id).filter(|_| at.exists()) else {
-            return;
-        };
-        let common = self.clone_for(&job).join(".git");
-        let name = format!("check-{id}");
-        let check = Spec {
-            worktree: at.join(&name),
-            git_admin: Some(common.join("worktrees").join(&name)),
-            git_common: Some(common),
-            ..Spec::default()
-        };
-        if let Err(why) = crate::secretspec::remove_checkout(&check, &at).await {
-            tracing::warn!("job {id}: {why}");
-        }
-    }
-
     /// What checks a stopped obid cut short left behind: their checkouts (`home/checks`) and
     /// their git folders in the clones (`worktrees/check-*`). Nothing checks before it runs.
     fn sweep_checks(&self) {
@@ -3555,17 +3535,19 @@ impl Jobs {
             tracing::error!("can't forget job {id}: {e}");
         }
         let clone = self.clone_for(&job);
+        // Under the lock the clone is got ready with: removing its worktree while another's is
+        // added fails that add (#2626); `git branch -D` rewrites its .git/config (it drops the
+        // branch's section, there or not), and a `git config` of git::ensure_clone meanwhile fails
+        // on git's lock, and with it another job's start.
+        let preparing = self.preparing(&job.repo);
+        let preparing = preparing.lock().await;
         self.remove_folders(&clone, id).await;
         self.transcripts.remove(id);
         // Only a branch no other job uses, and only the clone's: what was pushed stays remote.
         if !branch_stays && git::is_branch_name(&job.branch) {
-            // Under the lock the clone is got ready with: `git branch -D` rewrites its .git/config
-            // (it drops the branch's section, there or not), and a `git config` of git::ensure_clone
-            // meanwhile fails on git's lock, and with it another job's start.
-            let preparing = self.preparing(&job.repo);
-            let _preparing = preparing.lock().await;
             let _ = git::git(&clone, &["branch", "-D", "--", &job.branch]).await;
         }
+        drop(preparing);
         self.events.send("job", json!({"id": id, "deleted": true}));
         self.changed.notify_waiters();
         Some(Ok(branch_stays))
@@ -11142,6 +11124,82 @@ mod tests {
             "no step left"
         );
         drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #2626: every worktree obid adds or removes in a clone waits for the clone's lock, as a job's
+    /// start holds it while it adds the job's own: git can't make or remove two at once (an add
+    /// reads every other worktree's git folder and fails on one half made or half gone). Deleting a
+    /// job removes its worktree under it, and so does dropping its check's checkout.
+    #[tokio::test]
+    async fn worktrees_go_only_under_the_clones_lock() {
+        let root =
+            std::env::temp_dir().join(format!("obid-worktree-lock-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let job = |id: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "build".into(),
+                "Build it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = Status::Done;
+            job.base = Some("main".into());
+            job.branch = format!("oby/build-{id}");
+            job
+        };
+        let (deleted, checked) = (job("eeee0005"), job("eeee0006"));
+        let clone = git::clone_path(&home, "o/r");
+        std::fs::create_dir_all(&clone).unwrap();
+        cleanup_git(&clone, &["init", "-q"]);
+        cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let jobs = jobs_with_kept(&home, &[&deleted, &checked]);
+        let worktree = jobs.worktree_path("eeee0005");
+        cleanup_git(
+            &clone,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let checkout = jobs.check_home("eeee0006").join("check-eeee0006");
+        cleanup_git(
+            &clone,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        let wait = Duration::from_secs(2);
+        // Another job is adding its worktree to the clone.
+        let preparing = jobs.preparing("o/r");
+        let held = preparing.lock().await;
+        let mut deleting = Box::pin(jobs.delete("eeee0005"));
+        let waited = tokio::time::timeout(wait, &mut deleting).await;
+        assert!(waited.is_err(), "deleting waits on the lock: {waited:?}");
+        assert!(
+            worktree.is_dir(),
+            "the deleted job's worktree is still there"
+        );
+        let mut dropping = Box::pin(jobs.drop_checkout("eeee0006"));
+        let waited = tokio::time::timeout(wait, &mut dropping).await;
+        assert!(
+            waited.is_err(),
+            "the check's checkout waits on the lock: {waited:?}"
+        );
+        assert!(checkout.is_dir(), "the check's checkout is still there");
+        drop(held);
+        assert!(matches!(deleting.await, Some(Ok(false))));
+        dropping.await;
+        assert!(!worktree.exists() && !checkout.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
