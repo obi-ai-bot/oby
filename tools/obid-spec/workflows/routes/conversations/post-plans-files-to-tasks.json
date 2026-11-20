@@ -1,0 +1,193 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: files that reach a task",
+  "version": "1.0.0",
+  "description": "A task started from words with files gets them in its .obi/inputs and starts untrusted (ATTACH-6); files with no words to a finished task start its follow-up, with them in its .obi/inputs and untrusted (ATTACH-13).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=shot.png",
+        "raw": "PNG pixels",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\"}",
+          "new": true,
+          "attachments": [
+            "${state.shot.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "attach-6-the-task-is-untrusted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.said.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "untrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-6"
+        ]
+      }
+    },
+    {
+      "id": "attach-6-the-file-in-its-inputs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.said.body.jobs.0.id}/.obi/inputs/shot.png",
+        "expect": {
+          "text": "PNG pixels"
+        },
+        "within": 120
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-6"
+        ]
+      }
+    },
+    {
+      "id": "looked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.looked.body.jobs.0.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "more",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=more.png",
+        "raw": "more pixels",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "attach-13-files-alone-follow-it-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.looked.body.jobs.0.id}/messages",
+        "body": {
+          "text": "",
+          "attachments": [
+            "${state.more.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "untrusted": true,
+            "id": {
+              "$ne": "${state.looked.body.jobs.0.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-13"
+        ]
+      }
+    },
+    {
+      "id": "attach-13-in-the-follow-ups-inputs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.attach-13-files-alone-follow-it-up.body.id}/.obi/inputs/more.png",
+        "expect": {
+          "text": "more pixels"
+        },
+        "within": 120
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-13"
+        ]
+      }
+    }
+  ]
+}

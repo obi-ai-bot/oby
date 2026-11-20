@@ -55,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         .chain(obid_spec::t3_tasks::NODES.iter().copied())
         .chain(obid_spec::lab::nodes())
         .chain(obid_spec::t3_conversations::NODES.iter().copied())
+        .chain(obid_spec::coverage_conversations::NODES.iter().copied())
         .chain([("cleanup", "Stops every process this workflow started.")])
     {
         registry.register_typed(SpecNode {

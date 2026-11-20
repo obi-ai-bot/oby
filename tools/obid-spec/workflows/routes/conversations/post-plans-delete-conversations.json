@@ -1,0 +1,425 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: conversations listed by date and deleted on Confirm",
+  "version": "1.0.0",
+  "description": "Asked about its conversations, Oby lists them with when each was made and last used; a delete of one obid doesn't keep is refused and asks nothing; a delete waits for one Confirm that says how many and when each was last used; one the owner used meanwhile stays, and the tasks they started stay (CONVERSATION-AGENT-23).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "old",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "older",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "used",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "asking",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_conversations {}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "${state.old.body.conversation}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-the-one-with-a-task-listed",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.asking.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$contains": "${state.older.body.conversation}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-the-third-listed",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.asking.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$contains": "${state.used.body.conversation}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-with-when-last-used",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.asking.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$contains": "\"lastActivity\":\"20"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-and-this-one-said",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.asking.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$matches": "\"id\":\"${state.asking.body.conversation}\"[^}]*\"thisConversation\":true"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-one-it-doesnt-keep-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_delete_conversations {\"ids\": [\"${state.old.body.conversation}\", \"nope\"]}",
+          "conversation": "${state.asking.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "There's no conversation nope"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-and-nothing-asked",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "confirm": {
+                  "action": "delete_conversations"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-a-delete-waits-for-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_delete_conversations {\"ids\": [\"${state.old.body.conversation}\", \"${state.older.body.conversation}\", \"${state.used.body.conversation}\"]}",
+          "conversation": "${state.asking.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Delete 3 conversations waits for your OK"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-one-confirm-for-them-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "confirm": {
+              "action": "delete_conversations"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "confirm": {
+                    "action": "delete_conversations"
+                  },
+                  "title": "Delete 3 conversations",
+                  "text": {
+                    "$contains": "(last used 20"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-nothing-gone-yet",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 4
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "used-meanwhile",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "conversation": "${state.used.body.conversation}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "confirmed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.conversation-agent-23-one-confirm-for-them-all.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.conversation-agent-23-one-confirm-for-them-all.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-23-the-named-ones-gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "id": {
+                  "$oneOf": [
+                    "${state.old.body.conversation}",
+                    "${state.older.body.conversation}"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-the-one-used-meanwhile-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "${state.used.body.conversation}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-23-the-tasks-they-started-stay",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.older.body.jobs.0.id}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-23"
+        ]
+      }
+    }
+  ]
+}

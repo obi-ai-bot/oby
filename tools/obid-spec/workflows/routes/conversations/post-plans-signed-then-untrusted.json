@@ -1,0 +1,695 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a signed turn that read untrusted text",
+  "version": "1.0.0",
+  "description": "A signed turn that reads untrusted text mid-turn is no longer the owner's word: answering a card, Settings that widen, a merge, a write on GitHub and check-ins each become a Confirm naming its conversation, and nothing is done (TASKCONV-6, 11); the owner's taps then do each: the Settings, the check-ins, a review of the head GitHub has (TASKCONV-8) and a merge at the head the card named (TASKCONV-7); a merge card whose pull request moved since merges nothing (TASKCONV-7); every attempt is in the use log as the conversation's.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "person": {
+          "github/pull.json": {
+            "state": "open",
+            "merged": false,
+            "head": {
+              "sha": "abcdef0123456789"
+            },
+            "base": {
+              "ref": "main"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_offer {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "offer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "start"
+          }
+        },
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "start"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-second-later",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "taskconv-6-answering-a-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_answer {\"item\": \"${state.offer.picked.id}\", \"answer\": \"Start\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-6-settings-that-widen",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_settings {\"maxRunning\": 20}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-7-a-merge",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_merge {\"repo\": \"o/r\", \"pr\": 3}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6",
+          "TASKCONV-7"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-8-a-write-on-github",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_github_write {\"repo\": \"o/r\", \"action\": \"approve\", \"number\": 3, \"body\": \"LGTM\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6",
+          "TASKCONV-8"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-11-check-ins",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_check_in {\"schedule\": {\"every\": \"daily\", \"at\": \"08:30\"}, \"zone\": \"UTC\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6",
+          "TASKCONV-11"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-6-nothing-started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-6-nothing-merged-or-approved",
+      "use": "runtime.rust:conversations.person-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/merges",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6"
+        ]
+      }
+    },
+    {
+      "id": "merge",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "title": {
+              "$matches": "^Merge o/r#3 into main at abcdef0 \\(squash\\)"
+            },
+            "conversation": "${state.said.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "title": {
+                  "$matches": "^Merge o/r#3 into main at abcdef0 \\(squash\\)"
+                },
+                "conversation": "${state.said.body.conversation}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-7"
+        ]
+      }
+    },
+    {
+      "id": "approve",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "title": {
+              "$matches": "^Approve o/r#3 at abcdef0 on GitHub"
+            },
+            "text": {
+              "$contains": "> LGTM"
+            },
+            "conversation": "${state.said.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "title": {
+                  "$matches": "^Approve o/r#3 at abcdef0 on GitHub"
+                },
+                "text": {
+                  "$contains": "> LGTM"
+                },
+                "conversation": "${state.said.body.conversation}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-8"
+        ]
+      }
+    },
+    {
+      "id": "settings",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "title": {
+              "$matches": "^Change Settings: 20 tasks at once"
+            },
+            "conversation": "${state.said.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "title": {
+                  "$matches": "^Change Settings: 20 tasks at once"
+                },
+                "conversation": "${state.said.body.conversation}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6"
+        ]
+      }
+    },
+    {
+      "id": "check-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "title": {
+              "$matches": "^Check in with you"
+            },
+            "conversation": "${state.said.body.conversation}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "title": {
+                  "$matches": "^Check in with you"
+                },
+                "conversation": "${state.said.body.conversation}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-11"
+        ]
+      }
+    },
+    {
+      "id": "settings-tapped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.settings.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.settings.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-6-the-tap-saved-the-settings",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/settings/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 20
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-6"
+        ]
+      }
+    },
+    {
+      "id": "check-in-tapped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.check-in.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.check-in.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-11-the-tap-turned-check-ins-on",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "settings.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "checkIn.zone": "UTC"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-11"
+        ]
+      }
+    },
+    {
+      "id": "approve-tapped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.approve.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.approve.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-8-a-review-of-the-head-github-has",
+      "use": "runtime.rust:conversations.person-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/approvals",
+        "expect": {
+          "text": {
+            "$matches": "repos/o/r/pulls/3/reviews[^\\n]*\"commit_id\":\"abcdef0123456789\""
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-8"
+        ]
+      }
+    },
+    {
+      "id": "merge-tapped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.merge.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.merge.picked.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-7-merged-at-the-head-the-card-named",
+      "use": "runtime.rust:conversations.person-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/merges",
+        "expect": {
+          "text": {
+            "$matches": "^repos/o/r/pulls/3/merge [^\\n]*\"sha\":\"abcdef0123456789\"[^\\n]*\\n$"
+          }
+        },
+        "within": 10
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-7"
+        ]
+      }
+    },
+    {
+      "id": "merge-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "READREPO OBY oby_merge {\"repo\": \"o/r\", \"pr\": 3}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "waits for"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "it-moved",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "github/pull.json",
+        "content": {
+          "state": "open",
+          "merged": false,
+          "head": {
+            "sha": "9999999999999999"
+          },
+          "base": {
+            "ref": "main"
+          }
+        }
+      }
+    },
+    {
+      "id": "moved",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "kind": "confirm",
+            "title": {
+              "$matches": "^Merge o/r#3 into main at abcdef0"
+            }
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "confirm",
+                "title": {
+                  "$matches": "^Merge o/r#3 into main at abcdef0"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "taskconv-7-a-card-whose-pull-request-moved-merges-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.moved.picked.id}/answer",
+        "confirm": {
+          "device": "${state.device}",
+          "item": "${state.moved.picked.id}"
+        },
+        "expect": {
+          "status": 409,
+          "text": {
+            "$contains": "it moved since the card"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-7"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-7-still-one-merge",
+      "use": "runtime.rust:conversations.person-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/merges",
+        "expect": {
+          "text": {
+            "$matches": "^[^\\n]+\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-7"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-7-every-attempt-in-the-use-log",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "vault/uses.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "conversation-${state.said.body.conversation}[^\\n]*\"connection\":\"github\"|\"connection\":\"github\"[^\\n]*conversation-${state.said.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-7"
+        ]
+      }
+    }
+  ]
+}
