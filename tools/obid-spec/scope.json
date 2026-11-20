@@ -29,6 +29,9 @@
           "elsewhere": {
             "SPHERE-3": "the Electron side panel showing the joined Obysphere (apps/electron sphere.test.ts)",
             "SPHERE-7": "the Electron app's member rows and settings (apps/electron)",
+            "SPHERE-11": "the Electron Obysphere settings' members' keys and Verify (apps/electron sphereTrust.test.tsx)",
+            "SPHERE-12": "the Electron look-alike mark in settings and the thread (apps/electron sphereTrust.test.tsx)",
+            "SPHERE-13": "the Electron Obysphere settings' remembered decisions and Forget (apps/electron sphereTrust.test.tsx); obid's half is sphere_api.rs",
             "SPHERE-14": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)",
             "SPHERE-15": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)",
             "SPHERE-16": "the Electron side panel's Invite and Leave menu (apps/electron sphereMenu.test.tsx)"
