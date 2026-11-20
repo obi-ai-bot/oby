@@ -372,6 +372,12 @@ pub async fn serve(
     // and every other call waits until it's ready (Door).
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let (opened, door) = Door::open(token.clone(), &stopwatch);
+    // Each API connection's send buffer stays small, so a slow reader of a tab's live stream
+    // drops frames rather than queueing them in the socket (crate::browser::send_buffer).
+    let listener =
+        axum::serve::ListenerExt::tap_io(listener, |connection: &mut tokio::net::TcpStream| {
+            crate::browser::send_buffer::small_send_buffer(connection)
+        });
     let server = tokio::spawn(
         axum::serve(listener, door)
             .with_graceful_shutdown(async move {

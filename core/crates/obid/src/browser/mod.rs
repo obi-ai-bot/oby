@@ -34,6 +34,7 @@ pub mod driver;
 pub mod engine;
 pub mod install;
 pub mod routes;
+pub mod send_buffer;
 mod service;
 mod tools;
 
