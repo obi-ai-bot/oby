@@ -377,7 +377,8 @@
       "ui": {
         "proves": [
           "RECOVERY-3"
-        ]
+        ],
+        "flaky": "#2761: one disk-stalled window makes a writing job idle and stalls it before RECOVERY-3's 5 tries"
       }
     },
     {
