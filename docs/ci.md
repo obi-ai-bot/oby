@@ -4,7 +4,7 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 
 ## Before a push
 
-`scripts/preflight.sh` (docs/contracts/ci.md, CI-69) runs the checks GitHub fails a pull request on that a minute can run: the Brain's repo checks (`tools/brain/test/repo.test.ts`), `obid-spec coverage --gate`, and `cargo fmt --check` and clippy `-D warnings` where Rust changed. It names each miss with what to change, and is required before every push (AGENTS.md, "How we work"). Its first run in a fresh worktree installs the Brain's npm packages and builds with cargo for a few minutes; `scripts/preflight-test.sh` is its own test.
+`scripts/preflight.sh` (docs/contracts/ci.md, CI-69) runs the checks GitHub fails a pull request on that a minute can run: the Brain's repo checks (`tools/brain/test/repo.test.ts`), `obid-spec coverage --gate`, `obid-spec run` of each obid-spec workflow the change touches (but the lab's, run by hand), and `cargo fmt --check` and clippy `-D warnings` where Rust changed. It names each miss with what to change, and is required before every push (AGENTS.md, "How we work"). Its first run in a fresh worktree installs the Brain's npm packages and builds with cargo for a few minutes; `scripts/preflight-test.sh` is its own test.
 
 ## What GitHub runs
 
