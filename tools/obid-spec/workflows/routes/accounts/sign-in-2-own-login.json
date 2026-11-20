@@ -1,0 +1,115 @@
+{
+  "schemaVersion": "2",
+  "name": "SIGN-IN-2: the tool's own login is signed in with the tool itself",
+  "version": "1.0.0",
+  "description": "An account with no folder of obid's (Codex's own login, in the person's home) is signed in with Codex itself: its sign-in answers 409 `ownLogin`, and obid makes no folder for it.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "agents": {
+            "codex": {
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": null
+                }
+              ]
+            }
+          }
+        },
+        "person": {
+          ".codex/auth.json": "{\"OPENAI_API_KEY\": \"obid-spec-codex\"}"
+        }
+      }
+    },
+    {
+      "id": "the-own-login-is-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "codex",
+                "agent": "codex"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sign-in-2-the-tools-own-login-is-409-ownlogin",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/codex/sign-in",
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "ownLogin"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-2"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-2-no-code-is-taken-for-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/codex/sign-in",
+        "body": {
+          "code": "good-code#fake"
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-2"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-2-obid-made-it-no-folder",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/codex",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-2"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "schemaVersion": "2",
+  "name": "SIGN-IN-3: a login file that is a link is never signed in through",
+  "version": "1.0.0",
+  "description": "A Codex account whose auth.json, and a Claude Code account whose .credentials.json, is a symbolic link: its sign-in answers 409 `folderUnsafe` and the file it points to is left as it was.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude"
+      }
+    },
+    {
+      "id": "cx",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "name": "Work"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "elsewhere",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "elsewhere/auth.json",
+        "content": "{\"OPENAI_API_KEY\": \"obid-spec-elsewhere\"}"
+      }
+    },
+    {
+      "id": "auth-is-a-link",
+      "use": "runtime.rust:accounts.link",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.cx.body.id}/auth.json",
+        "to": "elsewhere/auth.json"
+      }
+    },
+    {
+      "id": "sign-in-3-a-login-file-that-is-a-link-is-409-folderunsafe",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.cx.body.id}/sign-in",
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "folderUnsafe"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-3"
+        ]
+      }
+    },
+    {
+      "id": "sign-in-3-what-it-points-to-is-untouched",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "elsewhere/auth.json",
+        "expect": {
+          "json": {
+            "OPENAI_API_KEY": "obid-spec-elsewhere"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-3"
+        ]
+      }
+    },
+    {
+      "id": "cl",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "claude",
+          "name": "Mine"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "credentials-is-a-link",
+      "use": "runtime.rust:accounts.link",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "accounts/${state.cl.body.id}/.credentials.json",
+        "to": "elsewhere/auth.json"
+      }
+    },
+    {
+      "id": "sign-in-3-claude-codes-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.cl.body.id}/sign-in",
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "folderUnsafe"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "SIGN-IN-3"
+        ]
+      }
+    }
+  ]
+}

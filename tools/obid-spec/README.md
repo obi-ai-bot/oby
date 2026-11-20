@@ -96,6 +96,17 @@ applies to obid gets workflows here, driving the real obid with its stand-in age
 tools/obid-spec/target/debug/obid-spec run --tag t3
 ```
 
+## The accounts area's scenarios
+
+The owner's decision of 2026-11-20 ("Yes, both"): every piece of obid's logic is proven through the
+suite, area by area, despite the freeze above. The accounts area's scenario workflows sit beside its
+route workflows in `workflows/routes/accounts/`, named after the scenario they prove first
+(`accounts-7-the-same-login-twice.json`), each with the route it drives most as its trigger. Its own
+nodes, `src/coverage_accounts.rs`, only act or read: `accounts.exec` (an executable stand-in: a tool
+with another version, one that fails or hangs, a `cursor-agent` with a known model list),
+`accounts.link` (a login file that is a link) and `accounts.log` (the scratch obid's own log, so a
+`check` proves a login's secret never reached it, or counts the lines that say something).
+
 ## How it runs
 
 The host, `obid-spec`, reads the workflows and judges each step. The nodes run in a second binary,
