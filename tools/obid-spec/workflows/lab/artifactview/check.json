@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact view: oby_artifact_check returns a picture and a board's thrown error",
+  "version": "1.0.0",
+  "description": "LAB-ARTVIEW-11 (src/lab/artifactview.rs: check). An agent's folder, before it is published, drawn as it would be: for a design with a board whose renderVals throws and one whose logic doesn't parse, the check answers not ok, with each mistake under its board's name and a picture of each board; the good board draws. A clean design answers ok with its pictures and height; so does a page.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "view",
+      "use": "runtime.rust:lab.artifactview.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "port": {
+              "$type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "broken",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "broken-design"
+      }
+    },
+    {
+      "id": "11-mistakes-by-board",
+      "use": "runtime.rust:lab.artifactview.check",
+      "inputs": {
+        "path": "${state.broken.path}",
+        "width": 400,
+        "height": 300,
+        "expect": {
+          "paths": {
+            "ok": false,
+            "kind": "design",
+            "errors": {
+              "$any": {
+                "board": "Throws.dc.html",
+                "message": {
+                  "$contains": "the lab board broke"
+                }
+              }
+            },
+            "pictures": {
+              "$len": 3
+            },
+            "pictures.0.bytes": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-11"
+        ]
+      }
+    },
+    {
+      "id": "11-unparsed-said",
+      "use": "runtime.rust:lab.artifactview.check",
+      "inputs": {
+        "path": "${state.broken.path}",
+        "board": "Unparsed.dc.html",
+        "width": 400,
+        "height": 300,
+        "expect": {
+          "paths": {
+            "ok": false,
+            "errors": {
+              "$any": {
+                "board": "Unparsed.dc.html",
+                "message": {
+                  "$contains": "SyntaxError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-11"
+        ]
+      }
+    },
+    {
+      "id": "11-the-good-board-draws",
+      "use": "runtime.rust:lab.artifactview.check",
+      "inputs": {
+        "path": "${state.broken.path}",
+        "board": "Good.dc.html",
+        "width": 400,
+        "height": 300,
+        "expect": {
+          "paths": {
+            "ok": true,
+            "errors": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-11"
+        ]
+      }
+    },
+    {
+      "id": "clean",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "11-a-clean-design",
+      "use": "runtime.rust:lab.artifactview.check",
+      "inputs": {
+        "path": "${state.clean.path}",
+        "width": 800,
+        "height": 600,
+        "expect": {
+          "paths": {
+            "ok": true,
+            "errors": {
+              "$len": 0
+            },
+            "pictures": {
+              "$len": 3
+            },
+            "height": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-11"
+        ]
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "11-a-page",
+      "use": "runtime.rust:lab.artifactview.check",
+      "inputs": {
+        "path": "${state.page.path}",
+        "expect": {
+          "paths": {
+            "ok": true,
+            "kind": "html",
+            "pictures": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTVIEW-11"
+        ]
+      }
+    }
+  ]
+}

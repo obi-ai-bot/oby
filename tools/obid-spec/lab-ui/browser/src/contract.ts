@@ -103,6 +103,40 @@ export interface Tab {
   ask: Ask | null;
   /// The dialog the page shows (the page's words), if any.
   dialog: string | null;
+  /// What the tab shows (add-only: missing is "page"). An artifact tab is drawn by the app itself
+  /// from Oby's artifact, never streamed, and never an agent's.
+  kind?: TabKind;
+  /// The artifact an artifact tab shows; absent on a page.
+  artifact?: ArtifactRef;
+}
+
+/// What a tab shows (Oby Artifacts): a web page, or one of Oby's artifacts.
+export const TAB_KINDS = ["page", "artifact"] as const;
+export type TabKind = (typeof TAB_KINDS)[number];
+
+/// Which artifact an artifact tab shows; `latest` follows the newest version.
+export interface ArtifactRef {
+  id: string;
+  version: number;
+  latest: boolean;
+}
+
+/// The artifact tab's routes, apart from ROUTES: open (POST PATH_TABS with OpenArtifactBody,
+/// signed), pin a version (VersionBody; null follows the latest again), close.
+export const VERB_VERSION = "version";
+export const VERB_CLOSE = "close";
+export const ARTIFACT_TAB_ROUTES = [
+  "POST /v1/browser/tabs",
+  "POST /v1/browser/tabs/{id}/version",
+  "POST /v1/browser/tabs/{id}/close",
+] as const;
+
+export interface OpenArtifactBody {
+  artifact: string;
+}
+
+export interface VersionBody {
+  version: number | null;
 }
 
 export interface TabsAnswer {
@@ -362,6 +396,8 @@ export const REASONS = [
   "bad_request",
   "browser_starting",
   "no_dialog",
+  // An artifact tab: drawn by the app, never streamed, taken or driven (Oby Artifacts).
+  "artifact_tab",
 ] as const;
 export type Reason = (typeof REASONS)[number];
 
