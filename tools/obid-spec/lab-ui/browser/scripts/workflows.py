@@ -1,4 +1,4 @@
-# Writes tools/obid-spec/workflows/lab/ui/*.json: one workflow per design board (LAB-UI-n), the five
+# Writes tools/obid-spec/workflows/lab/ui/*.json: one workflow per design board (LAB-UI-n), the six
 # live ones on lane A's API (LAB-UI-LIVE-n), the cleanup's proof and board 15's real Stop. Edit here,
 # then: python3 tools/obid-spec/lab-ui/browser/scripts/workflows.py
 import json, os, sys
@@ -341,7 +341,7 @@ wf(17, "first-use", "first use: no pages yet, type an address",
 def api(id, node, inputs):
     return {"id": id, "use": f"runtime.rust:lab.browserapi.{node}", "inputs": inputs}
 UP = "${state.up}"
-def live_head(n, job="j1", agent="codex", delay=None):
+def live_head(n, job="j1", agent="codex", delay=None, slow_reads=None):
     j = {"api": UP, "job": job, "agent": agent, "expect": {"paths": {"token": {"$type": "string"}}}}
     if delay: j["commitDelayMs"] = delay
     return [
@@ -349,7 +349,7 @@ def live_head(n, job="j1", agent="codex", delay=None):
         api("device", "device", {"expect": {"paths": {"id": {"$contains": "device-"}}}}),
         api(job, "job", j),
         api("open-site", "mcp", {"api": UP, "token": f"${{state.{job}.token}}", "tool": "oby_browser_open", "args": {"url": "${state.up.site.url}/"}, "expect": {"paths": {"isError": False}}}),
-        step("serve", "serve", {"api": UP, "device": "${state.device}", "expect": {"paths": {"live": True, "signs": True}}}),
+        step("serve", "serve", {"api": UP, "device": "${state.device}", **({"slowReadsMs": slow_reads} if slow_reads else {}), "expect": {"paths": {"live": True, "signs": True}}}),
         step("screen", "open", {"server": "${state.serve}", "board": n, "live": True}),
         read("live-frame", css("[data-lab=frame]"), {"count": 1}, within=20),
     ]
@@ -466,6 +466,16 @@ def desk(id, node, inputs, proves=None):
     if proves: s["ui"] = {"proves": [proves]}
     return s
 SNAP = lambda id: desk(id, "tool", {"conversation": "c1", "tool": "oby_desktop_snapshot", "app": "${state.app}", "args": {}, "expect": {"paths": {"ok": True}}})
+lwf(6, "live-older-list", "live: a list answer older than an event never rolls the screen back",
+    "Live (board 2's screen) on lane A's API, with the screens' server slow: each answer to GET /v1/browser and /v1/browser/downloads is held 3 s after the API gave it (a busy main process). The screen reloads, so its first read of the list is still on its way while the agent's page fails to load (127.0.0.1:2) and the failure arrives as an event: the screen shows This page didn't load, and still shows it after the older list lands, because the list carries the last event it reflects (`seq`) and an answer older than what the screen already applied is not taken. The screen never re-reads the list on a timer.",
+    live_head(2, slow_reads=3000) + [
+     step("reload", "reload", {"screen": S}),
+     read("tab-from-the-events", css(".br-tab.is-on .br-tab-name"), {"count": 1, "text": "Sign in to the lab"}, within=10),
+     api("refused", "mcp", {"api": UP, "token": "${state.j1.token}", "tool": "oby_browser_navigate", "args": {"url": "http://127.0.0.1:2/", "tab": TAB}, "expect": {"paths": {"isError": True}}}),
+     get("api-says-failed", {"status": 200, "body.tabs.0.state": "failed"}),
+     read("didnt-load-and-stays", css("[data-lab=page-failed]"), {"count": 1, "text": {"$contains": "This page didn’t load"}}, "LAB-UI-LIVE-6", within=10, hold=6000),
+    ])
+
 w = {"schemaVersion": "2", "name": "Lab browser screens 15: Stop takes the Mac back from the agent, on agent-desktop", "version": "1.0.0",
      "description": "Board 15's Stop, for real: a conversation drives the lab's own test app through agent-desktop (an invisible AppKit window, never activated); Stop is the person taking the desktop, after which the agent's click and keys are refused (human_control) while its reads go on; giving it back lets it act again. Skipped off macOS, without agent-desktop or without its Accessibility and Screen Recording permissions.",
      "trigger": {"manual": {}}, "tags": ["lab"], "steps": [

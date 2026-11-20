@@ -27,7 +27,7 @@ use crate::procs;
 
 /// Every `lab.ui.*` node: its name, what it does.
 pub const NODES: &[(&str, &str)] = &[
-    ("lab.ui.serve", "Builds the browser's screens (tools/obid-spec/lab-ui/browser) into the workflow's folder and serves them on 127.0.0.1 on a free port, first installing their packages from the lockfile (npm ci) when missing or stale; `api`: lane A's browser API, proxied for live mode. Skipped only without npm."),
+    ("lab.ui.serve", "Builds the browser's screens (tools/obid-spec/lab-ui/browser) into the workflow's folder and serves them on 127.0.0.1 on a free port, first installing their packages from the lockfile (npm ci) when missing or stale; `api`: lane A's browser API, proxied for live mode; `slowReadsMs` holds each answer to GET /v1/browser and /v1/browser/downloads that long (a busy main process). Skipped only without npm."),
     ("lab.ui.open", "Opens a board's screen (`board`: 1 to 17, `live` for lane A's API) in Chrome for Testing, headless, at the board's own size, with a profile in the workflow's folder; one helper per `name`. Skipped without Chrome for Testing."),
     ("lab.ui.click", "Clicks (or `hover`s) one element of the screen, at its middle or at `position` {x, y} in it: a target by role and name, label, text or css."),
     ("lab.ui.type", "Types `text` into the screen (into `target` first, when given); answers only how many characters."),
@@ -262,6 +262,7 @@ async fn serve(run: &Run, input: &Value) -> Result<Value> {
         .env_remove("LAB_BROWSER_API")
         .env_remove("LAB_BROWSER_TOKEN")
         .env_remove("LAB_BROWSER_DEVICE")
+        .env_remove("LAB_BROWSER_SLOW_READS_MS")
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::fs::File::create(
             folder.join(format!("serve-{port}.log")),
@@ -276,6 +277,10 @@ async fn serve(run: &Run, input: &Value) -> Result<Value> {
     }
     if let Some(d) = &device {
         cmd.env("LAB_BROWSER_DEVICE", d);
+    }
+    // A busy main process: the list's answers held this long (LAB-UI-LIVE-6).
+    if let Some(ms) = input["slowReadsMs"].as_u64() {
+        cmd.env("LAB_BROWSER_SLOW_READS_MS", ms.to_string());
     }
     let mut child = cmd.spawn().context("vite preview didn't start")?;
     let pid = child.id().context("vite preview ended at once")?;

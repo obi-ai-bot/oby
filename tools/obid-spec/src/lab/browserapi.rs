@@ -889,6 +889,7 @@ impl Api {
                 .keys()
                 .filter_map(|j| self.job_browser(j))
                 .collect(),
+            seq: self.last_seq(),
         }
     }
 
@@ -1036,6 +1037,7 @@ impl Api {
     pub fn downloads(&self) -> c::DownloadsAnswer {
         c::DownloadsAnswer {
             downloads: self.downloads.clone(),
+            seq: self.last_seq(),
         }
     }
 
@@ -3632,6 +3634,34 @@ mod tests {
         );
         let seqs: Vec<u64> = a.events_after(0).iter().map(|e| e.seq).collect();
         assert!(seqs.windows(2).all(|w| w[0] + 1 == w[1]));
+    }
+
+    /// The lists carry the last event they reflect, so a reader can tell an answer older than an
+    /// event it applied (LAB-UI-LIVE-6): taken under the same lock as the state it shows.
+    #[test]
+    fn the_lists_carry_the_last_event_they_reflect() {
+        let mut a = Api::new(Rules::ALL, "owner");
+        assert_eq!(
+            (a.tabs().seq, a.downloads().seq),
+            (0, 0),
+            "before any event"
+        );
+        a.add_job("j1", "codex", "jt");
+        a.sync_job(
+            "j1",
+            &[json!({"tab": "tab-1", "url": "http://x/", "current": true})],
+            &json!({}),
+        );
+        let before = a.tabs();
+        a.failed("tab-1", "Navigation failed: net::ERR_CONNECTION_REFUSED");
+        let after = a.tabs();
+        assert_eq!(after.seq, a.last_seq());
+        assert_eq!(after.seq, before.seq + 1, "the failure is one event later");
+        assert_eq!(before.tabs[0].state, c::TabState::Ready);
+        assert_eq!(after.tabs[0].state, c::TabState::Failed);
+        let missed = a.events_after(before.seq);
+        assert_eq!(missed.len(), 1, "exactly what the older answer lacks");
+        assert_eq!(a.downloads().seq, a.last_seq());
     }
 
     #[test]
