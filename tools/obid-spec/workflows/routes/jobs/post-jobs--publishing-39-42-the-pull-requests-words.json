@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "2",
+  "name": "What a pull request's description says (PUBLISHING-39, 40, 41, 42)",
+  "version": "1.0.0",
+  "description": "A summary linking its file by its full worktree path goes to GitHub as the path in the repository; a path under the person's home reads ~/…; the description is rewritten before the scan reads it; its last line says Oby merges it only on the owner's word for work that isn't their own, and by itself for their own.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: calc.py LINKED See ${state.o.person}/notes/plan.md",
+            "check": "test -f calc.py"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          },
+          "paths": {
+            "summary": {
+              "$contains": "/calc.py"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-39-the-repositorys-path-not-the-macs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.o.github}"
+        },
+        "path": "calls.jsonl",
+        "expect": {
+          "text": {
+            "$matches": "Added \\[​?calc\\.py​?\\]​?\\(calc\\.py\\)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-39",
+          "PUBLISHING-41"
+        ]
+      }
+    },
+    {
+      "id": "publishing-39-no-worktree-path-goes-out",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.o.github}"
+        },
+        "path": "calls.jsonl",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "/worktrees/"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-39",
+          "PUBLISHING-41"
+        ]
+      }
+    },
+    {
+      "id": "publishing-40-the-home-reads-tilde",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.o.github}"
+        },
+        "path": "calls.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "See ~/notes/plan.md"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-40",
+          "PUBLISHING-41"
+        ]
+      }
+    },
+    {
+      "id": "publishing-40-never-the-persons-home",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.o.github}"
+        },
+        "path": "calls.jsonl",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "${state.o.person}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-40"
+        ]
+      }
+    },
+    {
+      "id": "publishing-42-not-own-work-waits-for-the-owner",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.o.github}"
+        },
+        "path": "calls.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "Oby merges it only when its owner says so."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-42"
+        ]
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "s",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "sd",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.s}"
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: own.txt"
+          }
+        },
+        "as": "device",
+        "device": "${state.sd}",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "own-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-42-own-work-merges-by-itself",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": {
+          "home": "${state.s.github}"
+        },
+        "path": "calls.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "It's its owner's own work, so Oby merges it by itself after its own review."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-42"
+        ]
+      }
+    }
+  ]
+}

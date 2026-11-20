@@ -1,0 +1,185 @@
+{
+  "schemaVersion": "2",
+  "name": "Plan asks before what doesn't only read (PERMISSIONS-5)",
+  "version": "1.0.0",
+  "description": "In Plan, what only reads runs without asking, a command that writes asks, and an edit is refused until the plan is approved.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/permission"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Bash\", \"input\": {\"command\": \"cat README.md\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"ls\"}}, {\"tool\": \"Write\", \"input\": {\"file_path\": \"a.txt\", \"content\": \"x\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"touch made.txt\"}}]",
+            "mode": "plan"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "p-0-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.p.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "touch made.txt"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-5"
+        ]
+      }
+    },
+    {
+      "id": "p-0-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.p.body.id}/permission",
+        "body": {
+          "id": "${state.p-0-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "p-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.p.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "permissions-5-0-a-read-never-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.p.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "cat README.md",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-5"
+        ]
+      }
+    },
+    {
+      "id": "permissions-5-1-a-read-never-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.p.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "ls",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-5"
+        ]
+      }
+    },
+    {
+      "id": "permissions-5-an-edit-refused-before-the-plan",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.p.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "tool": "Write",
+                "decision": "refused"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-5"
+        ]
+      }
+    }
+  ]
+}

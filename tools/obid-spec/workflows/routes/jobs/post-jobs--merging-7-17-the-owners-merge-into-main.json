@@ -1,0 +1,263 @@
+{
+  "schemaVersion": "2",
+  "name": "Into main only the owner's Merge merges (MERGING-7, 17, 20, 21)",
+  "version": "1.0.0",
+  "description": "Work that isn't the owner's own, approved by Oby's review, doesn't merge into main by itself: it gets Ready to merge with Merge and Leave it open, its holds each on a line; the owner's Merge squashes it onto main with their own login.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "merging-7-ready-to-merge-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 120,
+        "pick": {
+          "where": {
+            "kind": "merge",
+            "job": "${state.t.body.id}"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "merge",
+                "job": "${state.t.body.id}",
+                "options": [
+                  "Merge",
+                  "Leave it open"
+                ],
+                "title": {
+                  "$matches": "^Ready to merge: "
+                },
+                "text": {
+                  "$contains": "Its base is main, which Oby merges into only on your word."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-7",
+          "MERGING-21"
+        ]
+      }
+    },
+    {
+      "id": "merging-7-nothing-merged-by-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mergedBy": null
+          },
+          "paths": {
+            "pullRequest.state": {
+              "$ne": "MERGED"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-7"
+        ]
+      }
+    },
+    {
+      "id": "merge",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.merging-7-ready-to-merge-asks.picked.id}/answer",
+        "body": {
+          "answer": "Merge"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "merging-17-merged-on-the-owners-word",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "mergedBy": {
+              "by": "owner"
+            },
+            "mergeNeedsYou": false,
+            "mergeError": null,
+            "pullRequest": {
+              "state": "MERGED"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-17",
+          "MERGING-20"
+        ]
+      }
+    },
+    {
+      "id": "base-tree",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/main^{tree}"
+        ]
+      }
+    },
+    {
+      "id": "head-tree",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "${state.merging-17-merged-on-the-owners-word.body.pullRequest.head}^{tree}"
+        ]
+      }
+    },
+    {
+      "id": "merging-17-the-head-it-read-landed-on-main",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.base-tree.out}",
+        "expect": {
+          "body": "${state.head-tree.out}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-17"
+        ]
+      }
+    },
+    {
+      "id": "merging-17-the-card-is-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$none": {
+                "kind": "merge",
+                "job": "${state.t.body.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-17"
+        ]
+      }
+    }
+  ]
+}
