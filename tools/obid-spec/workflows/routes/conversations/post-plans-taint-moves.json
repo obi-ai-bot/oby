@@ -1,0 +1,144 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: what a conversation read goes with it",
+  "version": "1.0.0",
+  "description": "What a conversation read goes with it to another agent: a task it starts there starts marked untrusted (CONVERSATION-AGENT-5).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "WEB REMEMBER",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=none"
+          }
+        }
+      }
+    },
+    {
+      "id": "chose-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "codex"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-5-the-task-starts-untrusted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.on-codex.body.jobs.0.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "untrusted": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-5"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-5-it-was-on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "codex"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-5"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/messages: a task whose conversation is gone",
+  "version": "1.0.0",
+  "description": "A task whose conversation is gone gets a new one the first time its page's words reach it (conversation: true), and so does the follow-up they start: Oby's line naming the task, then the words and Oby's answer with the follow-up's card (TASKCONV-4).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "Look around the fixture",
+            "title": "Old task"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "gone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.job.body.conversation}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "followed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.job.body.id}/messages",
+        "body": {
+          "text": "why wasn't this merged?",
+          "conversation": true
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "taskconv-4-a-new-conversation",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "conversation": {
+              "$ne": "${state.job.body.conversation}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-4"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-4-the-follow-up-in-it-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.followed.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.taskconv-4-a-new-conversation.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-4"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-4-its-turns",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.taskconv-4-a-new-conversation.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "0.jobs": [
+              "${state.job.body.id}"
+            ],
+            "$": {
+              "$any": {
+                "who": "user",
+                "text": "why wasn't this merged?"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-4"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-4-oby-answers-with-the-follow-ups-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.taskconv-4-a-new-conversation.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "jobs": [
+                  "${state.followed.body.id}"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-4"
+        ]
+      }
+    }
+  ]
+}

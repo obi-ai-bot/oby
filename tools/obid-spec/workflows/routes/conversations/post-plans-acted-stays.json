@@ -1,0 +1,180 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a turn that acted stays on its account",
+  "version": "1.0.0",
+  "description": "The account fills in a turn that already started a job: the turn stays where it is and says it couldn't answer, nothing runs twice; one that only read moves, and says so (CONVERSATION-AGENT-3).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-3-a-turn-that-started-a-job-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REPEAT 1 OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\"} THEN FULL ON stand-in",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^I couldn't answer: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-one-job-nothing-ran-twice",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-codex-never-ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "stand-in"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-one-that-only-read-moves",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REPEAT 1 OBY oby_jobs {} THEN FULL ON stand-in",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "Stand-in hit its limit, so I moved to Codex · Codex\\.$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-3-it-answered-on-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversations",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.said.body.conversation}",
+              "talkedOn": "codex"
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-3"
+        ]
+      }
+    }
+  ]
+}

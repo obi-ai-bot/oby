@@ -1,0 +1,176 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a Codex conversation asks, and runs out of room",
+  "version": "1.0.0",
+  "description": "A Codex conversation's question (request_user_input) is the turn's answer, its text and its options' labels, and the owner's next words go to the same thread (CONVERSATION-AGENT-48); Codex's full context window on a thread it resumed with history goes on in a new thread (CONVERSATION-AGENT-16).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "conversation": {
+            "agent": "codex"
+          },
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "ASK English or French? | English | French",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "question",
+            "question": {
+              "text": "English or French?",
+              "options": [
+                "English",
+                "French"
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-48"
+        ]
+      }
+    },
+    {
+      "id": "thread",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": {
+                "$type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-48-the-pick-goes-to-the-same-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "resume=${state.thread.json.session}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-48"
+        ]
+      }
+    },
+    {
+      "id": "renamed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/codex",
+        "body": {
+          "name": "Codex renamed"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-16-codex-out-of-room-goes-on-in-a-new-thread",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OUT OF ROOM",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "new thread"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-16-a-new-thread-kept",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/session.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "session": {
+                "$ne": "${state.thread.json.session}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    }
+  ]
+}
