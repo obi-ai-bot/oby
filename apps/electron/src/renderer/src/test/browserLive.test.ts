@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP } from '../../../shared/words';
+import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP, SAVE_A_COPY } from '../../../shared/words';
 import { mayInput, sawInput } from '../../../main/browserInput';
 import { connectLive, LINGER_MS, type Sinks } from '../browser/live';
 import type { BrowserState } from '../browser/view';
@@ -75,7 +75,8 @@ function mockObid(lists: { tabs: BrowserTab[]; seq?: number; status?: number }) 
       calls.push({ method, path, body });
       if (lists.status) return { status: lists.status, text: '{"error":"Not found."}' };
       if (path === '/v1/browser') return { status: 200, text: JSON.stringify({ tabs: lists.tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, browsers: [], seq: lists.seq }) };
-      if (path === '/v1/browser/downloads') return { status: 200, text: JSON.stringify({ downloads: [], seq: lists.seq }) };
+      if (path === '/v1/browser/downloads') return { status: 200, text: JSON.stringify({ downloads: (lists as { downloads?: unknown[] }).downloads ?? [], seq: lists.seq }) };
+      if (path.endsWith('/saveCopy')) return { status: 200, text: JSON.stringify({ id: 'd1', savedAs: '/Users/someone/Downloads/invoices (1).csv' }) };
       return { status: 200, text: '{}' };
     }),
     follow: vi.fn((fn: (m: { name: string; data: string }) => void) => { push = fn; return () => { push = null; }; }),
@@ -178,5 +179,33 @@ describe('BROWSERAPP-13: an ask answered by its own button', () => {
     await live.answer('a1', 'Team · $12');
     await live.answer('a1');
     expect(o.calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', path: ANSWER, body: { choice: 'Team · $12' } }, { method: 'POST', path: ANSWER, body: {} }]);
+  });
+});
+
+describe('BROWSERAPP-15 and 16: a script\'s mark, and the agent\'s downloads', () => {
+  let state: BrowserState | null = null;
+  const sinks: Sinks = { offered: () => {}, state: (x) => { state = x; }, frame: () => {}, problem: () => {} };
+  const act = (seq: number, tool: string) => ({ seq, type: 'action', tabId: 't1', job: 'j1', tool, text: 'Clicking Invite', pointer: null, outcome: 'started', reason: null });
+
+  it('browserapp_15: a script run marks its tab until the agent does something else there', async () => {
+    const o = mockObid({ tabs: [tab('t1')], seq: 1 });
+    connectLive(sinks, o.api);
+    await settle(); await settle();
+    o.event({ seq: 2, type: 'scriptRun', tabId: 't1', job: 'j1', expression: '1+1', result: { from: 'http://localhost:3000/', what: 'page data', note: 'outside', data: 2 } });
+    expect(state?.tabs[0].ran).toEqual({});
+    o.event(act(3, 'oby_browser_act'));
+    expect(state?.tabs[0].ran).toBeUndefined();
+  });
+  it('browserapp_16: Save a copy is signed by its label, an empty body; the copy\'s name in Downloads is kept for Show in Finder', async () => {
+    expect(wordsOf('POST', '/v1/browser/downloads/d1/saveCopy', {})).toEqual([SAVE_A_COPY]);
+    expect(wordsOf('POST', '/v1/browser/downloads/d1/saveCopy', { to: '/tmp' })).toBeNull();
+    const lists = { tabs: [tab('t1')], seq: 1, downloads: [{ id: 'd1', job: 'j1', tabId: 't1', name: 'invoices.csv', startedBy: 'agent', place: 'profile', bytes: 49152 }] };
+    const o = mockObid(lists);
+    const live = connectLive(sinks, o.api);
+    await settle(); await settle();
+    expect(state?.downloads[0]).toMatchObject({ name: 'invoices.csv', size: '48 KB', by: { kind: 'agent', agent: 'codex' }, saved: false });
+    await live.saveCopy('d1');
+    expect(o.calls).toContainEqual({ method: 'POST', path: '/v1/browser/downloads/d1/saveCopy', body: {} });
+    expect(state?.downloads[0]).toMatchObject({ saved: true, savedAs: 'invoices (1).csv' });
   });
 });

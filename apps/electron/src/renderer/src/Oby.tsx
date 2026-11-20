@@ -73,6 +73,8 @@ declare global {
         watch(tab: string, fn: (data: string) => void): () => void;
         // a password or code into the page's field, filled by main on the owner's click (BROWSERAPP-12): null once filled
         fill(tab: string, field: string, value: string, ask?: string): Promise<string | null>;
+        // Show in Finder for a download in Downloads, by its name (BROWSERAPP-16)
+        reveal(name: string): Promise<boolean>;
       };
       // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {

@@ -49,6 +49,9 @@ export const SKIP = 'Skip';
 const SKIP_LABELS = [SKIP, 'Skip this page'];
 export const FILL_IN = 'Fill in';
 const BROWSER_ANSWER = /^\/v1\/browser\/asks\/[^/]+\/answer$/;
+// An agent's download copied into the owner's Downloads (BROWSERAPP-16): an empty body, by its button's label
+export const SAVE_A_COPY = 'Save a copy';
+const BROWSER_SAVE = /^\/v1\/browser\/downloads\/[^/]+\/saveCopy$/;
 
 // whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
 const named = (words: string, owner: string) =>
@@ -74,6 +77,7 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   // a browser tab's take or give back: an empty body, nothing else
   const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
   if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;
+  if (method === 'POST' && BROWSER_SAVE.test(p)) return Object.keys(body).length === 0 ? [SAVE_A_COPY] : null;
   if (method === 'POST' && BROWSER_ANSWER.test(p)) {
     if (Object.keys(body).length === 0) return [SKIP];
     return text(body.choice) && body.choice.trim() && shaped(body, { choice: text }) ? [body.choice] : null;

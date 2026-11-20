@@ -34,6 +34,8 @@ export type Tab = {
   secure?: boolean;
   /** each hold carries a number: an agent action started before your Take control is refused */
   hold?: number;
+  /** the agent ran a script in the page, and has done nothing since (11); how long it took, when known */
+  ran?: { ms?: number };
 };
 
 /**
@@ -49,6 +51,8 @@ export type Download = {
   /** an agent's (stays in its browser profile) or yours (in Downloads) */
   by: Owner;
   saved?: boolean;
+  /** its name in Downloads, once there (Save a copy may name it apart) */
+  savedAs?: string;
 };
 
 /** How the demo data draws a tab where the boards differ (obid never sets them). */
@@ -71,6 +75,8 @@ export interface BrowserApi {
   /** an ask answered: a choice, or none (Skip) */
   answer(ask: string, choice?: string): Promise<void>;
   saveCopy(download: string): Promise<void>;
+  /** Show in Finder: a download in the owner's Downloads */
+  reveal(download: string): Promise<void>;
   setSettings(s: Partial<BrowserSettings>): Promise<void>;
   select(tab: string): Promise<void>;
   /** on obid: your mouse and keys on the page while you hold it */

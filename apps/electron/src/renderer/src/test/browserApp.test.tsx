@@ -120,3 +120,24 @@ describe('BROWSERAPP-11 to 13: the agent\'s asks over the message box', () => {
     expect(text('.decision-count')).toBe('2 of 3');
   });
 });
+
+describe('BROWSERAPP-14: a page that didn\'t simply load', () => {
+  let root: Root, host: HTMLDivElement;
+  beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+  afterEach(() => { act(() => root.unmount()); host.remove(); delete (window as unknown as { app?: unknown }).app; });
+
+  it('browserapp_14: on the demo data a failed page shows its words and Try again; on obid its words alone (no route for the owner yet)', async () => {
+    act(() => root.render(<BrowserProvider board={10}><BrowserPane width={640} /></BrowserProvider>));
+    act(() => (host.querySelectorAll('.br-tab')[1] as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="page-failed"]')?.textContent).toBe('This page didn’t loadlocalhost:3000 refused to connect. Is the app running?Try again');
+    act(() => root.unmount()); root = createRoot(host);
+    const tabs = [{ id: 't1', owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Dashboard', url: 'http://localhost:3000/dashboard', state: 'failed', heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null }];
+    const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
+    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {}, fill: async () => null, reveal: async () => true } };
+    await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
+    expect(host.querySelector('[data-browser="page-failed"]')?.textContent).toBe('This page didn’t loadlocalhost:3000 refused to connect. Is the app running?');
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(false);
+  });
+});

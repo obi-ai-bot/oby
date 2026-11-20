@@ -26,6 +26,9 @@
         "size": {
           "width": 1280,
           "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
         }
       }
     },

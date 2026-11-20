@@ -1,0 +1,208 @@
+{
+  "schemaVersion": "2",
+  "name": "App: downloads, the agent's stay in its browser, yours come to your Mac (board 12)",
+  "version": "1.0.0",
+  "description": "The real app on its demo data at the design's board 12 (BROWSERAPP-16): the shelf at the panel's foot says whose each file is and where it is; Save a copy puts the agent's into your Downloads and its row says so, with Show in Finder.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "mock": true,
+        "query": "browser=12",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "agents-file",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=file-csv] .br-file-about"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex downloaded it · kept in its browser, not on your Mac"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-16"
+        ]
+      }
+    },
+    {
+      "id": "your-file",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=file-pdf] .br-file-about"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "You downloaded it · in Downloads"
+          }
+        }
+      }
+    },
+    {
+      "id": "shelf-at-the-foot",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": ".br-shelf"
+        },
+        "against": {
+          "view": {
+            "css": ".br-view"
+          }
+        },
+        "expect": {
+          "paths": {
+            "view.overlap": false,
+            "view.gap": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-16"
+        ]
+      }
+    },
+    {
+      "id": "matches-board",
+      "use": "runtime.rust:app.compare",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Downloads",
+        "expect": {
+          "paths": {
+            "within": true,
+            "sameWords": true
+          }
+        },
+        "within": 10,
+        "skip": [
+          ".br-tabs-end .icon-button",
+          ".br-address",
+          ".br-control-text",
+          ".br-control .tc-option"
+        ]
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-16"
+        ]
+      }
+    },
+    {
+      "id": "shot",
+      "use": "runtime.rust:app.screenshot",
+      "inputs": {
+        "app": "${state.app}",
+        "name": "browser-12"
+      }
+    },
+    {
+      "id": "beside-board",
+      "use": "runtime.rust:app.sidebyside",
+      "inputs": {
+        "app": "${state.app}",
+        "board": "Downloads",
+        "name": "browser-12-beside-board",
+        "label": "board 12"
+      }
+    },
+    {
+      "id": "save-a-copy",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Save a copy"
+        }
+      }
+    },
+    {
+      "id": "saved",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=file-csv] .br-file-about"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": "Codex downloaded it · in Downloads"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-16"
+        ]
+      }
+    },
+    {
+      "id": "finder-twice",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Show in Finder"
+        },
+        "expect": {
+          "paths": {
+            "count": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "no-save-left",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Save a copy"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        },
+        "within": 5
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

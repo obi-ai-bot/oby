@@ -68,7 +68,7 @@ const BOARDS: Record<number, Demo> = {
       t('crashed', { owner: cursor, title: 'Reports', url: 'localhost:5173/reports', state: 'crashed' }),
     ]),
   },
-  11: { state: state([t('members', { title: 'Members · Acme', url: 'localhost:3000/workspace/members', holder: null })]), ui: { width: 600 } },
+  11: { state: state([t('members', { title: 'Members · Acme', url: 'localhost:3000/workspace/members', holder: null, ran: { ms: 18 } })]), ui: { width: 600 } },
   12: {
     state: state([t('invoices', { title: 'Invoices · Billing', url: 'billing.acme.dev/invoices', secure: true, holder: null })], {
       downloads: [
@@ -98,6 +98,7 @@ export function demoPage(tab: Tab): { page: ReactNode; label: string } {
     case 'invoices': return { page: <Site.Invoices />, label: 'Acme Billing’s invoices page' };
     case 'dash': return { page: <Site.Dashboard />, label: 'The dashboard running on devbox' };
     case 'dialog': return { page: <Site.Settings />, label: 'Acme’s settings page' };
+    case 'loading': return { page: <><Site.Bone w="40%" top={22} h={14} /><Site.Bone w="70%" /><Site.Bone w="60%" /><Site.Bone w="66%" /></>, label: 'The dashboard, loading' };
     default: return { page: null, label: tab.title };
   }
 }

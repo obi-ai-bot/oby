@@ -201,6 +201,8 @@ contextBridge.exposeInMainWorld('app', {
     // a password or code into the page's field, filled by main on the owner's press of Fill in (or
     // Enter in the card's box): main checks it saw that input itself; null once filled, else why not
     fill: (tab: string, field: string, value: string, ask?: string) => ipcRenderer.invoke('browser-fill', tab, field, value, ask ?? '', pressed(FILL_IN)) as Promise<string | null>,
+    // Show in Finder for a download in Downloads, by its name (main/browser.ts): true once shown
+    reveal: (name: string) => ipcRenderer.invoke('browser-reveal', name) as Promise<boolean>,
     watch(tab: string, fn: (data: string) => void) {
       const listener = (_: unknown, m: { tab: string; data: string }) => { if (m.tab === tab) fn(m.data); };
       ipcRenderer.on('browser-frame', listener);
