@@ -36,7 +36,7 @@ export type Spawn = (file: string, args: string[], options: { name: string; cols
 
 // at most this many shells at once, all places together
 export const MAX_TERMINALS = 8;
-// how long a closed shell has to end after SIGHUP and SIGTERM before SIGKILL
+// how long a closed shell has to end after its SIGHUP before SIGKILL
 export const KILL_GRACE_MS = 1000;
 // The process groups a shell started, as ps lists them now (macOS and Linux): each of its jobs runs
 // in a group of its own, which the shell's SIGKILL doesn't reach, so those left would run on with no
@@ -182,9 +182,11 @@ export class Terminals {
     return true;
   }
 
-  // Ends a shell and what it runs: SIGHUP, which an interactive shell passes to its jobs (it ignores
-  // SIGTERM), then SIGTERM, then SIGKILL if it's still there after the grace, with the jobs it never
-  // passed its SIGHUP to (a shell that ignores it, or a Mac too busy to run it in time)
+  // Ends a shell and what it runs: SIGHUP, which an interactive shell passes to its jobs, as
+  // Terminal.app sends; then SIGKILL if it's still there after the grace, with the jobs it never passed
+  // its SIGHUP to (a shell that ignores it, or a Mac too busy to run it in time). Never a SIGTERM right
+  // behind the SIGHUP: an interactive shell ignores it, except while it hangs up, when it can end the
+  // shell before its jobs got the SIGHUP, leaving them to run on (seen in bash 3.2)
   close(id: string) {
     const t = this.terms.get(id);
     if (!t) return false;
@@ -193,7 +195,7 @@ export class Terminals {
     t.closing = true;
     if (t.exited) return true;
     this.dying.add(t.pty);
-    for (const sig of ['SIGHUP', 'SIGTERM']) { if (t.exited) break; try { t.pty.kill(sig); } catch { /* gone already */ } }
+    try { t.pty.kill('SIGHUP'); } catch { /* gone already */ }
     const timer = setTimeout(() => { if (this.dying.delete(t.pty)) this.kill(t.pty, false); }, this.graceMs);
     timer.unref?.();
     return true;
