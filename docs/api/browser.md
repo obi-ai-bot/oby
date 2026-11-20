@@ -1,6 +1,6 @@
 ### obid only: the browser
 
-**Proposed: obid doesn't serve these routes yet.** They land, path for path, in the browser's port ([docs/contracts/browser.md](../contracts/browser.md), BROWSER-1 to 25); until then each section here is the lab's (`tools/obid-spec/src/lab/browser_contract.rs`, its TypeScript twin `tools/obid-spec/lab-ui/browser/src/contract.ts`), which the port takes as it is. Every name is camelCase on the wire. Enums the clients decode (`state`, `kind`, an event's `type`, `reason`) only grow: a client treats a value it doesn't know as the nearest it does (a state as `ready`, an event as one to ignore), never as an error.
+obid serves these routes (`core/crates/obid/src/browser/routes.rs`), path for path the lab's (`tools/obid-spec/src/lab/browser_contract.rs`); their wire types are `core/crates/obid/src/browser/contract/`, and a unit test there (`doc_guard`) keeps every key they send named here. What each scenario promises is [docs/contracts/browser.md](../contracts/browser.md) (BROWSER-1 to 25), each still `(proposed)` there until its test passes against obid. Every name is camelCase on the wire. Enums the clients decode (`state`, `kind`, an event's `type`, `reason`) only grow: a client treats a value it doesn't know as the nearest it does (a state as `ready`, an event as one to ignore), never as an error.
 
 Who calls what:
 
@@ -44,12 +44,12 @@ An error is `{"error": "<a sentence>", "reason": "<one of the reasons below>"}`.
 **A tab's routes**, `/v1/browser/tabs/{id}/…`:
 
 - `POST …/take`, signed: the device holds the tab. Answers `{"tabId", "heldBy", "holdGeneration"}`. Another device's hold: `409 held_by_other`. A take while an agent's act already runs waits for it to end.
-- `POST …/giveBack`, signed: only the holder (`409 not_holder`).
+- `POST …/giveBack`, signed: only the holder (`403 not_holder`).
 - `POST …/secret`, signed, `{"field": "<CSS selector>", "value": "<the secret>"}`: only the holder; the value goes into the page's field and nowhere else. Answers `{"tabId", "field", "filled"}`, never the value.
 - `GET …/stream`: Server-Sent Events, `event: frame`, `data: {"tabId", "seq", "data": "<base64>", "mime": "image/jpeg", "width", "height", "dropped"}`: the newest frame only; `dropped` counts the frames a slow reader missed.
-- `POST …/input`, signed, `{"kind": "mouse", "type": "mousePressed"|…, "x", "y", "button", "clickCount"}` or `{"kind": "key", "type": "keyDown"|…, "key", "code", "text"}`, in the page's CSS pixels: only from the device that holds the tab (`409 not_held` when nobody does, `not_holder` from another device). Answers `{"tabId", "delivered"}`.
+- `POST …/input`, signed, `{"type": "mouse", "eventType": "mousePressed"|"mouseReleased"|"mouseMoved"|"mouseWheel", "x", "y", "button", "clickCount", "deltaX", "deltaY"}` or `{"type": "key", "eventType": "keyDown"|"keyUp"|"char", "key", "code", "text"}`, in the page's CSS pixels: only from the device that holds the tab (`409 not_held` when nobody does, `403 not_holder` from another device). Answers `{"tabId", "delivered"}`: `delivered` names the downloads that input started, delivered to the person.
 
-**`POST /v1/browser/mcp`**: the agents' tools, MCP's JSON-RPC 2.0 over HTTP, `Authorization: Bearer <the job's broker token>` (none: `401 no_token`; another: `401 bad_token`). The server is `browser` in the agent's configuration, beside `oby` and `tetrix`, and its permission rules are `mcp__browser__<tool>`. `initialize` answers as every obid server for agents does ([agent-mcp.md](../contracts/agent-mcp.md)), with the server name `oby-browser`. `tools/list` gives these 11, each with `annotations.readOnlyHint`:
+**`POST /v1/browser/mcp`**: the agents' tools, MCP's JSON-RPC 2.0 over HTTP, `Authorization: Bearer <the job's broker token>` (none: `401 no_token`; another: `401 bad_token`). The server is `browser` in the agent's configuration, beside `oby` and `tetrix`, and its permission rules are `mcp__browser__<tool>`. `initialize` answers as every obid server for agents does ([agent-mcp.md](../contracts/agent-mcp.md)), with the server name `oby-browser`. `tools/list` gives these 11, each `{"name", "description", "inputSchema", "annotations": {"readOnlyHint"}}`:
 
 | Tool | Reads only | Does |
 |---|---|---|

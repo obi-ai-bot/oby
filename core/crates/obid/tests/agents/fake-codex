@@ -30,7 +30,10 @@
 //   QUIET            says nothing until it is ended, then in the turn obid continues says "Carried
 //                    on.", having heard its task again under "What you were last sent"
 //   DIE              exits with no result, then the same
-//   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
+//   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended; with
+//                    TOKEN FILE it first writes the token of Oby's own MCP server (its job's broker
+//                    token) to .obi/mcp-token, so a test can call obid's servers for agents as its
+//                    agent would (the browser's, BROWSER-1 to 16)
 //   SERVE PORT       starts a dev server's stand-in, a child process listening on 127.0.0.1 on a free
 //                    port it writes to .obi/serving; it stops listening once .obi/stop-serving is
 //                    there (then writes .obi/served) and lives on; the agent beats as SLEEP does
@@ -354,6 +357,9 @@ async function runTurn(turnId, prompt) {
   }
   if (task.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });
+    if (task.includes("TOKEN FILE")) {
+      writeFileSync(".obi/mcp-token", process.env[setting("mcp_servers.oby.bearer_token_env_var")] ?? "");
+    }
     let beats = 0;
     writeFileSync(".obi/beat", String(beats));
     setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);

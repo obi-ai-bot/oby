@@ -22,11 +22,19 @@
 //! The core ([`engine`], [`contract`], [`api`]) is pure: no IO, no files, no processes, no clock of
 //! its own (the caller passes the time, and [`api::browser_up`] waits on tokio's clock only). It
 //! keeps every rule on; the lab's switches that turn one off for a red proof stay in the lab.
-//! [`install`] and [`driver`] are where files and processes are. The routes, and the agents' MCP
-//! server, come in later pull requests (BROWSER-2 to 16, then 17).
+//! [`install`] and [`driver`] are where files and processes are. [`Service`] serves them: the API
+//! core, the driver and the events stream, created at obid's start, told when a job ends; its
+//! [`routes`] are the contract's paths under `/v1/browser` and the agents' MCP server
+//! (`POST /v1/browser/mcp`), and its tools run the agents' calls over the driver. Giving every
+//! agent that server in its configuration comes in a later pull request (BROWSER-17).
 
 pub mod api;
 pub mod contract;
 pub mod driver;
 pub mod engine;
 pub mod install;
+pub mod routes;
+mod service;
+mod tools;
+
+pub use service::{SWEEP_EVERY, Service};

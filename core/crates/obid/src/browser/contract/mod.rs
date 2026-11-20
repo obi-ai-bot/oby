@@ -32,6 +32,8 @@ mod ask;
 mod ask_kind;
 mod browser_state;
 mod computer;
+#[cfg(test)]
+mod doc_guard;
 mod download;
 mod downloads_answer;
 mod event;

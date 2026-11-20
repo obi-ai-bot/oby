@@ -57,6 +57,11 @@ impl Driver {
         self.epoch.elapsed().as_millis() as u64
     }
 
+    /// obid's home, under which every browser's folders are.
+    pub fn home(&self) -> &std::path::Path {
+        &self.options.home
+    }
+
     pub fn core(&self) -> &Arc<Mutex<Browsers>> {
         &self.core
     }
@@ -69,6 +74,22 @@ impl Driver {
     /// How many browsers are live now.
     pub fn live_count(&self) -> usize {
         self.live.lock().unwrap().len()
+    }
+
+    /// The jobs whose browsers are live now, or still recorded on disk: a job whose end is under
+    /// way has already left the live list but keeps its record until its processes are gone, so
+    /// stopping obid ends it again rather than leaving the record behind (`end` runs twice safely).
+    pub fn live_jobs(&self) -> Vec<String> {
+        let mut jobs: Vec<String> = self.live.lock().unwrap().keys().cloned().collect();
+        let recorded = std::fs::read_dir(LiveFile::dir(&self.options.home))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| LiveFile::read(&e.path()).map(|f| f.job));
+        jobs.extend(recorded);
+        jobs.sort_unstable();
+        jobs.dedup();
+        jobs
     }
 
     /// How many launches wait for a live browser to end.
@@ -430,6 +451,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// A job whose end is under way has left the live list but keeps its record: stopping obid
+    /// still finds it, so its record and processes don't outlive obid (BROWSER-25).
+    #[tokio::test]
+    async fn browser_25_a_job_still_recorded_is_among_the_live_ones() {
+        let home = stand_in::scratch("recorded");
+        let d = driver(&home);
+        assert!(d.live_jobs().is_empty());
+        LiveFile {
+            job: "job-ending".into(),
+            session: "s".into(),
+            socket_dir: home.join("none"),
+            daemon: None,
+            chrome: None,
+        }
+        .write(&home)
+        .unwrap();
+        assert_eq!(d.live_jobs(), vec!["job-ending".to_string()]);
+        d.end("job-ending").await;
+        assert!(d.live_jobs().is_empty(), "ending it removed its record");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[tokio::test]
     async fn browser_25_a_daemon_that_ignores_sigterm_is_killed() {
         let home = stand_in::scratch("stubborn");
@@ -448,12 +491,15 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        assert!(stand_in::within(WAIT, || async { pidfile.exists() }).await);
-        let pid: u32 = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        // The shell creates the file before it writes the pid: wait for the pid itself, or a read
+        // between the two finds the file empty.
+        let read_pid = || {
+            std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+        };
+        assert!(stand_in::within(WAIT, || async { read_pid().is_some() }).await);
+        let pid = read_pid().unwrap();
         LiveFile {
             job: "job-a".into(),
             session: "s".into(),

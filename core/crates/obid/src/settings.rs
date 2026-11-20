@@ -164,6 +164,10 @@ pub struct Settings {
     /// by account id. No entry: they haven't been asked, and it's a no.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub background_consent: BTreeMap<String, BackgroundConsent>,
+    /// The browser's two switches, "Agents can use the browser" and "Agents can use this Mac"
+    /// (docs/contracts/browser.md, BROWSER-15); both on when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<crate::browser::contract::Settings>,
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves (HOME-11).
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
