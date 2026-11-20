@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "POST /v1/plans: conversations listed by date and deleted on Confirm",
   "version": "1.0.0",
-  "description": "Asked about its conversations, Oby lists them with when each was made and last used; a delete of one obid doesn't keep is refused and asks nothing; a delete waits for one Confirm that says how many and when each was last used; one the owner used meanwhile stays, and the tasks they started stay (CONVERSATION-AGENT-23).",
+  "description": "Asked about its conversations, Oby lists them with when each was made and last used; a delete of one obid doesn't keep is refused and asks nothing; a delete waits for one Confirm that says how many and when each was last used; one the owner used meanwhile stays (and one whose task only ended meanwhile goes), and the tasks they started stay (CONVERSATION-AGENT-23).",
   "trigger": {
     "http": {
       "method": "POST",
@@ -50,7 +50,7 @@
         "method": "POST",
         "path": "/v1/plans",
         "body": {
-          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"investigate\"}",
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around SLEEP\", \"kind\": \"investigate\"}",
           "new": true
         },
         "expect": {
@@ -320,6 +320,44 @@
       }
     },
     {
+      "id": "older-task-ends",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.older.body.jobs.0.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "older-hears-it-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.older.body.conversation}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "ended": true,
+                "jobs": [
+                  "${state.older.body.jobs.0.id}"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "id": "used-meanwhile",
       "use": "runtime.rust:call",
       "inputs": {
@@ -377,7 +415,8 @@
       "ui": {
         "proves": [
           "CONVERSATION-AGENT-23"
-        ]
+        ],
+        "expectedRed": "#2706: a task that ends between the Confirm card and the Confirm adds obid's own report turn to its conversation, which moves its cursor, so obid keeps it as if the owner had used it"
       }
     },
     {
