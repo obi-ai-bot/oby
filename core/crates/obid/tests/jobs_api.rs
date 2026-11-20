@@ -582,6 +582,21 @@ fn stopped_beating(obid: &Obid, id: &str) -> bool {
     std::fs::read_to_string(&path).ok() == first
 }
 
+/// The commit a worktree's HEAD names, read from its ref alone: none while git can't say.
+fn head_of(worktree: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(worktree)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
@@ -3474,12 +3489,14 @@ fn a_follow_up_publishes_the_first_jobs_commits() {
         .as_str()
         .unwrap()
         .to_owned();
-    // Stopped once it committed, before its check ran.
+    // Stopped once it committed, before its check ran: once the worktree's HEAD moved off the
+    // commit the job started from. Its objects are in the job's own folder, which plain git here
+    // can't read, but HEAD names the commit without them.
     let worktree = obid.home.join("worktrees").join(&id);
-    until(&obid, &id, |_| worktree.join("a.txt").exists());
-    // ponytail: the agent commits right after it writes the file; its objects are in the job's
-    // own folder, which plain git here can't read, so a moment stands in for watching it.
-    std::thread::sleep(Duration::from_secs(2));
+    until(&obid, &id, |job| {
+        let start = job["startCommit"].as_str().unwrap_or_default();
+        !start.is_empty() && head_of(&worktree).is_some_and(|head| head != start)
+    });
     let stop = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
     assert_eq!(stop.status, 200, "{}", stop.text);
     let job = wait(&obid, &id);
