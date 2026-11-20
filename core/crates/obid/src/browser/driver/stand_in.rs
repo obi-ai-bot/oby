@@ -4,7 +4,9 @@
 //! the socket folder) with a "Chrome" under it that SIGTERM takes down, sleeping for a URL with
 //! `slow` in it, leaving the daemon busy until the test clears it, and stopping at the browser's
 //! certificate page for one with `cert` in it (and, for BROWSER-26, reload, back and a dialog
-//! answered). Every call is logged in the job's `HOME`. Tests only (obid's, and a debug build's
+//! answered; with a `<session>.navclosed` file in the socket folder, reload and back move the
+//! page and then fail as agent-browser does when the page navigates under its own evaluate).
+//! Every call is logged in the job's `HOME`. Tests only (obid's, and a debug build's
 //! integration tests'): it writes the script under the home it is given.
 
 use std::path::{Path, PathBuf};
@@ -61,8 +63,9 @@ case "${words[0]} ${words[1]}" in
     cp "$urlfile" "$prevfile"; echo "$u" > "$urlfile"; ok "{\"url\":\"$u\",\"title\":\"Fixture\"}" ;;
   "get title") up; ok '{"title":"Fixture"}' ;;
   "eval "*) up; ok '{"result":2}' ;;
-  "reload ") up; ok '{}' ;;
-  "back ") up; [ -f "$prevfile" ] && mv "$prevfile" "$urlfile"; ok '{}' ;;
+  "reload ") up; [ -f "$dir/$session.navclosed" ] && fail "CDP error (Runtime.evaluate): Inspected target navigated or closed"; ok '{}' ;;
+  "back ") up; [ -f "$prevfile" ] && mv "$prevfile" "$urlfile"
+    [ -f "$dir/$session.navclosed" ] && fail "CDP error (Runtime.evaluate): Inspected target navigated or closed"; ok '{}' ;;
   "dialog accept"|"dialog dismiss") up; ok '{}' ;;
   "tab list") up; ok "{\"tabs\":[{\"targetId\":\"T1\",\"url\":\"$(cat "$urlfile")\",\"active\":true}]}" ;;
   "tab T1") up; ok '{}' ;;
