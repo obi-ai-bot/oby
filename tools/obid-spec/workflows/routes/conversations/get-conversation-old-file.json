@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/conversation: a conversation kept before deliveries",
+  "version": "1.0.0",
+  "description": "A conversation file written before deliveries: its turns have no delivery and are served with none; a move asked of them (a cancel naming its turn) changes nothing, sends nothing and writes nothing; a restart adds nothing (DELIVERY-5).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/conversation"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "files": {
+          "conversations/5d0e1d00-0000-4000-8000-0000000d5000.json": {
+            "id": "5d0e1d00-0000-4000-8000-0000000d5000",
+            "title": "Before deliveries",
+            "pinned": false,
+            "created": "2026-09-01T10:00:00Z",
+            "sequence": 1,
+            "turns": [
+              {
+                "id": "5d0e1d00-0000-4000-8000-0000000d5001",
+                "who": "user",
+                "text": "SAY Long ago.",
+                "at": "2026-09-01T10:00:00Z",
+                "jobs": [],
+                "conversation": "5d0e1d00-0000-4000-8000-0000000d5000"
+              },
+              {
+                "id": "5d0e1d00-0000-4000-8000-0000000d5002",
+                "who": "oby",
+                "text": "Long ago.",
+                "at": "2026-09-01T10:00:01Z",
+                "jobs": [],
+                "conversation": "5d0e1d00-0000-4000-8000-0000000d5000"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "delivery-5-served-with-no-delivery",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=5d0e1d00-0000-4000-8000-0000000d5000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "5d0e1d00-0000-4000-8000-0000000d5001",
+                "delivery": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "delivery-5-as-it-was",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=5d0e1d00-0000-4000-8000-0000000d5000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "before",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/5d0e1d00-0000-4000-8000-0000000d5000.json",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "delivery-5-a-cancel-of-its-words-drops-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans/cancel",
+        "body": {
+          "conversation": "5d0e1d00-0000-4000-8000-0000000d5000",
+          "turn": "5d0e1d00-0000-4000-8000-0000000d5001"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "dropped": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "delivery-5-nothing-written",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/5d0e1d00-0000-4000-8000-0000000d5000.json",
+        "expect": {
+          "text": "${state.before.text}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "nothing-sent",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "turnDelivery",
+        "expect": {
+          "paths": {
+            "conversation": "5d0e1d00-0000-4000-8000-0000000d5000"
+          }
+        },
+        "seconds": 3,
+        "none": true
+      }
+    },
+    {
+      "id": "stopped",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "delivery-5-a-restart-adds-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=5d0e1d00-0000-4000-8000-0000000d5000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "new-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Now.",
+          "conversation": "5d0e1d00-0000-4000-8000-0000000d5000"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Now."
+          }
+        }
+      }
+    },
+    {
+      "id": "delivery-5-the-old-words-still-have-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=5d0e1d00-0000-4000-8000-0000000d5000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "5d0e1d00-0000-4000-8000-0000000d5001",
+                "delivery": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "DELIVERY-5"
+        ]
+      }
+    },
+    {
+      "id": "the-new-words-have-theirs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/conversation?id=5d0e1d00-0000-4000-8000-0000000d5000",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "text": "SAY Now.",
+                "delivery": {
+                  "status": "answered"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

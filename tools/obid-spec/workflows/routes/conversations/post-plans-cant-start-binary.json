@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a tool whose agent isn't there",
+  "version": "1.0.0",
+  "description": "A chosen account whose agent can't start (its binary isn't there): the turn moves, and its line says why in plain words with no path in them (CONVERSATION-AGENT-26).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.scratch}/nowhere/codex",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": "{}"
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "chose-codex",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "body": {
+          "talkAccount": "codex"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "talkAccount": "codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-26-the-move-says-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "\\nCodex · Codex couldn't start: [^/\\n]+, so I moved to Claude Code · Stand-in\\.$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-26"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-26-the-reason-stays-on-the-account",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "codex",
+                "cantRun": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-26"
+        ]
+      }
+    }
+  ]
+}

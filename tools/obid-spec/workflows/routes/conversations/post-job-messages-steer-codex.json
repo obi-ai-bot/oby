@@ -1,0 +1,222 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/messages: words reach a Codex task's turn under way",
+  "version": "1.0.0",
+  "description": "Words to a Codex task at work reach its turn under way by turn/steer: the turn answers them, with no turn and no Codex started again for them (TASKCONV-36); words Codex refuses as its turn ends are its thread's next turn, in the same Codex process (TASKCONV-37).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex",
+              "accounts": [
+                {
+                  "id": "work",
+                  "name": "Work",
+                  "configDir": "${run.scratch}/o/home/accounts/codex-work"
+                }
+              ]
+            }
+          }
+        },
+        "files": {
+          "accounts/codex-work/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        }
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "STEPS: 60 250",
+            "check": "true",
+            "agent": "codex"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "at-work",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.job.body.id}/.obi/turns.log",
+        "expect": {
+          "exists": true
+        },
+        "within": 60
+      }
+    },
+    {
+      "id": "told",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.job.body.id}/messages",
+        "body": {
+          "text": "use SQLite"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-36-the-turn-under-way-heard-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$contains": "heard: use SQLite"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-36"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-36-one-turn",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.job.body.id}/.obi/turns.log",
+        "expect": {
+          "text": {
+            "$matches": "^[^\\n]+\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-36"
+        ]
+      }
+    },
+    {
+      "id": "refusing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "STEPS: 40 250 REFUSE STEER",
+            "check": "true",
+            "agent": "codex"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "refusing-at-work",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.refusing.body.id}/.obi/turns.log",
+        "expect": {
+          "exists": true
+        },
+        "within": 60
+      }
+    },
+    {
+      "id": "told-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.refusing.body.id}/messages",
+        "body": {
+          "text": "use SQLite"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "taskconv-37-the-next-turn-heard-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.refusing.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "summary": {
+              "$contains": "heard: use SQLite"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-37"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-37-its-next-turn-heard-them",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.refusing.body.id}/.obi/turns.log",
+        "expect": {
+          "text": {
+            "$matches": "^\\S+ [^\\n]*\\n\\S+ [^\\n]*use SQLite[^\\n]*\\n$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-37"
+        ]
+      }
+    }
+  ]
+}

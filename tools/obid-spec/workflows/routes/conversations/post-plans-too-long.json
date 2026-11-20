@@ -1,0 +1,258 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a session too long for its model",
+  "version": "1.0.0",
+  "description": "A session too long for its model carries on in a new one, once, with the earlier turns, and its step says so; too long there too, or an older Claude Code that says so only in words, the plain words; a turn that did more says it stopped partway, its job's card on the answer, and starts no new session (CONVERSATION-AGENT-16).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-16-carries-on-in-a-new-session",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLONG RESUMED",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "new session: with the earlier turns"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-16-its-step-says-so",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "thinking",
+        "expect": {
+          "paths": {
+            "text": {
+              "$contains": "carrying on in a new session"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "before-plain",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "count": {
+              "$type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-16-too-long-there-too-the-plain-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLONG",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-16-one-new-session-no-more",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "last": "TOOLONG"
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-16-an-older-claude-codes-words-say-it-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLONG OLD",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-16-a-turn-that-acted-stopped-partway",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "TOOLONG AFTER oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a note\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "stopped there"
+            },
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-16-and-never-says-nothing-was-started",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.conversation-agent-16-a-turn-that-acted-stopped-partway.body.text}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$not": {
+                "$contains": "nothing was started"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-16-no-new-session-for-it",
+      "use": "runtime.rust:t3.heard",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "expect": {
+          "paths": {
+            "heard": {
+              "$count": [
+                {
+                  "last": {
+                    "$contains": "TOOLONG AFTER"
+                  }
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-16"
+        ]
+      }
+    }
+  ]
+}
