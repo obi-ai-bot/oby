@@ -438,8 +438,8 @@ describe('TERMINAL-8: a real shell', () => {
     // 6,000 bytes of é in chunks the pty cuts where it likes: every one whole, none garbled
     expect(text()).toContain('é'.repeat(3000));
     expect(text()).not.toContain('�');
-    // a job left running in it ends with it
-    t.write(term, 'sleep 300 & echo "JOB=$!"\r');
+    // a job left running in it ends with it (`$!` unquoted: macOS's bash 3.2 takes `!"` for a history event)
+    t.write(term, 'sleep 300 & echo JOB=$!\r');
     await until(() => /JOB=\d+/.test(text()));
     const job = Number(/JOB=(\d+)/.exec(text())![1]);
     const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;

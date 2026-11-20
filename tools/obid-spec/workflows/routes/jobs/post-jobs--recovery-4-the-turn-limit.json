@@ -1,0 +1,183 @@
+{
+  "schemaVersion": "2",
+  "name": "The turn limit continues the same session (RECOVERY-4)",
+  "version": "1.0.0",
+  "description": "A run at Claude Code's --max-turns continues in its session, told so; again and again it counts with the quiet job's 5 tries and stalls as turns.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "config": {
+          "stallAfter": 3
+        }
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "MAXTURNS ONCE KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-4-continued-and-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.once.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "recovery-4-told-of-its-200-turns",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$contains": "200 turns in one round"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "recovery-4-two-prompts",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.once.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "always",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "MAXTURNS KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "recovery-4-stalls-as-turns",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.always.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "stalled": {
+              "why": "turns"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-4"
+        ]
+      }
+    },
+    {
+      "id": "recovery-4-five-tries-and-the-note",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.always.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){7}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECOVERY-4"
+        ]
+      }
+    }
+  ]
+}

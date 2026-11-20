@@ -24,7 +24,7 @@ import { roomOpens, useRoom } from './room';
 import { archivedChats, chatOfTask, lastAgo, latestChat, ofObid, renameChat, restartChat, useChats, type Chat } from './chats';
 import { chatFirst, everything, onObid } from './lean';
 import { ACTIONS, RESTART, pickGroups, tasksMatching, useObidSearch } from './search';
-import { ariaKeys, JUMPS, registerCommands, shortcutLabel, withShortcut } from './shortcuts';
+import { ariaKeys, composing, JUMPS, registerCommands, shortcutLabel, withShortcut } from './shortcuts';
 import { adjacent, panelOrder, pinnedFirst, projectGroups as groupsOf } from './panelOrder';
 import SearchMore from './SearchMore';
 import { say, useLive, useWaitingCount } from './live';
@@ -440,6 +440,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             onClick={(e) => e.stopPropagation()}
             onBlur={(e) => { renameChat(c.id, e.currentTarget.value); setRenamingConvo(null); }}
             onKeyDown={(e) => {
+              if (composing(e)) return;
               if (e.key === 'Enter') e.currentTarget.blur();
               if (e.key === 'Escape') { e.stopPropagation(); setRenamingConvo(null); }
             }}
@@ -823,6 +824,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                             onClick={(e) => e.stopPropagation()}
                             onBlur={(e) => doneRenamingTask(k.id, e.currentTarget.value)}
                             onKeyDown={(e) => {
+                              if (composing(e)) return;
                               if (e.key === 'Enter') e.currentTarget.blur();
                               if (e.key === 'Escape') { e.stopPropagation(); setRenamingTask(null); }
                             }}

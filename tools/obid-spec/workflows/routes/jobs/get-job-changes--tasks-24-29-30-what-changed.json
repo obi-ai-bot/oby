@@ -1,0 +1,541 @@
+{
+  "schemaVersion": "2",
+  "name": "A task's changes: none while queued, capped, secrets redacted (TASKS-24, 29, 30)",
+  "version": "1.0.0",
+  "description": "A queued job with no worktree answers no files and null base and head, and one obid doesn't have is 404; a diff over 1 MiB is cut at the cap and says so, and one past the 4 MiB read keeps its files with an empty diff and an error; a vault secret and obid's API token committed in a changed file never leave in the diff.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs/{id}/changes"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "one-at-a-time",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 1
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "q-waits-for-a-slot",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "worktree": null
+          },
+          "paths": {
+            "waiting.kind": "cap"
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-29-a-queued-job-has-no-files",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.q.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": null,
+            "head": null,
+            "files": [],
+            "diff": "",
+            "truncated": false,
+            "round": null,
+            "rounds": []
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-29"
+        ]
+      }
+    },
+    {
+      "id": "tasks-29-no-such-job-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/not-a-job/changes",
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": {
+              "$contains": "There's no such job."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-29"
+        ]
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "many-at-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 4
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "EDIT: README.md COMMIT: a.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "a-vault-secret",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/obid/vault/deploy-key",
+        "body": {
+          "value": "key/7384+R8n3=c0dZ"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "leak",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.c.body.id}/leak.txt",
+        "text": "deploy key/7384+R8n3=c0dZ\ntoken ${state.o.token}\n"
+      }
+    },
+    {
+      "id": "add-leak",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.c.body.id}",
+        "args": [
+          "add",
+          "leak.txt"
+        ]
+      }
+    },
+    {
+      "id": "commit-leak",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.c.body.id}",
+        "args": [
+          "-c",
+          "user.name=obid-spec",
+          "-c",
+          "user.email=obid-spec@example.invalid",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-q",
+          "-m",
+          "Add leak.txt"
+        ]
+      }
+    },
+    {
+      "id": "tasks-30-the-token-never-leaves",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "${state.o.token}"
+            }
+          },
+          "paths": {
+            "diff": {
+              "$contains": "[redacted: api-token]"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-30"
+        ]
+      }
+    },
+    {
+      "id": "tasks-30-the-vault-secret-never-leaves",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "R8n3=c0dZ"
+            }
+          },
+          "paths": {
+            "diff": {
+              "$contains": "deploy-key]"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-30"
+        ]
+      }
+    },
+    {
+      "id": "wide",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.c.body.id}/wide.txt",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+        "repeat": 12000
+      }
+    },
+    {
+      "id": "add-wide",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.c.body.id}",
+        "args": [
+          "add",
+          "wide.txt"
+        ]
+      }
+    },
+    {
+      "id": "commit-wide",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.c.body.id}",
+        "args": [
+          "-c",
+          "user.name=obid-spec",
+          "-c",
+          "user.email=obid-spec@example.invalid",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-q",
+          "-m",
+          "Add wide.txt"
+        ]
+      }
+    },
+    {
+      "id": "tasks-24-cut-at-the-cap",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "body": {
+            "truncated": true
+          },
+          "paths": {
+            "diff": {
+              "$len": 1048576
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-24"
+        ]
+      }
+    },
+    {
+      "id": "tasks-24-a-prefix-of-the-whole",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "diff": {
+              "$matches": "^diff --git "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-24"
+        ]
+      }
+    },
+    {
+      "id": "long",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.c.body.id}/long.txt",
+        "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n",
+        "repeat": 45000
+      }
+    },
+    {
+      "id": "add-long",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.c.body.id}",
+        "args": [
+          "add",
+          "long.txt"
+        ]
+      }
+    },
+    {
+      "id": "commit-long",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.c.body.id}",
+        "args": [
+          "-c",
+          "user.name=obid-spec",
+          "-c",
+          "user.email=obid-spec@example.invalid",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-q",
+          "-m",
+          "Add long.txt"
+        ]
+      }
+    },
+    {
+      "id": "tasks-24-past-the-read-no-diff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "body": {
+            "diff": "",
+            "truncated": true,
+            "files": {
+              "$any": {
+                "path": "long.txt"
+              }
+            }
+          },
+          "paths": {
+            "error": {
+              "$contains": "printed more than 4194304 bytes"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-24"
+        ]
+      }
+    },
+    {
+      "id": "tasks-24-its-files-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "files": {
+              "$any": {
+                "path": "wide.txt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-24"
+        ]
+      }
+    }
+  ]
+}
