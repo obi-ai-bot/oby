@@ -933,6 +933,13 @@ fn parse_later(text: &str) -> Option<i64> {
     time::parse(&format!("{whole}Z"))
 }
 
+/// Sets `item`'s `triage` on `shown`, and `triageWhy`: why it stays `pending` while nothing can
+/// sort it, or null (crate::triage::Sorts::why). Both from the same `sorts`.
+fn sorted(shown: &mut Value, item: &Item, sorts: &crate::triage::Sorts) {
+    shown["triage"] = sorts.get(item).into();
+    shown["triageWhy"] = sorts.why(item).into();
+}
+
 /// What needs the owner first (crate::triage, with what waits for the model), then FYI, then
 /// ignore; each in the order they came, also within one second (Item::arrival_order).
 fn needs_you_first(items: &mut [impl std::borrow::Borrow<Item>], sorts: &crate::triage::Sorts) {
@@ -1923,11 +1930,18 @@ impl Link {
         self.sorts(&state.inbox).get(item)
     }
 
-    /// An item as the API shows it: with its `triage`.
+    /// An item as the API shows it: with its `triage` and `triageWhy`.
     pub fn shown(&self, item: &Item) -> Value {
         let mut shown = item.to_json();
-        shown["triage"] = self.triage_of(item).into();
+        self.sort_shown(&mut shown, item);
         shown
+    }
+
+    /// Sets `item`'s `triage` and `triageWhy` on `shown`, from the inbox's sorts now. Never with
+    /// this Link's state locked.
+    pub(super) fn sort_shown(&self, shown: &mut Value, item: &Item) {
+        let state = self.lock();
+        sorted(shown, item, &self.sorts(&state.inbox));
     }
 
     /// Open items waiting for the quick model (crate::triage), the longest-waiting first.
