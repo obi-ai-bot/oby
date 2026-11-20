@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/failures (copy 5)",
+  "version": "1.0.0",
+  "description": "What failed: none at first, 422 for a limit that isn't a number; a task that ended interrupted leaves its record, kept 0600.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/failures"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/failures",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/failures",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "limit-not-a-number-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/failures?limit=x",
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "FAIL"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "id": "f-interrupted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "interrupted",
+                "failed"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "its-record",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/failures",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0.job": "${state.f.body.id}"
+          }
+        }
+      }
+    }
+  ]
+}

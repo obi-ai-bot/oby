@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/publish (copy 2)",
+  "version": "1.0.0",
+  "description": "Publish by hand takes the owner's device approval: 400 for a body that isn't JSON, 422 for one that isn't an approval, 403 for a device obid doesn't know, 404 for a job it doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/publish"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "COMMIT: hello.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/publish",
+        "body": {},
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "not-json-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/publish",
+        "raw": "x",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "not-an-approval-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/publish",
+        "body": {
+          "to": "main"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "an-unknown-device-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/publish",
+        "body": {
+          "device": "nope",
+          "action": "Publish",
+          "signedAt": "2026-11-18T00:00:00Z",
+          "signature": "AAAA"
+        },
+        "expect": {
+          "status": [
+            403,
+            409
+          ]
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/deadbeef/publish",
+        "body": {
+          "device": "nope",
+          "action": "Publish",
+          "signedAt": "2026-11-18T00:00:00Z",
+          "signature": "AAAA"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

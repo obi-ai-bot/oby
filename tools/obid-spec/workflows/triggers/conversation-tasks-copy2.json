@@ -1,0 +1,336 @@
+{
+  "schemaVersion": "2",
+  "name": "Conversations: tasks they start and attach (copy 2)",
+  "version": "1.0.0",
+  "description": "The composer's mode is the task's, Bypass only on signed words, the owner's default aside (COMPOSER-4); tasks attached to words go on the owner's turn (ATTACH-7); words to a finished task start a follow-up in the same conversation (TASKCONV-3).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "d",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SLEEP\", \"kind\": \"build\"}",
+          "new": true,
+          "defaults": {
+            "mode": "plan"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "composer-4-the-chips-mode-is-the-tasks",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.d.body.jobs.0}",
+        "expect": {
+          "body": {
+            "mode": "plan"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-4"
+        ]
+      }
+    },
+    {
+      "id": "default-bypass-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SLEEP\", \"kind\": \"build\"}",
+          "new": true,
+          "defaults": {
+            "mode": "bypass"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "composer-4-the-default-bypass-asks-nothing-more",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.default-bypass-unsigned.body}",
+        "expect": {
+          "body": {
+            "jobs": [
+              {
+                "mode": "bypass"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-4"
+        ],
+        "expectedRed": "#2543: a Bypass chip on unsigned words waits for a Confirm though Bypass is the default"
+      }
+    },
+    {
+      "id": "ask-by-default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      }
+    },
+    {
+      "id": "unsigned-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SLEEP\", \"kind\": \"build\"}",
+          "new": true,
+          "defaults": {
+            "mode": "bypass"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "composer-4-bypass-not-on-unsigned-words",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.unsigned-bypass.body}",
+        "expect": {
+          "body": {
+            "jobs": [
+              {
+                "mode": "ask"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-4"
+        ]
+      }
+    },
+    {
+      "id": "signed-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"SLEEP\", \"kind\": \"build\"}",
+          "new": true,
+          "defaults": {
+            "mode": "bypass"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "composer-4-bypass-on-signed-words",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.signed-bypass.body.jobs.0}",
+        "expect": {
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPOSER-4"
+        ]
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "attached",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY noted",
+          "new": true,
+          "jobs": [
+            "${state.d.body.jobs.0.id}"
+          ]
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "attach-7-on-the-owners-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.attached.body.conversation}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "user",
+                "jobs": [
+                  "${state.d.body.jobs.0.id}"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-7"
+        ]
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "COMMIT: hello.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "follow-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/messages",
+        "body": {
+          "text": "COMMIT: more.txt",
+          "conversation": true
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "taskconv-3-in-the-same-conversation",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.follow-up.body}",
+        "expect": {
+          "body": {
+            "conversation": "${state.c.body.conversation}",
+            "followUpOf": "${state.c.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-3"
+        ]
+      }
+    }
+  ]
+}

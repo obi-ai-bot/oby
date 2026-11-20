@@ -1,0 +1,153 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/move (copy 2)",
+  "version": "1.0.0",
+  "description": "Moves a task to another tool, account or model: 422 for another shape, for naming nothing and for where it already is; 404 for one obid doesn't have.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/move"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/move",
+        "body": {
+          "account": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "another-shape-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/move",
+        "body": {
+          "where": "x"
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "nothing-named-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/move",
+        "body": {
+          "agent": null,
+          "account": null,
+          "model": null
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "Say which tool, account or model."
+          }
+        }
+      }
+    },
+    {
+      "id": "where-it-is-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/move",
+        "body": {
+          "account": "stand-in"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "already"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/deadbeef/move",
+        "body": {
+          "account": "stand-in"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    }
+  ]
+}

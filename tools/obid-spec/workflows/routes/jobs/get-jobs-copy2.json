@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/jobs (copy 2)",
+  "version": "1.0.0",
+  "description": "The jobs, newest first: [] with none, 422 for a limit that isn't a number, limit cuts the list.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      }
+    },
+    {
+      "id": "limit-not-a-number-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs?limit=x",
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "limit is a number."
+          }
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "tick",
+      "use": "runtime.rust:next-second"
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "newest-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.b.body.id}"
+            },
+            {
+              "id": "${state.a.body.id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "limit-1",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs?limit=1",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "id": "${state.b.body.id}"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

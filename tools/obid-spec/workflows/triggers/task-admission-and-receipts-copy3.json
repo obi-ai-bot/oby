@@ -1,0 +1,257 @@
+{
+  "schemaVersion": "2",
+  "name": "Tasks: slots and request keys (copy 3)",
+  "version": "1.0.0",
+  "description": "With every slot taken, the next task waits saying a slot opens, and starts when one does (ADMISSION-3); a request key sent again signed differently is 409 and runs nothing (RECEIPTS-15).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "one-slot",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "maxRunning": 1
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "maxRunning": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "a-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued",
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "admission-3-waits-for-a-slot",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "waiting": {
+              "kind": "cap",
+              "text": "a slot opens"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-3"
+        ]
+      }
+    },
+    {
+      "id": "a-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.a.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "admission-3-starts-when-one-opens",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ADMISSION-3"
+        ]
+      }
+    },
+    {
+      "id": "b-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.b.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "signed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around.",
+            "clientRequestId": "k-signed"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "receipts-15-unsigned-under-the-key-409",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around.",
+            "clientRequestId": "k-signed"
+          }
+        },
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-15"
+        ]
+      }
+    },
+    {
+      "id": "receipts-15-nothing-ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "task": "Look around."
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-15"
+        ]
+      }
+    }
+  ]
+}

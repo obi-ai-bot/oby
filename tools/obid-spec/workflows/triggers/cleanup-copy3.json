@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "2",
+  "name": "Cleanup (copy 3)",
+  "version": "1.0.0",
+  "description": "obid frees what ended work leaves: its first pass, 30 seconds after start, removes a done task's worktree when nothing is left to publish (CLEANUP-3), and says so on the task and in status.",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "COMMIT: hello.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "cleanup-3-the-worktree-freed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "worktreeFreed": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLEANUP-3"
+        ]
+      }
+    },
+    {
+      "id": "cleanup-3-its-folder-gone",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.c.body.id}",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "CLEANUP-3"
+        ]
+      }
+    },
+    {
+      "id": "a-pass-ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "cleanup.lastRun": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

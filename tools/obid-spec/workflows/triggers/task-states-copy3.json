@@ -1,0 +1,298 @@
+{
+  "schemaVersion": "2",
+  "name": "Tasks: Try again, dismiss, archive, nothing done (copy 3)",
+  "version": "1.0.0",
+  "description": "An interrupted task archives as it asks nothing (TASKS-31); dismissing it keeps its status and round (JOBSTATE-13); Try again's words run the same task's next round (JOBSTATE-9), and on a stopped one too (JOBSTATE-10); a build that did nothing reads so (TASKS-12).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "FAIL"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "FAIL"
+          }
+        }
+      }
+    },
+    {
+      "id": "f-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "interrupted",
+                "failed"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-13-dismissed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.f.body.id}/dismiss",
+        "expect": {
+          "status": 200,
+          "body": {
+            "dismissed": {
+              "$type": "string"
+            },
+            "resumesAt": null,
+            "status": "${state.f-ended.body.status}",
+            "round": "${state.f-ended.body.round}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-13"
+        ]
+      }
+    },
+    {
+      "id": "tasks-31-archives",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.f.body.id}/archive",
+        "expect": {
+          "status": 200,
+          "body": {
+            "archived": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-31"
+        ]
+      }
+    },
+    {
+      "id": "jobstate-9-try-again-the-same-task",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.f.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.f.body.id}",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": {
+              "$ne": "${state.f-ended.body.round}"
+            },
+            "reason": null,
+            "finished": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-9"
+        ]
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-10-try-again-after-stopped",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "Try again, picking up where you left off. Finish with a short summary as asked."
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.s.body.id}",
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "round": 2,
+            "stoppedBy": null,
+            "finished": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-10"
+        ]
+      }
+    },
+    {
+      "id": "stop-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "n",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "Look around the code."
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "Look around the code."
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-12-nothing-done-reads-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "nothingDone": true
+          }
+        }
+      }
+    }
+  ]
+}

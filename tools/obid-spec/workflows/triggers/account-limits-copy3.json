@@ -1,0 +1,171 @@
+{
+  "schemaVersion": "2",
+  "name": "Account limits: a task waits for its account's reset (copy 3)",
+  "version": "1.0.0",
+  "description": "A task whose only account hits its five-hour limit waits by itself, with no card: queued, a resume time and why (LIMITS-5), no limit decision; Stop then ends it for good (LIMITS-6); a new task while the account is full is queued waiting too (LIMITS-18).",
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "w",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "LIMITED: 7200"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "LIMITED: 7200"
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-5-it-waits-queued",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.w.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "resumesAt": {
+              "$type": "string"
+            },
+            "waiting": {
+              "kind": "cap"
+            },
+            "accountLimit": null,
+            "reason": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-5"
+        ]
+      }
+    },
+    {
+      "id": "limits-5-no-decision-for-the-owner",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-5"
+        ]
+      }
+    },
+    {
+      "id": "limits-18-a-new-task-waits-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": "queued"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-18"
+        ]
+      }
+    },
+    {
+      "id": "limits-18-queued-for-room",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.limits-18-a-new-task-waits-too.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "waiting": {
+              "kind": "cap"
+            },
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-18"
+        ]
+      }
+    },
+    {
+      "id": "limits-6-stop-ends-the-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.w.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped",
+            "resumesAt": null,
+            "waiting": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-6"
+        ]
+      }
+    }
+  ]
+}

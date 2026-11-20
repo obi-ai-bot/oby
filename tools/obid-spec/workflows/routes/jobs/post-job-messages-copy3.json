@@ -1,0 +1,437 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/jobs/{id}/messages (copy 3)",
+  "version": "1.0.0",
+  "description": "Words to a task: 404 for one obid doesn't have, 400 without text, 422 for empty words; a running task hears them; a finished one starts a follow-up (JOBSTATE-12), once for a repeated key (RECEIPTS-8); files to a running task reach its .obi/inputs and mark it (ATTACH-21, 22), and wait for one that asks the owner (ATTACH-23).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "SLEEP"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "x"
+        },
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/deadbeef/messages",
+        "body": {
+          "text": "x"
+        },
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "no-text-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "words": "x"
+        },
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "empty-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "  "
+        },
+        "expect": {
+          "status": 422
+        }
+      }
+    },
+    {
+      "id": "heard-while-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "Use the staging config"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.s.body.id}",
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "attach-21-upload",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=build.log",
+        "raw": "all good",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "attach-21-files-to-a-task-at-work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/messages",
+        "body": {
+          "text": "Use this log",
+          "attachments": [
+            "${state.attach-21-upload.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "id": "${state.s.body.id}",
+            "status": "running",
+            "step": "You: Use this log"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-21"
+        ]
+      }
+    },
+    {
+      "id": "attach-21-in-its-inputs",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.obi/inputs/build.log",
+        "within": 30,
+        "expect": {
+          "text": "all good"
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-21"
+        ]
+      }
+    },
+    {
+      "id": "attach-22-they-mark-it",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.s.body.id}.json",
+        "within": 30,
+        "expect": {
+          "json": {
+            "foreign": {
+              "$type": "string"
+            },
+            "foreignByApi": {
+              "$exists": false
+            },
+            "attachments": [
+              {
+                "$contains": "build.log"
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-22"
+        ]
+      }
+    },
+    {
+      "id": "q",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "q",
+        "owner": "alex"
+      }
+    },
+    {
+      "id": "asking",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "task": "Pick a store. JOB-ASKS-QUESTION",
+            "mode": "ask"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "asking-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.asking.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "permission": {
+              "question": {
+                "$type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "attach-23-upload",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "POST",
+        "path": "/v1/attachments?name=more.png",
+        "raw": "png",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "attach-23-not-while-it-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.q}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.asking.body.id}/messages",
+        "body": {
+          "text": "",
+          "attachments": [
+            "${state.attach-23-upload.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "It can't take files now: it's getting ready, waiting for your answer or wrapping up. Send them again once it's at work."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-23"
+        ]
+      }
+    },
+    {
+      "id": "attach-23-nothing-copied",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.q}",
+        "path": "worktrees/${state.asking.body.id}/.obi/inputs/more.png",
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-23"
+        ]
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            },
+            "task": "COMMIT: hello.txt"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "jobstate-12-a-follow-up",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/messages",
+        "body": {
+          "text": "COMMIT: second.txt",
+          "clientRequestId": "f-1"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "followUpOf": "${state.c.body.id}",
+            "id": {
+              "$ne": "${state.c.body.id}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "JOBSTATE-12",
+          "RECEIPTS-8"
+        ]
+      }
+    },
+    {
+      "id": "receipts-8-once-for-the-same-key",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.c.body.id}/messages",
+        "body": {
+          "text": "COMMIT: second.txt",
+          "clientRequestId": "f-1"
+        },
+        "expect": {
+          "status": [
+            200,
+            201
+          ],
+          "body": {
+            "id": "${state.jobstate-12-a-follow-up.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-8"
+        ]
+      }
+    }
+  ]
+}
