@@ -8,12 +8,14 @@
 //! 1. **The core** ([`Api`] and what it uses): routing, the owner token and the agents' per-job
 //!    tokens, the owner's signed words (a registered device's P-256 key over the exact body), the
 //!    hold on a tab with its generation (an agent's act let through under one generation is refused
-//!    under the next, never half-applied; a take waits for acts already running), the settings'
-//!    gate on every tool, asks, downloads, the event log, and the secret, which no answer, event or
-//!    log line ever carries. Pure Rust with no IO and no clock of its own: obid takes it as it is.
+//!    under the next, never half-applied; a take waits for acts already running), the person's ways
+//!    out of a page state (Reload, Go back, a dialog answered, on a tab their device holds), the
+//!    settings' gate on every tool, asks, downloads, the event log, and the secret, which no answer,
+//!    event or log line ever carries. Pure Rust with no IO and no clock of its own: obid takes it as it is.
 //! 2. **The lab** (from [`Server`] down): an HTTP/1.1 server on 127.0.0.1 with a free port, its
-//!    SSE streams, MCP's JSON-RPC over HTTP, a bridge to agent-browser's live stream, a fixture
-//!    site of its own, and the thin `lab.browserapi.*` nodes. It drives the engine only through
+//!    SSE streams, MCP's JSON-RPC over HTTP, a bridge to agent-browser's live stream, fixture sites
+//!    of its own (one that fails then works, one over HTTPS whose certificate is made at run time
+//!    and swapped behind its port), and the thin `lab.browserapi.*` nodes. It drives the engine only through
 //!    browser.rs's public nodes (`lab.browser.agent`, `.tool`, `.take`, `.release`, `.person`,
 //!    `.stream`, `.read`), so the engine stays as #2593 merged it.
 //!
@@ -169,6 +171,9 @@ pub enum Route {
     Take(String),
     GiveBack(String),
     Secret(String),
+    Reload(String),
+    Back(String),
+    Dialog(String),
     Answer(String),
     Mcp,
     Preflight,
@@ -213,6 +218,9 @@ pub fn route(method: &str, path: &str) -> Route {
                 ("POST", v) if v == c::VERB_TAKE => Route::Take(tab),
                 ("POST", v) if v == c::VERB_GIVE_BACK => Route::GiveBack(tab),
                 ("POST", v) if v == c::VERB_SECRET => Route::Secret(tab),
+                ("POST", v) if v == c::VERB_RELOAD => Route::Reload(tab),
+                ("POST", v) if v == c::VERB_BACK => Route::Back(tab),
+                ("POST", v) if v == c::VERB_DIALOG => Route::Dialog(tab),
                 _ => Route::NotFound,
             }
         }
@@ -230,6 +238,9 @@ impl Route {
                 | Route::Take(_)
                 | Route::GiveBack(_)
                 | Route::Secret(_)
+                | Route::Reload(_)
+                | Route::Back(_)
+                | Route::Dialog(_)
                 | Route::Answer(_)
         )
     }
@@ -772,6 +783,21 @@ impl Api {
         }
     }
 
+    /// The person's way out of a page state (board 10), `verb` one of the contract's: only on a
+    /// tab the signing device holds, and a dialog's answer only while the page shows one. Answers
+    /// the tab's job.
+    pub fn way_out(&self, device: &str, tab: &str, verb: &str) -> Result<String, Refused> {
+        let job = self.person_holds(Some(device), tab)?;
+        if verb == c::VERB_DIALOG && self.rec(tab)?.tab.dialog.is_none() {
+            return Err(Refused::new(
+                409,
+                "no_dialog",
+                "This tab's page shows no dialog to answer.",
+            ));
+        }
+        Ok(job)
+    }
+
     // ── Tabs, as the engine reports them ───────────────────────────────────────────────────────
 
     /// A job's tabs as the engine's status says (`tabs` and the quoted titles): changes become
@@ -1201,12 +1227,12 @@ pub fn mcp_refusal(r: &Refused) -> Value {
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 pub const NODES: &[(&str, &str)] = &[
-    ("lab.browserapi.up", "Starts the browser's API on 127.0.0.1 (a free port) over the engine, and its fixture site (a sign-in form, a download, an animated counter, each at a fixed place): {url, port, token, site}. One per workflow."),
+    ("lab.browserapi.up", "Starts the browser's API on 127.0.0.1 (a free port) over the engine, and its fixture site (a sign-in form, a download, an animated counter, each at a fixed place; `/second`, and `/leave`, whose Leave asks the page's confirm): {url, port, token, site}. One per workflow."),
     ("lab.browserapi.device", "Registers a new device key of the owner's with the API (what obid's device pairing does): {id, key, publicKey}, the shape `device-sign` takes."),
     ("lab.browserapi.job", "Starts a job: the engine gives its agent a browser (skipped when it can't be installed), and the API a token of the job's own: {job, token}. `commitDelayMs` holds each act between being let through and being run (the race's window)."),
     ("lab.browserapi.end-job", "Ends a job: its token dies and its tabs leave the list."),
     ("lab.browserapi.call", "One request to the API: `method`, `path`, `body`; `as` owner (the default), none, wrong, device (owner token and the device's signed words), unsigned, badsig (signed by another key), unknown-device, job (`token`). {status, body}; with expect."),
-    ("lab.browserapi.mcp", "One MCP request as an agent: `method` (initialize, tools/list, tools/call), `tool`, `args`, `token` (or `as`: none, wrong). `refFor` {role, name} picks a ref from `snapshot`'s result. {status, rpc, result, isError, structured, toolNames}; with expect."),
+    ("lab.browserapi.mcp", "One MCP request as an agent: `method` (initialize, tools/list, tools/call), `tool`, `args`, `token` (or `as`: none, wrong). `refFor` {role, name} picks a ref from `snapshot`'s result (`refOr` when it has none such). {status, rpc, result, isError, structured, toolNames}; with expect."),
     ("lab.browserapi.events", "Reads the events stream for `ms` (from `after`, default every event kept): {events, types, count}; with expect."),
     ("lab.browserapi.race", "The agent's act sent, then `takeAfterMs` later the person's signed take while the act still waits to run: {act, take}; with expect."),
     ("lab.browserapi.secret", "Puts a fresh random secret into `field` of a held tab through the API, signed by `device`; the value stays in this process only. {status, body, fieldHasIt}; with expect."),
@@ -1214,7 +1240,9 @@ pub const NODES: &[(&str, &str)] = &[
     ("lab.browserapi.watch", "Reads a tab's stream for `ms` with each of `readers` ({readEveryMs, chunk}): per reader frames read, dropped, first and last seq; with expect."),
     ("lab.browserapi.alive", "Whether the API still answers on its port, and how many of its tasks are alive; with expect."),
     ("lab.browserapi.down", "Stops the API and everything it started, now rather than at the cleanup."),
-    ("lab.browserapi.serve", "Keeps the API up for a person to click through (lane B's screens, the owner's look): only with OBID_SPEC_LAB_BROWSERAPI_SERVE_MINUTES set, else skipped. `check: true` only checks that. Prints the URL, token and a device key on stderr, writes them to ~/Library/Caches/obid-spec/browserapi-serve.json (0600), and waits until the minutes pass or that file is deleted."),
+    ("lab.browserapi.https", "An HTTPS fixture on 127.0.0.1 (a free port) with a self-signed certificate made at run time: `certificate` names it (default `first`); naming another while the `site` (default `main`) is up swaps it behind the same port, the same origin with a new certificate; another `site` is another origin. {url, port, site, certificate, fingerprint}."),
+    ("lab.browserapi.flaky", "A site that fails, then works, at one address: `up: false` keeps a port nobody listens on (refused), `up: true` serves the fixture site on it. {url, port, up}."),
+    ("lab.browserapi.serve","Keeps the API up for a person to click through (lane B's screens, the owner's look): only with OBID_SPEC_LAB_BROWSERAPI_SERVE_MINUTES set, else skipped. `check: true` only checks that. Prints the URL, token and a device key on stderr, writes them to ~/Library/Caches/obid-spec/browserapi-serve.json (0600), and waits until the minutes pass or that file is deleted."),
 ];
 
 fn rules_here() -> Rules {
@@ -1667,6 +1695,9 @@ async fn person_route(
                 filled: true,
             })
         }
+        Route::Reload(tab) | Route::Back(tab) | Route::Dialog(tab) => {
+            way_out(shared, req, r, &device_id, tab).await
+        }
         Route::Answer(id) => match parse::<c::AnswerBody>(&req.body) {
             Ok(b) => match shared.api(|a| a.answer(id, b)) {
                 Ok(ask) => json_of(&ask),
@@ -1675,6 +1706,66 @@ async fn person_route(
             Err(e) => refused(e),
         },
         Route::Mcp | Route::Preflight | Route::NotFound => unreachable!(),
+    }
+}
+
+/// The person's way out of a page state, through the engine's person path: the tab as it is after.
+async fn way_out(
+    shared: &Arc<Shared>,
+    req: &Request,
+    r: &Route,
+    device: &str,
+    tab: &str,
+) -> Answer {
+    let (verb, extra) = match r {
+        Route::Reload(_) => match parse::<c::ReloadBody>(&req.body) {
+            Ok(_) => (c::VERB_RELOAD, json!({})),
+            Err(e) => return refused(e),
+        },
+        Route::Back(_) => match parse::<c::BackBody>(&req.body) {
+            Ok(_) => (c::VERB_BACK, json!({})),
+            Err(e) => return refused(e),
+        },
+        Route::Dialog(_) => match parse::<c::DialogBody>(&req.body) {
+            Ok(b) => (
+                c::VERB_DIALOG,
+                json!({"accept": b.accept, "promptText": b.prompt_text}),
+            ),
+            Err(e) => return refused(e),
+        },
+        _ => unreachable!("a way out"),
+    };
+    let job = match shared.api(|a| a.way_out(device, tab, verb)) {
+        Ok(j) => j,
+        Err(e) => return refused(e),
+    };
+    let mut input = json!({"person": device, "tab": tab, "page": verb});
+    if let (Some(o), Some(x)) = (input.as_object_mut(), extra.as_object()) {
+        o.extend(x.clone());
+    }
+    let said = browser::run_node(&shared.run, "lab.browser.person", &input).await;
+    let failure = engine_error(&said);
+    // The page moved: whatever failed before is over (a dialog answered is gone).
+    match &failure {
+        None if verb == c::VERB_DIALOG => shared.api(|a| a.dialog(tab, None)),
+        None => shared.api(|a| a.loaded(tab)),
+        Some(_) => {}
+    }
+    let _ = sync(shared, &job).await;
+    if let Some(e) = failure {
+        // It still doesn't load: the tab says so, in the browser's words.
+        if e.reason == "browser" && verb != c::VERB_DIALOG {
+            shared.api(|a| a.failed(tab, &e.message));
+        }
+        return refused(e);
+    }
+    match shared.api(|a| a.tab(tab).cloned()) {
+        Some(t) => json_of(&t),
+        None => refused(Refused::new(
+            404,
+            "no_such_tab",
+            format!("There is no tab {tab}."),
+        )),
     }
 }
 
@@ -2625,6 +2716,16 @@ body{margin:0;font:16px sans-serif} .at{position:fixed;left:20px;width:200px;hei
 <script>let n=0;function f(){document.getElementById('n').textContent=++n;requestAnimationFrame(f)}f()</script>
 </body></html>"#;
 
+/// A second page, for a history to go back in.
+const FIXTURE_SECOND: &str = r#"<!doctype html><html><head><title>Second page</title></head><body><h1>Second page</h1><p><a href="/">Home</a></p></body></html>"#;
+
+/// The page's own dialog (board 10): Leave asks the page's confirm; accepted it goes home, dismissed
+/// the page stays.
+const FIXTURE_LEAVE: &str = r#"<!doctype html><html><head><title>Leave or stay</title></head><body>
+<h1>Unsaved changes</h1>
+<button id="leave" onclick="if (confirm('Leave this page? Your changes will be lost.')) location.href='/'">Leave</button>
+</body></html>"#;
+
 async fn fixture(listener: tokio::net::TcpListener) {
     let hits = Arc::new(std::sync::atomic::AtomicU64::new(0));
     loop {
@@ -2643,6 +2744,18 @@ async fn fixture(listener: tokio::net::TcpListener) {
                     "text/html; charset=utf-8",
                     String::new(),
                     FIXTURE_HOME.to_string(),
+                ),
+                "/second" => (
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    String::new(),
+                    FIXTURE_SECOND.to_string(),
+                ),
+                "/leave" => (
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    String::new(),
+                    FIXTURE_LEAVE.to_string(),
                 ),
                 "/file.txt" => (
                     "200 OK",
@@ -2667,6 +2780,262 @@ async fn fixture(listener: tokio::net::TcpListener) {
             let _ = conn.shutdown().await;
         });
     }
+}
+
+// ── A site that fails, then works: Try again's fixture ─────────────────────────────────────────
+
+/// The port the flaky site has (refused until it's up) and its server once it is.
+static FLAKY: Mutex<Option<(u16, Option<tokio::task::JoinHandle<()>>)>> = Mutex::new(None);
+
+/// `up: false` keeps a port nobody listens on (a navigation there is refused); `up: true` starts
+/// the fixture site on that very port, so the same address now loads.
+async fn flaky(input: &Value) -> Result<Value> {
+    let port = {
+        let held = FLAKY.lock().unwrap().as_ref().map(|(p, _)| *p);
+        match held {
+            Some(p) => p,
+            None => {
+                let l = std::net::TcpListener::bind("127.0.0.1:0")?;
+                let p = l.local_addr()?.port();
+                drop(l);
+                *FLAKY.lock().unwrap() = Some((p, None));
+                p
+            }
+        }
+    };
+    let up = input["up"] == true;
+    let running = FLAKY
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(_, t)| t.is_some());
+    if up && !running {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .with_context(|| format!("can't serve the flaky site on its port {port}"))?;
+        let task = tokio::spawn(fixture(listener));
+        *FLAKY.lock().unwrap() = Some((port, Some(task)));
+    } else if !up && running {
+        if let Some(t) = FLAKY.lock().unwrap().as_mut().and_then(|(_, t)| t.take()) {
+            t.abort();
+        }
+    }
+    Ok(json!({"url": format!("http://127.0.0.1:{port}"), "port": port, "up": up}))
+}
+
+// ── The HTTPS fixture: self-signed certificates made at run time, swapped behind one port ─────
+
+const HTTPS_PAGE: &str = r#"<!doctype html><html><head><title>Secure lab page</title></head><body><h1>Secure lab page</h1></body></html>"#;
+
+/// One DER element: its tag, its length, its content.
+fn der(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut v = vec![tag];
+    let n = content.len();
+    if n < 0x80 {
+        v.push(n as u8);
+    } else if n <= 0xff {
+        v.extend([0x81, n as u8]);
+    } else {
+        v.extend([0x82, (n >> 8) as u8, n as u8]);
+    }
+    v.extend_from_slice(content);
+    v
+}
+
+fn der_seq(parts: &[Vec<u8>]) -> Vec<u8> {
+    der(0x30, &parts.concat())
+}
+
+/// A positive DER INTEGER from big-endian bytes.
+fn der_uint(bytes: &[u8]) -> Vec<u8> {
+    let trimmed: &[u8] = {
+        let first = bytes
+            .iter()
+            .position(|b| *b != 0)
+            .unwrap_or(bytes.len() - 1);
+        &bytes[first..]
+    };
+    let mut c = vec![];
+    if trimmed[0] & 0x80 != 0 {
+        c.push(0);
+    }
+    c.extend_from_slice(trimmed);
+    der(0x02, &c)
+}
+
+const OID_ECDSA_SHA256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+const OID_EC_PUBLIC_KEY: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+const OID_P256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+const OID_COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
+const OID_SUBJECT_ALT_NAME: &[u8] = &[0x55, 0x1d, 0x11];
+
+/// A self-signed certificate for 127.0.0.1 (P-256, ECDSA with SHA-256, valid from yesterday for
+/// three days, the address in its subjectAltName), made with the suite's own p256: its DER, its
+/// key as SEC1 DER, and the SHA-256 of the DER (the fingerprint a browser keys an exception by).
+pub fn self_signed_127() -> (Vec<u8>, Vec<u8>, String) {
+    use p256::ecdsa::signature::Signer as _;
+    let key = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+    let point = key.verifying_key().to_encoded_point(false);
+    let alg = der_seq(&[der(0x06, OID_ECDSA_SHA256)]);
+    let name = der_seq(&[der(
+        0x31,
+        &der_seq(&[der(0x06, OID_COMMON_NAME), der(0x0c, b"127.0.0.1")]),
+    )]);
+    let now = chrono::Utc::now();
+    let at = |t: chrono::DateTime<chrono::Utc>| {
+        der(0x17, t.format("%y%m%d%H%M%SZ").to_string().as_bytes())
+    };
+    let validity = der_seq(&[
+        at(now - chrono::Duration::days(1)),
+        at(now + chrono::Duration::days(2)),
+    ]);
+    let mut bits = vec![0u8];
+    bits.extend_from_slice(point.as_bytes());
+    let spki = der_seq(&[
+        der_seq(&[der(0x06, OID_EC_PUBLIC_KEY), der(0x06, OID_P256)]),
+        der(0x03, &bits),
+    ]);
+    // subjectAltName: iPAddress [7] 127.0.0.1.
+    let san = der_seq(&[
+        der(0x06, OID_SUBJECT_ALT_NAME),
+        der(0x04, &der_seq(&[der(0x87, &[127, 0, 0, 1])])),
+    ]);
+    let mut serial = rand::random::<[u8; 16]>();
+    serial[0] = (serial[0] & 0x7f) | 0x01;
+    let tbs = der_seq(&[
+        der(0xa0, &der_uint(&[2])),
+        der_uint(&serial),
+        alg.clone(),
+        name.clone(),
+        validity,
+        name,
+        spki,
+        der(0xa3, &der_seq(&[san])),
+    ]);
+    let signature: p256::ecdsa::Signature = key.sign(&tbs);
+    let mut sig_bits = vec![0u8];
+    sig_bits.extend_from_slice(signature.to_der().as_bytes());
+    let cert = der_seq(&[tbs, alg, der(0x03, &sig_bits)]);
+    let sec1 = der_seq(&[
+        der_uint(&[1]),
+        der(0x04, &key.to_bytes()),
+        der(0xa0, &der(0x06, OID_P256)),
+        der(0xa1, &der(0x03, &bits)),
+    ]);
+    let fingerprint = hex::encode(sha2::Sha256::digest(&cert));
+    (cert, sec1, fingerprint)
+}
+
+fn tls_config(cert: &[u8], key: &[u8]) -> Result<Arc<rustls::ServerConfig>> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![rustls::pki_types::CertificateDer::from(cert.to_vec())],
+            rustls::pki_types::PrivateKeyDer::Sec1(key.to_vec().into()),
+        )?;
+    // No resumption: every connection shows the certificate the site has now.
+    config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+    config.send_tls13_tickets = 0;
+    Ok(Arc::new(config))
+}
+
+/// One HTTPS fixture: its port, the certificates it made by name, and which one it shows now.
+struct HttpsSite {
+    name: String,
+    port: u16,
+    certificates: BTreeMap<String, (String, Arc<rustls::ServerConfig>)>,
+    showing: Arc<Mutex<(String, Arc<rustls::ServerConfig>)>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+static HTTPS: Mutex<Vec<HttpsSite>> = Mutex::new(Vec::new());
+
+async fn serve_https(
+    listener: tokio::net::TcpListener,
+    showing: Arc<Mutex<(String, Arc<rustls::ServerConfig>)>>,
+) {
+    loop {
+        let Ok((conn, _)) = listener.accept().await else {
+            continue;
+        };
+        // The certificate this connection gets is the one the site shows as it is accepted.
+        let config = showing.lock().unwrap().1.clone();
+        tokio::spawn(async move {
+            let Ok(mut tls) = tokio_rustls::TlsAcceptor::from(config).accept(conn).await else {
+                return;
+            };
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 2048];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 16 * 1024 {
+                match tls.read(&mut chunk).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{HTTPS_PAGE}",
+                HTTPS_PAGE.len()
+            );
+            let _ = tls.write_all(reply.as_bytes()).await;
+            let _ = tls.shutdown().await;
+        });
+    }
+}
+
+/// Starts the HTTPS fixture `site` (default `main`) showing the certificate `certificate`
+/// (default `first`, made the first time it's named), or, when it's up, swaps to that certificate
+/// behind the same port: the same origin with another certificate.
+async fn https(input: &Value) -> Result<Value> {
+    let site = input["site"].as_str().unwrap_or("main").to_string();
+    let cert_name = input["certificate"].as_str().unwrap_or("first").to_string();
+    let make = || -> Result<(String, Arc<rustls::ServerConfig>)> {
+        let (cert, key, fingerprint) = self_signed_127();
+        Ok((fingerprint, tls_config(&cert, &key)?))
+    };
+    let exists = HTTPS.lock().unwrap().iter().any(|s| s.name == site);
+    if !exists {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let first = make()?;
+        let showing = Arc::new(Mutex::new((cert_name.clone(), first.1.clone())));
+        let task = tokio::spawn(serve_https(listener, showing.clone()));
+        HTTPS.lock().unwrap().push(HttpsSite {
+            name: site.clone(),
+            port,
+            certificates: BTreeMap::from([(cert_name.clone(), first)]),
+            showing,
+            task,
+        });
+    }
+    let made = if HTTPS
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|s| s.name == site && s.certificates.contains_key(&cert_name))
+    {
+        None
+    } else {
+        Some(make()?)
+    };
+    let mut sites = HTTPS.lock().unwrap();
+    let s = sites
+        .iter_mut()
+        .find(|s| s.name == site)
+        .context("the HTTPS site")?;
+    if let Some(m) = made {
+        s.certificates.insert(cert_name.clone(), m);
+    }
+    let (fingerprint, config) = s.certificates[&cert_name].clone();
+    *s.showing.lock().unwrap() = (cert_name.clone(), config);
+    Ok(json!({
+        "url": format!("https://127.0.0.1:{}", s.port),
+        "port": s.port,
+        "site": site,
+        "certificate": cert_name,
+        "fingerprint": fingerprint,
+    }))
 }
 
 // ── The nodes' side: an HTTP client and the steps ───────────────────────────────────────────
@@ -2793,12 +3162,19 @@ fn pick_ref(input: &Value) -> Result<Option<String>> {
     } else {
         &s["data"]["refs"]
     };
-    refs.as_object()
+    let found = refs
+        .as_object()
         .into_iter()
         .flatten()
         .find(|(_, v)| v["role"] == want["role"] && v["name"] == want["name"])
-        .map(|(k, _)| Some(k.clone()))
-        .with_context(|| format!("no {want} in the snapshot's refs: {refs}"))
+        .map(|(k, _)| k.clone());
+    // `refOr`: the ref to send when the snapshot has none such (a step proving a refusal that comes
+    // before any ref is looked at).
+    match (found, input["refOr"].as_str()) {
+        (Some(r), _) => Ok(Some(r)),
+        (None, Some(or)) => Ok(Some(or.to_string())),
+        (None, None) => bail!("no {want} in the snapshot's refs: {refs}"),
+    }
 }
 
 async fn mcp_call(input: &Value) -> Result<Value> {
@@ -3287,6 +3663,12 @@ async fn alive(input: &Value) -> Result<Value> {
 
 /// Stops the API, its site, every connection and bridge, whatever the workflow ended in.
 pub async fn cleanup() -> Value {
+    for s in HTTPS.lock().unwrap().drain(..) {
+        s.task.abort();
+    }
+    if let Some((_, Some(t))) = FLAKY.lock().unwrap().take() {
+        t.abort();
+    }
     let server = SERVER.lock().unwrap().take();
     let Some(s) = server else {
         SECRETS.lock().unwrap().clear();
@@ -3356,6 +3738,8 @@ async fn run_once(run: &Run, name: &str, input: &Value) -> Result<Value> {
         "lab.browserapi.alive" => alive(input).await,
         "lab.browserapi.down" => Ok(cleanup().await),
         "lab.browserapi.serve" => keep_up(input).await,
+        "lab.browserapi.https" => https(input).await,
+        "lab.browserapi.flaky" => flaky(input).await,
         _ => bail!("{name} isn't a lab.browserapi node"),
     }
 }
@@ -3422,6 +3806,29 @@ mod tests {
             Route::Answer("ask-3".into())
         );
         assert_eq!(route("POST", "/v1/browser/mcp"), Route::Mcp);
+        assert_eq!(
+            route("POST", "/v1/browser/tabs/tab-1/reload"),
+            Route::Reload("tab-1".into())
+        );
+        assert_eq!(
+            route("POST", "/v1/browser/tabs/tab-1/back"),
+            Route::Back("tab-1".into())
+        );
+        assert_eq!(
+            route("POST", "/v1/browser/tabs/tab-1/dialog"),
+            Route::Dialog("tab-1".into())
+        );
+        assert_eq!(
+            route("GET", "/v1/browser/tabs/tab-1/reload"),
+            Route::NotFound
+        );
+        for r in [
+            Route::Reload("t".into()),
+            Route::Back("t".into()),
+            Route::Dialog("t".into()),
+        ] {
+            assert!(r.signed(), "{r:?} is the owner's own act");
+        }
         assert_eq!(route("GET", "/v1/browser/tabs/../take"), Route::NotFound);
         assert_eq!(route("GET", "/v1/browser/tabs/tab-1/take"), Route::NotFound);
         // Every route of the contract parses to something.
@@ -3580,6 +3987,87 @@ mod tests {
             a.person_holds(Some("d2"), "tab-1").unwrap_err().reason,
             "not_holder"
         );
+    }
+
+    #[test]
+    fn lab_browserapi_8_a_way_out_needs_the_holding_device_and_a_dialog_answer_needs_a_dialog() {
+        let mut a = api();
+        with_tab(&mut a, "j1", "tab-1");
+        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
+            assert_eq!(
+                a.way_out("d1", "tab-1", verb).unwrap_err().reason,
+                "not_held"
+            );
+        }
+        a.take("d1", "tab-1").unwrap();
+        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
+            assert_eq!(
+                a.way_out("d2", "tab-1", verb).unwrap_err().reason,
+                "not_holder"
+            );
+        }
+        assert_eq!(a.way_out("d1", "tab-1", c::VERB_RELOAD).unwrap(), "j1");
+        assert_eq!(a.way_out("d1", "tab-1", c::VERB_BACK).unwrap(), "j1");
+        let no = a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap_err();
+        assert_eq!((no.status, no.reason), (409, "no_dialog"));
+        assert!(c::REASONS.contains(&no.reason));
+        a.dialog("tab-1", Some("Leave this page?".into()));
+        assert_eq!(a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap(), "j1");
+        let body: c::DialogBody = serde_json::from_value(json!({"accept": false})).unwrap();
+        assert_eq!((body.accept, body.prompt_text), (false, None));
+        assert!(serde_json::from_value::<c::ReloadBody>(json!({})).is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_https_fixture_shows_its_certificate_and_swaps_it_behind_the_same_port() {
+        use super::super::remote::computers::{pinned_client, Pin};
+        async fn fetch(port: u16, fingerprint: &str) -> Result<String, String> {
+            let pin = Pin::parse(fingerprint)?;
+            let connector = tokio_rustls::TlsConnector::from(pinned_client(pin)?);
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .map_err(|e| e.to_string())?;
+            let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+            let mut tls = connector
+                .connect(name, tcp)
+                .await
+                .map_err(|e| e.to_string())?;
+            tls.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            let _ = tls.read_to_end(&mut out).await;
+            Ok(String::from_utf8_lossy(&out).into_owned())
+        }
+        let site = "unit-test";
+        let first = https(&json!({"site": site, "certificate": "a"}))
+            .await
+            .unwrap();
+        let port = first["port"].as_u64().unwrap() as u16;
+        let fa = first["fingerprint"].as_str().unwrap().to_string();
+        assert!(fetch(port, &fa).await.unwrap().contains("Secure lab page"));
+        let second = https(&json!({"site": site, "certificate": "b"}))
+            .await
+            .unwrap();
+        let fb = second["fingerprint"].as_str().unwrap().to_string();
+        assert_eq!(second["port"], first["port"], "the same origin");
+        assert_ne!(fa, fb, "another certificate");
+        assert!(fetch(port, &fa).await.is_err(), "the first is gone");
+        assert!(fetch(port, &fb).await.unwrap().contains("Secure lab page"));
+        let back = https(&json!({"site": site, "certificate": "a"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            back["fingerprint"].as_str(),
+            Some(fa.as_str()),
+            "kept by name"
+        );
+        HTTPS.lock().unwrap().retain(|s| {
+            if s.name == site {
+                s.task.abort();
+            }
+            s.name != site
+        });
     }
 
     #[test]

@@ -1,0 +1,947 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser API: the person's ways out of a page state, Try again and Reload, Go back, and the page's own dialog answered Leave or Stay, each signed and only on a tab the signing device holds",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-8, board 10 (src/lab/browserapi.rs, Route::Reload, Route::Back, Route::Dialog and way_out; browser.rs's person_page): the agent's navigate to a site that refuses fails and the tab is failed. `POST …/reload` unsigned is refused (unsigned), with the job's token too (the agents' tools never get these routes); signed by a device on a tab nobody holds it is refused (not_held); once the device takes, another device is refused (not_holder); a reload while the site still refuses leaves the tab failed (browser); with the site fixed the same address loads and the tab is ready. Go back: the agent goes from the home page to the second, the device takes, `…/back` brings the home page back. The page's dialog: the agent clicks Leave, the page asks its confirm and the tab is in state dialog; the device takes, `…/dialog` {accept: false} is Stay (the page is still there, the dialog gone), with no dialog left a second answer is refused (no_dialog), and once the page asks again {accept: true} is Leave (the page goes home).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d2",
+      "use": "runtime.rust:lab.browserapi.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$contains": "device-"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "flakydown",
+      "use": "runtime.rust:lab.browserapi.flaky",
+      "inputs": {
+        "up": false,
+        "expect": {
+          "paths": {
+            "up": false
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "bad",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.flakydown.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "failed",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.tabs.0.id": "${state.open.structured.result.tab}",
+            "body.tabs.0.state": "failed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "reload-unsigned",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "reload-as-agent",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
+        "as": "job",
+        "token": "${state.j1.token}",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "bad_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "reload-not-held",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "not_held"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "take",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.heldBy": "${state.d1.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "reload-other-device",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
+        "as": "device",
+        "device": "${state.d2}",
+        "expect": {
+          "paths": {
+            "status": 403,
+            "body.reason": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "reload-still-refused",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "browser"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "still-failed",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs.0.state": "failed"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "flakyup",
+      "use": "runtime.rust:lab.browserapi.flaky",
+      "inputs": {
+        "up": true,
+        "expect": {
+          "paths": {
+            "up": true,
+            "url": "${state.flakydown.url}"
+          }
+        }
+      }
+    },
+    {
+      "id": "reload",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.id": "${state.open.structured.result.tab}",
+            "body.state": "ready",
+            "body.url": "${state.flakydown.url}/",
+            "body.heldBy": "${state.d1.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "ready",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs.0.state": "ready",
+            "body.tabs.0.url": "${state.flakydown.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "reloaded",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "url": "${state.flakydown.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "ready-event",
+      "use": "runtime.rust:lab.browserapi.events",
+      "inputs": {
+        "api": "${state.up}",
+        "ms": 500,
+        "expect": {
+          "paths": {
+            "of.tab": {
+              "$any": {
+                "tab": {
+                  "id": "${state.open.structured.result.tab}",
+                  "state": "ready",
+                  "url": "${state.flakydown.url}/"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "give-back",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.heldBy": null
+          }
+        }
+      }
+    },
+    {
+      "id": "home",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "second",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.up.site.url}/second"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "back-unsigned",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "back-not-held",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "not_held"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "take-again",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.heldBy": "${state.d1.id}"
+          }
+        }
+      }
+    },
+    {
+      "id": "back-other-device",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "as": "device",
+        "device": "${state.d2}",
+        "expect": {
+          "paths": {
+            "status": 403,
+            "body.reason": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "back",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.state": "ready",
+            "body.url": "${state.up.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "went-back",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "url": "${state.up.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "give-back-again",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "leave-page",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.up.site.url}/leave"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "click-leave",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.dialogOpened": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "dialog-state",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs.0.state": "dialog",
+            "body.tabs.0.dialog": {
+              "$contains": "Leave this page?"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "dialog-not-held",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "accept": false
+        },
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "not_held"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "take-for-dialog",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "dialog-unsigned",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "as": "unsigned",
+        "body": {
+          "accept": false
+        },
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "dialog-other-device",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "as": "device",
+        "device": "${state.d2}",
+        "body": {
+          "accept": false
+        },
+        "expect": {
+          "paths": {
+            "status": 403,
+            "body.reason": "not_holder"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "stay",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "accept": false
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.state": "ready",
+            "body.dialog": null,
+            "body.url": "${state.up.site.url}/leave"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "stayed",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "url": "${state.up.site.url}/leave"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "no-dialog",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "accept": true
+        },
+        "expect": {
+          "paths": {
+            "status": 409,
+            "body.reason": "no_dialog"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "give-back-for-leave",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "snap-again",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "click-leave-again",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Leave"
+        },
+        "snapshot": "${state.snap-again}",
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.dialogOpened": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "take-to-leave",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
+        "as": "device",
+        "device": "${state.d1}",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "leave",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {
+          "accept": true
+        },
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.state": "ready",
+            "body.dialog": null,
+            "body.url": "${state.up.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    },
+    {
+      "id": "left",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "url": "${state.up.site.url}/"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-8"
+        ]
+      }
+    }
+  ]
+}

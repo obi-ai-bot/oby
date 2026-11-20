@@ -1,0 +1,463 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab browser: an agent can't get past the browser's certificate error page; reads still work, and navigating elsewhere",
+  "version": "1.0.0",
+  "description": "LAB-BROWSERAPI-9 (src/lab/browser.rs, the `certificate` rule: Browsers::begin and may_start refuse certificate_page): the agent navigates to an HTTPS fixture whose self-signed certificate was made at run time; it stops at the browser's certificate page and the tab is certificate. The agent's evaluate of the page's own `certificateErrorPageController.proceed()` (which loads the page when nothing stops it) is refused (certificate_page) and the page is still the error page; so is answering a dialog. Snapshot, screenshot and list_tabs still work. With the fixture swapped to a second certificate behind the same origin, the agent's navigate stops at the certificate page again; its click on Advanced and on the page's Proceed link, by snapshot refs, are refused, and the page is still the error page. Navigating elsewhere works, and acting there works again.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.browserapi.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j1",
+      "use": "runtime.rust:lab.browserapi.job",
+      "inputs": {
+        "api": "${state.up}",
+        "job": "j1",
+        "agent": "claude",
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            },
+            "engine.agentBrowser.pinned": true
+          }
+        }
+      }
+    },
+    {
+      "id": "cert",
+      "use": "runtime.rust:lab.browserapi.https",
+      "inputs": {
+        "certificate": "first",
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "https://127.0.0.1:"
+            },
+            "fingerprint": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "bad",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.cert.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "browser",
+            "structured.error.message": {
+              "$contains": "ERR_CERT"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "certificate",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs.0.state": "certificate"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "proceed-eval",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "certificateErrorPageController.proceed(); 'proceeded'"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "certificate_page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "still-stopped",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "chrome-error://"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "dialog-refused",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_dialog",
+        "args": {
+          "accept": true
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "certificate_page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "snapshot-works",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.url": {
+              "$contains": "chrome-error://"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "screenshot-works",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_screenshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "list-works",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_list_tabs",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.tabs.0.certificatePage": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "swap",
+      "use": "runtime.rust:lab.browserapi.https",
+      "inputs": {
+        "certificate": "second",
+        "expect": {
+          "paths": {
+            "url": "${state.cert.url}",
+            "certificate": "second"
+          }
+        }
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.cert.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.message": {
+              "$contains": "ERR_CERT"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "advanced",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "button",
+          "name": "Advanced"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "certificate_page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "snap-details",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      }
+    },
+    {
+      "id": "proceed-click",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "click"
+        },
+        "refFor": {
+          "role": "link",
+          "name": "Proceed to 127.0.0.1 (unsafe)"
+        },
+        "snapshot": "${state.snap-details}",
+        "refOr": "e999",
+        "expect": {
+          "paths": {
+            "isError": true,
+            "structured.error.code": "certificate_page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "still-stopped-again",
+      "use": "runtime.rust:lab.browser.read",
+      "inputs": {
+        "conversation": "j1",
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "chrome-error://"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "elsewhere",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_navigate",
+        "args": {
+          "url": "${state.up.site.url}/"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "acts-again",
+      "use": "runtime.rust:lab.browserapi.mcp",
+      "inputs": {
+        "api": "${state.up}",
+        "token": "${state.j1.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "1 + 1"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    },
+    {
+      "id": "ready",
+      "use": "runtime.rust:lab.browserapi.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "paths": {
+            "body.tabs.0.state": "ready"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-BROWSERAPI-9"
+        ]
+      }
+    }
+  ]
+}

@@ -8,8 +8,9 @@
 //!
 //! - **The person's app** (lane B's screens, later the Electron app): every route but the MCP one,
 //!   with obid's owner token (`Authorization: Bearer <token>`). The owner's own acts on a tab
-//!   (take, give back, a secret, an answer, Save a copy, a setting) also carry the device's signed
-//!   words (`X-Oby-Words`, [`WORDS_HEADER`]) over the exact body, as obid's other owner's words.
+//!   (take, give back, a secret, an answer, Save a copy, a setting, a way out of a page state) also
+//!   carry the device's signed words (`X-Oby-Words`, [`WORDS_HEADER`]) over the exact body, as
+//!   obid's other owner's words.
 //! - **An agent**: only [`PATH_MCP`], JSON-RPC 2.0 over HTTP, with its job's own token, which dies
 //!   with the job. Never the owner token, never the person's routes.
 //!
@@ -49,6 +50,16 @@ pub const VERB_TAKE: &str = "take";
 pub const VERB_GIVE_BACK: &str = "giveBack";
 /// `POST` a [`SecretBody`], signed, while the person holds the tab ([`SecretAnswer`]).
 pub const VERB_SECRET: &str = "secret";
+/// The person's ways out of a page state (board 10), each signed and only on a tab the signing
+/// device holds (`not_held`, `not_holder`), each answering the [`Tab`] as it is after; never an
+/// agent's tool. `POST` a [`ReloadBody`]: Try again (failed) and Reload (timed out, crashed); a page
+/// that loads clears the tab's failure, one that still doesn't is refused `browser`.
+pub const VERB_RELOAD: &str = "reload";
+/// `POST` a [`BackBody`]: Go back, the tab's history back.
+pub const VERB_BACK: &str = "back";
+/// `POST` a [`DialogBody`]: the page's own dialog answered, Leave (`accept`) or Stay; with no
+/// dialog on the tab, refused `no_dialog`.
+pub const VERB_DIALOG: &str = "dialog";
 /// `POST` an [`AnswerBody`], signed: the person's answer to an agent's ask.
 pub const PATH_ASKS: &str = "/v1/browser/asks";
 pub const VERB_ANSWER: &str = "answer";
@@ -87,6 +98,9 @@ pub const ROUTES: &[&str] = &[
     "POST /v1/browser/tabs/{id}/take",
     "POST /v1/browser/tabs/{id}/giveBack",
     "POST /v1/browser/tabs/{id}/secret",
+    "POST /v1/browser/tabs/{id}/reload",
+    "POST /v1/browser/tabs/{id}/back",
+    "POST /v1/browser/tabs/{id}/dialog",
     "POST /v1/browser/asks/{id}/answer",
     "POST /v1/browser/mcp",
 ];
@@ -290,6 +304,26 @@ pub struct SecretAnswer {
     pub tab_id: String,
     pub field: String,
     pub filled: bool,
+}
+
+// ── The person's ways out of a page state ───────────────────────────────────────────────────────
+
+/// Try again and Reload: nothing more to say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReloadBody {}
+
+/// Go back: nothing more to say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackBody {}
+
+/// The page's own dialog answered: `accept` is Leave (OK), else Stay (Cancel); `promptText` for a
+/// prompt.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DialogBody {
+    pub accept: bool,
+    #[serde(default)]
+    pub prompt_text: Option<String>,
 }
 
 // ── Downloads ───────────────────────────────────────────────────────────────────────────────────
@@ -576,6 +610,7 @@ pub const REASONS: &[&str] = &[
     "upload_outside_room",
     "not_granted",
     "browser",
+    "certificate_page",
     // The API's.
     "browser_off",
     "no_token",
@@ -589,6 +624,7 @@ pub const REASONS: &[&str] = &[
     "not_found",
     "bad_request",
     "browser_starting",
+    "no_dialog",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────
@@ -816,6 +852,11 @@ mod tests {
                 seq: 7,
             })
             .unwrap(),
+            serde_json::to_value(DialogBody {
+                accept: true,
+                prompt_text: Some("p".into()),
+            })
+            .unwrap(),
             serde_json::to_value(Download {
                 id: "d".into(),
                 job: "j".into(),
@@ -953,6 +994,7 @@ mod tests {
             Refusal::ControlChanged,
             Refusal::Settling { tool: "x".into() },
             Refusal::Browser("x".into()),
+            Refusal::CertificatePage,
         ] {
             assert!(REASONS.contains(&r.code()), "{}", r.code());
         }
