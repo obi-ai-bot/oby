@@ -123,7 +123,7 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
   }
   return (
     <div className="br-control" role="status" data-browser="control">
-      <span className="br-control-text">{logo}<span>{tab.action ? <><b>{who}</b> is using this tab · <Sheen>{tab.action}</Sheen></> : idle ?? <><b>{who}</b> opened this tab · idle</>}</span></span>
+      <span className="br-control-text">{logo}<span>{tab.action ? <><b>{who}</b> is using this tab · <Sheen>{tab.action}</Sheen></> : idle ?? (tab.ran ? <><b>{who}</b> ran a script in this page · done</> : <><b>{who}</b> opened this tab · idle</>)}</span></span>
       {take}
     </div>
   );
@@ -131,11 +131,15 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
 
 /** A page that didn't simply load (board 10's words), in the panel's middle; its way out. */
 export function PageState({ tab }: { tab: Tab }) {
-  const { api } = useBrowser();
+  const { api, mode } = useBrowser();
   const host = tab.url.split('/')[0];
   const who = tab.owner.kind === 'agent' ? agentName(tab.owner.agent) : '';
+  // On obid the ways out (Try again, Reload, Go back, Go on anyway, a dialog's Leave and Stay) wait for
+  // routes obid doesn't have for the owner yet: there, the state's words show alone, and the agent,
+  // told every time, acts (BROWSERAPP-14). On the demo data they show as the board does.
+  const ways = mode !== 'obid';
   const box = (icon: ReactNode, title: string, text: string, way: ReactNode) => (
-    <div className="br-state" data-browser={`page-${tab.state}`}>{icon}<span className="br-state-title">{title}</span><span className="br-state-text">{text}</span><div className="tc-options">{way}</div></div>
+    <div className="br-state" data-browser={`page-${tab.state}`}>{icon}<span className="br-state-title">{title}</span><span className="br-state-text">{text}</span>{ways && <div className="tc-options">{way}</div>}</div>
   );
   const again = <button className="tc-option is-sm">Try again</button>;
   switch (tab.state) {
@@ -149,11 +153,11 @@ export function PageState({ tab }: { tab: Tab }) {
         <div className="br-over" role="dialog" aria-label="The page asks" data-browser="page-dialog">
           <span className="br-over-kind">{host} asks</span>
           <p className="br-over-text">{tab.dialog}</p>
-          <div className="tc-options" style={{ marginTop: 10 }}>
+          {ways && <div className="tc-options" style={{ marginTop: 10 }}>
             <button className="tc-option is-sm" disabled={!held} style={held ? undefined : { opacity: 0.4 }}>Leave</button>
             <button className="tc-option is-sm" disabled={!held} style={held ? undefined : { opacity: 0.4 }}>Stay</button>
             {!held && <button className="tc-option is-sm is-primary" style={{ marginLeft: 'auto' }} onClick={() => api.take(tab.id)}>Take control to answer</button>}
-          </div>
+          </div>}
         </div>
       );
     }
@@ -161,12 +165,50 @@ export function PageState({ tab }: { tab: Tab }) {
   }
 }
 
-/** The page: the demo's site (on obid, the live stream's frame: BROWSERAPP-8). */
+/**
+ * The live page: the stream's newest frame, drawn from the top left at the panel's width. While you
+ * hold the tab, your mouse and keys on it go to the page (POST …/input, signed by main right after
+ * the very input it saw: BROWSERAPP-10), in the page's own px; never unless you hold it.
+ */
+function LiveFrame({ tab, url, size }: { tab: Tab; url: string; size: { width: number; height: number } }) {
+  const { api } = useBrowser();
+  const held = tab.holder === 'you';
+  const at = (e: { clientX: number; clientY: number; currentTarget: Element }) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const scale = Math.min(r.width / size.width, r.height / size.height) || 1;
+    return { x: Math.round((e.clientX - r.left) / scale), y: Math.round((e.clientY - r.top) / scale) };
+  };
+  const send = (e: Parameters<NonNullable<typeof api.input>>[1]) => { if (held) void api.input?.(tab.id, e); };
+  return (
+    <div
+      className="br-frame" tabIndex={held ? 0 : -1} data-browser="frame-input" aria-label={held ? 'The page: you have it' : undefined}
+      style={{ position: 'absolute', inset: 0, outline: 'none', cursor: held ? 'default' : 'not-allowed' }}
+      onPointerDown={(e) => { if (!held) return; e.currentTarget.focus(); const p = at(e); send({ type: 'mouse', eventType: 'mouseMoved', ...p }); send({ type: 'mouse', eventType: 'mousePressed', ...p, button: 'left', clickCount: 1 }); }}
+      onPointerUp={(e) => send({ type: 'mouse', eventType: 'mouseReleased', ...at(e), button: 'left', clickCount: 1 })}
+      onWheel={(e) => send({ type: 'mouse', eventType: 'mouseWheel', ...at(e), deltaX: e.deltaX, deltaY: e.deltaY })}
+      onKeyDown={(e) => { if (!held) return; e.preventDefault(); send({ type: 'key', eventType: 'keyDown', key: e.key, code: e.code, text: e.key.length === 1 ? e.key : null }); }}
+      onKeyUp={(e) => { if (!held) return; e.preventDefault(); send({ type: 'key', eventType: 'keyUp', key: e.key, code: e.code }); }}
+    >
+      <img src={url} alt="" data-browser="frame" draggable={false} style={{ display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'top left', pointerEvents: 'none' }} />
+    </div>
+  );
+}
+
+const STOPPED = ['failed', 'timedOut', 'certificate', 'crashed'];
+
+/** The page: the demo's site, or on obid the live stream's frame and the page's own states. */
 export function View({ tab, label, page, children, className = '', style }: { tab: Tab; label: string; page: ReactNode; children?: ReactNode; className?: string; style?: CSSProperties }) {
+  const { mode, frame } = useBrowser();
   const held = tab.holder === 'you' && tab.owner.kind === 'agent';
+  const live = mode === 'obid' ? frame(tab.id) : null;
   return (
     <div className={`br-view${held ? ' is-held' : ''} ${className}`.trim()} role="img" aria-label={label} style={style} data-browser="view">
-      {page}
+      {STOPPED.includes(tab.state)
+        ? <div className="br-view is-blank" style={{ position: 'absolute', inset: 0 }}><PageState tab={tab} /></div>
+        : mode === 'obid'
+        ? (live ? <LiveFrame tab={tab} url={live.url} size={live} /> : <div className="br-state"><span className="br-state-text"><Sheen>Waiting for the page</Sheen></span></div>)
+        : page}
+      {tab.state === 'dialog' && <PageState tab={tab} />}
       {children}
     </div>
   );
@@ -190,7 +232,7 @@ export function FileRow({ id }: { id: string }) {
       </span>
       {agent && !d.saved
         ? <button className="tc-option is-sm" onClick={() => api.saveCopy(d.id)}>Save a copy</button>
-        : <button className="tc-option is-sm">Show in Finder</button>}
+        : <button className="tc-option is-sm" onClick={() => api.reveal(d.id)}>Show in Finder</button>}
     </div>
   );
 }

@@ -86,7 +86,7 @@
         "expect": {
           "paths": {
             "count": 1,
-            "text": "Show the browser⇧⌘B"
+            "words": "Show the browser⇧⌘B"
           }
         }
       },

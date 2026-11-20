@@ -111,18 +111,14 @@ fn skills_5_the_box_lists_the_agents_skills_where_they_run() {
     assert_eq!(home.status, 200, "{}", home.text);
     assert_eq!(home.body["tool"], "claude");
     assert_eq!(home.body["account"], "stub");
-    if cfg!(target_os = "macos") {
-        assert_eq!(names(&home), ["agent-only", "write-tests"], "{}", home.text);
-        let skill = &home.body["skills"][1];
-        assert_eq!(skill["description"], "Writes the tests first.");
-        assert_eq!(skill["userInvocable"], true);
-        assert_eq!(skill["source"], "user");
-        assert_eq!(home.body["skills"][0]["userInvocable"], false);
-        assert!(home.body.get("why").is_none(), "{}", home.text);
-    } else {
-        // Elsewhere a conversation stays boxed until the own lane is proven there (LANES-12).
-        assert!(names(&home).is_empty(), "{}", home.text);
-    }
+    // The owner's own conversation, on macOS and Linux alike (LANES-12, LANES-26).
+    assert_eq!(names(&home), ["agent-only", "write-tests"], "{}", home.text);
+    let skill = &home.body["skills"][1];
+    assert_eq!(skill["description"], "Writes the tests first.");
+    assert_eq!(skill["userInvocable"], true);
+    assert_eq!(skill["source"], "user");
+    assert_eq!(home.body["skills"][0]["userInvocable"], false);
+    assert!(home.body.get("why").is_none(), "{}", home.text);
     let boxed = call(&obid, "GET", &format!("/v1/skills?conversation={id}"), None);
     assert_eq!(boxed.status, 200, "{}", boxed.text);
     assert!(names(&boxed).is_empty(), "{}", boxed.text);

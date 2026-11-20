@@ -2709,6 +2709,36 @@ fn tasks_31_a_failed_or_interrupted_task_archives() {
     assert!(refused.text.contains("still needs you"), "{}", refused.text);
 }
 
+/// PUBLISHING-44 (docs/contracts/publishing.md): a task naming the branch `oby`, in any case, is
+/// refused before anything starts, since Oby's own branches live under it and git can't make
+/// `oby/<kind>-<id>` beside a branch of that name; a task after it gets its `oby/` branch and runs.
+#[test]
+fn publishing_44_a_branch_named_oby_is_refused_and_oby_branches_still_start() {
+    let folder = Folder::new("publishing-44");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
+    for name in ["oby", "OBY", "Oby", " oby "] {
+        let mut job = task.clone();
+        job["branch"] = json!(name);
+        let answer = post_job(&obid, job);
+        assert_eq!(answer.status, 422, "{name}: {}", answer.text);
+        let error = answer.body["error"].as_str().unwrap();
+        assert!(error.contains("isn't a branch name"), "{name}: {error}");
+    }
+    assert_eq!(request(&obid, "GET", "/v1/jobs", None).body, json!([]));
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let id = ended(&obid, "Look around");
+    let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["branch"], format!("oby/investigate-{id}"), "{job}");
+    let oby = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "refs/heads/oby"])
+        .current_dir(&clone)
+        .status()
+        .unwrap();
+    assert!(!oby.success(), "no branch named oby was made");
+}
+
 /// JOBSTATE-9 (docs/contracts/job-state.md): Try again on an `interrupted` job.
 #[test]
 fn jobstate_9_try_again_after_interrupted_resets_the_round() {
@@ -2719,6 +2749,54 @@ fn jobstate_9_try_again_after_interrupted_resets_the_round() {
 #[test]
 fn jobstate_10_try_again_after_stopped_resets_the_round() {
     try_again_clears("jobstate-10", obid::job::Status::Stopped);
+}
+
+/// JOBSTATE-20 (docs/contracts/job-state.md): Try again on a stopped job whose worktree went makes
+/// it again, and the job runs to its end, instead of failing on git's "missing but already
+/// registered worktree": its folder deleted (git still lists it), or its git folder in obid's
+/// clone gone (the clone moved), whose folder moves aside as `<id>.orphaned` with what it held.
+#[test]
+fn jobstate_20_try_again_makes_a_missing_worktree_again() {
+    let folder = Folder::new("jobstate-20");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let admins = obid.home.join("clones/obi-e2e/fixture-app/.git/worktrees");
+    // A job that ran, stopped, its worktree then broken by `break_it`, and Try again pressed: it
+    // ends `done`, its worktree made again in obid's clone.
+    let try_again_after = |break_it: &dyn Fn(&Path, &Path)| {
+        let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"});
+        let id = post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+        beat(&obid, &id);
+        let stopped = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+        assert_eq!(stopped.body["status"], "stopped", "{}", stopped.text);
+        let worktree = obid.home.join("worktrees").join(&id);
+        break_it(&worktree, &admins.join(&id));
+        let again = press_try_again(&obid, &id);
+        assert_eq!(again.status, 200, "{}", again.text);
+        let job = wait(&obid, &id);
+        assert_eq!(job["status"], "done", "{job}");
+        assert!(worktree.join(".git").exists(), "{job}");
+        assert!(admins.join(&id).exists(), "made again in obid's clone");
+        worktree
+    };
+
+    try_again_after(&|worktree, admin| {
+        std::fs::remove_dir_all(worktree).unwrap();
+        assert!(admin.exists(), "git still lists the worktree");
+    });
+
+    let worktree = try_again_after(&|worktree, admin| {
+        std::fs::write(worktree.join("notes.md"), "mine").unwrap();
+        std::fs::remove_dir_all(admin).unwrap();
+    });
+    let aside = worktree.with_file_name(format!(
+        "{}.orphaned",
+        worktree.file_name().unwrap().to_str().unwrap()
+    ));
+    assert_eq!(
+        std::fs::read_to_string(aside.join("notes.md")).unwrap(),
+        "mine"
+    );
 }
 
 /// JOBSTATE-5 (docs/contracts/job-state.md): Try again on a job whose follow-up carries its branch

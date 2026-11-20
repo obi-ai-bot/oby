@@ -23,7 +23,10 @@
         "expect": {
           "paths": {
             "agentBrowser.pinned": true,
-            "profileInWorkflow": true
+            "profileInWorkflow": true,
+            "chrome": {
+              "$contains": "chrome-headless-shell"
+            }
           }
         }
       }

@@ -66,6 +66,16 @@ declare global {
       // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
       sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
       sphereAddSignin?(provider: string): Promise<string | null>;
+      // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, and a
+      // tab's frames; each a function that stops listening
+      browser?: {
+        follow(fn: (m: { name: string; data: string }) => void): () => void;
+        watch(tab: string, fn: (data: string) => void): () => void;
+        // a password or code into the page's field, filled by main on the owner's click (BROWSERAPP-12): null once filled
+        fill(tab: string, field: string, value: string, ask?: string): Promise<string | null>;
+        // Show in Finder for a download in Downloads, by its name (BROWSERAPP-16)
+        reveal(name: string): Promise<boolean>;
+      };
       // obid, through main (preload, main/obid.ts); its events, from main's one follower (main/live.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

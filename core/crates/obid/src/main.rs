@@ -1,6 +1,8 @@
 //! `obid serve --config /path/to/config.json` (docs/runner-api.md, "obid only: configuration"),
 //! and `obid vault --config /path/to/config.json list | add NAME | remove NAME`: the owner's vault
-//! from a terminal on the machine, a value only ever on stdin (obid::vault).
+//! from a terminal on the machine, a value only ever on stdin (obid::vault). `obid pair-computer
+//! [--config /path/to/config.json]`: what the person's SSH runs here to add this computer to their
+//! Mac, the Mac's name and key on stdin (obid::remote::pair, docs/api/remote.md).
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -8,7 +10,7 @@ use std::process::ExitCode;
 
 use obid::config::Config;
 
-const USAGE: &str = "usage: obid serve --config /path/to/config.json\n       obid serve   (macOS, as Oby.app starts it: ~/Library/Application Support/Oby/obid/config.json)\n       obid vault --config /path/to/config.json list | add NAME (the value on stdin) | remove NAME\n       obid --version";
+const USAGE: &str = "usage: obid serve --config /path/to/config.json\n       obid serve   (macOS, as Oby.app starts it: ~/Library/Application Support/Oby/obid/config.json)\n       obid vault --config /path/to/config.json list | add NAME (the value on stdin) | remove NAME\n       obid pair-computer [--config /path/to/config.json]   (the Mac's name and device key on stdin)\n       obid --version";
 
 enum Command {
     /// `config` none: as Oby.app starts it (obid::app), on macOS only.
@@ -18,6 +20,10 @@ enum Command {
     Vault {
         config: PathBuf,
         action: obid::vault::Action,
+    },
+    /// `config` none: Oby.app's, on macOS only, as `Serve`.
+    PairComputer {
+        config: Option<PathBuf>,
     },
     Version,
     Help,
@@ -49,6 +55,19 @@ fn parse(args: &[String]) -> Result<Command, String> {
             })
         }
         [vault, ..] if vault == "vault" => Err(obid::vault::USAGE.into()),
+        [pair] if pair == "pair-computer" && cfg!(target_os = "macos") => {
+            Ok(Command::PairComputer { config: None })
+        }
+        [pair, flag, path] if pair == "pair-computer" && flag == "--config" => {
+            Ok(Command::PairComputer {
+                config: Some(PathBuf::from(path)),
+            })
+        }
+        [pair, flag] if pair == "pair-computer" && flag.starts_with("--config=") => {
+            Ok(Command::PairComputer {
+                config: Some(PathBuf::from(&flag["--config=".len()..])),
+            })
+        }
         _ => Err(USAGE.into()),
     }
 }
@@ -112,6 +131,7 @@ fn main() -> ExitCode {
             path
         }
         Command::Vault { config, action } => return vault(&config, &action),
+        Command::PairComputer { config } => return pair_computer(config),
     };
 
     // The runtime, then SIGTERM and SIGINT caught, before anything else: from here on a stop
@@ -254,6 +274,46 @@ fn vault(config: &std::path::Path, action: &obid::vault::Action) -> ExitCode {
     ))
 }
 
+/// `obid pair-computer`: one JSON line on stdout when it paired, one line on stderr when not.
+/// Nothing it prints holds the API token; the invitation's secret goes back over SSH only.
+fn pair_computer(config: Option<PathBuf>) -> ExitCode {
+    let config = match config {
+        Some(config) => config,
+        None => match nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map(|user| user.dir)
+            .filter(|dir| dir.is_absolute())
+        {
+            Some(home) => obid::app::config_path(&home),
+            None => {
+                eprintln!("obid: can't find the person's home folder");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("obid: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(obid::remote::pair::run(&config, std::io::stdin().lock())) {
+        Ok(line) => {
+            println!("{line}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => {
+            eprintln!("{}", refused.said);
+            ExitCode::from(refused.code)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +342,20 @@ mod tests {
                 ..
             })
         ));
+        assert!(
+            matches!(parse(&args(&["pair-computer", "--config", "/c.json"])), Ok(Command::PairComputer { config: Some(config) }) if config.as_path() == Path::new("/c.json"))
+        );
+        assert!(
+            matches!(parse(&args(&["pair-computer", "--config=/c.json"])), Ok(Command::PairComputer { config: Some(config) }) if config.as_path() == Path::new("/c.json"))
+        );
+        assert_eq!(
+            matches!(
+                parse(&args(&["pair-computer"])),
+                Ok(Command::PairComputer { config: None })
+            ),
+            cfg!(target_os = "macos")
+        );
+        assert!(parse(&args(&["pair-computer", "Mac", "key"])).is_err());
         // `obid serve` alone is how Oby.app starts it, on macOS only.
         assert_eq!(
             matches!(

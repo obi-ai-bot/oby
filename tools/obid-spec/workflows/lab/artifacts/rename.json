@@ -1,0 +1,223 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifacts: a rename sends artifact {renamed}; a delete takes it away",
+  "version": "1.0.0",
+  "description": "LAB-ARTIFACTS-5 (src/lab/artifacts.rs: handle's Rename and Delete). Renaming an artifact, signed by the owner's device, answers it with its new title and sends the artifact event with renamed: true and the title (obid sends none today); a title that isn't one line of 1 to 100 characters is refused bad_title and sends nothing. Deleting it, signed, answers 204 and it is gone: 404 after, and again on a second delete. (Revoking its shares and public link first comes with the sharing PR.)",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "url": {
+              "$contains": "http://127.0.0.1:"
+            },
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:lab.artifacts.device",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab artifact",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "5-renamed",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": "Renamed page"
+        },
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.title": "Renamed page",
+            "body.versions": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-rename-event",
+      "use": "runtime.rust:lab.artifacts.events",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "count": 2,
+            "events": {
+              "$any": {
+                "type": "artifact",
+                "data": {
+                  "id": "${state.page.id}",
+                  "renamed": true,
+                  "title": "Renamed page",
+                  "conversation": "c1"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-bad-title",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.id}",
+        "body": {
+          "title": ""
+        },
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 422,
+            "body.reason": "bad_title"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-no-event-for-a-refusal",
+      "use": "runtime.rust:lab.artifacts.events",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "count": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-deleted",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 204
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-gone",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}",
+        "expect": {
+          "paths": {
+            "status": 404,
+            "body.reason": "not_found"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-gone-again",
+      "use": "runtime.rust:lab.artifacts.call",
+      "inputs": {
+        "api": "${state.up}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}",
+        "device": "${state.d1}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 404
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTIFACTS-5"
+        ]
+      }
+    }
+  ]
+}

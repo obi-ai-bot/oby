@@ -5,7 +5,7 @@ The business behavior contract for one shared room per Obysphere, the owner's re
 ## Feature and status
 
 - **Outcome:** Every member's Oby in an Obysphere talks in one shared room, in the open to the members and sealed from the Sphere's operator. The owner reads it and can step in. "What's everyone working on?" is answered in the room with nobody bothered.
-- **Status:** obid's side **implemented**. **Proposed:** the app's side (below), after the Electron work under way.
+- **Status:** obid's side **implemented**. The Electron app's side is **implemented** too, its own contract [room-app.md](room-app.md) (`RoomView.tsx`, `room.ts`). A phone doesn't reach the room yet ("The app", below).
 - **Scope:** one room per Sphere. **Out of scope, in #46:** multiple rooms, channels, one identity across Spheres, overlap warnings and community Spheres, and putting posts in the chain.
 
 ## Why not in the chain
@@ -66,9 +66,9 @@ obid owns following the room in the Sphere link's loop, verifying, opening, keep
 - **API, add-only:** `GET /v1/spheres/{sphere}/room?after=` and `POST` of the owner's `say`, signed like the app's other owner words ([signed-words.md](signed-words.md)), and a `roomPost` event: [runner-api.md](../runner-api.md), "obid only: the Sphere's room".
 - **Brain tools:** `oby_room_read` and `oby_room_post` (`need`, `found`). A post on a turn that isn't the owner's own word waits for their Confirm, with its kind, what it's about, what it answers and its words on the card.
 
-### The app (proposed)
+### The app
 
-A Sphere's chat shows its room, from the Sphere prototype's Deskree board (canvas `project/Main.dc.html`). Words are proposed, Sangam's to change. Unavailable: the room isn't shown and asking stays one member at a time. The Electron app's main signs `POST /v1/spheres/{sphere}/room` only once `wordsOf` knows its shape (`text`). The gateway's allowlist doesn't have the room's routes yet, and it filters the `roomPost` event, so a phone doesn't reach it.
+The Electron app's side is [room-app.md](room-app.md): a Sphere's chat shows its room, from the Sphere prototype's Deskree board (canvas `project/Main.dc.html`). Words are proposed, Sangam's to change. Unavailable: the room isn't shown and asking stays one member at a time. Its main signs the owner's `POST /v1/spheres/{sphere}/room` in exactly its shape, `text` alone (`wordsOf`, [signed-words.md](signed-words.md), WORDS-10). The gateway's allowlist doesn't have the room's routes yet, and it filters the `roomPost` event (`MAC_ONLY_EVENTS` in `gateway.rs`), so a phone doesn't reach it.
 
 ### Failure and recovery
 

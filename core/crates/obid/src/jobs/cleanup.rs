@@ -1,8 +1,32 @@
 //! The cleanup pass (docs/runner-api.md, `cleanup`): git's daily tidy of each clone, a settled
-//! job's worktree removed once it holds nothing that exists nowhere else, and an ended job's build
-//! outputs freed (CLEANUP-1, CLEANUP-2). It never writes a job's branch or its commits.
+//! job's worktree removed once it holds nothing that exists nowhere else (CLEANUP-7: not even an
+//! edit `git status` doesn't show), and an ended job's build outputs freed (CLEANUP-1,
+//! CLEANUP-2). It never writes a job's branch or its commits.
 
 use super::*;
+
+/// What [`Jobs::worktree_holds_work`] says of a worktree whose edits `git status` doesn't show
+/// (CLEANUP-7).
+pub(super) const HIDDEN_CHANGES: &str = "It has uncommitted changes git status doesn't show.";
+
+/// The entries of `git ls-files --stage -v -z` flagged skip-worktree (`S`) or assume-unchanged (a
+/// lowercase tag), which `git status` doesn't look at: each one's mode, object id and path, a
+/// submodule's left out (its own repository says what it holds).
+fn flagged(listed: &[u8]) -> Vec<(&[u8], &[u8], &[u8])> {
+    listed
+        .split(|&b| b == 0)
+        .filter_map(|entry| {
+            let (&tag, rest) = entry.split_first()?;
+            let tab = rest.iter().position(|&b| b == b'\t')?;
+            let (fields, path) = (&rest[..tab], &rest[tab + 1..]);
+            let mut fields = fields.split(|&b| b == b' ').filter(|f| !f.is_empty());
+            let (mode, object) = (fields.next()?, fields.next()?);
+            (tag == b'S' || tag.is_ascii_lowercase())
+                .then_some((mode, object, path))
+                .filter(|_| mode != b"160000")
+        })
+        .collect()
+}
 
 impl Jobs {
     /// Lets git tidy each clone once a day ([`Jobs::tidy_clone`]).
@@ -164,6 +188,15 @@ impl Jobs {
                 ));
             }
         }
+        match self.hides_changes(&job.id).await {
+            Ok(false) => {}
+            Ok(true) => return Some(HIDDEN_CHANGES.into()),
+            Err(e) => {
+                return Some(format!(
+                    "obid can't tell whether it has uncommitted changes: {e}"
+                ));
+            }
+        }
         let head = match self
             .sandboxed_git(&job.id, &["rev-parse", "--verify", "--quiet", "HEAD"], None)
             .await
@@ -195,6 +228,51 @@ impl Jobs {
             Ok(refs) if !refs.is_empty() => None,
             _ => Some("It has commits that aren't on the remote.".into()),
         }
+    }
+
+    /// Whether the job's worktree holds an edit `git status` doesn't show (CLEANUP-7): a tracked
+    /// file flagged skip-worktree or assume-unchanged ([`flagged`]: an agent's `git update-index`,
+    /// a sparse checkout), there on disk and not what git holds for it. Status and `git diff`
+    /// never look at those files, as T3 Code found (pingdotgg/t3code fe565c8958). A flagged file
+    /// that isn't on disk loses nothing; one obid can't compare (a link, a folder, a name with a
+    /// newline) counts as changed. git runs in the job's sandbox, as for the status before it.
+    async fn hides_changes(&self, id: &str) -> Result<bool, String> {
+        use std::os::unix::ffi::OsStrExt;
+        let listed = self
+            .sandboxed_git(id, &["ls-files", "--stage", "-v", "-z"], None)
+            .await?;
+        let worktree = self.worktree_path(id);
+        let (mut paths, mut held) = (Vec::new(), Vec::new());
+        for (mode, object, path) in flagged(&listed) {
+            let on_disk =
+                std::fs::symlink_metadata(worktree.join(std::ffi::OsStr::from_bytes(path)));
+            match on_disk {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) => {}
+                Ok(meta)
+                    if meta.is_file() && mode.starts_with(b"1006") && !path.contains(&b'\n') =>
+                {
+                    paths.extend_from_slice(path);
+                    paths.push(b'\n');
+                    held.push(object);
+                }
+                _ => return Ok(true),
+            }
+        }
+        if held.is_empty() {
+            return Ok(false);
+        }
+        let hashed = self
+            .sandboxed_git(id, &["hash-object", "--stdin-paths"], Some(paths))
+            .await?;
+        let on_disk: Vec<&[u8]> = hashed
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .collect();
+        Ok(on_disk.len() != held.len() || on_disk.iter().zip(&held).any(|(disk, git)| disk != git))
     }
 
     /// Deletes the build outputs in a job's worktree ([`build_outputs`]: a build makes them again)
@@ -268,5 +346,99 @@ impl Jobs {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{cleanup_git, cleanup_home, ended, with_pr};
+    use super::*;
+
+    /// CLEANUP-7 (docs/contracts/cleanup.md): a worktree whose edit `git status` doesn't show,
+    /// because its file is marked skip-worktree or assume-unchanged, stays on the pass, in
+    /// `status.cleanup.kept` with why. A flagged file that is as git holds it, or not on disk at
+    /// all (a sparse checkout's), keeps nothing: that worktree goes.
+    #[tokio::test]
+    async fn cleanup_7_edits_git_status_hides_keep_the_worktree() {
+        let (root, clone, _, jobs) = cleanup_home("hidden", true);
+        std::fs::write(clone.join("README.md"), "base\n").unwrap();
+        std::fs::write(clone.join("notes.md"), "notes\n").unwrap();
+        cleanup_git(&clone, &["add", "README.md", "notes.md"]);
+        cleanup_git(&clone, &["commit", "-q", "-m", "files"]);
+        let base = cleanup_git(&clone, &["rev-parse", "HEAD"]);
+        cleanup_git(&clone, &["update-ref", "refs/remotes/origin/main", &base]);
+        let now = obi_protocol::time::now();
+        let job = |id: &str, change: &dyn Fn(&Path)| {
+            let (job, tree) = ended(&jobs, &clone, &base, id, now);
+            change(&tree);
+            jobs.lock()
+                .jobs
+                .insert(id.into(), with_pr(job, "MERGED", now));
+            tree
+        };
+        let flag = |tree: &Path, flag: &str, file: &str| {
+            cleanup_git(tree, &["update-index", flag, file]);
+        };
+        let skipped = job("skipped", &|tree| {
+            std::fs::write(tree.join("README.md"), "mine\n").unwrap();
+            flag(tree, "--skip-worktree", "README.md");
+        });
+        let assumed = job("assumed", &|tree| {
+            std::fs::write(tree.join("notes.md"), "mine\n").unwrap();
+            flag(tree, "--assume-unchanged", "notes.md");
+        });
+        let unchanged = job("unchanged", &|tree| {
+            flag(tree, "--skip-worktree", "README.md");
+            flag(tree, "--assume-unchanged", "notes.md");
+        });
+        let sparse = job("sparse", &|tree| {
+            flag(tree, "--skip-worktree", "README.md");
+            std::fs::remove_file(tree.join("README.md")).unwrap();
+        });
+        let status = cleanup_git(&skipped, &["status", "--porcelain"]);
+        assert_eq!(
+            status, "",
+            "git status shows the edit, so this proves nothing"
+        );
+
+        jobs.clean_worktrees(now, None, 0).await;
+        assert!(
+            skipped.join("README.md").exists(),
+            "the skip-worktree edit was lost"
+        );
+        assert!(
+            assumed.join("notes.md").exists(),
+            "the assume-unchanged edit was lost"
+        );
+        assert!(
+            !unchanged.exists(),
+            "a flagged file as git holds it kept its worktree"
+        );
+        assert!(
+            !sparse.exists(),
+            "a flagged file not on disk kept its worktree"
+        );
+        let mut kept: Vec<(String, String)> = (jobs.cleaned().kept.into_iter())
+            .map(|k| (k.job, k.why))
+            .collect();
+        kept.sort();
+        let said = |job: &str| (job.to_owned(), HIDDEN_CHANGES.to_owned());
+        assert_eq!(kept, vec![said("assumed"), said("skipped")]);
+        assert!(jobs.get("skipped").unwrap().worktree_freed.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CLEANUP-7: which `git ls-files --stage -v -z` entries `git status` doesn't look at.
+    #[test]
+    fn cleanup_7_flagged_reads_skip_worktree_and_assume_unchanged() {
+        let id = "e69de29bb2d1d6434b8b29ae775ad8c2b48c5391";
+        let listed = format!(
+            "H 100644 {id} 0\tplain\0S 100644 {id} 0\tskipped\0h 100755 {id} 0\tsome dir/assumed\0s 160000 {id} 0\tmodule\0"
+        );
+        let paths: Vec<&[u8]> = flagged(listed.as_bytes())
+            .into_iter()
+            .map(|(_, _, p)| p)
+            .collect();
+        assert_eq!(paths, vec![&b"skipped"[..], &b"some dir/assumed"[..]]);
     }
 }

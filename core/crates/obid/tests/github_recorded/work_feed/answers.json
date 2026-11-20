@@ -548,8 +548,8 @@
         "state": "open",
         "text": "Issue #641 in obi-e2e/fixture-app is assigned to you.",
         "title": "Assigned to you: fixture-app #641",
-        "triage": "pending",
-        "triageWhy": "Oby can't sort it yet: no Claude Code or Codex account is signed in. It's sorted once one is.",
+        "triage": "needs_you",
+        "triageWhy": null,
         "why": null
       },
       {

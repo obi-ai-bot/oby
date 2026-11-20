@@ -1,0 +1,444 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: tasks started together each get their own worktree",
+  "version": "1.0.0",
+  "description": "T3 Code's race kind: tasks started at once on one repository, each in a worktree and on a branch of its own, none waiting on another's git lock; each task's changes are its own (TASKS-23). Two tasks never share a branch, in any letter case (PUBLISHING-4).",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "t3"
+  ],
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: one.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: two.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: three.txt QUIET"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "b-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "c-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 90,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "tasks-23-a-changed-one-txt-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.a.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "main",
+            "truncated": false,
+            "files": [
+              {
+                "path": "one.txt",
+                "status": "added",
+                "additions": 1,
+                "deletions": 0
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "tasks-23-b-changed-two-txt-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.b.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "main",
+            "truncated": false,
+            "files": [
+              {
+                "path": "two.txt",
+                "status": "added",
+                "additions": 1,
+                "deletions": 0
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "tasks-23-c-changed-three-txt-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}/changes",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "base": "main",
+            "truncated": false,
+            "files": [
+              {
+                "path": "three.txt",
+                "status": "added",
+                "additions": 1,
+                "deletions": 0
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "worktrees-listed",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "worktree",
+          "list",
+          "--porcelain"
+        ]
+      }
+    },
+    {
+      "id": "git-lists-a",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.worktrees-listed}",
+        "expect": {
+          "paths": {
+            "out": {
+              "$contains": "worktrees/${state.a.body.id}\n"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "git-lists-b",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.worktrees-listed}",
+        "expect": {
+          "paths": {
+            "out": {
+              "$contains": "worktrees/${state.b.body.id}\n"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "git-lists-c",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.worktrees-listed}",
+        "expect": {
+          "paths": {
+            "out": {
+              "$contains": "worktrees/${state.c.body.id}\n"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "branches",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "clones/obi-e2e/fixture-app",
+        "args": [
+          "for-each-ref",
+          "--format=%(refname:short)",
+          "refs/heads/oby/"
+        ]
+      }
+    },
+    {
+      "id": "three-branches",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.branches}",
+        "expect": {
+          "paths": {
+            "out": {
+              "$matches": "^oby/\\S+\\noby/\\S+\\noby/\\S+$"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "n",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "branch": "t3/same"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "n-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.n.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-4-the-same-branch-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "branch": "t3/same"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "is working on t3/same now"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-4"
+        ]
+      }
+    },
+    {
+      "id": "publishing-4-another-case-422",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP",
+            "branch": "T3/Same"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "paths": {
+            "error": {
+              "$contains": "is working on"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-4"
+        ]
+      }
+    },
+    {
+      "id": "n-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.n.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}
