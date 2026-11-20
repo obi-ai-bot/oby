@@ -1,8 +1,9 @@
+import { createPublicKey, verify } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { confirming, notificationWords, ownersWords } from '../../../main/device';
+import { confirming, deviceKey, notificationWords, ownersWords } from '../../../main/device';
 import { input, picked, takeInput } from '../../../main/words';
 
 // Main's Confirm as the window reaches it (docs/contracts/peer-thread.md, PEER-17): what it signs,
@@ -21,6 +22,8 @@ const the = vi.hoisted(() => ({
   undo: 'oby/fix-1 goes back to abc1234, as it was before this round. Nothing is pushed.',
   dialog: 1,
   asked: [] as { message: string; detail: string }[],
+  // a finishing action (WORKSPACE-4): obid's sentence for it, read by main itself
+  finish: 'Commit 1 change in /Users/me/a/api on main: api/todo.md (new).',
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => mkdtempSync(join(tmpdir(), 'oby-device-')) },
@@ -37,6 +40,7 @@ vi.mock('../../../main/obid', () => ({
     if (path === '/v1/devices') return { status: 200, text: JSON.stringify({ id: 'd1' }) };
     if (path === '/v1/projects') return the.projects;
     if (path === '/v1/jobs/j1/undo' && method === 'GET') return { status: 200, text: JSON.stringify({ action: the.undo }) };
+    if (path.startsWith('/v1/conversations/c1/workspace?') && method === 'GET') return { status: 200, text: JSON.stringify({ action: the.finish }) };
     if (path.endsWith('/messages') && the.lost > 0) { the.lost--; return { status: 0, text: 'obid closed the connection.' }; }
     return { status: 200, text: '{}' };
   },
@@ -268,6 +272,43 @@ describe('obid-undo', () => {
     expect((await undo(the.undo)).status).toBe(200);
     expect(posted()).toHaveLength(1);
     expect(posted()[0].body).toMatchObject({ device: 'd1', action: the.undo, signedAt: expect.any(String), signature: expect.any(String) });
+  });
+});
+
+// A finishing action in a conversation's folder (docs/contracts/folders.md, WORKSPACE-4): main signs
+// `oby-finish` only on its own dialog's button, after an input it saw, for the sentence it read from
+// obid itself, which names the folder by its full path.
+describe('obid-finish', () => {
+  confirming(() => true);
+  const folder = '/Users/me/a/api';
+  const finish = (action: string) => the.handlers.get('obid-finish')!({ sender: {} }, 'c1', folder, action);
+  const posted = () => the.calls.filter((c) => c.method === 'POST' && c.path === '/v1/conversations/c1/workspace');
+  beforeEach(() => { the.calls.length = 0; the.asked.length = 0; the.dialog = 1; while (takeInput()) { /* other tests' */ } });
+
+  it('workspace_4_main_signs_a_finishing_action_only_on_its_own_dialogs_button', async () => {
+    // a script's call, with no input of the owner's: no read, no dialog, nothing reaches obid
+    expect((await finish('commit')).status).toBe(403);
+    expect(the.calls).toEqual([]);
+    expect(the.asked).toEqual([]);
+    // Not now in main's dialog: nothing signed; the dialog shows obid's own sentence
+    input();
+    expect((await finish('commit')).status).toBe(409);
+    const read = the.calls.find((c) => c.method === 'GET');
+    expect(read?.path).toBe(`/v1/conversations/c1/workspace?${new URLSearchParams({ folder, finish: 'commit' }).toString()}`);
+    expect(the.asked.at(-1)).toMatchObject({ message: 'Commit?', detail: the.finish });
+    expect(posted()).toEqual([]);
+    // Commit there: signed obid's sentence, with this device's key, once
+    the.dialog = 0;
+    input();
+    expect((await finish('commit')).status).toBe(200);
+    expect(posted()).toHaveLength(1);
+    const body = posted()[0].body as unknown as { folder: string; finish: string; approval: { device: string; action: string; signedAt: string; signature: string } };
+    expect(body).toMatchObject({ folder, finish: 'commit', approval: { device: 'd1', action: the.finish } });
+    const message = `oby-finish\nc1\n${the.finish}\n${body.approval.signedAt}`;
+    expect(verify('sha256', Buffer.from(message), createPublicKey(deviceKey()), Buffer.from(body.approval.signature, 'base64'))).toBe(true);
+    // the click is used: a second call with no new input signs nothing
+    expect((await finish('commit')).status).toBe(403);
+    expect(posted()).toHaveLength(1);
   });
 });
 

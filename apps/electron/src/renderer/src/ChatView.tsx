@@ -555,7 +555,7 @@ function Stages({ task }: { task: Task }) {
 // /v1/conversations/{id}/workspace): one button per action, each done on the owner's click, which
 // main asks about in its own dialog and signs (WORKSPACE-4, 5). Read again once a turn ends. A
 // folder's name goes before its buttons when the conversation works in several.
-function FinishLine({ conversation, busy }: { conversation: string; busy: boolean }) {
+export function FinishLine({ conversation, busy }: { conversation: string; busy: boolean }) {
   const on = takesWorkspace(useLive());
   const [seen, setSeen] = useState<WorkspaceAnswer | null>(null);
   const [doing, setDoing] = useState<string | null>(null);
@@ -566,7 +566,8 @@ function FinishLine({ conversation, busy }: { conversation: string; busy: boolea
     api.workspace(realId(conversation)).then((w) => { if (!gone) setSeen(w); }, () => { if (!gone) setSeen(null); });
     return () => { gone = true; };
   }, [on, busy, conversation]);
-  const places = seen?.places.filter((p) => p.actions.length) ?? [];
+  // a place with an action, or one obid works in only in the room, with why
+  const places = seen?.places.filter((p) => p.actions.length || p.why) ?? [];
   if (!on || !places.length) return null;
   const run = async (folder: string, action: FinishAction) => {
     setDoing(`${folder}:${action}`);
@@ -578,8 +579,9 @@ function FinishLine({ conversation, busy }: { conversation: string; busy: boolea
   return (
     <div className="finish-line" role="group" aria-label="Finish">
       {places.map((p) => (
-        <span key={p.folder} className="finish-place" title={p.path}>
+        <span key={p.folder} className="finish-place" title={p.path ?? p.folder}>
           {seen!.places.length > 1 && <span className="finish-name">{p.name}</span>}
+          {p.why && <span className="finish-said">{p.why}</span>}
           {p.actions.map((a) => (
             <button key={a} type="button" className="finish-action" disabled={!!doing} onClick={() => void run(p.folder, a)}>
               {FINISH_WORDS[a]}

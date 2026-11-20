@@ -410,8 +410,11 @@ export type PlanRequest = {
 // where the conversation works in each of its folders, and what finishing can do there now
 export type Workspace = 'folder' | 'worktree';
 export type FinishAction = 'commit' | 'push' | 'pullRequest' | 'publishRepository' | 'initializeGit';
-export type WorkspacePlace = { folder: string; name: string; path: string; worktree: boolean; branch: string | null; actions: FinishAction[] };
-export type WorkspaceAnswer = { workspace: Workspace; places: WorkspacePlace[] };
+// path null: obid can't tell or make where it works there (its choice unreadable, a worktree it
+// couldn't make), so the conversation works only in its own room there, and why says so
+export type WorkspacePlace = { folder: string; name: string; path: string | null; worktree: boolean; branch: string | null; actions: FinishAction[]; why?: string };
+// workspace null: the conversation's choice can't be read
+export type WorkspaceAnswer = { workspace: Workspace | null; places: WorkspacePlace[] };
 // "POST /v1/jobs/{id}/messages" as this app sends it; skill as on POST /v1/plans (COMPOSER-27)
 export type JobMessageRequest = { text: string; attachments?: string[]; conversation?: true; clientRequestId?: string; skill?: string };
 // "GET /v1/skills" (obid only, skills-v1; docs/api/skills.md): a skill of the agent that would get the
