@@ -68,22 +68,21 @@
     },
     {
       "id": "attach-11-the-upload-went-with-it",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "DELETE",
-        "path": "/v1/attachments?path=${state.notes.body.path}",
-        "expect": {
-          "status": 422,
-          "body": {
-            "error": "That isn't a file the Oby app uploaded."
-          }
-        }
-      },
+      "use": "runtime.rust:conversations.list-dir",
       "ui": {
         "proves": [
           "ATTACH-11"
         ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "attachments/app",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
       }
     },
     {
@@ -166,6 +165,24 @@
         "proves": [
           "ATTACH-11"
         ]
+      }
+    },
+    {
+      "id": "attach-11-its-folder-still-there",
+      "use": "runtime.rust:conversations.list-dir",
+      "ui": {
+        "proves": [
+          "ATTACH-11"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "attachments/app",
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
       }
     }
   ]

@@ -8,7 +8,7 @@ import { HOME, obid, type Trusted } from './obid';
 import { obidState, onLive } from './live';
 import { takeInput } from './words';
 import { mayWrite } from './terminalInput';
-import { foldersOf, worktreeOf } from './worktree';
+import { worktreeOf } from './worktree';
 import { ipc } from './ipc';
 import { oneOf, safeInteger, string, type Decoder } from '../shared/decode';
 
@@ -36,7 +36,7 @@ export type Spawn = (file: string, args: string[], options: { name: string; cols
 
 // at most this many shells at once, all places together
 export const MAX_TERMINALS = 8;
-// how long a closed shell has to end after SIGHUP and SIGTERM before SIGKILL
+// how long a closed shell has to end after its SIGHUP before SIGKILL
 export const KILL_GRACE_MS = 1000;
 // The process groups a shell started, as ps lists them now (macOS and Linux): each of its jobs runs
 // in a group of its own, which the shell's SIGKILL doesn't reach, so those left would run on with no
@@ -98,7 +98,11 @@ export function cleanEnv(base: NodeJS.ProcessEnv, who: { home: string; user: str
 // home (worktree.ts) and only while obid has the job; a conversation's first folder, as obid lists
 // it (its project's while it's in one). Null: none on this Mac.
 export async function cwdOf(place: Place, id: string, ask = obid): Promise<string | null> {
-  if (place === 'conversation') return foldersOf('conversation', id)[0] ?? null;
+  // obid's first folder as it lists it, there or not: one gone since says so (start), never the next
+  if (place === 'conversation') {
+    const first = obidState().conversations.find((c) => c.id === id)?.folders?.[0];
+    return typeof first === 'string' && isAbsolute(first) ? first : null;
+  }
   const dir = worktreeOf(HOME, id);
   if (!dir) return null;
   return (await ask('GET', `/v1/jobs/${encodeURIComponent(id)}`)).status === 200 ? dir : null;
@@ -144,7 +148,8 @@ export class Terminals {
       t.exited = true;
       this.dying.delete(pty);
       this.flush(t);
-      this.send(t.page, 'terminal-exit', id, exitCode, signal ?? null);
+      // nothing comes after a close (TERMINAL-4), its exit neither
+      if (!t.closing) this.send(t.page, 'terminal-exit', id, exitCode, signal ?? null);
       this.terms.delete(id);
     });
     return { term: id, cwd, name: basename(cwd) };
@@ -177,9 +182,11 @@ export class Terminals {
     return true;
   }
 
-  // Ends a shell and what it runs: SIGHUP, which an interactive shell passes to its jobs (it ignores
-  // SIGTERM), then SIGTERM, then SIGKILL if it's still there after the grace, with the jobs it never
-  // passed its SIGHUP to (a shell that ignores it, or a Mac too busy to run it in time)
+  // Ends a shell and what it runs: SIGHUP, which an interactive shell passes to its jobs, as
+  // Terminal.app sends; then SIGKILL if it's still there after the grace, with the jobs it never passed
+  // its SIGHUP to (a shell that ignores it, or a Mac too busy to run it in time). Never a SIGTERM right
+  // behind the SIGHUP: an interactive shell ignores it, except while it hangs up, when it can end the
+  // shell before its jobs got the SIGHUP, leaving them to run on (seen in bash 3.2)
   close(id: string) {
     const t = this.terms.get(id);
     if (!t) return false;
@@ -188,7 +195,7 @@ export class Terminals {
     t.closing = true;
     if (t.exited) return true;
     this.dying.add(t.pty);
-    for (const sig of ['SIGHUP', 'SIGTERM']) { if (t.exited) break; try { t.pty.kill(sig); } catch { /* gone already */ } }
+    try { t.pty.kill('SIGHUP'); } catch { /* gone already */ }
     const timer = setTimeout(() => { if (this.dying.delete(t.pty)) this.kill(t.pty, false); }, this.graceMs);
     timer.unref?.();
     return true;

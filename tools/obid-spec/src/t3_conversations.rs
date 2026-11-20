@@ -1,7 +1,7 @@
 //! Nodes for the conversation bugs T3 Code fixed (`workflows/t3/conversations/`, tag `t3`): what a
 //! conversation's turn sent on the event stream, in the order it came and how many times, a
-//! stream followed again as a reconnecting `EventSource` does, and a stand-in agent that dies in
-//! the middle of a turn.
+//! stream followed again as a reconnecting `EventSource` does, a stand-in agent that dies in
+//! the middle of a turn, and the stand-ins still running.
 
 use crate::{events, expect, sphere};
 use anyhow::{bail, Context, Result};
@@ -13,6 +13,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("t3.follow", "Follows GET /v1/events as `name` (the obid's base by default), from `after` and/or with a `Last-Event-ID` header (`lastEventId`), as a reconnecting EventSource does; events-wait and t3.trail then read it by that name."),
     ("t3.trail", "One conversation's events on a followed stream (`name`, or the obid's), in the order they came: once `until` ({event, expect}) has come (waiting up to `seconds`) and `settle` ms more, `turn` keeps only a turn's own (its `turn` or `id`); {trail: one line per event of `events`, its name then each `show` path's value; ids; revisions; deltaText: its `delta` texts joined; count}; with expect."),
     ("t3.kill-agent", "Kills (SIGKILL) a scratch obid's stand-in agent (`fake-*`, not what starts it) serving `conversation`, found by its command line, which names the obid's home and the conversation, skipping the pids in `not` (one killed before) and waiting up to `within` seconds for one: {killed: [pids]}; none found fails. With `heard` (a prompt's last line), every try instead: each stand-in that has read those words is killed once it has (the first within `within` seconds, default 20), again for each try obid makes, until none reads them for `quiet` seconds (default 10): {killed: [pids], tries}."),
+    ("t3.agents", "The stand-in agents (`fake-*`, never what starts them) of a scratch obid serving `conversation` that are running now, found by their command line as t3.kill-agent finds them, signalling none: {count, pids, commands}; with expect, read again until it holds or `within` seconds pass."),
     ("t3.heard", "What a conversation's stand-in agent heard, from its own record (`conversations/<id>/config/turns.jsonl` in the obid's home), oldest first: {heard: [{process, resumed, cut: whether obid's note said its run was cut, last: the prompt's last line}], count}; with expect and within (seconds)."),
 ];
 
@@ -22,6 +23,7 @@ pub async fn run_node(name: &str, input: &Value) -> Result<Value> {
         "t3.trail" => trail(input).await?,
         "t3.kill-agent" => kill_agent(input).await?,
         "t3.heard" => heard(input).await?,
+        "t3.agents" => agents(input).await?,
         other => bail!("no node named {other}"),
     };
     if let Some(want) = input.get("expect") {
@@ -232,30 +234,56 @@ async fn kill_every_try(
     }
 }
 
+/// The stand-ins of `conversation` running now ([`stand_ins`]), read again until `expect` holds or
+/// `within` seconds pass: {count, pids, commands}.
+async fn agents(input: &Value) -> Result<Value> {
+    let home = sphere::str_of(&input["obid"], "home")?;
+    let conversation = sphere::str_of(input, "conversation")?;
+    let until = Instant::now() + Duration::from_secs(input["within"].as_u64().unwrap_or(0));
+    loop {
+        let running = stand_ins(home, conversation)?;
+        let pids: Vec<i32> = running.iter().map(|(p, _)| *p).collect();
+        let commands: Vec<String> = running
+            .into_iter()
+            .map(|(_, c)| c.chars().take(160).collect())
+            .collect();
+        let out = json!({"count": pids.len(), "pids": pids, "commands": commands});
+        let holds = input
+            .get("expect")
+            .is_none_or(|want| expect::check(want, &out, "").is_empty());
+        if holds || Instant::now() >= until {
+            return Ok(out);
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Every stand-in of `conversation` running now, as `ps` lists them: (pid, command line).
+fn stand_ins(home: &str, conversation: &str) -> Result<Vec<(i32, String)>> {
+    let ps = std::process::Command::new("ps")
+        .args(["-axww", "-o", "pid=,command="])
+        .output()
+        .context("ps")?;
+    Ok(String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (pid, command) = l.trim_start().split_once(' ')?;
+            let pid = pid.parse::<i32>().ok()?;
+            (is_stand_in(command) && command.contains(home) && command.contains(conversation))
+                .then(|| (pid, command.to_string()))
+        })
+        .collect())
+}
+
 /// SIGKILLs every stand-in of `conversation` not in `skip`, adding each to it: {pids, commands}.
 fn kill_stand_ins(
     home: &str,
     conversation: &str,
     skip: &mut Vec<i64>,
 ) -> Result<(Vec<i32>, Vec<String>)> {
-    let ps = std::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,command="])
-        .output()
-        .context("ps")?;
     let (mut killed, mut commands) = (vec![], vec![]);
-    for l in String::from_utf8_lossy(&ps.stdout).lines() {
-        let Some((pid, command)) = l.trim_start().split_once(' ') else {
-            continue;
-        };
-        let Ok(pid) = pid.parse::<i32>() else {
-            continue;
-        };
-        if is_stand_in(command)
-            && command.contains(home)
-            && command.contains(conversation)
-            && !skip.contains(&(pid as i64))
-            && unsafe { libc::kill(pid, libc::SIGKILL) } == 0
-        {
+    for (pid, command) in stand_ins(home, conversation)? {
+        if !skip.contains(&(pid as i64)) && unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
             skip.push(pid as i64);
             killed.push(pid);
             commands.push(command.chars().take(160).collect::<String>());

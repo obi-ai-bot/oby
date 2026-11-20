@@ -6,6 +6,8 @@
 # them (its target folders and tools/brain/node_modules are linked in), else made in the copy.
 #
 #   scripts/preflight-test.sh
+#   PREFLIGHT_TEST_ONLY=<text> scripts/preflight-test.sh    only the cases whose name holds <text>
+#                                                          (each other case's change is undone)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 src=$PWD
@@ -32,6 +34,10 @@ reset() { git checkout -q -- . && git clean -qfd; }
 check() {
     local name=$1 steps=$2 want=$3 out code line
     shift 3
+    if [[ -n "${PREFLIGHT_TEST_ONLY:-}" && "$name" != *"$PREFLIGHT_TEST_ONLY"* ]]; then
+        reset
+        return
+    fi
     out=$(PREFLIGHT_ONLY="$steps" scripts/preflight.sh HEAD 2>&1)
     code=$?
     if [[ $code -eq $want ]]; then ok "$name: exit $code"; else bad "$name: exit $code, not $want"; echo "$out" | tail -30 >&2; fi
@@ -116,6 +122,16 @@ check "CI-69 clippy" clippy 1 \
     "using \`clone\` on type \`u32\` which implements the \`Copy\` trait" \
     "--> core/crates/obi-protocol/src/card.rs:" \
     "fix: clear each warning above in core"
+
+# CI-69 green on macOS's /bin/bash, 3.2 (the script's own shebang): a change to only a tool's Rust
+# (tools/obid-spec) leaves clippy's crate list empty, which bash 3.2 under `set -u` calls unbound.
+# fmt and clippy run on a stand-in cargo that checks nothing, so this case needs no build.
+printf '\n// preflight-test.\n' >>tools/obid-spec/src/lib.rs
+mkdir -p .stand-in && printf '#!/bin/sh\nexit 0\n' >.stand-in/cargo && chmod +x .stand-in/cargo
+PATH="$PWD/.stand-in:$PATH" check "CI-69 bash 3.2, a tool's Rust alone" "fmt clippy" 0 \
+    "fmt       passed" "clippy    passed" "preflight: clean"
+rm -rf .stand-in
+PATH="$PWD/.stand-in:$PATH" check "CI-69 bash 3.2, no step asked for" "none-of-them" 0 "preflight: clean"
 
 # CI-69 green: a clean Rust change, every step.
 printf '\n/// preflight-test.\npub fn preflight_probe() -> u32 {\n    1\n}\n' >>core/crates/obi-protocol/src/card.rs
