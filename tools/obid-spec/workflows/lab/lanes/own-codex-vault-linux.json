@@ -95,7 +95,9 @@
           }
         },
         "expect": {
-          "status": 201
+          "paths": {
+            "status": 201
+          }
         }
       }
     },
@@ -119,7 +121,9 @@
           }
         },
         "expect": {
-          "status": 201
+          "paths": {
+            "status": 201
+          }
         }
       }
     },
@@ -143,7 +147,9 @@
           }
         },
         "expect": {
-          "status": 201
+          "paths": {
+            "status": 201
+          }
         }
       }
     },
