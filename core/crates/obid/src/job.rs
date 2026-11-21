@@ -890,6 +890,13 @@ pub struct Job {
     /// API's job.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub foreign_by_api: bool,
+    /// Its subject is someone else's code, found before its agent ran: the owner's review of a
+    /// pull request whose head has commits obid didn't record, or that anyone else wrote in
+    /// (MERGING-36). Its `foreign` mark
+    /// says so too, but so does a page an own job's agent read, which this doesn't: Oby's browser
+    /// reads this one (BROWSER-18). Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub someone_elses_code: bool,
     /// Why its own check gets none of the declared secrets though the job stays the owner's own:
     /// it reached chatgpt.com (MERGING-30). This job's only: no follow-up inherits it, and nothing
     /// a conversation reads of the job sees it. Never in the API's job.
@@ -1259,12 +1266,19 @@ impl Job {
     /// is marked with: what it reached ([`Job::reached`]) or had withheld ([`Job::withheld`])
     /// isn't someone else's words (MERGING-32).
     /// What a job saved by an older obid needs to mean what it meant: a check that went without
-    /// its declared secrets (the earlier bool) keeps holding its merge, with a reason.
+    /// its declared secrets (the earlier bool) keeps holding its merge, with a reason; the owner's
+    /// review marked `foreign` is someone else's code for Oby's browser (BROWSER-18).
     pub fn upgrade(&mut self) {
         if std::mem::take(&mut self.check_withheld_was) && self.check_withheld.is_none() {
             self.check_withheld = Some(self.withheld.clone().unwrap_or_else(|| {
                 "its check ran without the secrets its base declares".to_owned()
             }));
+        }
+        // A review saved before `someone_elses_code` has only its `foreign` mark, which a page read
+        // gives too: safety first, it is someone else's code, its follow-ups with it. Goes once no
+        // saved review is older than its start mark (W01-03).
+        if self.read_only() && self.foreign.is_some() {
+            self.someone_elses_code = true;
         }
     }
 

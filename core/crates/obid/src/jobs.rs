@@ -10399,6 +10399,7 @@ mod tests {
             (|job: &mut Job| job.untrusted = true) as fn(&mut Job),
             |job| job.memory_from_others = true,
             |job| job.ran_unproxied = true,
+            |job| job.someone_elses_code = true,
             |job| job.check_withheld = None,
         ] {
             assert!(jobs.update("aaaa0006", mark).is_none());
@@ -10413,7 +10414,7 @@ mod tests {
             (
                 (job.foreign.clone(), job.foreign_by_api, job.reached.clone()),
                 (job.untrusted, job.unsigned, job.memory_from_others),
-                (job.ran_unproxied, job.vetted),
+                (job.ran_unproxied, job.vetted, job.someone_elses_code),
                 (job.withheld.clone(), job.check_withheld.clone()),
             )
         };
@@ -10424,7 +10425,7 @@ mod tests {
                 Some("it reached example.com".to_owned()),
             ),
             (true, true, true),
-            (true, false),
+            (true, false, true),
             (
                 Some("this job reached chatgpt.com".to_owned()),
                 Some("a newer check".to_owned()),

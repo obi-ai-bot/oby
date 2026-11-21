@@ -1,0 +1,432 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: another Oby's task's report carries a token from a page: the secret scan finds it and nothing goes back through the Sphere; the same report without it goes",
+  "version": "1.0.0",
+  "description": "BROWSER-22 (the lab's LAB-BROWSERSPHERE-6): owner B's task, accepted on owner A's Oby, opens the fixture's page that shows a fresh token-like string and writes the page into its summary. The secret scan obid runs before anything of the job leaves (its publish gate, over its summary and pull request text) finds it: the job is held with the finding and sends nothing, so nothing goes back to B, whose obid holds no trace of the token. A second task whose page has no token goes back, its summary saying what the page said. (The Sphere's own gate, the scan right before a result is sent, is the other workflow's: with no scanner that runs, nothing is sent.)",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/mcp"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs",
+        "browser": true,
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        },
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1"
+        }
+      }
+    },
+    {
+      "id": "a-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-sphere-site",
+      "inputs": {}
+    },
+    {
+      "id": "tokened",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "BROWSE: ${state.site.url}/token REPORT-PAGE COMMIT: notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "tokened-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.tokened.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "tokened-accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.tokened.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "tokened-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.tokened.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "job": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "job": "${state.tokened-job.body.job}"
+      }
+    },
+    {
+      "id": "the-page-shows-a-token",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.snapshot.result.structuredContent.result.outside.data.tree": {
+              "$contains": "${state.site.token}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+      }
+    },
+    {
+      "id": "the-scan-finds-it-and-holds-the-task",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.tokened-job.body.job}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "interrupted",
+            "outgoing": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+      }
+    },
+    {
+      "id": "nothing-goes-back-to-b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.tokened.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "result": null
+          },
+          "text": {
+            "$not": {
+              "$contains": "${state.site.token}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+      }
+    },
+    {
+      "id": "b-holds-no-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "${state.site.token}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ]
+      }
+    },
+    {
+      "id": "clean",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "BROWSE: ${state.site.url}/ REPORT-PAGE COMMIT: notes2.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "clean-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.clean.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "clean-accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.clean.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "clean-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.clean.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "job": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-same-report-without-it-goes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.clean.body.correlationId}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "result.summary": {
+              "$contains": "Opening hours"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+      }
+    },
+    {
+      "id": "still-no-token-at-b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "${state.site.token}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ]
+      }
+    }
+  ]
+}

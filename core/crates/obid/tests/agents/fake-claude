@@ -3,7 +3,17 @@
 // it does comes from the prompt (the job's task):
 //   .obi/inputs/handoff.json  (another Oby's task, HANDOFF-2) named in the prompt: exits 3 when the
 //                    request's goal reached the prompt; else commits the file its quoted goal's
-//                    `COMMIT: <file>` names, and ends "Added <file>." and `GOAL MET`
+//                    `COMMIT: <file>` names, and ends "Added <file>." and `GOAL MET`; a goal
+//                    holding `BROWSE: <url>` browses first, as below; with `EDGE <the host's
+//                    gateway's address>` it then tries the host's own places, in order: obid's /v1/jobs (its
+//                    port the browser server's), the gateway's, the browser's own route, a file,
+//                    then snapshots and lists its tabs (BROWSER-18); with `WAIT-OFF`, then waits
+//                    for the browser to be turned off and keeps what its tools say (`calls.off`);
+//                    with `APART <tab>` (another job's) it reads its own page's cookies, then
+//                    tries to read and drive that tab, then lists its own (BROWSER-21); with
+//                    `REPORT-PAGE` its summary says what the page said (BROWSER-22); with ` ASK` it
+//                    asks the person to sign in on the page's `#pw`, waits for the answer
+//                    (`calls.answered`) and reads only how long the field's value is (BROWSER-19)
 //   .obi/inputs/github-<name>-<n>.md  (GitHub's quoted text) named in the prompt and holding
 //                    `COMMIT: <file>`: commits that file and ends "Fixed <file>." and `GOAL MET`
 //   COMMIT: <file>   writes the file in the worktree and commits it; with ENDS: <line>, its summary's
@@ -104,7 +114,9 @@
 //                    in its --mcp-config, calls each tool only when --allowedTools names its rule
 //                    (`mcp__browser__<tool>`), lists the tools, opens <url> and snapshots it; writes
 //                    what it found and got to .obi/browsed.json and ends "Browsed." (or "Not
-//                    browsed: <why>")
+//                    browsed: <why>"); `THEN <json>` calls each `{tool, args}` after, in order,
+//                    their answers under `calls.then`; ` STAY` stays in its turn after, so its
+//                    job and its browser keep running
 //   REPORT           writes .obi/report.json in the worktree: its arguments, environment, prompt,
 //                    the MCP config it was given (--mcp-config), the tools it was allowed
 //                    (--allowedTools), what each http MCP server answered to `tools/list`, the
@@ -648,11 +660,27 @@ rl.on("line", (line) => {
   if (prompt.includes(".obi/inputs/handoff.json") && existsSync(".obi/inputs/handoff.json")) {
     const request = JSON.parse(readFileSync(".obi/inputs/handoff.json", "utf8"));
     if (prompt.includes(request.goal)) process.exit(3);
+    // Its quoted goal's `BROWSE: <url>` (BROWSER-18): it uses the browser it was given first.
+    const browsing = String(request.goal).match(/BROWSE: (\S+)(?: EDGE (http:\/\/127\.0\.0\.1:\d+))?(?: APART (\S+))?/);
     const file = String(request.goal).match(/COMMIT: (\S+)/)?.[1] ?? "handoff.txt";
-    writeFileSync(file, "hello\n");
-    execFileSync("git", ["add", file]);
-    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${file}`]);
-    return result(`Added ${file}.\n\nGOAL MET`);
+    const commit = (said = "") => {
+      writeFileSync(file, "hello\n");
+      execFileSync("git", ["add", file]);
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${file}`]);
+      return result(`${said}Added ${file}.\n\nGOAL MET`);
+    };
+    if (!browsing) return commit();
+    const then = browsing[2] ? { edge: browsing[2], waitOff: String(request.goal).includes("WAIT-OFF") }
+      : browsing[3] ? { apart: browsing[3] }
+      : / ASK\b/.test(String(request.goal)) ? { ask: true } : [];
+    // `REPORT-PAGE`: what the page said goes into its summary, which goes back (BROWSER-22).
+    const report = String(request.goal).includes("REPORT-PAGE");
+    return void browse(browsing[1], then)
+      .then((said) => {
+        const page = JSON.parse(readFileSync(".obi/browsed.json", "utf8"))
+          .calls?.snapshot?.result?.structuredContent?.result?.outside?.data?.tree ?? "";
+        return commit(report ? `${said}\nThe page says: ${page}\n` : `${said}\n`);
+      }, (e) => result(`browse failed: ${e}`, true));
   }
   // A GitHub task's quoted file (.obi/inputs/github-<name>-<n>.md) named in the prompt and holding
   // `COMMIT: <file>`: commits it (a Fix CI job's fix, TASKCONV-31)
@@ -808,7 +836,11 @@ ${probes}`;
     const at = process.argv.indexOf("--resume");
     result(`heard: ${prompt} resume=${at >= 0 ? process.argv[at + 1] : "none"}`);
   } else if (prompt.match(/BROWSE: \S+/)) {
-    browse(prompt.match(/BROWSE: (\S+)/)[1]).then(result, (e) => result(`browse failed: ${e}`, true));
+    const [, url, then] = prompt.match(/BROWSE: (\S+)(?: THEN (\[.*\]))?/s);
+    // ` STAY`: it stays in its turn after, so its job (and its browser, its tabs) keeps running.
+    const stay = / STAY\b/.test(prompt);
+    browse(url, then ? JSON.parse(then) : [])
+      .then((said) => stay || result(said), (e) => result(`browse failed: ${e}`, true));
   } else if (prompt.includes("REPORT")) {
     // LINGER: the turn goes on after the report, until obid ends it.
     report(prompt).then(() => (prompt.includes("LINGER") ? setInterval(() => {}, 1000) : result("Reported.")), (e) => result(`report failed: ${e}`, true));
@@ -994,7 +1026,7 @@ ${probes}`;
   }
 });
 
-async function browse(url) {
+async function browse(url, then = []) {
   const argv = process.argv.slice(2);
   const at = argv.indexOf("--mcp-config");
   const server = at >= 0 ? JSON.parse(readFileSync(argv[at + 1], "utf8")).mcpServers?.browser : undefined;
@@ -1025,6 +1057,69 @@ async function browse(url) {
   seen.calls.list = await call("tools/list", {});
   seen.calls.open = await tool("oby_browser_open", { url });
   seen.calls.snapshot = await tool("oby_browser_snapshot", {});
+  // What the task names next, each `{tool, args}`, in order; or, for `{edge: <the gateway's address>}`, the
+  // host's own places, the box's edge (BROWSER-18), on obid's port as the browser server's.
+  const waitOff = !Array.isArray(then) && then.waitOff;
+  const asking = !Array.isArray(then) && then.ask;
+  // `{ask: true}` (BROWSER-19): it asks the person to sign in on its page's password field, and
+  // lists its asks.
+  if (asking) {
+    then = [
+      { tool: "oby_browser_ask_person", args: { kind: "signIn", reason: "Sign in to the lab site, please.", field: "#pw" } },
+      { tool: "oby_browser_list_tabs", args: {} },
+    ];
+  }
+  // `{apart: <another job's tab>}` (BROWSER-21): its own page's cookies, then that tab, read and
+  // driven, then its own tabs.
+  if (!Array.isArray(then) && then.apart) {
+    const tab = then.apart;
+    then = [
+      { tool: "oby_browser_evaluate", args: { expression: "document.cookie" } },
+      { tool: "oby_browser_snapshot", args: { tab } },
+      { tool: "oby_browser_evaluate", args: { tab, expression: "document.cookie" } },
+      { tool: "oby_browser_navigate", args: { tab, url } },
+      { tool: "oby_browser_list_tabs", args: {} },
+    ];
+  }
+  if (!Array.isArray(then)) {
+    const obid = new URL(server.url).port;
+    then = [
+      { tool: "oby_browser_navigate", args: { url: `http://127.0.0.1:${obid}/v1/jobs` } },
+      { tool: "oby_browser_open", args: { url: `${then.edge}/v1/jobs`, newTab: true } },
+      { tool: "oby_browser_open", args: { url: `http://localhost:${obid}/v1/browser/mcp`, newTab: true } },
+      { tool: "oby_browser_navigate", args: { url: "file:///etc/hosts" } },
+      { tool: "oby_browser_snapshot", args: {} },
+      { tool: "oby_browser_list_tabs", args: {} },
+    ];
+  }
+  seen.calls.then = [];
+  for (const next of then) {
+    seen.calls.then.push(await tool(next.tool, next.args ?? {}));
+    if (asking) write();
+  }
+  // Asking: what it found so far is written, then it lists its tabs every 250 ms (three minutes at
+  // most) until its ask is answered, and keeps that answer; then it reads how long the field's
+  // value is, never the value.
+  if (asking) {
+    write();
+    for (const until = Date.now() + 180_000; Date.now() < until;) {
+      const answer = await tool("oby_browser_list_tabs", {});
+      const asks = answer.result?.structuredContent?.result?.asks ?? [];
+      if (asks.length && asks.every((a) => a.answered)) { seen.calls.answered = answer; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    seen.calls.filled = await tool("oby_browser_evaluate", { expression: "document.querySelector('#pw').value.length" });
+  }
+  // `WAIT-OFF`: what it found so far is written, then it lists its tabs every 250 ms (two minutes
+  // at most) until the owner turns "Agents can use the browser" off, and keeps that answer.
+  if (waitOff) {
+    write();
+    for (const until = Date.now() + 120_000; Date.now() < until;) {
+      const answer = await tool("oby_browser_list_tabs", {});
+      if (answer.result?.structuredContent?.error?.code === "browser_off") { seen.calls.off = answer; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
   const ok = seen.calls.open.result?.structuredContent?.ok === true && seen.calls.snapshot.result?.structuredContent?.ok === true;
   return write(ok ? "Browsed." : "Not browsed: a call failed");
 }

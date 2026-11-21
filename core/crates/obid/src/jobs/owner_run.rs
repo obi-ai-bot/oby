@@ -136,6 +136,7 @@ impl Jobs {
                 if theirs && job.read_only() && job.review_of.is_none() {
                     let why = format!("pull request #{pr}'s head has commits obid didn't record");
                     self.mark(id, why, false);
+                    self.update(id, |job| job.someone_elses_code = true);
                     job = self.get(id).ok_or("the job is gone")?;
                 }
             }

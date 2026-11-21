@@ -59,11 +59,12 @@ impl Api {
     /// A job starts. Who it is comes from obid's broker token (`crate::connections`), not from
     /// here.
     pub fn add_job(&mut self, id: &str, agent: &str) {
-        self.add_job_in(id, agent, &format!("persist:oby-agent-{agent}"));
+        self.add_job_for(id, agent, c::Origin::Own);
     }
 
-    /// A job the API hears of, its tabs opening in `partition`.
-    pub fn add_job_in(&mut self, id: &str, agent: &str, partition: &str) {
+    /// A job the API hears of, working for `origin` (BROWSER-18): its tabs open in the partition
+    /// that follows from it (`Origin::partition`).
+    pub fn add_job_for(&mut self, id: &str, agent: &str, origin: c::Origin) {
         self.jobs.insert(
             id.into(),
             Job {
@@ -74,9 +75,28 @@ impl Api {
                 seen_downloads: BTreeSet::new(),
                 browser: c::BrowserState::NotStarted,
                 browser_reason: None,
-                partition: partition.into(),
+                partition: origin.partition(id, agent),
+                origin,
             },
         );
+    }
+
+    /// Job `id`, known as the owner's, is foreign by `origin`: it works for that one from now on,
+    /// in its box's partition, told as a `browser` event. A foreign job's origin is kept as it was
+    /// first found. Answers whether it changed.
+    pub fn found_foreign(&mut self, id: &str, origin: c::Origin) -> bool {
+        if !origin.foreign() {
+            return false;
+        }
+        let Some(j) = self.jobs.get_mut(id).filter(|j| !j.origin.foreign()) else {
+            return false;
+        };
+        j.partition = origin.partition(id, &j.agent);
+        j.origin = origin;
+        if let Some(browser) = self.job_browser(id) {
+            self.push(c::EventBody::Browser { browser });
+        }
+        true
     }
 
     /// Every job the API knows.
@@ -432,6 +452,7 @@ impl Api {
             agent: j.agent.clone(),
             state: j.browser,
             reason: j.browser_reason.clone(),
+            origin: j.origin.clone(),
         })
     }
 
@@ -691,6 +712,26 @@ mod tests {
             &[json!({"tab": tab, "url": "http://x/", "current": true})],
             &json!({tab: "X"}),
         );
+    }
+
+    /// A job found foreign is told to the stream: one `browser` event with its new origin, after
+    /// the last `seq` (BROWSER-18); found foreign again, nothing new.
+    #[test]
+    fn browser_18_a_job_found_foreign_is_one_browser_event() {
+        let mut a = api();
+        a.add_job("j1", "claude");
+        let before = a.events_after(0).last().map_or(0, |e| e.seq);
+        a.found_foreign("j1", c::Origin::Untrusted);
+        let new = a.events_after(before);
+        assert_eq!(new.len(), 1, "{new:?}");
+        match &new[0].body {
+            c::EventBody::Browser { browser } => {
+                assert_eq!(browser.origin, c::Origin::Untrusted);
+            }
+            other => panic!("{other:?}"),
+        }
+        a.found_foreign("j1", c::Origin::Untrusted);
+        assert_eq!(a.events_after(new[0].seq).len(), 0);
     }
 
     #[test]

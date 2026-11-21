@@ -23,18 +23,6 @@ const COMMANDS: usize = 1024;
 /// How many page events the tools' waits may fall behind.
 const PAGE_EVENTS: usize = 1024;
 
-/// The webview partition a job's tabs open in (the window takes no other shape): the owner's own
-/// work in its agent's, kept, so a site signed in to for that agent stays signed in for its next
-/// job; another Oby's task, an `untrusted` job and Oby's own review each in a box partition of
-/// its own, not kept, dropped with the job.
-pub fn partition_of(job: &crate::job::Job) -> String {
-    if job.obi.is_some() || job.untrusted || job.review_of.is_some() {
-        format!("oby-box-{}", job.id)
-    } else {
-        format!("persist:oby-agent-{}", job.agent)
-    }
-}
-
 /// Why a CDP call has no answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RelayError {
@@ -653,21 +641,6 @@ mod tests {
             again.try_recv().is_err(),
             "nothing else, and nothing from before"
         );
-    }
-
-    #[test]
-    fn relay_the_owners_own_job_opens_in_its_agents_partition_and_any_other_in_a_box_of_its_own() {
-        let mut job = crate::job::Job {
-            id: "j1".into(),
-            agent: "codex".into(),
-            ..crate::job::Job::default()
-        };
-        assert_eq!(partition_of(&job), "persist:oby-agent-codex");
-        job.untrusted = true;
-        assert_eq!(partition_of(&job), "oby-box-j1");
-        job.untrusted = false;
-        job.review_of = Some("j0".into());
-        assert_eq!(partition_of(&job), "oby-box-j1");
     }
 
     #[test]
