@@ -111,12 +111,12 @@ export function register(): Promise<string> {
 }
 async function registerNow(): Promise<string> {
   const body = { name: name(), publicKey: publicKey() };
-  let r = await obid('POST', '/v1/devices', body);
+  let r = await obid('POST', '/v1/devices', body, undefined, true);
   if (r.status === 403) {
     const pairing = join(HOME, 'pairing');
     try {
       writeOwn(pairing, body.publicKey, O.O_TRUNC);
-      r = await obid('POST', '/v1/devices', body);
+      r = await obid('POST', '/v1/devices', body, undefined, true);
     } finally {
       rmSync(pairing, { force: true });
     }
@@ -300,7 +300,7 @@ export function confirming(trusted: Trusted) {
     if (response !== 0) return { status: 409, text: JSON.stringify({ error: 'Not paired: you cancelled.' }) };
     try {
       const device = await register(), signedAt = now();
-      return obid('POST', '/v1/pairing/invite', { name: macName(), approval: { device, action: '', signedAt, signature: signed(`oby-pair-invite\n${signedAt}`) } });
+      return obid('POST', '/v1/pairing/invite', { name: macName(), approval: { device, action: '', signedAt, signature: signed(`oby-pair-invite\n${signedAt}`) } }, undefined, true);
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }

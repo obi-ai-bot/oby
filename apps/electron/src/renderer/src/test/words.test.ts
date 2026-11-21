@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -295,6 +295,43 @@ describe('signed words', () => {
     const sentence = `oby-words\nDELETE\n${path}\n${empty}\n${signedAt}`;
     expect(verify('sha256', Buffer.from(sentence), createPublicKey(privateKey), Buffer.from(signature, 'base64'))).toBe(true);
     expect(wordsHeader(privateKey, 'd1', 'DELETE', path, {})).toBeNull();
+  });
+
+  it('COMPUTERSAPP-6: a computer added with a code signs exactly {link, code} by the code the owner typed', () => {
+    const link = 'oby-computer:eyJuYW1lIjoiZGV2Ym94In0', body = { link, code: '482913' };
+    expect(wordsOf('POST', '/v1/computers', body)).toEqual(['482913']);
+    // Enter in its box holds the box as typed, the other computer's way ("482 913"); a click on Add
+    // computer holds its form's boxes too: either stands for it
+    expect(owners('POST', '/v1/computers', body, ['482 913'], [])).toEqual([0]);
+    expect(owners('POST', '/v1/computers', body, ['Add computer', link, '482913'], [])).toEqual([2]);
+    // the button alone, or another code, is no word of the owner's for it
+    expect(owners('POST', '/v1/computers', body, ['Add computer'], [])).toBeNull();
+    expect(owners('POST', '/v1/computers', body, ['482 914'], [])).toBeNull();
+    // only that shape: six digits, the link, nothing else; never another verb or path
+    for (const b of [{ link }, { code: '482913' }, { link, code: '48291' }, { link, code: '482 913' }, { link, code: '482913', ssh: 'devbox' }, { link: 1, code: '482913' }]) {
+      expect(wordsOf('POST', '/v1/computers', b)).toBeNull();
+    }
+    expect(wordsOf('PUT', '/v1/computers', body)).toBeNull();
+    expect(wordsOf('POST', '/v1/computers/link', { link })).toBeNull();
+    // a code stands for nothing else: a message with those digits needs its own words
+    expect(owners('POST', '/v1/jobs/j1/messages', { text: '482913' }, ['482 913'], [])).toBeNull();
+  });
+
+  it('COMPUTERSAPP-11: a computer’s removal signs with no body, by Remove computer alone, never a bare Remove', () => {
+    const path = '/v1/computers/studio';
+    expect(REMOVE_COMPUTER).toBe('Remove computer');
+    expect(wordsOf('DELETE', path, undefined)).toEqual([REMOVE_COMPUTER]);
+    expect(owners('DELETE', path, undefined, ['Remove computer'], [])).toEqual([0]);
+    // a click on any other Remove (an account's, a rule's), or the vault's, can't stand for it
+    for (const other of ['Remove', 'Remove Secret', 'Remove…']) expect(owners('DELETE', path, undefined, [other], [])).toBeNull();
+    // and its label signs no other removal
+    expect(owners('DELETE', '/v1/obid/vault/staging-key', undefined, ['Remove computer'], [])).toBeNull();
+    // only with no body; never the list, the switch, or another verb on it
+    for (const body of [{}, { id: 'studio' }, null, '']) expect(wordsOf('DELETE', path, body)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers', undefined)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers/current', undefined)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers/studio/retry', undefined)).toBeNull();
+    expect(wordsOf('PATCH', path, { name: 'Remove computer' })).toBeNull();
   });
 
   it('WORDS-7: main signs once per real keystroke or click it saw, and only right after it', () => {

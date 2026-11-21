@@ -46,7 +46,7 @@ vi.mock('../../../main/obid', () => ({
     return { status: 200, text: '{}' };
   },
   takesKeys: async () => the.receipts,
-  chooseProfile: () => false,
+  chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
   openedProfile: () => null,
 }));
 
