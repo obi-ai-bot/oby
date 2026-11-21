@@ -5,7 +5,7 @@ The business behavior contract for helpers, from [the template](../business-cont
 ## Feature and status
 
 - **Outcome:** The owner has a named assistant for one kind of general work, as OpenBot has: a name, a colour, what it helps with (its standing instructions), the tool it runs on and the connectors it may use, in one profile, with one ongoing conversation. Words sent to it run a turn on its tool, told its instructions, reaching only what it was given.
-- **Status:** **Implemented** (HELPERS-1 to 20): obid, and the Electron app, which shows them as Agents (docs/design/oby-home/, screens 08 to 10, task A00-78). The iPhone and Watch apps don't show them yet. The words of the refusals and of the helper's section are obid's own, Sangam's to change.
+- **Status:** **Implemented** (every scenario unless it says it's proposed): obid, and the Electron app, which shows them as Agents (docs/design/oby-home/, screens 08 to 10, task A00-78). The iPhone and Watch apps don't show them yet. The words of the refusals and of the helper's section are obid's own, Sangam's to change.
 - **Scope:** the record and its file, `GET` and `POST /v1/helpers`, `PATCH` and `DELETE /v1/helpers/{id}`, the helper's conversation, and its turns' tool, instructions and connectors. In the Electron app: Agents beside Projects in the side panel, the New agent sheet, and an agent's conversation (A00-78). **Left out, for later tasks:** a helper's routine and the line saying one ran; Gmail, Slack or any other connector; the iPhone and Watch screens; editing, recolouring, renaming or deleting an agent from the app; a gateway or phone-relay route; changing a helper's profile after it's made; scoping conversations, jobs or accounts to a profile (PROF-3).
 
 ## Behavior

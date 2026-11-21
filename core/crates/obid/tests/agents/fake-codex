@@ -164,7 +164,8 @@ const setting = (key) => {
   }
   return null;
 };
-const own = setting("approval_policy") !== null && /^:/.test(setting("default_permissions") ?? "");
+// An own run: an approval policy, and a built-in profile or obid's `oby` (LANES-27) of its `-c`.
+const own = setting("approval_policy") !== null && /^(:|oby$)/.test(setting("default_permissions") ?? "");
 // An own run in Bypass (T3's full access): Codex asks nobody, as under `never`.
 const asksNobody = own && typeof setting("approval_policy") === "object";
 // Its `-c` settings as `config/read` gives them: the merged config, and where each key came from.
@@ -177,7 +178,10 @@ const configRead = () => {
   argv.forEach((arg, at) => {
     if (argv[at - 1] !== "-c") return;
     const [key, text] = [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)];
-    const value = toml(text);
+    let value = toml(text);
+    // As codex-cli 0.163.0 says a profile's denied path: "deny", where its `-c` said "none".
+    if (/^permissions\.[^.]+\.filesystem$/.test(key) && value && typeof value === "object")
+      value = Object.fromEntries(Object.entries(value).map(([p, a]) => [p, a === "none" ? "deny" : a]));
     const path = key.split(".");
     let table = config;
     for (const part of path.slice(0, -1)) table = table[part] ??= {};
@@ -566,7 +570,7 @@ rl.on("line", (line) => {
       state.instructions = params.developerInstructions;
       save();
       return send({ id, result: { thread: { id: thread }, approvalPolicy: state.approvalPolicy,
-        activePermissionProfile: state.permissions ? { id: state.permissions, extends: null } : null } });
+        activePermissionProfile: state.permissions ? { id: state.permissions, extends: setting(`permissions.${state.permissions}.extends`) } : null } });
     }
     case "config/read":
       return send({ id, result: configRead() });

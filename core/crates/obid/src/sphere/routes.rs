@@ -68,12 +68,23 @@ pub async fn pins(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.pins_json())
 }
 
-/// `POST /v1/obid/sphere/pins/{owner}`.
+/// `POST /v1/obid/sphere/pins/{owner}`: trusting a member's changed key, or marking a pinned one
+/// verified, decides whose words obid believes are that person's, so it is the owner's word alone,
+/// signed by an app of theirs, as the `trust_key` Confirm is (SPHERE-9, SPHERE-25): obid's token,
+/// which the page reaches through main, isn't enough.
 pub async fn accept_pin(
     State(shared): State<Arc<Shared>>,
     Path(owner): Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    if crate::routes::signed_by(&shared, "POST", &uri, &headers, &body).is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Trusting a member's key is only yours to do: an app of yours signs it.",
+        ));
+    }
     Ok(json(
         StatusCode::OK,
         shared.link.accept_pin(&owner, &body).await?,

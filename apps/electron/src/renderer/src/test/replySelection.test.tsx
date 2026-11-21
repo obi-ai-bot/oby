@@ -109,8 +109,7 @@ describe('T3: words picked in a reply', () => {
   };
   // "captures the final paragraph when Chromium extends to the next paragraph boundary": a triple-click
   // ends the range at the start of the next block, nothing of which is picked
-  // known bug obi-ai-bot/oby#2728: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_reply_a_triple_clicked_paragraph_offers_reply_about_this (known bug #2728)', async () => {
+  it('t3_reply_a_triple_clicked_paragraph_offers_reply_about_this', async () => {
     const t = await thread();
     const oby = document.getElementById('oby')!;
     await pick([oby.firstChild!, 0], [document.getElementById('you')!, 0]);
@@ -120,8 +119,7 @@ describe('T3: words picked in a reply', () => {
   });
 
   // "does not attribute an empty starting endpoint to the previous response"
-  // known bug obi-ai-bot/oby#2728: it.fails until it's fixed, then the fix removes .fails
-  it.fails('t3_reply_a_pick_that_starts_at_the_very_end_of_the_words_before_is_the_replys (known bug #2728)', async () => {
+  it('t3_reply_a_pick_that_starts_at_the_very_end_of_the_words_before_is_the_replys', async () => {
     const t = await thread();
     // from the very end of the owner's words before it (none of them picked) into the reply
     const you = document.getElementById('you')!.firstChild as Text, oby2 = document.getElementById('oby2')!.firstChild as Text;

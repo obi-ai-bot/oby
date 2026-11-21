@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "Sphere directory: a changed-key card closes by itself",
   "version": "1.0.0",
-  "description": "The card for a changed owner key closes with no answer and an inbox event when the owner accepts the key through POST /v1/obid/sphere/pins/{owner}, when a directory read lists no active member of that owner, and when obid leaves the Obysphere (SPHERE-10).",
+  "description": "The card for a changed owner key closes with no answer and an inbox event when the owner accepts the key through POST /v1/obid/sphere/pins/{owner}, signed by an app of theirs (SPHERE-25), when a directory read lists no active member of that owner, and when obid leaves the Obysphere (SPHERE-10).",
   "trigger": {
     "manual": {}
   },
@@ -79,6 +79,13 @@
             "ownerKey": "${state.dana-key}"
           }
         ]
+      }
+    },
+    {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
       }
     },
     {
@@ -163,7 +170,9 @@
         },
         "expect": {
           "status": 200
-        }
+        },
+        "as": "device",
+        "device": "${state.alex-device}"
       }
     },
     {

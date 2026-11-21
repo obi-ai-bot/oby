@@ -144,6 +144,7 @@ pub async fn run_turn_steered(
         thread: None,
         worktree: launch.cwd.clone(),
         own: launch.own_sandbox,
+        policy: None,
     };
     Ok(turn_on(server, prompt, options, decide, on_event, false)
         .await
@@ -172,6 +173,9 @@ pub struct Kept {
     thread: Option<String>,
     worktree: PathBuf,
     own: bool,
+    /// The settings an own server was started on (LANES-27), which its later turns are checked
+    /// against: what it denies was fixed as it started, as a waiting Claude Code's rules are.
+    policy: Option<own::Policy>,
 }
 
 /// Starts `launch` for a conversation's turn ([`run_turn`]), and hands its server back running when
@@ -192,6 +196,7 @@ pub async fn start_kept(
         thread: None,
         worktree: launch.cwd.clone(),
         own: launch.own_sandbox,
+        policy: None,
     };
     Ok(turn_on(server, prompt, options, decide, on_event, true).await)
 }
@@ -216,6 +221,7 @@ pub async fn start_ahead(
         thread: None,
         worktree: launch.cwd.clone(),
         own: launch.own_sandbox,
+        policy: None,
     };
     let refuse = |_: &str, _: &Value| Ruling::Now(Answer::Deny("No turn is under way.".into()));
     let mut run = Run::on(server, options, refuse, |_: Event| {});
@@ -230,6 +236,7 @@ pub async fn start_ahead(
             thread: Some(thread),
             worktree: run.worktree,
             own: run.own,
+            policy: run.policy,
         }),
         Err(why) => {
             run.conn.close_input();
@@ -305,6 +312,7 @@ async fn turn_on(
             thread: Some(thread),
             worktree: run.worktree,
             own: run.own,
+            policy: run.policy.clone(),
         };
         return (turn, Some(server));
     }
@@ -473,6 +481,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             thread,
             worktree,
             own,
+            policy,
         } = server;
         Run {
             conn,
@@ -481,7 +490,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             worktree,
             plan: options.plan,
             own,
-            policy: options.own,
+            policy: policy.or_else(|| options.own.clone()),
             files: HashMap::new(),
             calls: HashMap::new(),
             no_commands: options.no_commands,
@@ -558,7 +567,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
 
     /// The settings an own run holds its threads to: none, and it starts no thread.
     fn own_policy(&self) -> Result<own::Policy, Stop> {
-        (self.policy).ok_or_else(|| Stop::Failed("obid started this run outside its box with no mode's settings, so it started no thread.".into()))
+        (self.policy.clone()).ok_or_else(|| Stop::Failed("obid started this run outside its box with no mode's settings, so it started no thread.".into()))
     }
 
     /// `initialize`, then the thread started or picked up again, as `options` say: its id.
@@ -603,7 +612,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         } else {
             None
         };
-        let mut params = thread_params(&cwd, policy);
+        let mut params = thread_params(&cwd, policy.as_ref());
         if let Some(instructions) = &options.instructions {
             params["developerInstructions"] = json!(instructions);
         }
@@ -630,7 +639,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             }
             Stop::Failed(why)
         })?;
-        if let Some(why) = policy.and_then(|p| p.thread_problem(&started)) {
+        if let Some(why) = policy.as_ref().and_then(|p| p.thread_problem(&started)) {
             return Err(Stop::Failed(why));
         }
         let thread = started["thread"]["id"]
@@ -1144,7 +1153,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
 /// The thread's settings: obid's sandbox is the sandbox, and every approval comes to obid. An `own`
 /// run's are its mode's ([`own::Policy::thread_config`]), named on a new thread and on a resumed
 /// one, which would keep the ones it was last saved with (LANES-18).
-fn thread_params(cwd: &str, own: Option<own::Policy>) -> Value {
+fn thread_params(cwd: &str, own: Option<&own::Policy>) -> Value {
     if let Some(policy) = own {
         return json!({"cwd": cwd, "approvalsReviewer": "user", "config": policy.thread_config()});
     }
@@ -1768,10 +1777,20 @@ done
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cwd = root.to_str().unwrap();
-        let ask = own::policy(crate::permissions::Mode::Ask);
+        let ask = own::policy(crate::permissions::Mode::Ask).denying(["/h/vault".to_owned()]);
         let ours = json!({"thread": {"id": "t1"}, "approvalPolicy": ask.approval(),
-            "activePermissionProfile": {"id": ask.profile}});
-        let held = json!({"config": ask.thread_config()});
+            "activePermissionProfile": {"id": ask.profile(), "extends": ask.base}});
+        // As codex-cli 0.163.0 answers `config/read` for those settings (LANES-27's profile too).
+        let mut held = json!({"config": ask.thread_config()});
+        held["config"]["permissions"] = json!({"oby": {"extends": ":read-only",
+            "filesystem": {"/h/vault": "deny"}}});
+        let flags = json!({"name": {"type": "sessionFlags"}});
+        for key in [
+            "permissions.oby.extends",
+            "permissions.oby.filesystem./h/vault",
+        ] {
+            held["origins"][key] = flags.clone();
+        }
         let run = async |own: Option<Option<own::Policy>>,
                          resume: Option<&str>,
                          config: Value,
@@ -1806,7 +1825,8 @@ done
             (turn, asked)
         };
         for resume in [None, Some("t1")] {
-            let (turn, asked) = run(Some(Some(ask)), resume, held.clone(), ours.clone()).await;
+            let (turn, asked) =
+                run(Some(Some(ask.clone())), resume, held.clone(), ours.clone()).await;
             assert_eq!(turn.text(), "Done.", "{}", turn.error());
             let methods: Vec<&str> = asked
                 .iter()
@@ -1835,7 +1855,7 @@ done
         // it was saved with: no turn. No mode's settings at all: nothing asked, no thread.
         let mut never = held.clone();
         never["config"]["approval_policy"] = json!("never");
-        let (turn, asked) = run(Some(Some(ask)), None, never, ours.clone()).await;
+        let (turn, asked) = run(Some(Some(ask.clone())), None, never, ours.clone()).await;
         assert!(
             turn.error().contains("(approval_policy)"),
             "{}",
@@ -1851,7 +1871,7 @@ done
         assert!(asked.is_empty(), "{asked:?}");
         let mut wide = ours;
         wide["activePermissionProfile"]["id"] = json!(":danger-full-access");
-        let (turn, asked) = run(Some(Some(ask)), Some("t1"), held, wide).await;
+        let (turn, asked) = run(Some(Some(ask.clone())), Some("t1"), held, wide).await;
         assert!(
             turn.error().contains("permission profile"),
             "{}",

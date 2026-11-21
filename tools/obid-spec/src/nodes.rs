@@ -74,6 +74,9 @@ type Pending =
 static PENDING: std::sync::Mutex<Option<Pending>> = std::sync::Mutex::new(None);
 
 pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
+    if let Some(want) = input.get("expect") {
+        expect::judged_by(name, want, judges(name)).map_err(anyhow::Error::msg)?;
+    }
     if name == "app.launch" {
         return crate::app::launch(run, &input).await;
     }
@@ -422,6 +425,32 @@ fn owner_key(input: &Value) -> Result<OwnerKey> {
     let key = &input["ownerKey"];
     let seed = key["seed"].as_str().or(key.as_str()).context("ownerKey")?;
     OwnerKey::from_hex(seed)
+}
+
+/// The top-level keys of a step's `expect` the node `name` judges (OBIDSPEC-6): none for a node
+/// that takes no `expect`. A new node that reads one names its keys here, or its steps fail. Any other key fails the step before the node runs (expect::judged_by),
+/// so an assertion is never skipped in silence: `{"count": 0}` where `{"paths": {"count": 0}}` was
+/// meant, or `status` on a node whose answer is judged by `expect::check` alone, which reads no
+/// status (`{"paths": {"status": 200}}` there).
+pub fn judges(name: &str) -> &'static [&'static str] {
+    const ANSWER: &[&str] = &["status", "body", "paths", "text"];
+    const VALUE: &[&str] = &["body", "paths", "text"];
+    match name {
+        "call" | "call-wait" | "sphere-admin" | "sphere-owner" => ANSWER,
+        "home-file" | "conversations.person-file" => &["exists", "mode", "json", "text"],
+        "conversations.list-dir" => VALUE,
+        "check" | "events-wait" => VALUE,
+        "app.launch" => &[],
+        n if n.starts_with("app.")
+            || n.starts_with("desktop.")
+            || n.starts_with("lab.")
+            || n.starts_with("browser-") =>
+        {
+            VALUE
+        }
+        n if crate::t3_conversations::NODES.iter().any(|(t, _)| *t == n) => VALUE,
+        _ => &[],
+    }
 }
 
 /// The proof that an assertion can fail (OBIDSPEC-6): the answer it passed on, changed at each

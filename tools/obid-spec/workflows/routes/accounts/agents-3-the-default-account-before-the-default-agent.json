@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "AGENTS-3: the default account comes before the default agent",
   "version": "1.0.0",
-  "description": "`defaultAgent` (a tool) keeps working for whoever sets it, beside `defaultAccount`; a conversation's plan with no agent or account named goes to the default account while it can take the work, and to the default agent once it can't. Expected red (#2697): the conversation's agent is never told which account new tasks go to, though AGENTS-3 says the brain's briefing marks it.",
+  "description": "`defaultAgent` (a tool) keeps working for whoever sets it, beside `defaultAccount`; a conversation's plan with no agent or account named goes to the default account while it can take the work, and to the default agent once it can't. Each of the conversation's turns is told which account new tasks go to (AGENTS-3).",
   "trigger": {
     "http": {
       "method": "PUT",
@@ -140,9 +140,6 @@
             "$contains": "new tasks go here unless the user names another agent"
           }
         }
-      },
-      "ui": {
-        "expectedRed": "#2697: a conversation's agent is never told which account new tasks go to (Briefing::text has no caller)"
       }
     },
     {

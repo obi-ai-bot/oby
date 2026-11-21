@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser, Page } from 'playwright-core';
-import { chrome, openMock, type Mock } from './layout/mock';
+import { CHROME_HOOK_MS, chrome, openMock, type Mock } from './layout/mock';
 import { measure } from './layout/measure';
 
 // A menu stays inside the window (Menu.tsx: menuPlace up and down, menuShift sideways), as a person sees
@@ -8,7 +8,7 @@ import { measure } from './layout/measure';
 // usage gauge) and the side panel's (the profile's, a conversation's ⋮), opened at a normal window and a
 // narrow one, lies wholly inside it, 8px from its edges, with none of its words cut.
 let browser: Browser | string;
-beforeAll(async () => { browser = await chrome(); });
+beforeAll(async () => { browser = await chrome(); }, CHROME_HOOK_MS);
 afterAll(async () => { if (typeof browser !== 'string') await browser.close(); });
 
 const ci = !!process.env.CI;

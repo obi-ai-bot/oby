@@ -1,4 +1,5 @@
-//! The process groups obid starts for a job (each turn of its agent, its check), recorded on disk
+//! The process groups obid starts for a job (each turn of its agent, its check) and for a
+//! conversation (its agent, DELIVERY-12), recorded on disk
 //! while they run, so that what an obid that went down without ending them (a crash, a kill, a
 //! panic) left running ends at its next start, before any job is picked up again
 //! (docs/runner-api.md, "Restarts"). Each leads a session of its own (the job sandbox's first
@@ -37,6 +38,28 @@ pub struct Recording {
     /// The worktree's own git folder, where the lock goes: the one obid made, never what the
     /// worktree's `.git` names.
     pub git_admin: Option<PathBuf>,
+}
+
+/// What a conversation's agent's record carries before the conversation's id in
+/// [`Recording::job`]: a job's id never starts with it.
+pub const CONVERSATION: &str = "conversation ";
+
+impl Recording {
+    /// The group of conversation `id`'s agent, recorded as a job's agent's is, so that [`reap`]
+    /// ends what an obid that went down mid-turn left running (DELIVERY-12, #2739). Its room
+    /// isn't a worktree, so it holds no lock.
+    pub fn conversation(home: &Path, id: &str) -> Recording {
+        Recording {
+            records: dir(home),
+            job: format!("{CONVERSATION}{id}"),
+            git_admin: None,
+        }
+    }
+
+    /// Whether this is a job's run, not a conversation's agent.
+    pub fn is_job(&self) -> bool {
+        !self.job.starts_with(CONVERSATION)
+    }
 }
 
 /// A group's leader as recorded.

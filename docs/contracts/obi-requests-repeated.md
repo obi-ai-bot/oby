@@ -5,7 +5,7 @@ The business behavior contract for sending another Oby a request again after its
 ## Feature and status
 
 - **Outcome:** A retry over the phone relay, or an app's or MCP client's retry, never sends a teammate's Oby the same question or review request twice, so it never counts twice against their limit of 5 open requests per owner (`busy`).
-- **Status:** **Implemented** (OBIREQ-7 to 10).
+- **Status:** **Implemented**: every scenario unless it says it's proposed.
 - **Scope:** `POST /v1/obid/sphere/requests` and `POST /v1/obid/sphere/peers/{owner}/ask`. Outside it: other routes (R02's own), any protocol change (the envelope's `id` stays a new UUID per request), and oby-mcp, which isn't in this repository any more (`mcp/` is gone): a client that wants it sends its tool call's id as `operationId`.
 
 ## Behavior
