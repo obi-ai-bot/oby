@@ -2425,7 +2425,7 @@ fn tasks_20_try_again_reruns_a_task_that_never_started() {
 /// before the answer was read. obid holds the answer 3 seconds (a debug build's
 /// `OBID_TEST_MESSAGE_ANSWER_HOLD_MS`), long enough for the rerun's clone, which can't start, to
 /// fail; the answer still reads queued or running with how it ended gone, and only `GET` shows it
-/// failed again.
+/// failed again. Its revision is older than the failure's, so an app that has the failure keeps it.
 #[test]
 fn jobstate_6_try_again_answers_the_round_it_opened_though_it_already_failed() {
     let folder = Folder::new("jobstate-6-held");
@@ -2453,6 +2453,16 @@ fn jobstate_6_try_again_answers_the_round_it_opened_though_it_already_failed() {
     for empty in ["finished", "reason", "nextStep"] {
         assert!(again.body[empty].is_null(), "{empty}: {}", again.text);
     }
+    // Older than the failure's, so an app that has the failure keeps it (LIVE-1).
+    let (answered, ended) = (
+        again.body["revision"].as_u64(),
+        refailed["revision"].as_u64(),
+    );
+    assert!(
+        answered < ended,
+        "answer {answered:?}, failure {ended:?}: {}",
+        again.text
+    );
 }
 
 /// TASKS-25: a job no app signed that ends before its agent starts ends `failed` with its reason,

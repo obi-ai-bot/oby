@@ -272,6 +272,9 @@ pub fn as_opened(opened: &Job, mut now: Job) -> Job {
         now.step = opened.step.clone();
         now.finished = opened.finished;
         now.review_result = opened.review_result.clone();
+        // And the revision it had then: the end's event is newer, so an app that has it keeps it
+        // (docs/contracts/live-state.md, LIVE-1).
+        now.revision = opened.revision;
     }
     now
 }
@@ -308,11 +311,16 @@ mod tests {
             .unwrap()
             .apply(&mut now);
         now.unsigned = true;
+        // Kept twice since: the end, then the mark.
+        now.revision = opened.revision + 2;
         assert_eq!(now.status, Status::Failed);
 
         let mut want = opened.clone();
         want.unsigned = true;
-        assert_eq!(as_opened(&opened, now.clone()).to_json(), want.to_json());
+        let answered = as_opened(&opened, now.clone());
+        assert_eq!(answered.to_json(), want.to_json());
+        // Older than the end's event, so an app holding that keeps it.
+        assert!(answered.revision < now.revision);
 
         let mut stopped = now.clone();
         stopped.status = Status::Stopped;
