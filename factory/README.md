@@ -15,6 +15,9 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 set too, obid's test binaries in shards on the VM's slots, the Mac worker and this Mac, all at
                 once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it); `gate --checkout
                 <worktree> <commit> <branch> <out-dir>` is the same gate with no job folder (oby-feed's)
+bin/gate-ci     the gate from GitHub's CI: waits for GitHub Actions' `Check` (and each `--also <name>`) at the pull
+                request's exact head and writes round-N/checks.md from its conclusion and gate's protected paths,
+                checks.log on FAIL; it runs no check itself; exit 0 PASS, 1 FAIL, 2 couldn't judge
 bin/oby-feed    feeds the task files to the factory's own obid, each as intake, then spec, then build (Oby builds
                 against the spec and reviews it), and merges what Oby approved twice, once the models, Kani and
                 bin/gate passed on the head; a task intake holds for the owner waits `blocked`; state in
@@ -79,6 +82,19 @@ throttles disk I/O and keeps the run on the efficiency cores even when no gate r
 `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores. Commands that read none of those (`npm test`,
 `npm run typecheck`, `swift test`) are held only by the priority (and `swift test` by the lock), and an explicit
 `-j` or `--test-threads` overrides them.
+
+When the gate's hosts are gone, the orchestrator runs `bin/gate-ci <job-id>` in place of `bin/gate`: GitHub
+Actions already runs the required `Check` on every head pushed to a pull request, drafts included. gate-ci refuses
+(exit 2, no checks.md) a worktree with uncommitted changes, an `origin/<branch>` or a pull request head other than
+the worktree's HEAD; then it reads the head's check runs every 30 seconds until the newest `Check` from the GitHub
+Actions app, and the newest run of each `--also <name>` (`--also app-mac`), is completed, at most `--timeout`
+seconds (5400 by default). PASS needs every one `success` and no protected path modified or deleted (`bin/gate`'s
+own rule, imported); `skipped`, `neutral`, `cancelled` and the rest are FAIL. checks.md carries `GATE`, `COMMIT`,
+`HOST: github-actions`, `PR` and `RUNS` (the Actions run ids), so `bin/job advance` and `bin/job merge` read it as
+the gate's; on FAIL checks.log holds each failed run's last 300 lines of `gh run view <run> --log-failed`, fenced
+as quoted data from GitHub. Exit 0 is PASS, 1 FAIL, and 2 couldn't judge: a refusal above, or a run that didn't
+appear or finish in time, which writes no checks.md (no `Check` at all usually means CI didn't start for that
+head: push again). It never calls az, ssh, checks.sh, cargo or npm.
 
 Gates run on the Mac until the owner adds `remote_gate` to `config.json` (`docs/factory-remote-gate.md`, "The
 owner's steps"). With it, `bin/gate` reads the check's plan, starts the gate VM `oby-gate` when it is stopped
