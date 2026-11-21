@@ -35,10 +35,12 @@ pub mod contract;
 pub mod driver;
 pub mod engine;
 pub mod install;
+pub mod relay;
 pub mod routes;
 pub mod send_buffer;
 mod service;
 mod tools;
+pub mod window;
 
 pub use agent_server::AgentServer;
 pub use service::{SWEEP_EVERY, Service};

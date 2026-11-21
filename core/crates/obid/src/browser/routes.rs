@@ -26,8 +26,7 @@ use axum::routing::{get, post};
 use futures_util::stream::{self, StreamExt};
 use serde_json::{Value, json};
 
-use super::Service;
-use super::api::{Refused, Take};
+use super::api::Refused;
 use super::contract as c;
 use crate::api::{ApiError, Shared};
 
@@ -45,15 +44,18 @@ pub fn router() -> Router<Arc<Shared>> {
         .route("/v1/browser/downloads", get(downloads))
         .route("/v1/browser/downloads/{id}/saveCopy", post(save_copy))
         .route("/v1/browser/asks/{id}/answer", post(answer))
-        .route("/v1/browser/tabs/{id}/stream", get(stream))
-        .route("/v1/browser/tabs/{id}/input", post(input))
-        .route("/v1/browser/tabs/{id}/take", post(take))
-        .route("/v1/browser/tabs/{id}/giveBack", post(give_back))
-        .route("/v1/browser/tabs/{id}/secret", post(secret))
+        // Retired with obid's own browser (the window's browser, docs/plans/browser-t3.md): the
+        // person uses the webview itself, and Fill in is the window's. Kept, answering 410.
+        .route("/v1/browser/tabs/{id}/stream", get(retired))
+        .route("/v1/browser/tabs/{id}/input", post(retired))
+        .route("/v1/browser/tabs/{id}/take", post(retired))
+        .route("/v1/browser/tabs/{id}/giveBack", post(retired))
+        .route("/v1/browser/tabs/{id}/secret", post(retired))
         .route("/v1/browser/tabs/{id}/reload", post(reload))
         .route("/v1/browser/tabs/{id}/back", post(back))
         .route("/v1/browser/tabs/{id}/dialog", post(dialog))
         .route("/v1/browser/mcp", post(mcp))
+        .route("/v1/browser/relay", get(relay_commands).post(relay_events))
 }
 
 /// A gate refusal of a browser route says which, as the contract's reasons do: no token, or one
@@ -132,7 +134,8 @@ fn signed(
 fn know_running_jobs(shared: &Shared) {
     for job in shared.jobs.list(usize::MAX) {
         if job.status == crate::job::Status::Running {
-            shared.browser.ensure_job(&job.id, &job.agent);
+            let partition = super::relay::partition_of(&job);
+            shared.browser.ensure_job(&job.id, &job.agent, &partition);
         }
     }
 }
@@ -232,65 +235,6 @@ async fn answer(
     }
 }
 
-/// The job whose tab `tab` is: an agent's tab's job.
-fn job_of_tab(service: &Service, tab: &str) -> Result<String, Refused> {
-    service.api(|a| {
-        a.hold_of(tab)?;
-        Ok(match a.tab(tab).map(|t| t.owner.clone()) {
-            Some(c::Owner::Agent { job, .. }) => job,
-            _ => String::new(),
-        })
-    })
-}
-
-async fn stream(State(shared): State<Arc<Shared>>, Path(tab): Path<String>) -> Response {
-    let job = match job_of_tab(&shared.browser, &tab) {
-        Ok(j) => j,
-        Err(e) => return refused(e),
-    };
-    let live = match shared.browser.driver().stream(&job).await {
-        Ok(s) => s,
-        Err(e) => {
-            return refused(Refused::new(
-                409,
-                "browser",
-                format!("The tab's live stream didn't start: {e}"),
-            ));
-        }
-    };
-    let reader = live.reader();
-    // The reader goes once the person's stream does.
-    struct Leaving(Arc<super::driver::Stream>, Arc<super::driver::StreamReader>);
-    impl Drop for Leaving {
-        fn drop(&mut self) {
-            self.0.drop_reader(&self.1);
-        }
-    }
-    let leaving = Arc::new(Leaving(live, reader));
-    let frames = stream::unfold(leaving, move |leaving| {
-        let tab = tab.clone();
-        async move {
-            let (frame, dropped) = leaving.1.next().await?;
-            let f = c::StreamFrame {
-                tab_id: tab,
-                seq: frame.seq,
-                data: frame.data.clone(),
-                mime: "image/jpeg".into(),
-                width: frame.width,
-                height: frame.height,
-                dropped,
-            };
-            let data = serde_json::to_string(&f).unwrap_or_default();
-            Some((
-                Ok::<_, Infallible>(SseEvent::default().event("frame").data(data)),
-                leaving,
-            ))
-        }
-    });
-    let frames = frames.take_until(stopping(shared.stopping.clone()));
-    Sse::new(frames).into_response()
-}
-
 async fn stopping(mut receiver: tokio::sync::watch::Receiver<bool>) {
     while !*receiver.borrow() {
         if receiver.changed().await.is_err() {
@@ -305,6 +249,51 @@ fn sse_of(e: &c::Event) -> SseEvent {
         .id(e.seq.to_string())
         .event(e.body.kind())
         .data(serde_json::to_string(e).unwrap_or_default())
+}
+
+/// A route retired with obid's own browser: the window's browser does it now.
+async fn retired() -> Response {
+    refused(Refused::new(
+        410,
+        "retired",
+        "Oby's window does this now: its browser is the window's own (the person uses the page in the window, and Fill in is the window's).",
+    ))
+}
+
+/// `GET /v1/browser/relay`: the window's relay commands (T3 Code's design), each sent once to
+/// whoever follows now, never kept or replayed. While nobody follows there is no window.
+async fn relay_commands(State(shared): State<Arc<Shared>>) -> Response {
+    let (rx, following) = shared.browser.relay().follow();
+    let commands = stream::unfold((rx, following), |(mut rx, following)| async move {
+        loop {
+            match rx.recv().await {
+                Ok(c) => {
+                    let event = SseEvent::default()
+                        .event(c.kind())
+                        .data(serde_json::to_string(&c).unwrap_or_default());
+                    return Some((Ok::<_, Infallible>(event), (rx, following)));
+                }
+                // A window that fell behind missed commands: its calls time out, and it reconnects.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => return None,
+            }
+        }
+    });
+    let commands = commands.take_until(stopping(shared.stopping.clone()));
+    Sse::new(commands)
+        .keep_alive(KeepAlive::new().interval(KEEP_ALIVE).text("keep-alive"))
+        .into_response()
+}
+
+/// `POST /v1/browser/relay`, `{"events": [...]}`: the window's events, in order.
+async fn relay_events(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
+    match parse::<c::RelayEvents>(&body) {
+        Ok(b) => {
+            shared.browser.relay().receive(b.events);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(r) => refused(r),
+    }
 }
 
 async fn events(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
@@ -348,173 +337,6 @@ async fn events(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Respon
     Sse::new(events)
         .keep_alive(KeepAlive::new().interval(KEEP_ALIVE).text("keep-alive"))
         .into_response()
-}
-
-async fn input(
-    State(shared): State<Arc<Shared>>,
-    Path(tab): Path<String>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let device = match signed(&shared, &method, &uri, &headers, &body) {
-        Ok(d) => d,
-        Err(e) => return refused(e),
-    };
-    let input = match parse::<c::StreamInput>(&body) {
-        Ok(i) => i,
-        Err(e) => return refused(e),
-    };
-    // Only the device that holds the tab (BROWSER-7).
-    let job = match shared.browser.api(|a| a.person_holds(Some(&device), &tab)) {
-        Ok(j) => j,
-        Err(e) => return refused(e),
-    };
-    let live = match shared.browser.driver().stream(&job).await {
-        Ok(s) => s,
-        Err(e) => return refused(Refused::new(409, "browser", e)),
-    };
-    if let Err(e) = live.send(&input).await {
-        return refused(Refused::new(409, "browser", e));
-    }
-    if matches!(&input, c::StreamInput::Mouse { event_type, .. } if event_type == "mouseReleased") {
-        // A click the person made may start a download: theirs, so delivered.
-        shared.browser.watch_downloads(
-            &job,
-            Some(tab.clone()),
-            super::engine::Actor::Person(device),
-        );
-    }
-    ok(&c::InputAnswer {
-        tab_id: tab,
-        delivered: vec![],
-    })
-}
-
-async fn take(
-    State(shared): State<Arc<Shared>>,
-    Path(tab): Path<String>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let device = match signed(&shared, &method, &uri, &headers, &body) {
-        Ok(d) => d,
-        Err(e) => return refused(e),
-    };
-    let service = &shared.browser;
-    let first = service.api(|a| a.take(&device, &tab));
-    service.flush();
-    let first = match first {
-        Ok(t) => t,
-        Err(e) => return refused(e),
-    };
-    // Acts already running finish first; no new one is let through meanwhile.
-    if let Take::Wait(_) = first {
-        let until = tokio::time::Instant::now()
-            + Duration::from_millis(super::engine::MAX_DEADLINE_MS + 5000);
-        while service.api(|a| a.inflight(&tab)) > 0 && tokio::time::Instant::now() < until {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-    let engine = service
-        .driver()
-        .core()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take(&device, &tab);
-    if let Err(r) = engine {
-        return refused(Refused::engine(r.code(), &r.message()));
-    }
-    match service.api(|a| a.hold_of(&tab)) {
-        Ok(h) => ok(&h),
-        Err(e) => refused(e),
-    }
-}
-
-async fn give_back(
-    State(shared): State<Arc<Shared>>,
-    Path(tab): Path<String>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let device = match signed(&shared, &method, &uri, &headers, &body) {
-        Ok(d) => d,
-        Err(e) => return refused(e),
-    };
-    let service = &shared.browser;
-    let given = service.api(|a| a.give_back(&device, &tab));
-    service.flush();
-    let given = match given {
-        Ok(h) => h,
-        Err(e) => return refused(e),
-    };
-    let engine = service
-        .driver()
-        .core()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .release(&device, &tab);
-    if let Err(r) = engine {
-        return refused(Refused::engine(r.code(), &r.message()));
-    }
-    ok(&given)
-}
-
-async fn secret(
-    State(shared): State<Arc<Shared>>,
-    Path(tab): Path<String>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let device = match signed(&shared, &method, &uri, &headers, &body) {
-        Ok(d) => d,
-        Err(e) => return refused(e),
-    };
-    let b = match parse::<c::SecretBody>(&body) {
-        Ok(b) => b,
-        Err(e) => return refused(e),
-    };
-    let service = &shared.browser;
-    let job = match service.api(|a| a.person_holds(Some(&device), &tab)) {
-        Ok(j) => j,
-        Err(e) => return refused(e),
-    };
-    let target = service
-        .driver()
-        .core()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .person_may_act(&device, &tab)
-        .map(|t| t.target.clone());
-    let target = match target {
-        Ok(t) => t,
-        Err(r) => return refused(Refused::engine(r.code(), &r.message())),
-    };
-    // Straight into the page's field through the person's own path: the value goes in the
-    // stream's key events and nowhere else.
-    if let Err(e) = service
-        .driver()
-        .person_types(&job, &target, &b.field, &b.value)
-        .await
-    {
-        return refused(Refused::new(
-            409,
-            "browser",
-            format!("The secret didn't go into the field: {e}"),
-        ));
-    }
-    ok(&c::SecretAnswer {
-        tab_id: tab,
-        field: b.field,
-        filled: true,
-    })
 }
 
 async fn reload(
@@ -573,33 +395,23 @@ async fn way_out(
         Ok(b) => b,
         Err(e) => return refused(e),
     };
+    let _ = device;
     let service = &shared.browser;
-    let job = match service.api(|a| a.way_out(&device, &tab, verb)) {
+    let job = match service.api(|a| a.way_out(&tab, verb)) {
         Ok(j) => j,
         Err(e) => return refused(e),
     };
-    let target = service
-        .driver()
-        .core()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .person_may_act(&device, &tab)
-        .map(|t| t.target.clone());
-    let target = match target {
-        Ok(t) => t,
-        Err(r) => return refused(Refused::engine(r.code(), &r.message())),
-    };
     let moved = service
-        .driver()
+        .window()
         .person_page(
             &job,
             &tab,
-            &target,
             verb,
             answer.accept,
             answer.prompt_text.as_deref(),
         )
-        .await;
+        .await
+        .map_err(|e| Refused::new(409, "browser", e));
     // The page moved: whatever failed before is over (a dialog answered is gone).
     match &moved {
         Ok(_) if verb == c::VERB_DIALOG => service.api(|a| a.dialog(&tab, None)),
@@ -609,11 +421,11 @@ async fn way_out(
     service.sync(&job);
     if let Err(r) = moved {
         // It still doesn't load: the tab says so, in the browser's words.
-        if r.code() == "browser" && verb != c::VERB_DIALOG {
-            service.api(|a| a.failed(&tab, &r.message()));
+        if verb != c::VERB_DIALOG {
+            service.api(|a| a.failed(&tab, &r.message));
             service.flush();
         }
-        return refused(Refused::engine(r.code(), &r.message()));
+        return refused(r);
     }
     match service.api(|a| a.tab(&tab).cloned()) {
         Some(t) => ok(&t),
@@ -665,8 +477,12 @@ async fn mcp(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes)
             }
         },
     };
-    let agent = shared.jobs.get(&job).map(|j| j.agent).unwrap_or_default();
-    shared.browser.ensure_job(&job, &agent);
+    let (agent, partition) = shared
+        .jobs
+        .get(&job)
+        .map(|j| (j.agent.clone(), super::relay::partition_of(&j)))
+        .unwrap_or_default();
+    shared.browser.ensure_job(&job, &agent, &partition);
     let value: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
