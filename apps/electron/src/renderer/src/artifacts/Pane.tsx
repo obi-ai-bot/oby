@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Download, X } from 'lucide-react';
 import { Panel } from '../browser/Panel';
+import { useClicksEverywhere } from '../Menu';
 import { closeArtifact, kindName, onLatest, save, showTab, showVersion, useOpenArtifact, type Tab } from './store';
 import { saveAs } from '../../../shared/words';
 // Code loads with its first use: CodeMirror reads the page as it loads, and needn't on every start
@@ -20,7 +21,32 @@ export function ArtifactPane({ width }: { width: number }) {
   const open = useOpenArtifact();
   const box = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
-  const id = open?.artifact.id, version = open?.version, previewing = open?.tab === 'preview';
+  const [saved, setSaved] = useState<string | null>(null);
+  const [menu, setMenu] = useState(false);
+  useEffect(() => { setMenu(false); setSaved(null); }, [open?.artifact.id, open?.version]);
+  // Export's menu closes as the app's other menus do (Menu.tsx): Esc (focus back on Export), a click
+  // outside it and its button, or the window changing size
+  const exportWrap = useRef<HTMLSpanElement>(null), exportButton = useRef<HTMLButtonElement>(null);
+  useClicksEverywhere(menu);
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(false);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); exportButton.current?.focus(); } };
+    const onDown = (e: Event) => { if (!exportWrap.current?.contains(e.target as Node)) close(); };
+    addEventListener('keydown', onKey, true);
+    addEventListener('pointerdown', onDown, true);
+    addEventListener('resize', close);
+    return () => { removeEventListener('keydown', onKey, true); removeEventListener('pointerdown', onDown, true); removeEventListener('resize', close); };
+  }, [menu]);
+  // obid's export of the version on view, saved where the owner picks in main's dialog
+  const download = async (as: 'zip' | 'html') => {
+    setMenu(false);
+    if (!open || !window.app?.artifactExport) return;
+    const r = await window.app.artifactExport(open.artifact.id, open.version, as);
+    setSaved(!r ? null : 'saved' in r ? `Saved to ${r.saved}` : 'error' in r ? r.error : null);
+  };
+  // main's view lies over the page: while Export's menu is open, Preview's view steps aside for it
+  const id = open?.artifact.id, version = open?.version, previewing = open?.tab === 'preview' && !menu;
   // the owner's unsaved edits show in Preview as they would once saved (ARTIFACTSAPP-8)
   const edits = open && Object.keys(open.edits).length ? open.edits : undefined;
 
@@ -68,8 +94,24 @@ export function ArtifactPane({ width }: { width: number }) {
               <button key={tab} role="tab" aria-selected={open.tab === tab} className={`art-tab${open.tab === tab ? ' is-on' : ''}`} onClick={() => showTab(tab)}>{label}</button>
             ))}
           </span>
+          <span className="art-export-wrap" ref={exportWrap}>
+            <button ref={exportButton} className="icon-button is-28" aria-label="Export" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}><Download size={14} strokeWidth={1.8} /></button>
+            {menu && (
+              // Download, as Sangam's board 1c has it: obid's own export of the version on view (ARTIFACTSAPP-11)
+              <div className="art-export" role="menu" aria-label="Download">
+                <p className="art-export-head">Download</p>
+                <button role="menuitem" className="art-export-item" onClick={() => void download('zip')}>
+                  <span>Project archive (.zip)</span>
+                  {artifact.kind === 'design' && <small>Every file, as Claude Design keeps it: opens there unchanged</small>}
+                </button>
+                <button role="menuitem" className="art-export-item" onClick={() => void download('html')}><span>Standalone HTML</span></button>
+              </div>
+            )}
+          </span>
           <button className="icon-button is-28" aria-label="Close the artifact" onClick={closeArtifact}><X size={14} strokeWidth={2} /></button>
         </div>
+        {/* where a download went, or why it didn't */}
+        {saved && <p className="art-saved" role="status">{saved}</p>}
         {/* why the last Save was refused, the edits kept (ARTIFACTSAPP-10) */}
         {open.refused && <p className="art-refused" role="alert">{open.refused}</p>}
         {open.tab === 'code' ? <Suspense fallback={null}><Code artifact={artifact} version={open.version} edits={open.edits} editable={onLatest(open)} /></Suspense> : (

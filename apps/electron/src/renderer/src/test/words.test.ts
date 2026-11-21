@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf, IMPORT } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -285,6 +285,21 @@ describe('signed words', () => {
     }
     // with new, it isn't a shape the app sends: nothing is signed
     expect(wordsOf('POST', '/v1/plans', plan(artifact, { new: true }))).toBeNull();
+  });
+
+  it('words_21_an_artifacts_import_signs_its_bytes_as_they_are_by_its_own_import', () => {
+    const bytes = new TextEncoder().encode('<!doctype html><h1>Mine</h1>');
+    expect(IMPORT).toBe('Import');
+    expect(wordsOf('POST', '/v1/artifacts/import', bytes)).toEqual(['Import']);
+    expect(owners('POST', '/v1/artifacts/import', bytes, ['Import'], [])).toEqual([0]);
+    for (const held of ['Save', 'Import as', '<!doctype html><h1>Mine</h1>']) expect(owners('POST', '/v1/artifacts/import', bytes, [held], []), held).toBeNull();
+    for (const body of [new Uint8Array(), { bytes: 'x' }, '<h1>x</h1>', undefined]) expect(wordsOf('POST', '/v1/artifacts/import', body), String(body)).toBeNull();
+    expect(wordsOf('PUT', '/v1/artifacts/import', bytes)).toBeNull();
+    // the signature is over the bytes themselves, as obid hashes them
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const [, signedAt, signature] = wordsHeader(privateKey, 'd1', 'POST', '/v1/artifacts/import', bytes)!.split(' ');
+    const sentence = `oby-words\nPOST\n/v1/artifacts/import\n${createHash('sha256').update(bytes).digest('hex')}\n${signedAt}`;
+    expect(verify('sha256', Buffer.from(sentence), createPublicKey(privateKey), Buffer.from(signature, 'base64'))).toBe(true);
   });
 
   it('words_23_an_artifacts_edit_signs_by_its_own_save_as_label', () => {

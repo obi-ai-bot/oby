@@ -1,12 +1,31 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PREVIEW_CSP, RELAY_CSP, servedHost, servedWorker, startRelay, type Relay } from '../../../main/sandpackRelay';
 import { allowed, noFiles, overlay, previewAsk, shownAs } from '../../../main/previewRules';
 import { showable } from '../artifacts/showable';
+import { importType } from '../../../shared/artifactImport';
+import { exportArtifact, nameOf, saveFile } from '../../../main/previewRules';
 // @ts-expect-error a plain script
 import { FORBIDDEN, forbiddenIn, localOnly } from '../../../../scripts/local-only.mjs';
+
+// a disk that fills partway through a write when told to (disk.fails): half the bytes land, then it fails
+const disk = vi.hoisted(() => ({ fails: false }));
+vi.mock('node:fs/promises', async (original) => {
+  const fs = await original<typeof import('node:fs/promises')>();
+  const half = async (write: (b: Uint8Array) => Promise<void>, bytes: Uint8Array) => {
+    await write(bytes.subarray(0, bytes.length >> 1));
+    throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+  };
+  const writeFile = ((path: string, bytes: Uint8Array, ...rest: []) => disk.fails ? half((b) => fs.writeFile(path, b), bytes) : fs.writeFile(path, bytes, ...rest)) as typeof fs.writeFile;
+  const open = (async (...a: Parameters<typeof fs.open>) => {
+    const h = await fs.open(...a);
+    return disk.fails ? new Proxy(h, { get: (t, k) => k === 'writeFile' ? (b: Uint8Array) => half((x) => t.writeFile(x), b) : typeof t[k as keyof typeof t] === 'function' ? (t[k as keyof typeof t] as (...x: unknown[]) => unknown).bind(t) : t[k as keyof typeof t] }) : h;
+  }) as typeof fs.open;
+  return { ...fs, default: { ...fs, writeFile, open }, writeFile, open };
+});
 
 // The app's artifacts, run local (docs/contracts/artifacts-app.md): Sandpack's relay as main serves
 // it, what the preview's session lets go, the build's guard, and what a version shows. The window
@@ -146,6 +165,69 @@ describe('ARTIFACTSAPP-8', () => {
     expect(Object.hasOwn(received!.files, '__proto__')).toBe(true);
     expect(received!.files['__proto__']).toEqual({ text: 'a file' });
     expect(Object.getPrototypeOf(received!.files)).toBe(Object.prototype);
+  });
+});
+
+describe('ARTIFACTSAPP-11 and 12, main', () => {
+  it('artifactsapp_11_main_saves_obids_export_byte_for_byte_where_the_owner_picked_and_nothing_when_cancelled', async () => {
+    const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 255]);
+    const written: [string, Uint8Array][] = [];
+    const asked: string[] = [];
+    const deps = (answer: string | null, r: Response | { status: number; text: string }) => ({
+      fetch: async (path: string) => { asked.push(path); return r; },
+      ask: async (defaultPath: string) => { asked.push(defaultPath); return answer; },
+      write: async (path: string, bytes: Uint8Array) => { written.push([path, bytes]); },
+      downloads: '/Users/me/Downloads',
+    });
+    const ok = () => new Response(zip, { headers: { 'Content-Disposition': 'attachment; filename="Landing-page-v2.zip"' } });
+    expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 2, 'zip', deps('/tmp/x.zip', ok()))).toEqual({ saved: '/tmp/x.zip' });
+    expect(asked).toEqual(['/v1/artifacts/3f0c2a1e-1111-4222-8333-944455556666/export/2?as=zip', '/Users/me/Downloads/Landing-page-v2.zip']);
+    expect([...written[0][1]]).toEqual([...zip]);
+    expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 2, 'zip', deps(null, ok()))).toEqual({ cancelled: true });
+    expect(written).toHaveLength(1);
+    expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 9, 'html', deps('/tmp/y', new Response('{}', { status: 404 })))).toEqual({ error: 'That version isn’t there any more.' });
+    expect(written).toHaveLength(1);
+    // obid's file name, or one made the same way; never a path
+    for (const bad of ['attachment; filename="../../.ssh/x"', 'attachment; filename=".hidden"', null]) expect(nameOf(bad, 'html', 3)).toBe('artifact-v3.html');
+  });
+
+  it('artifactsapp_11_a_download_replaces_the_file_whole_or_not_at_all_and_never_writes_through_a_link', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'oby-save-'));
+    const to = (path: string) => ({ fetch: async () => new Response(new Uint8Array([1, 2, 3, 4])), ask: async () => path, write: saveFile, downloads: dir });
+    try {
+      // a link where the owner picked (swapped in after the dialog closed): refused, what it points at untouched
+      writeFileSync(join(dir, 'elsewhere'), 'theirs');
+      symlinkSync(join(dir, 'elsewhere'), join(dir, 'a.zip'));
+      expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 1, 'zip', to(join(dir, 'a.zip')))).toEqual({ error: 'Oby couldn’t save it: a.zip is a link.' });
+      expect(readFileSync(join(dir, 'elsewhere'), 'utf8')).toBe('theirs');
+      // a write that fails partway (the disk fills): the file that was there stays whole, and nothing is left beside it
+      writeFileSync(join(dir, 'b.zip'), 'before');
+      disk.fails = true;
+      try {
+        expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 1, 'zip', to(join(dir, 'b.zip')))).toEqual({ error: 'Oby couldn’t save it: no space left on device' });
+      } finally {
+        disk.fails = false;
+      }
+      expect(readFileSync(join(dir, 'b.zip'), 'utf8')).toBe('before');
+      expect(readdirSync(dir).sort()).toEqual(['a.zip', 'b.zip', 'elsewhere']);
+      // one that goes: the bytes whole, over the file that was there and as a new one
+      for (const name of ['b.zip', 'c.zip']) {
+        expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 1, 'zip', to(join(dir, name)))).toEqual({ saved: join(dir, name) });
+        expect([...readFileSync(join(dir, name))]).toEqual([1, 2, 3, 4]);
+      }
+      expect(readdirSync(dir).sort()).toEqual(['a.zip', 'b.zip', 'c.zip', 'elsewhere']);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('artifactsapp_12_an_import_is_sent_as_what_its_bytes_are', () => {
+    const enc = (s: string) => new TextEncoder().encode(s);
+    expect(importType(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0]))).toBe('application/zip');
+    expect(importType(enc('<!doctype html><h1>x</h1>'))).toBe('text/html');
+    expect(importType(enc('\ufeff\n  <html>'))).toBe('text/html');
+    expect(importType(enc('# Notes\n<b>bold</b>'))).toBe('text/markdown');
+    expect(importType(enc('PK but text'))).toBe('text/markdown');
   });
 });
 
