@@ -85,6 +85,7 @@ The business behavior contract for what GitHub's `CI` workflow runs and what the
   | Paths | Reaches |
   | --- | --- |
   | `.github/*`, `scripts/oby-check*`, `core/Cargo.toml`, `core/Cargo.lock`, `rust-toolchain*` | `rust=full`, `electron` |
+  | `core/crates/obid/src/browser/*` | `rust=full`, `electron` (the app's relay test reads the CDP methods obid's browser sends) |
   | `core/*`, `e2e/*`, `docs/api/*`, `Makefile` | `rust=full` |
   | `apps/electron/*` | `electron`, and `rust=guards` unless already `full` |
   | `apps/shared/*`, `docs/runner-api.md`, `docs/contracts/*` | `rust=guards` unless already `full` |
@@ -133,7 +134,7 @@ The business behavior contract for what GitHub's `CI` workflow runs and what the
 
 ## Interfaces and dependencies
 
-- **Workflow:** `.github/workflows/ci.yml` (GitHub's `CI` workflow), `.github/actions/setup/action.yml` (gitleaks at its pinned version and SHA-256, and bubblewrap when asked) and `core/.config/nextest.toml`'s `ci` profile are what CI-70 to 76 describe; GitHub's own runs prove them, since no test runner in this repository runs a workflow's triggers.
+- **Workflow:** `.github/workflows/ci.yml` (GitHub's `CI` workflow), `.github/actions/setup/action.yml` (gitleaks at the version and SHA-256 `ci.yml` pins, and bubblewrap when asked) and `core/.config/nextest.toml`'s `ci` profile are what CI-70 to 76 describe; GitHub's own runs prove them, since no test runner in this repository runs a workflow's triggers.
 - **Files:** `docs/api/routes.txt`, `docs/api/dead-client-calls.txt`, read by `core/crates/obid/tests/routes_guard.rs`.
 - **Check:** `scripts/oby-check.sh` plans the Rust group with `tests/routes_guard.rs` when `core/crates/obid/src/api.rs` or `gateway.rs` changes, another file under `core/crates/obid/src/` with a `.route(` in it, anything under `docs/api/`, or a client source as above (`apps/electron/src` but its tests and mock, `apps/shared/*.swift`); the groups those paths planned before stay as they were. `scripts/oby-check-test.sh` proves that plan.
 - **Cost:** an Electron-only or Swift-only change to client sources now also runs `cargo fmt`, clippy on obid and a build of one obid test binary.

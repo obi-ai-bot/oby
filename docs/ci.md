@@ -18,13 +18,14 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | `electron` | In `apps/electron/`: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` (Node 22, with zsh installed: the ChatGPT gate's test runs `scripts/package.sh` with `/bin/zsh`). |
 | `Check` | Always runs. Passes only when `changes` succeeded and every other job passed or was skipped. |
 
-`.github/actions/setup/action.yml` installs gitleaks at its pinned version, checked against its SHA-256, and, when asked, bubblewrap and slirp4netns for obid's job sandbox, with a line that proves bubblewrap works on the runner. Rust is pinned to the 1.97 channel (`RUSTUP_TOOLCHAIN`), and every action to a commit SHA.
+`.github/actions/setup/action.yml` installs gitleaks at the version `ci.yml` pins (`GITLEAKS_VERSION`, checked against `GITLEAKS_SHA256`), and, when asked, bubblewrap and slirp4netns for obid's job sandbox; the workflow's next step proves bubblewrap works on the runner. Rust is pinned to the 1.97 channel (`RUSTUP_TOOLCHAIN`), and every action to a commit SHA.
 
 **What a change reaches.** `changes` reads `git diff --name-only` of the run's range (a pull request's from its merge base) and prints `rust=<full|guards|none> electron=<true|false>`. The first row a path matches decides what that path reaches, and the paths' results add up:
 
 | Paths | Reaches |
 | --- | --- |
 | `.github/**`, `scripts/oby-check*`, `core/Cargo.toml`, `core/Cargo.lock`, `rust-toolchain*` | all of Rust, the Electron app |
+| `core/crates/obid/src/browser/**` | all of Rust, the Electron app (its relay test reads the CDP methods obid's browser sends) |
 | `core/**`, `e2e/**`, `docs/api/**`, `Makefile` | all of Rust |
 | `apps/electron/**` | the Electron app, the guards |
 | `apps/shared/**`, `docs/runner-api.md`, `docs/contracts/**` | the guards |
