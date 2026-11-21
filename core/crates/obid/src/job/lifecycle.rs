@@ -253,16 +253,21 @@ impl Change {
 /// What words that opened a round answer (JOBSTATE-6): `now`, the job read after them, with that
 /// round's end taken back when its run already ended in it, as `opened`, the job the words kept,
 /// had it. A round that fails at once (a clone that can't start) can end before the answer is
-/// read; the end is in `GET` and the job's events. A stop is the owner's, and stays.
+/// read; the end is in `GET` and the job's events. A stop is the owner's, and stays. Taken back,
+/// it reads as the round starts (`queued`, as [`Change::Round`] writes it), whatever ran between.
 pub fn as_opened(opened: &Job, mut now: Job) -> Job {
     let ended = !now.status.is_active()
         && !matches!(now.status, Status::Stopped | Status::Interrupted)
         && opened.status.is_active()
         && now.current_round() == opened.current_round();
     if ended {
-        // What `Change::End` wrote.
-        now.status = opened.status;
-        now.phase = opened.phase;
+        // The round as the words opened it, by the one writer of a round's start (its status,
+        // phase and cleared fields), then the rest `Change::End` wrote, as they left it.
+        Change::Round {
+            round: opened.current_round(),
+            rounds: opened.rounds,
+        }
+        .apply(&mut now);
         now.summary = opened.summary.clone();
         now.next_step = opened.next_step.clone();
         now.resumes_at = opened.resumes_at;
