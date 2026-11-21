@@ -3,7 +3,7 @@ import { request } from 'node:http';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PREVIEW_CSP, RELAY_CSP, servedHost, servedWorker, startRelay, type Relay } from '../../../main/sandpackRelay';
-import { allowed, previewAsk } from '../../../main/previewRules';
+import { allowed, noFiles, overlay, previewAsk, shownAs } from '../../../main/previewRules';
 import { showable } from '../artifacts/showable';
 // @ts-expect-error a plain script
 import { FORBIDDEN, forbiddenIn, localOnly } from '../../../../scripts/local-only.mjs';
@@ -118,6 +118,30 @@ describe('ARTIFACTSAPP-8', () => {
     for (const edits of [null, 'x', ['a'], { 'a.css': 1 }, { '': 'x' }, { ['p'.repeat(1025)]: 'x' }, Object.fromEntries(Array.from({ length: 513 }, (_, i) => [`f${i}`, 'x'])), { 'big.html': 'x'.repeat((17 << 20) + 1) }]) {
       expect(previewAsk({ id, version: 1, bounds, edits }), JSON.stringify(edits).slice(0, 40)).toBeUndefined();
     }
+  });
+});
+
+describe('ARTIFACTSAPP-8, the edits laid over', () => {
+  it('artifactsapp_8_an_edit_named_like_an_inherited_key_changes_nothing', () => {
+    const files = Object.assign(noFiles(), { 'index.html': { text: '<h1>One</h1>' }, 'style.css': { text: 'h1 {}' } });
+    const proto = Object.getPrototypeOf(files);
+    overlay(files, JSON.parse('{"__proto__": "<h1>x</h1>", "constructor": "x", "toString": "x", "hasOwnProperty": "x", "new.html": "x", "style.css": "h1 { color: red }"}'));
+    expect(Object.keys(files).sort()).toEqual(['index.html', 'style.css']);
+    expect(files['style.css']).toEqual({ text: 'h1 { color: red }' });
+    expect(files['index.html']).toEqual({ text: '<h1>One</h1>' });
+    expect(Object.getPrototypeOf(files)).toBe(proto);
+    expect(proto).toBeNull();
+    // a real file of that name is one like any other: laid over, and shown
+    const named = Object.assign(noFiles(), { 'index.html': { text: 'x' } });
+    named['__proto__'] = { text: 'kept' };
+    overlay(named, JSON.parse('{"__proto__": "edited"}'));
+    expect(Object.keys(named).sort()).toEqual(['__proto__', 'index.html']);
+    expect(named['__proto__']).toEqual({ text: 'edited' });
+    // and reaches the host page as a key, never as the object's prototype
+    let got: Record<string, unknown> | undefined;
+    new Function('window', shownAs({ files: named }))({ obyShow: (v: { files: Record<string, unknown> }) => { got = v.files; } });
+    expect(Object.keys(got!).sort()).toEqual(['__proto__', 'index.html']);
+    expect(Object.getPrototypeOf(got)).toBe(Object.prototype);
   });
 });
 
