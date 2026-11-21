@@ -1,0 +1,215 @@
+{
+  "schemaVersion": "2",
+  "name": "What a line's words hide is still seen (PERMISSIONS-7, 8)",
+  "version": "1.0.0",
+  "description": "In Sandbox, printenv of one name runs, but a redirect isn't an argument (printenv 2>&1 prints every variable and asks), $'…' is a quote that can't hide a printenv behind it, and a shift in $[ ] doesn't hide the curl on the next line.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/permission"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ASKS: [{\"tool\": \"Bash\", \"input\": {\"command\": \"printenv HOME\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"printenv 2>&1\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"echo $'\\\\'' ; printenv ; echo ''\"}}, {\"tool\": \"Bash\", \"input\": {\"command\": \"echo $[1<<2]\\ncurl https://example.com/y\"}}]",
+            "mode": "sandbox"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "s-0-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "printenv 2>&1"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-7"
+        ]
+      }
+    },
+    {
+      "id": "s-0-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/permission",
+        "body": {
+          "id": "${state.s-0-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "s-1-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "echo $'\\'' ; printenv ; echo ''"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-7"
+        ]
+      }
+    },
+    {
+      "id": "s-1-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/permission",
+        "body": {
+          "id": "${state.s-1-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "s-2-asks",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "permission.detail": "echo $[1<<2]\ncurl https://example.com/y"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-8"
+        ]
+      }
+    },
+    {
+      "id": "s-2-no",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/permission",
+        "body": {
+          "id": "${state.s-2-asks.body.permission.id}",
+          "decision": "deny"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "s-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "permissions-7-one-name-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "answered": {
+              "$any": {
+                "detail": "printenv HOME",
+                "decision": "allowed"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PERMISSIONS-7"
+        ]
+      }
+    }
+  ]
+}

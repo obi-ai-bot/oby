@@ -451,8 +451,8 @@ impl Jobs {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
                 }
                 if own {
-                    let settings = codex::own::policy(Self::mode_of(job)).settings();
-                    argv.splice(1..1, settings.map(OsString::from));
+                    let settings = self.own_codex_policy(Self::mode_of(job)).settings();
+                    argv.splice(1..1, settings.into_iter().map(OsString::from));
                     // Codex may ask nobody (Bypass): Oby's own tools are approved (LANES-21).
                     if broker.is_some() {
                         argv.splice(1..1, codex::OWN_OBY_TOOLS.map(OsString::from));
@@ -784,7 +784,7 @@ impl Jobs {
     /// comes back `looped`.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn turn(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         tool: Tool,
         launch: Launch,
@@ -835,7 +835,7 @@ impl Jobs {
     /// [`Jobs::turn`], without the record.
     #[allow(clippy::too_many_arguments)]
     async fn unrecorded_turn(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         tool: Tool,
         launch: Launch,
@@ -940,6 +940,10 @@ impl Jobs {
         // activity once a second and at the turn's end, never once per step: a step reaches the
         // window within a second, and a crash loses at most that second of them, never a status.
         let stepped: Mutex<Option<Stepped>> = Mutex::default();
+        // The step this turn's saves last wrote: a step kept while a save was under way was
+        // started from the job before that save landed, and the agent's own step since is still
+        // the agent's, never obid's newer one (#2760).
+        let written: Arc<Mutex<Option<String>>> = Arc::default();
         let on_event = |event: AgentEvent| {
             let entries = jobs
                 .transcripts
@@ -997,6 +1001,9 @@ impl Jobs {
                         &stepped,
                         || jobs.get(id),
                         |kept| {
+                            if new_attempt(&step) {
+                                kept.attempts.push(step.clone());
+                            }
                             kept.step = Some(step);
                             kept.ran = ran.or(kept.ran);
                         },
@@ -1064,30 +1071,31 @@ impl Jobs {
                     let chatgpt = self
                         .job_account(&job)
                         .is_ok_and(|(_, account)| crate::chatgpt::marker_of(&account).is_some());
-                    let options =
-                        codex::Options {
-                            resume: job.session.clone(),
-                            model: Some(job.model.clone().unwrap_or_else(|| {
-                                crate::settings::default_model(tool).to_owned()
-                            })),
-                            effort: job.effort.clone(),
-                            plan,
-                            instructions: (!obi_review).then(|| standing_rules(&job)).flatten(),
-                            no_commands: false,
-                            usage: !chatgpt,
-                            priced: if chatgpt {
-                                Some("plan".into())
-                            } else {
-                                self.usage.get(&job.account).priced
-                            },
-                            chatgpt,
-                            // An own run's threads are held to its mode's settings (LANES-18),
-                            // the mode it launched in (`Job::own_mode`).
-                            own: own.then(|| {
-                                let launched = job.own_mode.as_deref().and_then(Mode::parse);
-                                codex::own::policy(launched.unwrap_or_else(|| Self::mode_of(&job)))
-                            }),
-                        };
+                    let options = codex::Options {
+                        resume: job.session.clone(),
+                        model: Some(
+                            job.model
+                                .clone()
+                                .unwrap_or_else(|| crate::settings::default_model(tool).to_owned()),
+                        ),
+                        effort: job.effort.clone(),
+                        plan,
+                        instructions: (!obi_review).then(|| standing_rules(&job)).flatten(),
+                        no_commands: false,
+                        usage: !chatgpt,
+                        priced: if chatgpt {
+                            Some("plan".into())
+                        } else {
+                            self.usage.get(&job.account).priced
+                        },
+                        chatgpt,
+                        // An own run's threads are held to its mode's settings (LANES-18),
+                        // the mode it launched in (`Job::own_mode`).
+                        own: own.then(|| {
+                            let launched = job.own_mode.as_deref().and_then(Mode::parse);
+                            self.own_codex_policy(launched.unwrap_or_else(|| Self::mode_of(&job)))
+                        }),
+                    };
                     // The owner's words go into its turn as they come, as `turn/steer`, and those
                     // that come as it ends are its thread's next turn, in the same server
                     // (crate::steer, TASKCONV-36, 37).
@@ -1152,6 +1160,11 @@ impl Jobs {
         let mut activity =
             tokio::time::interval_at(tokio::time::Instant::now() + ACTIVITY_EVERY, ACTIVITY_EVERY);
         activity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The save under way, off this task: it writes the job to disk under the jobs lock, which
+        // a slow disk can hold for a second or more, and the agent's lines go on being read
+        // meanwhile (RECOVERY-6, #2760). One at a time: what comes while one is under way waits
+        // for the next.
+        let mut saving: Option<tokio::task::JoinHandle<()>> = None;
         let ran = loop {
             tokio::select! {
                 ran = &mut run => break ran,
@@ -1159,8 +1172,14 @@ impl Jobs {
                     self.transcribed(id, self.transcripts.tick(id, spill_temp.as_deref()));
                 }
                 _ = activity.tick() => {
-                    self.stepped(id, &stepped);
-                    self.glanced(id);
+                    if saving.as_ref().is_none_or(tokio::task::JoinHandle::is_finished) {
+                        let held = stepped.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        let (jobs, job, wrote) = (self.clone(), id.to_owned(), written.clone());
+                        saving = Some(tokio::task::spawn_blocking(move || {
+                            jobs.save_stepped(&job, held, &wrote);
+                            jobs.glanced(&job);
+                        }));
+                    }
                     // A call of its agent's that waits for the owner past `parkAfter` parks it.
                     if parks {
                         self.park(id);
@@ -1172,7 +1191,15 @@ impl Jobs {
             }
         };
         self.transcribed(id, self.transcripts.end_turn(id));
-        self.stepped(id, &stepped);
+        // The last save, after the one under way, so nothing older writes over it.
+        if let Some(saving) = saving {
+            let _ = saving.await;
+        }
+        self.save_stepped(
+            id,
+            stepped.lock().unwrap_or_else(|e| e.into_inner()).take(),
+            &written,
+        );
         self.glanced(id);
         self.transcripts.forget(id);
         forward.abort();
@@ -1310,7 +1337,7 @@ impl Jobs {
     /// Its branch and worktree stay; nothing is published.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn stall(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         why: Stall,
         tool: Tool,
@@ -1457,23 +1484,49 @@ impl Jobs {
     /// Saves the agent's latest step and the run's time so far, kept since the last save
     /// (`stepped`), in one write and one `job` event: at most once a second while it works. A step
     /// obid set since the first of them is newer, and stays.
-    fn stepped(&self, id: &str, stepped: &Mutex<Option<Stepped>>) {
+    /// Saves what the agent did since the last save ([`Stepped`]): each of its own tries first,
+    /// one write each (RECOVERY-6, LIVETASK-37), then its latest step, call and time. `written` is
+    /// the step this turn's saves last wrote, which a step kept before it landed may not know.
+    fn save_stepped(&self, id: &str, held: Option<Stepped>, written: &Mutex<Option<String>>) {
         let Some(Stepped {
             step,
             doing,
             ran,
-            before,
-        }) = stepped.lock().unwrap_or_else(|e| e.into_inner()).take()
+            mut before,
+            attempts,
+        }) = held
         else {
             return;
         };
-        self.update(id, |job| {
-            // What it asked with `oby_ask_owner` waits on the owner (PERMISSIONS-22).
-            if let Some(step) = step
-                && job.step == before
+        // The job's step is still the agent's: as it was when this was kept, or as this turn's
+        // saves last wrote it. What it asked with `oby_ask_owner` waits on the owner (PERMISSIONS-22).
+        let last = || written.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let free = |job: &crate::job::Job, before: &str| {
+            (job.step == before || last().as_deref() == Some(job.step.as_str()))
                 && !job.question_call.as_ref().is_some_and(|c| c.ended_turn)
+        };
+        let wrote =
+            |step: &str| *written.lock().unwrap_or_else(|e| e.into_inner()) = Some(step.to_owned());
+        for attempt in attempts {
+            let saved = self.update(id, |job| {
+                if free(job, &before) {
+                    job.step = attempt.clone();
+                }
+            });
+            match saved {
+                Some(job) if job.step == attempt => {
+                    wrote(&attempt);
+                    before = attempt;
+                }
+                // A step obid set meanwhile is newer: the tries that follow don't write over it.
+                _ => break,
+            }
+        }
+        let saved = self.update(id, |job| {
+            if let Some(step) = step.as_ref()
+                && free(job, &before)
             {
-                job.step = step;
+                job.step = step.clone();
             }
             if doing.is_some() {
                 job.doing = doing;
@@ -1483,6 +1536,11 @@ impl Jobs {
                 job.ran_secs = ran;
             }
         });
+        if let (Some(step), Some(job)) = (step, saved)
+            && job.step == step
+        {
+            wrote(&step);
+        }
     }
 
     fn glanced(&self, id: &str) {
@@ -1517,6 +1575,16 @@ struct Stepped {
     doing: Option<String>,
     ran: Option<u64>,
     before: String,
+    /// Each step since the last save that carries a new try of the agent's own
+    /// ([`new_attempt`]), in order: every one is saved, so each try shows (RECOVERY-6).
+    attempts: Vec<String>,
+}
+
+/// Whether `step` is one of the agent's own tries ([`crate::jobs::trying_again`], RECOVERY-6):
+/// each carries a new attempt number, and each is saved as its own write, never folded into the
+/// next once-a-second save's latest step (LIVETASK-37, #2763).
+fn new_attempt(step: &str) -> bool {
+    step.starts_with("Trying again in ")
 }
 
 impl Stepped {
@@ -1534,5 +1602,22 @@ impl Stepped {
         });
         change(&mut held);
         *kept.lock().unwrap_or_else(|e| e.into_inner()) = Some(held);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RECOVERY-6, LIVETASK-37: every step `trying_again` makes is a new try of the agent's own,
+    /// saved as its own write; obid's own "Trying again now" and an ordinary step aren't (#2763).
+    #[test]
+    fn recovery_6_each_of_the_agents_own_tries_is_saved() {
+        for attempt in 1..=10 {
+            let step = crate::jobs::trying_again("overloaded", Duration::from_secs(8), attempt, 10);
+            assert!(new_attempt(&step), "{step}");
+        }
+        assert!(!new_attempt("Trying again now (1 of 5)"));
+        assert!(!new_attempt("Running ls"));
     }
 }

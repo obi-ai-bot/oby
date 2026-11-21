@@ -1,0 +1,322 @@
+{
+  "schemaVersion": "2",
+  "name": "A Fix CI task names the pull request it pushed onto (AUTOFIX-20)",
+  "version": "1.0.0",
+  "description": "Fix CI on the owner's own red pull request pushes onto its branch, and the task's publish stage says it pushed onto that pull request, never that the remote has none.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1",
+          "OBID_RERUN_SETTLE_SECONDS": "0"
+        },
+        "person": {
+          "github/work.json": {
+            "data": {
+              "reviews": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "assigned": {
+                "issueCount": 0,
+                "nodes": []
+              },
+              "mine": {
+                "issueCount": 1,
+                "nodes": [
+                  {
+                    "number": 5,
+                    "title": "Thing 5",
+                    "updatedAt": "2026-10-18T08:05:00Z",
+                    "state": "OPEN",
+                    "author": {
+                      "login": "sangam"
+                    },
+                    "repository": {
+                      "nameWithOwner": "obi-e2e/fixture-app"
+                    },
+                    "labels": {
+                      "nodes": [
+                        {
+                          "name": "bug"
+                        }
+                      ]
+                    },
+                    "isDraft": false,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "commits": {
+                      "nodes": [
+                        {
+                          "commit": {
+                            "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "statusCheckRollup": {
+                              "state": "SUCCESS"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isCrossRepository": false
+                  }
+                ]
+              },
+              "rateLimit": {
+                "remaining": 4900,
+                "resetAt": "2030-10-18T10:00:00Z"
+              },
+              "viewer": {
+                "login": "alex"
+              }
+            }
+          },
+          "github/view.json": {
+            "title": "Login fix",
+            "body": "COMMIT: fixed.txt",
+            "author": {
+              "login": "alex"
+            },
+            "labels": [],
+            "comments": [],
+            "headRefName": "fix-login",
+            "isCrossRepository": false,
+            "statusCheckRollup": [
+              {
+                "__typename": "StatusContext",
+                "context": "ci/test",
+                "state": "FAILURE"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "branch",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "branch",
+          "fix-login",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "pull-ref",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "args": [
+          "update-ref",
+          "refs/pull/5/head",
+          "fix-login"
+        ]
+      }
+    },
+    {
+      "id": "green-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "now-red",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "github/work.json",
+        "content": {
+          "data": {
+            "reviews": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "assigned": {
+              "issueCount": 0,
+              "nodes": []
+            },
+            "mine": {
+              "issueCount": 1,
+              "nodes": [
+                {
+                  "number": 5,
+                  "title": "Thing 5",
+                  "updatedAt": "2026-10-18T08:05:00Z",
+                  "state": "OPEN",
+                  "author": {
+                    "login": "sangam"
+                  },
+                  "repository": {
+                    "nameWithOwner": "obi-e2e/fixture-app"
+                  },
+                  "labels": {
+                    "nodes": [
+                      {
+                        "name": "bug"
+                      }
+                    ]
+                  },
+                  "isDraft": false,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": {
+                    "nodes": [
+                      {
+                        "commit": {
+                          "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                          "statusCheckRollup": {
+                            "state": "FAILURE"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isCrossRepository": false
+                }
+              ]
+            },
+            "rateLimit": {
+              "remaining": 4900,
+              "resetAt": "2030-10-18T10:00:00Z"
+            },
+            "viewer": {
+              "login": "alex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "red",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/refresh",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/github/work",
+        "pick": {
+          "from": "mine",
+          "where": {
+            "number": 5
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "started",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/github/work/${state.work.picked.id}/start",
+        "expect": {
+          "status": 201,
+          "body": {
+            "kind": "fix",
+            "pr": 5
+          }
+        }
+      }
+    },
+    {
+      "id": "pushed-onto-its-branch",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "pushed": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "autofix-20-the-publish-stage-names-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "pipeline.stages": {
+              "$any": {
+                "id": "publish",
+                "detail": "Secret scan clean · pushed onto pull request #5"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AUTOFIX-20"
+        ]
+      }
+    },
+    {
+      "id": "autofix-20-never-no-pull-request",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.started.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "pipeline.stages": {
+              "$any": {
+                "id": "publish",
+                "detail": {
+                  "$not": {
+                    "$contains": "no pull request"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "AUTOFIX-20"
+        ]
+      }
+    }
+  ]
+}

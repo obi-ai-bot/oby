@@ -56,10 +56,9 @@ fn workflows_dir() -> PathBuf {
         .unwrap_or_else(|| suite().join("workflows"))
 }
 
+/// scope.json, refused unless it is in its canonical form (`obid-spec fmt-scope` writes it).
 fn scope() -> Result<Value> {
-    Ok(serde_json::from_str(&std::fs::read_to_string(
-        suite().join("scope.json"),
-    )?)?)
+    obid_spec::scope::read(&suite().join("scope.json"))
 }
 
 struct Args {
@@ -161,9 +160,23 @@ async fn run_main() -> Result<i32> {
                 Ok(if report.ok() { 0 } else { 1 })
             }
         }
+        "fmt-scope" => {
+            let path = suite().join("scope.json");
+            let changed = obid_spec::scope::rewrite(&path)?;
+            println!(
+                "{} {}",
+                path.display(),
+                if changed {
+                    "rewritten in its canonical form"
+                } else {
+                    "already canonical"
+                }
+            );
+            Ok(0)
+        }
         "run" => run(a).await,
         _ => {
-            println!("obid-spec run [--only <area>] [--tag <tag>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]\nobid-spec coverage [--only <area>] [--gate]\nobid-spec list\nobid-spec nodes");
+            println!("obid-spec run [--only <area>] [--tag <tag>] [--workflow <text>] [--jobs <n>] [--obid <path>] [--keep]\nobid-spec coverage [--only <area>] [--gate]\nobid-spec fmt-scope\nobid-spec list\nobid-spec nodes");
             Ok(if a.command == "help" { 0 } else { 2 })
         }
     }

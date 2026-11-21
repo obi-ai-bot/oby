@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from 'playwright-core';
-import { chrome, openMock, type Mock } from './layout/mock';
+import { CHROME_HOOK_MS, chrome, openMock, type Mock } from './layout/mock';
 import { measure, say } from './layout/measure';
 
 // What a task did, under its card (docs/contracts/live-task.md, LIVETASK-31), as a person sees it:
@@ -8,7 +8,7 @@ import { measure, say } from './layout/measure';
 // paragraph's own margins on top), and nothing in the log lies on anything
 // else. Every conversation of the mock, at a normal window and a narrow one.
 let browser: Browser | string;
-beforeAll(async () => { browser = await chrome(); });
+beforeAll(async () => { browser = await chrome(); }, CHROME_HOOK_MS);
 afterAll(async () => { if (typeof browser !== 'string') await browser.close(); });
 
 const ci = !!process.env.CI;

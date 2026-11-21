@@ -5,7 +5,7 @@ The business behavior contract for reading what a released obid wrote, from [the
 ## Feature and status
 
 - **Outcome:** Someone who updates Oby keeps every job they had and the configuration they had. `Store::load_all` (`core/crates/obid/src/store.rs`) skips a job file that doesn't read, with one warning in the log, and the job is gone from `GET /v1/jobs` with no other sign: a field renamed or made required in `Job` would do that to every job an earlier release saved. These scenarios fail first.
-- **Status:** RELEASED-1 to 3 are **implemented**: tests that start today's obid on the files of each covered release. Nothing in obid changed.
+- **Status:** Each scenario says whether it's **implemented**: tests that start today's obid on the files of each covered release. Nothing in obid changed.
 - **Scope:** Tags v0.4.1, v0.4.2, v0.4.3, v0.4.4 and v0.4.5, each with three job files (done, failed, waiting), a `config.json` and the accounts' `usage.json` that keeps the waiting job waiting, in `core/crates/obid/tests/fixtures/released/<tag>/`. Out of scope: the home's schema version and an inbox item for a job that doesn't read (#923); tags before v0.4.1; other stored files (conversations, routines, the inbox, accounts' state, permissions) as things to prove; any API change.
 
 ## Behavior

@@ -698,8 +698,11 @@ describe('T3: a real shell', () => {
     const want = Buffer.from(paste);
     const { t, text } = real();
     const term = started(t, dir);
-    t.write(term, `stty raw -echo; head -c ${want.length} > got.bin; stty sane; echo GO""T\r`);
-    await new Promise((r) => setTimeout(r, 300));
+    // pasted once the terminal is raw (READY comes after `stty raw`), never after a guessed time: on a
+    // busy machine the shell may not have gone raw yet, and the paste would be cooked or read by bash
+    // (#2769); bytes in before `head` reads wait in the raw terminal's queue
+    t.write(term, `stty raw -echo; printf RE""ADY; head -c ${want.length} > got.bin; stty sane; echo GO""T\r`);
+    await until(() => /READY/.test(text()));
     t.write(term, paste);
     await until(() => /GOT/.test(text()), 20_000);
     const { readFileSync } = await import('node:fs');

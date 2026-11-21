@@ -3469,6 +3469,50 @@ fn delivery_4_a_failed_turn_says_why_with_no_secret() {
     assert!(error.contains("[redacted:"), "{error}");
 }
 
+/// DELIVERY-12: obid killed mid-turn (a crash, SIGKILL) leaves the conversation's agent running,
+/// its group recorded in obid's home as a job's agent's is; the next start ends it, so no agent
+/// carries on with a turn the conversation says was cut (#2739).
+#[test]
+fn delivery_12_a_restart_ends_the_conversation_agent_a_killed_obid_left_running() {
+    let folder = Folder::new("delivery-12");
+    let mut obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plan_cut_short(&obid, json!({"said": "LINGER 60000", "conversation": id}));
+    reads(&obid, &id, "LINGER 60000", "running");
+    let records = obid.home.join("jobs/groups");
+    let pgid = within(30, "the conversation agent's group is recorded", || {
+        std::fs::read_dir(&records)
+            .ok()?
+            .flatten()
+            .filter_map(|e| {
+                serde_json::from_slice::<serde_json::Value>(&std::fs::read(e.path()).ok()?).ok()
+            })
+            .find(|r| r["job"] == format!("conversation {id}"))
+            .and_then(|r| r["pgid"].as_u64())
+    });
+    // `kill -0 -<pgid>`: whether anything of that group still runs.
+    let alive = |pgid: u64| {
+        std::process::Command::new("kill")
+            .args(["-0", "--", &format!("-{pgid}")])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    obid.child.kill().unwrap();
+    let _ = obid.child.wait();
+    assert!(alive(pgid), "the agent outlived obid, as the bug needs");
+    drop(obid);
+    let config =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    let _obid = start(&folder.0, &config, None);
+    within(30, "the next start ends what the killed obid left", || {
+        (!alive(pgid)).then_some(())
+    });
+}
+
 /// Sends `body` to `POST /v1/plans` on a thread of its own and never reads its answer: a request
 /// obid's stop cuts short.
 fn plan_cut_short(obid: &Obid, body: serde_json::Value) {

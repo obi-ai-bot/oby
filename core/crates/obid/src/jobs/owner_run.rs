@@ -1068,6 +1068,7 @@ impl Jobs {
                     self.update(id, |job| {
                         job.recovery.errors = 0;
                         job.recovery.stalls = 0;
+                        job.recovery.wrote = false;
                     });
                 }
                 if turn.over_budget {
@@ -1081,9 +1082,15 @@ impl Jobs {
                         return Err(stall(Stall::Ceiling).await);
                     }
                     // RECOVERY-3: stopped and continued in its session, no model asked; idle,
-                    // twice at most (RECOVERY-12).
+                    // twice at most (RECOVERY-12). A job one of whose runs in a row went quiet
+                    // still writing keeps RECOVERY-3's tries: a later window a slow disk held
+                    // (the writer blocked, saying and using nothing) isn't the agent hung (#2761).
                     let text = Stall::Quiet.text(&self.config);
-                    let tries = if turn.idle { IDLE_TRIES } else { STALL_TRIES };
+                    if !turn.idle {
+                        self.update(id, |job| job.recovery.wrote = true);
+                    }
+                    let wrote = self.get(id).is_some_and(|job| job.recovery.wrote);
+                    let tries = if wrote { STALL_TRIES } else { IDLE_TRIES };
                     let Some(next) = self.stall_try(id, &text, tries) else {
                         return Err(stall(Stall::Quiet).await);
                     };
@@ -1270,6 +1277,7 @@ impl Jobs {
                     job.recovery.sent = None;
                     job.recovery.errors = 0;
                     job.recovery.stalls = 0;
+                    job.recovery.wrote = false;
                     // A turn that said nothing (its last message a tool call, say) keeps the
                     // earlier round's summary and adds no empty one to the rounds' (#764).
                     if said.trim().is_empty() {

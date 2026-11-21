@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from 'playwright-core';
-import { chrome, openMock, type Mock } from './layout/mock';
+import { CHROME_HOOK_MS, chrome, openMock, type Mock } from './layout/mock';
 import { measure, say } from './layout/measure';
 
 // The side panel as a person sees it: New conversation's ⌘N tip (docs/contracts/shortcuts.md, SHORTCUTS-6)
 // holds no room while hidden, so the row reads whole, and no control in the panel lies on another, from a
 // normal window down to the narrowest that still docks it (892px, 252px wide: chat-first.md, CHATFIRST-35).
 let browser: Browser | string;
-beforeAll(async () => { browser = await chrome(); });
+beforeAll(async () => { browser = await chrome(); }, CHROME_HOOK_MS);
 afterAll(async () => { if (typeof browser !== 'string') await browser.close(); });
 
 const ci = !!process.env.CI;

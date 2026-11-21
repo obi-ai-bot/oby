@@ -1,0 +1,163 @@
+{
+  "schemaVersion": "2",
+  "name": "A job waits out its limits as many times as it takes (LIMITS-9, 11)",
+  "version": "1.0.0",
+  "description": "A job whose account is still full when its wait ends gets a new wait, counted on the job, with no try spent and no card.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "investigate",
+            "task": "LIMITED AGAIN: 1"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "first-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued"
+          },
+          "paths": {
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-11-a-new-wait-at-its-time",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "accountLimit": null
+          },
+          "paths": {
+            "resumesAt": {
+              "$ne": "${state.first-wait.body.resumesAt}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-11"
+        ]
+      }
+    },
+    {
+      "id": "limits-9-each-wait-counted-no-try",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.t.body.id}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.limitResumes": {
+                "$oneOf": [
+                  1,
+                  2
+                ]
+              },
+              "recovery.tries": {
+                "$oneOf": [
+                  0,
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-9",
+          "LIMITS-11"
+        ]
+      }
+    },
+    {
+      "id": "limits-9-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-9"
+        ]
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

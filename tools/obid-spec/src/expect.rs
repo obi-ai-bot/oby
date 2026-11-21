@@ -26,9 +26,68 @@ pub fn check_status(expected: &Value, status: u16) -> Option<String> {
     (!ok).then(|| format!("status {status}, expected {expected}"))
 }
 
-/// Every way `actual` falls short of `expect` (`body`, `paths`, `text`); none when it doesn't.
+/// Every top-level key an `expect` may have, whichever node reads it: an answer's `status`, the
+/// subset `body`, `paths` and `text` (this file), a home file's `exists`, `mode` and `json`.
+pub const KEYS: &[&str] = &["status", "body", "paths", "text", "exists", "mode", "json"];
+
+/// `expect` as the node `node` reads it: an object whose top-level keys are among `judged`, the
+/// keys that node judges. Any other key would be skipped in silence and the step pass asserting
+/// nothing of it, so it's an error naming the key, the node and what it judges.
+pub fn judged_by(node: &str, expect: &Value, judged: &[&str]) -> Result<(), String> {
+    let Some(map) = expect.as_object() else {
+        return Err(format!(
+            "expect must be an object, not {expect}: {node} judges {}",
+            list(judged)
+        ));
+    };
+    if judged.is_empty() {
+        return Err(format!(
+            "{node} takes no expect, so this one would assert nothing: check its answer in a check step (a node that does read one names its keys in nodes::judges)"
+        ));
+    }
+    let unknown: Vec<&str> = map
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !judged.contains(k))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let hint = unknown
+        .iter()
+        .map(|k| format!("\"paths\": {{\"{k}\": …}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "expect has {} {} that {node} doesn't judge, so it would assert nothing: {node} judges {}; to assert a field of its answer, write {hint}",
+        if unknown.len() == 1 { "a key" } else { "keys" },
+        list(&unknown),
+        list(judged),
+    ))
+}
+
+fn list(keys: &[&str]) -> String {
+    keys.iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Every way `actual` falls short of `expect` (`body`, `paths`, `text`); none when it doesn't. A
+/// key no node reads (not in [`KEYS`]) is a failure too, so a nested expectation (`until`'s) can't
+/// skip one in silence either.
 pub fn check(expect: &Value, actual: &Value, text: &str) -> Vec<String> {
     let mut failures = vec![];
+    if let Some(map) = expect.as_object() {
+        for k in map.keys().filter(|k| !KEYS.contains(&k.as_str())) {
+            failures.push(format!(
+                "expect has a key `{k}` nothing reads (it reads {}): write \"paths\": {{\"{k}\": …}}",
+                list(KEYS)
+            ));
+        }
+    } else if !expect.is_null() {
+        failures.push(format!("expect must be an object, not {expect}"));
+    }
     if let Some(body) = expect.get("body") {
         matches("body", body, actual, &mut failures);
     }
@@ -216,6 +275,32 @@ pub fn matches(path: &str, want: &Value, got: &Value, failures: &mut Vec<String>
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn obidspec_6_a_key_no_node_reads_is_a_failure_never_skipped() {
+        let got = json!({"count": 1});
+        let f = check(&json!({"count": 0}), &got, "");
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].contains("`count`") && f[0].contains("paths"), "{f:?}");
+        assert!(!check(&json!([0]), &got, "").is_empty());
+        assert!(check(&json!({"paths": {"count": 1}}), &got, "").is_empty());
+        assert!(check(&Value::Null, &got, "").is_empty());
+    }
+
+    #[test]
+    fn obidspec_6_a_node_judges_only_its_own_keys() {
+        let value = ["body", "paths", "text"];
+        assert!(judged_by("lab.x", &json!({"paths": {"status": 200}}), &value).is_ok());
+        let e = judged_by("lab.x", &json!({"status": 200, "paths": {}}), &value).unwrap_err();
+        assert!(
+            e.contains("`status`") && e.contains("lab.x") && e.contains("\"paths\": {\"status\""),
+            "{e}"
+        );
+        assert!(judged_by("t3.fs", &json!({"paths": {}}), &[])
+            .unwrap_err()
+            .contains("takes no expect"));
+        assert!(judged_by("call", &json!("200"), &value).is_err());
+    }
 
     #[test]
     fn a_subset_matches_and_a_wrong_value_says_where() {
