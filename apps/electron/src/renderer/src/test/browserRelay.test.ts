@@ -221,11 +221,20 @@ describe('BROWSERAPP-28: Page.navigate goes only to a page of the web', () => {
       const host = relayHost(o.post, { home: HOME });
       const g = fakeGuest();
       host.attach(K, g);
-      const urls = ['http://localhost:5175/', 'http://localhost:5175/#/settings', 'http://LOCALHOST:5175/index.html', 'http://127.0.0.1:5175/', 'http://[::1]:5175/', 'http://localhost:3000/'];
-      urls.forEach((url, i) => host.command(cdp(i + 1, 'Page.navigate', { url })));
-      for (let i = 0; i < 12; i++) await settle();
-      expect(replies(o.all()).map((r) => [r.id, r.error?.code])).toEqual([[1, -32601], [2, -32601], [3, -32601], [4, -32601], [5, -32601], [6, undefined]]);
-      expect(g.sent).toEqual([{ method: 'Page.navigate', params: { url: 'http://localhost:3000/' } }]);
+      // every loopback host on the dev server's port: Chromium sends any *.localhost name to loopback too
+      const refused = [
+        'http://localhost:5175/', 'http://localhost:5175/#/settings', 'http://LOCALHOST:5175/index.html', 'https://localhost:5175/',
+        'http://app.localhost:5175/', 'http://a.b.localhost:5175/', 'http://localhost.:5175/', 'http://APP.LocalHost.:5175/',
+        'http://127.0.0.1:5175/', 'http://127.1:5175/', 'http://0x7f000001:5175/', 'http://127.255.255.254:5175/', 'http://0.0.0.0:5175/', 'http://0:5175/',
+        'http://[::1]:5175/', 'http://[0:0:0:0:0:0:0:1]:5175/', 'http://[::]:5175/', 'http://[::ffff:127.0.0.1]:5175/', 'http://[::ffff:7f00:1]:5175/', 'http://[::ffff:0.0.0.0]:5175/',
+      ];
+      // another port on loopback, or the same port on another host, is another server
+      const kept = ['http://localhost:3000/', 'http://127.0.0.1:5176/', 'http://localhost.example.com:5175/', 'http://notlocalhost:5175/', 'http://128.0.0.1:5175/', 'http://[::2]:5175/'];
+      [...refused, ...kept].forEach((url, i) => host.command(cdp(i + 1, 'Page.navigate', { url })));
+      for (let i = 0; i < 30; i++) await settle();
+      const answered = new Map(replies(o.all()).map((r) => [r.id, r.error?.code]));
+      expect([...refused, ...kept].map((url, i) => [url, answered.get(i + 1)])).toEqual([...refused.map((u) => [u, -32601]), ...kept.map((u) => [u, undefined])]);
+      expect(g.sent.map((s) => s.params?.url)).toEqual(kept);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -247,44 +256,70 @@ describe('BROWSERAPP-28: Page.navigate goes only to a page of the web', () => {
 // its test items; one right after `==` is an event it listens for, any other a method it sends. A CDP
 // call (`send`/`cdp` on a tab) whose method isn't a literal can't be read, and is listed as such.
 // ponytail: a scanner of Rust's strings, chars and comments only, not a parser; enough for obid's style
+// where the token at `i` of `text` ends, when it's a string, raw string, char or comment (else `i`)
+function skip(text: string, i: number): number {
+  const raw = /^b?r(#*)"/.exec(text.slice(i, i + 260));
+  if (raw && (i === 0 || !/\w/.test(text[i - 1]))) { const end = text.indexOf(`"${raw[1]}`, i + raw[0].length); return end < 0 ? text.length : end + 1 + raw[1].length; }
+  if (text[i] === '"') { let j = i + 1; while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1; return j + 1; }
+  const ch = /^'(\\.[^']*|[^\\'])'/.exec(text.slice(i, i + 12));
+  if (ch) return i + ch[0].length;
+  if (text.startsWith('//', i)) { const end = text.indexOf('\n', i); return end < 0 ? text.length : end; }
+  if (text.startsWith('/*', i)) { const end = text.indexOf('*/', i + 2); return end < 0 ? text.length : end + 2; }
+  return i;
+}
+// from `i`, where the item there ends: after its `;`, or its `{` and the `}` that closes it
+function itemEnd(text: string, i: number): number {
+  let depth = 0;
+  while (i < text.length) {
+    const j = skip(text, i);
+    if (j !== i) { i = j; continue; }
+    const c = text[i++];
+    if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) break;
+    else if (c === ';' && depth === 0) break;
+  }
+  return i;
+}
+// the top-level arguments of the call whose `(` is at `open`, trimmed
+function args(text: string, open: number): string[] {
+  const out: string[] = [];
+  let depth = 0, from = open + 1, i = open;
+  while (i < text.length) {
+    const j = skip(text, i);
+    if (j !== i) { i = j; continue; }
+    const c = text[i++];
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c) && --depth === 0) { out.push(text.slice(from, i - 1)); break; }
+    else if (c === ',' && depth === 1) { out.push(text.slice(from, i - 1)); from = i; }
+  }
+  return out.map((a) => a.trim()).filter((a) => a !== '');
+}
 function withoutTests(text: string) {
-  // where the token at `i` ends, when it's a string, raw string, char or comment
-  const skip = (i: number): number => {
-    const raw = /^b?r(#*)"/.exec(text.slice(i, i + 260));
-    if (raw && (i === 0 || !/\w/.test(text[i - 1]))) { const end = text.indexOf(`"${raw[1]}`, i + raw[0].length); return end < 0 ? text.length : end + 1 + raw[1].length; }
-    if (text[i] === '"') { let j = i + 1; while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1; return j + 1; }
-    const ch = /^'(\\.[^']*|[^\\'])'/.exec(text.slice(i, i + 12));
-    if (ch) return i + ch[0].length;
-    if (text.startsWith('//', i)) { const end = text.indexOf('\n', i); return end < 0 ? text.length : end; }
-    if (text.startsWith('/*', i)) { const end = text.indexOf('*/', i + 2); return end < 0 ? text.length : end + 2; }
-    return i;
-  };
   let out = '', from = 0;
   for (const m of text.matchAll(/#\[cfg\(test\)\]/g)) {
     if (m.index! < from) continue;
-    // the item the attribute is on: up to its `;`, or its `{` and the `}` that closes it
-    let i = m.index! + m[0].length, depth = 0;
-    while (i < text.length) {
-      const j = skip(i);
-      if (j !== i) { i = j; continue; }
-      const c = text[i++];
-      if (c === '{') depth++;
-      else if (c === '}' && --depth === 0) break;
-      else if (c === ';' && depth === 0) break;
-    }
     out += text.slice(from, m.index);
-    from = i;
+    from = itemEnd(text, m.index! + m[0].length);
   }
   return out + text.slice(from);
 }
+// Page::send, the one place obid's browser hands a method on that it was given (page.rs): every other
+// CDP call names its method as a literal
+const FORWARD = { file: join('window', 'page.rs'), fn: 'async fn send(&self, tab: &str, method: &str, params: Value, until: Until) -> Step<Value> {', call: 'self.relay.cdp(tab, method, params, until.left())' };
 function obidSends(files: { name: string; text: string }[]) {
   const sent = new Set<string>(), events = new Set<string>(), unread: string[] = [];
   for (const { name, text } of files) {
     const code = withoutTests(text);
     for (const m of code.matchAll(/(==\s*)?"([A-Z][A-Za-z]*\.[a-z][A-Za-z]*)"/g)) (m[1] ? events : sent).add(m[2]);
-    // a CDP call on a tab: its method must be a literal, but in Page::send, which forwards its own
-    for (const m of code.matchAll(/\.(?:send|cdp)\(\s*&?\w+\s*,\s*([^,]+?)\s*,/g)) {
-      if (!/^"[^"]*"$/.test(m[1]) && !(name === join('window', 'page.rs') && m[0] === '.cdp(tab, method,')) unread.push(`${name}: ${m[0]}`);
+    // Page::send's body, if this is its file (the signature appears once)
+    const fn = name === FORWARD.file ? code.indexOf(FORWARD.fn) : -1;
+    const body = fn < 0 ? [0, 0] : [fn, itemEnd(code, fn)];
+    // a CDP call is a `send` or `cdp` with a tab and a method (a channel's `send` takes one value)
+    for (const m of code.matchAll(/\.(send|cdp)\s*\(/g)) {
+      const open = m.index! + m[0].length - 1, a = args(code, open);
+      if (a.length < 2 || /^"[^"]*"$/.test(a[1])) continue;
+      const forward = m.index! > body[0] && m.index! < body[1] && `${code.slice(m.index! - 'self.relay'.length, m.index!)}.${m[1]}(${a.join(', ')})` === FORWARD.call;
+      if (!forward) unread.push(`${name}: .${m[1]}(${a.join(', ')})`);
     }
   }
   return { sent, events, unread };
@@ -316,12 +351,18 @@ describe('BROWSERAPP-29: the methods main runs are the ones obid sends', () => {
     expect(obidSends([relay]).sent.has('DOM.focus')).toBe(false);
   });
 
-  it('browserapp_29: a CDP call whose method is built at run time is listed as unread, so the drift test fails', () => {
+  it('browserapp_29: a CDP call whose method isn\'t a literal is listed as unread, however its tab is passed; Page::send\'s own forward is the one exempt, and only where it is', () => {
     const sources = browserSources();
     const page = sources.find((f) => f.name === join('window', 'page.rs'))!;
-    const built = { ...page, text: `${page.text}\nimpl WindowDriver {\n    async fn built(&self, tab: &str, m: &str, until: Until) {\n        let _ = self.send(\n            tab,\n            &format!("Network.{m}"),\n            json!({}),\n            until,\n        ).await;\n    }\n}\n` };
-    const { unread } = obidSends(sources.map((f) => (f === page ? built : f)));
-    expect(unread).toEqual([expect.stringContaining('format!')]);
+    const added = (rust: string) => obidSends(sources.map((f) => (f === page ? { ...f, text: `${f.text}\nimpl WindowDriver {\n${rust}\n}\n` } : f))).unread;
+    for (const call of [
+      'self.send(tab, &format!("Network.{m}"), json!({}), until)',
+      'self.send(tab.as_str(), &format!("Network.{m}"), json!({}), until)',
+      'self.send(\n            &tabs[0],\n            m,\n            json!({}),\n            until,\n        )',
+      'self.relay.cdp(&self.tab(job)?, METHOD, json!({}), until.left())',
+    ]) expect(added(`    async fn built(&self, tab: &str, m: &str, until: Until) {\n        let _ = ${call}.await;\n    }`), call).toHaveLength(1);
+    // the forward Page::send makes is exempt only inside Page::send itself
+    expect(added('    async fn again(&self, tab: &str, method: &str, params: Value, until: Until) -> Step<Value> {\n        Ok(self.relay.cdp(tab, method, params, until.left()).await?)\n    }')).toHaveLength(1);
   });
 });
 
