@@ -128,6 +128,8 @@ const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, .
 const answers = (t: Turn) => t.who === 'oby' && !t.ended && !t.routine && !folded(t);
 // The cards a turn holds, of a shape this app reads. Any other leaves its turn as words.
 const asksOn = (t: Turn): AskMark[] => (Array.isArray(t.asks) ? t.asks : []).filter((a) => !!a && typeof a.owner === 'string' && typeof a.name === 'string' && typeof a.question === 'string' && typeof a.state === 'string');
+// The artifacts an Oby turn published, by id; any entry of another shape is dropped.
+const artifactsOn = (t: Turn): string[] => (t.who === 'oby' && Array.isArray(t.artifacts) ? t.artifacts : []).flatMap((a) => (!!a && typeof a.id === 'string' ? [a.id] : []));
 // obid's own turn about a question, which its card says instead (only those are relayed with a card)
 const folded = (t: Turn) => !!t.relayed && asksOn(t).length > 0;
 // words this app has on their way in a conversation
@@ -230,7 +232,9 @@ export function chatOf(s: Live, c: Conversation): Chat {
     const jobs = [...t.jobs, ...mine].filter((j) => !carded.has(j) && carded.add(j));
     // the files that went with your words: their tags (a photo's preview while this app has it)
     const files = t.attachments?.map((name) => { const p = s.previews[t.id]?.find((f) => f.name === name); return { name: p?.shown ?? name, preview: p?.preview }; });
-    const message: Message = { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}), ...(t.who === 'oby' && t.fixes?.length ? { fixes: t.fixes } : {}) };
+    const published = artifactsOn(t), reports = t.ended && typeof t.jobs[0] === 'string' ? t.jobs[0] : undefined;
+    const message: Message = { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}), ...(t.who === 'oby' && t.fixes?.length ? { fixes: t.fixes } : {}),
+      ...(published.length ? { artifacts: published } : {}), ...(reports ? { reports } : {}) };
     said.push(message);
     for (const offer of offers.filter((o) => o.id === answer)) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer });
     if (t.who === 'oby') confirm({ who: 'oby', text: '', ago: minutesAgo(t.at) }, t.at);

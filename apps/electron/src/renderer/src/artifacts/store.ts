@@ -1,5 +1,6 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { api, type Artifact } from '../obid';
+import { onObid } from '../lean';
 import type { ArtifactEvent } from '../../../shared/obid-wire';
 
 // The artifact open beside its conversation (docs/contracts/artifacts-app.md, ARTIFACTSAPP-4 to 7):
@@ -18,6 +19,9 @@ let open: Open = null;
 let onView: string | null = null;
 // bumped by each artifact event, so the cards read their conversation's list again
 let seen = 0;
+// the artifacts made or given a version while the window runs and not opened since: their row's New
+// dot (ARTIFACTSAPP-17). The window's own, never obid's or kept on disk
+let fresh: ReadonlySet<string> = new Set();
 const listeners = new Set<() => void>();
 const changed = () => { for (const l of listeners) l(); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
@@ -25,6 +29,7 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => { listener
 const latestOf = (a: Artifact) => a.versions.at(-1)?.version ?? 1;
 export const openArtifact = (artifact: Artifact, version = latestOf(artifact)) => {
   const same = open?.artifact.id === artifact.id;
+  if (fresh.has(artifact.id)) fresh = new Set([...fresh].filter((id) => id !== artifact.id));
   open = { artifact, version, tab: same ? open!.tab : 'preview', edits: same && open!.version === version ? open!.edits : {}, refused: null };
   changed();
 };
@@ -68,10 +73,15 @@ export async function save(): Promise<void> {
   changed();
 }
 export const closeArtifact = () => { if (open) { open = null; changed(); } };
+/** A conversation left: the artifact open beside it goes, unless it's the one now on view's (a row
+ * opened that conversation and its artifact together, ARTIFACTSAPP-17). */
+export const leftConversation = () => { if (!open?.artifact.conversation || open.artifact.conversation !== onView) closeArtifact(); };
 export const showTab = (tab: Tab) => { if (open && open.tab !== tab) { open = { ...open, tab }; changed(); } };
 export const useOpenArtifact = () => useSyncExternalStore(subscribe, () => open);
 /** The artifact events seen so far: a conversation's cards read their list again as it grows. */
 export const useArtifactsSeen = () => useSyncExternalStore(subscribe, () => seen);
+/** The artifacts with a New dot (ARTIFACTSAPP-17). */
+export const useNewArtifacts = () => useSyncExternalStore(subscribe, () => fresh);
 
 /** The conversation on view, or none: an artifact its agent makes opens by itself. */
 export const viewing = (conversation: string | null) => { onView = conversation; };
@@ -87,8 +97,10 @@ export function openArtifactOf(conversation: string): { id: string; version: num
  * new one made in the conversation on view opens. Read again from obid, never taken from the event. */
 export function artifactChanged(e: ArtifactEvent) {
   seen++;
-  changed();
   const mine = open?.artifact.id === e.id;
+  // made, or given a version, while it isn't the one the owner is looking at: New until opened
+  if (typeof e.version === 'number' && !e.renamed && !mine) fresh = new Set([...fresh, e.id]);
+  changed();
   const made = !open && e.version === 1 && !e.renamed && !!e.conversation && e.conversation === onView;
   if (!mine && !made) return;
   void api.artifact(e.id).then((artifact) => {
@@ -107,8 +119,8 @@ export function artifactChanged(e: ArtifactEvent) {
   }, () => {});
 }
 
-// What the card and the pane say a kind is (Sangam's board 1b: "Oby artifact · Canvas · v3")
-const KINDS: Record<string, string> = { html: 'Page', markdown: 'Document', image: 'Picture', pdf: 'PDF', canvas: 'Canvas', design: 'Canvas' };
+// What the card, the pane and the row say a kind is (Sangam's boards 1b and Main: "Oby artifact · Canvas · v3")
+const KINDS: Record<string, string> = { html: 'Page', markdown: 'Document', image: 'Image', pdf: 'PDF', canvas: 'Canvas', design: 'Canvas' };
 export const kindName = (kind: string) => KINDS[kind] ?? 'File';
 
 /** A conversation's artifacts as obid lists them, read again whenever `tick` changes (a task ended,
@@ -124,4 +136,23 @@ export function useConversationArtifacts(conversation: string | null, tick: stri
     return () => { gone = true; };
   }, [conversation, tick, events]);
   return list.of === conversation ? list.artifacts : [];
+}
+
+/** Every artifact obid keeps, by the conversation it's in, for the side panel's rows (ARTIFACTSAPP-17):
+ * one read of the whole list, again at each artifact event, on obid only. A read that fails keeps the
+ * last list. */
+export function useArtifactsByConversation(): ReadonlyMap<string, Artifact[]> {
+  const [all, setAll] = useState<Artifact[]>([]);
+  const events = useArtifactsSeen();
+  useEffect(() => {
+    if (!onObid) return;
+    let gone = false;
+    api.artifacts().then((artifacts) => { if (!gone) setAll(artifacts); }, () => {});
+    return () => { gone = true; };
+  }, [events]);
+  return useMemo(() => {
+    const by = new Map<string, Artifact[]>();
+    for (const a of all) if (a.conversation) by.set(a.conversation, [...(by.get(a.conversation) ?? []), a]);
+    return by;
+  }, [all]);
 }

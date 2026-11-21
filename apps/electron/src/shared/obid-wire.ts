@@ -219,6 +219,9 @@ export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; 
   // obid only (docs/contracts/deliveries.md): where the owner's words stand. status: an open string
   // (queued, starting, running, answered, failed, interrupted, cancelled); read one you don't know as nothing
   delivery?: { status: string; by?: string; why?: string; error?: string };
+  // obid only (docs/api/conversations.md, oby_artifact): on Oby's turn, the artifacts it published; none
+  // from an older obid
+  artifacts?: { id: string; version: number }[];
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number };
 // What the owner can do about a task obid couldn't start on an account (ACCOUNTS-37). action: an open

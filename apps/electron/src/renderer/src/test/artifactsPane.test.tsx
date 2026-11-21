@@ -55,3 +55,35 @@ describe('ARTIFACTSAPP-4', () => {
     expect(host.querySelector('[role="alert"]')!.textContent).toBe('That artifact isn’t there any more.');
   });
 });
+
+describe('ARTIFACTSAPP-15', () => {
+  const show = async (artifact: Artifact) => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<><ArtifactCard artifact={artifact} agent="claude" /><ArtifactPane width={480} /></>));
+    return host;
+  };
+
+  it('artifactsapp_15_the_card_draws_the_frame_its_title_and_what_it_is_with_a_chevron_at_14', async () => {
+    const card = (await show(page)).querySelector('button.art-card')!;
+    const frame = card.querySelector('svg.lucide-frame')!;
+    expect([frame.getAttribute('width'), frame.getAttribute('height')]).toEqual(['16', '16']);
+    expect(card.querySelector('.lucide-shapes')).toBeNull();
+    expect(card.querySelector('.art-card-title')!.textContent).toBe('page');
+    expect(card.querySelector('.art-card-meta')!.textContent).toBe('Oby artifact · Page · v2 · made by Claude Code');
+    const chevron = card.querySelector('svg.lucide-chevron-right')!;
+    expect([chevron.getAttribute('width'), chevron.getAttribute('height')]).toEqual(['14', '14']);
+  });
+
+  it('artifactsapp_15_each_kind_says_the_boards_word', async () => {
+    for (const [kind, word] of [['html', 'Page'], ['markdown', 'Document'], ['image', 'Image'], ['pdf', 'PDF'], ['canvas', 'Canvas'], ['design', 'Canvas']]) {
+      const host = await show({ ...page, kind });
+      expect(host.querySelector('.art-card-meta')!.textContent).toBe(`Oby artifact · ${word} · v2 · made by Claude Code`);
+      await act(async () => { (host.querySelector('button.art-card') as HTMLButtonElement).click(); });
+      expect(host.querySelector('.art-strip-title span')!.textContent).toBe(`Oby artifact · ${word} · v2`);
+      await act(async () => { closeArtifact(); root!.unmount(); });
+      host.remove();
+    }
+  });
+});

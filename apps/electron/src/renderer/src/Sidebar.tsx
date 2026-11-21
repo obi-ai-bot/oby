@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { BookOpen, Check, Mail, UserPlus, ChevronDown, ChevronRight, EllipsisVertical, Folder, FolderPlus, Plus, Search, type LucideIcon } from 'lucide-react';
+import { BookOpen, Check, Mail, UserPlus, ChevronDown, ChevronRight, EllipsisVertical, Folder, FolderPlus, Frame, Plus, Search, type LucideIcon } from 'lucide-react';
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
 import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
@@ -27,7 +27,8 @@ import { ACTIONS, RESTART, pickGroups, tasksMatching, useObidSearch } from './se
 import { ariaKeys, composing, JUMPS, registerCommands, shortcutLabel, withShortcut } from './shortcuts';
 import { adjacent, panelOrder, pinnedFirst, projectGroups as groupsOf } from './panelOrder';
 import SearchMore from './SearchMore';
-import { say, useLive, useWaitingCount } from './live';
+import { realId, say, useLive, useWaitingCount } from './live';
+import { kindName, openArtifact, useArtifactsByConversation, useNewArtifacts, useOpenArtifact } from './artifacts/store';
 import { has } from '../../shared/capabilities';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import type { Profile } from './obid';
@@ -122,6 +123,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     t.addEventListener('pointercancel', up);
   };
   const tasks = useTasks();
+  // every artifact, by its conversation, each a row under it (ARTIFACTSAPP-17): one read for the panel
+  const artifactsBy = useArtifactsByConversation(), newArtifacts = useNewArtifacts(), openArt = useOpenArtifact();
   const convos = useConvos();
   // the open profile's (profiles.ts): on the mock its own conversations, on obid all of them
   const profiles = useProfiles();
@@ -408,13 +411,15 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const searchMore = q ? <SearchMore settings={finds.settings} actions={finds.actions} onPick={runPick} /> : null;
   const convoRow = (c: Chat) => {
     const kids = chatFirst ? kidsOf(tasks, c.id, chatIdOf) : [];
+    const arts = chatFirst ? artifactsBy.get(realId(c.id)) ?? [] : [];
     // its one mark (CHATSTATE-5): needs you, working, unread, then how its latest task ended
     const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
     const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
-    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
+    const nested = kids.length + arts.length > 0;
+    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
     return (
-    <div key={c.id} className={`convo-nest${kids.length ? ' has-kids' : ''}`}>
-    {kids.length > 0 && (
+    <div key={c.id} className={`convo-nest${nested ? ' has-kids' : ''}`}>
+    {nested && (
       <button className="convo-twist" aria-expanded={shown} aria-label={`${shown ? 'Hide' : 'Show'} ${c.title}’s agents`} onClick={() => showKids(c.id, !shown)}>
         {shown ? <ChevronDown size={10} strokeWidth={2} /> : <ChevronRight size={10} strokeWidth={2} />}
       </button>
@@ -483,6 +488,19 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             <BrandMark brand={k.brand} size={14} />
             <span className="convo-kid-text"><b>{k.title}</b> · {kidLine(k)}</span>
             <TaskMark task={k} />
+          </button>
+        ))}
+        {/* its artifacts, after its tasks: a click opens it beside this conversation; New until opened (board 1a), lit while open (board 1b) */}
+        {arts.map((a) => (
+          <button
+            key={a.id}
+            className={`convo-kid art-kid${openArt?.artifact.id === a.id ? ' is-on' : ''}`}
+            title={`${a.title}, made in this conversation`}
+            onClick={() => { onOpenTalk(c.id); openArtifact(a); }}
+          >
+            <span className="art-kid-icon"><Frame size={14} strokeWidth={1.6} aria-hidden="true" /></span>
+            <span className="convo-kid-text"><b>{a.title}</b> · {kindName(a.kind)}</span>
+            {newArtifacts.has(a.id) && <span className="status" role="img" aria-label="New"><span className="status-dot is-new" /></span>}
           </button>
         ))}
       </div>

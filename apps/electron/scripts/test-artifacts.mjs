@@ -1,8 +1,8 @@
 // An artifact in the real window (docs/contracts/artifacts-app.md), end to end: a real obid in a
 // scratch home, a stand-in agent's task that makes a page (index.html and its stylesheet, under
 // .obi/artifacts/), and the built app. Nothing reaches a real agent, account or the network.
-//   ARTIFACTSAPP-4: the page's card shows under its task in the task's conversation, and a click
-//                   opens it beside the conversation.
+//   ARTIFACTSAPP-4: the page's card shows in the message that reports its task's end, in the task's
+//                   conversation, and a click opens it beside the conversation.
 //   ARTIFACTSAPP-1: Sandpack draws it in main's preview view, its stylesheet applied, from
 //                   <id>-preview.localhost on main's relay; every request the preview made went to
 //                   its host page or that relay.
@@ -13,6 +13,11 @@
 //                   the version menu opens any version, an older one read-only.
 //   ARTIFACTSAPP-11: Download saves the zip and the HTML, each byte for byte as obid exports it.
 //   ARTIFACTSAPP-12: a page dropped on the thread is imported on the owner's Import, and opens.
+//   ARTIFACTSAPP-16: a card stays in the first message that tells of its artifact (the page's in its
+//                   task's report, the site's in the turn that published it), on its latest version.
+//   ARTIFACTSAPP-17: a version made while another artifact is open puts a New dot on the page's row
+//                   under its conversation; the row's click opens it, lit, the dot gone. At 1280 by 800,
+//                   the boards' size (1a, 1b).
 //   ARTIFACTSAPP-3: the preview reaches nothing off its origin (another site, obid, the relay by
 //                   127.0.0.1), by fetch, image, script or navigation, while its own files load; and
 //                   it is sandboxed in its own partition, with no preload, no Node and no bridge.
@@ -189,19 +194,33 @@ async function main() {
     requests.onSendHeaders((d) => { globalThis.__previewSent.push(d.url); });
   });
 
-  // ARTIFACTSAPP-4: the card, under its task in the task's conversation, opens the pane
+  // ARTIFACTSAPP-4: the card, in the message that reports its task's end, opens the pane
   const row = page.locator('.convo-row', { hasText: job.title || 'ARTIFACTS' }).first();
   await until('the task’s conversation in the side panel', async () => (await row.count()) > 0);
   await row.evaluate((el) => el.click());
-  const card = page.locator('button.art-card', { hasText: 'page' });
+  const card = page.locator(`button.art-card[data-artifact="${pageArtifact.id}"]`);
   await until('the page’s card', async () => (await card.count()) > 0);
   const meta = await card.locator('.art-card-meta').innerText();
   assert.match(meta, /^Oby artifact · Page · v1( · made by Claude Code)?$/, `artifactsapp_4: the card says what it is: ${meta}`);
+  // the report's words, as obid wrote them: the card is in their message, never in the task's card
+  const turns = await s.call('GET', `/v1/conversation?id=${made.conversation}&limit=100`);
+  const report = turns.find((t) => t.ended && t.jobs?.[0] === made.id);
+  assert.ok(report, `the task's report is in its conversation: ${JSON.stringify(turns.map((t) => [t.who, t.ended ?? false, t.jobs]))}`);
+  const inMessage = (artifact, text) => page.evaluate(({ artifact, text }) => {
+    const c = document.querySelector(`button.art-card[data-artifact="${artifact}"]`);
+    const msg = c?.closest('.msg');
+    // its words' first few, as a person reads them (Markdown drawn)
+    const words = (t) => (t.match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 4).join(' ');
+    return { cards: document.querySelectorAll(`button.art-card[data-artifact="${artifact}"]`).length, inTask: !!c?.closest('.msg-task-work'), inEnd: c?.parentElement?.classList.contains('msg-end') ?? false,
+      said: words(msg?.querySelector('.msg-bubble')?.innerText ?? ''), want: words(text) };
+  }, { artifact, text });
+  const placed = await inMessage(pageArtifact.id, report.text);
+  assert.deepEqual(placed, { cards: 1, inTask: false, inEnd: true, said: placed.want, want: placed.want }, `artifactsapp_4: the card is in the task's report: ${JSON.stringify(placed)}`);
   await shot(page, '1-card');
   await card.click();
   await until('the pane', async () => (await page.locator(`[data-artifact-view="${pageArtifact.id}"]`).count()) > 0);
   assert.equal(await page.locator('.art-strip-title b').innerText(), 'page', 'artifactsapp_4: the pane says which');
-  console.log('ok artifactsapp_4: the card under its task opens the pane');
+  console.log('ok artifactsapp_4: the card in its message opens the pane');
 
   // ARTIFACTSAPP-1: Sandpack draws the page from <id>-preview.localhost, its stylesheet applied
   const drawn = await until('the page drawn in the preview', async () => {
@@ -336,6 +355,9 @@ async function main() {
   const first = await publish('One');
   const site = /Published artifact ([0-9a-f-]{36})/.exec(first.text)[1];
   await until('the new artifact open by itself', async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === 'site', 60_000);
+  // its card, in the Oby message whose turn published it (ARTIFACTSAPP-16)
+  const sitePlaced = await until('the site’s card in its message', async () => { const p = await inMessage(site, first.text); return p.cards === 1 && p.said && p; }, 60_000);
+  assert.deepEqual(sitePlaced, { cards: 1, inTask: false, inEnd: true, said: sitePlaced.want, want: sitePlaced.want }, `artifactsapp_16: the site's card is in the turn that published it: ${JSON.stringify(sitePlaced)}`);
   assert.equal(await until('its version 1 drawn', async () => (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value, 60_000), 'One');
   await publish('Two', site);
   await until('the pane on version 2', async () => (await page.locator('.art-strip-title span').innerText()) === 'Oby artifact · Page · v2', 60_000);
@@ -421,6 +443,47 @@ async function main() {
   assert.equal(imported.origin.from, 'page');
   await shot(page, '7-imported');
   console.log('ok artifactsapp_12: a page dropped and imported on Import opens beside the conversation');
+
+  // ARTIFACTSAPP-16 and 17, at the boards' size: the page's v2, published from the conversation's room
+  // while the import is open, leaves its card where it was, on v2, and puts a New dot on its row
+  await until('the window at the boards’ size', () => app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().endsWith('/preview.html'));
+    win.setContentSize(1280, 800);
+    const [w, h] = win.getContentSize();
+    return w === 1280 && h === 800;
+  }));
+  const again = join(s.home, 'conversations', made.conversation, 'room', 'page-v2');
+  mkdirSync(again, { recursive: true });
+  writeFileSync(join(again, 'index.html'), '<!doctype html><h1>Hello again</h1>');
+  const v2 = await s.call('POST', '/v1/plans', { said: `OBY oby_artifact ${JSON.stringify({ title: 'page', path: 'page-v2', artifact: pageArtifact.id })}`, conversation: made.conversation });
+  assert.match(v2.text ?? '', /Published artifact /, `the conversation published the page's v2: ${v2.text}`);
+  const pageRow = page.locator(`button.convo-kid.art-kid[title="page, made in this conversation"]`);
+  const dot = pageRow.locator('span.status[role="img"][aria-label="New"] > span.status-dot.is-new');
+  await until('the page’s card on v2', async () => (await card.locator('.art-card-meta').innerText().catch(() => '')).startsWith('Oby artifact · Page · v2'), 60_000);
+  const stayed = await inMessage(pageArtifact.id, report.text);
+  assert.deepEqual(stayed, { cards: 1, inTask: false, inEnd: true, said: stayed.want, want: stayed.want }, `artifactsapp_16: the page's card stays in the task's report: ${JSON.stringify(stayed)}`);
+  await until('the page’s row with its New dot', async () => (await dot.count()) === 1, 60_000);
+  console.log('ok artifactsapp_16: the page’s card stays in its task’s report on v2, and the site’s is in the turn that published it');
+  // as board 1a: the import closed, the side panel beside the conversation (an open pane at this
+  // width floats it), the card in view
+  const showPanel = async () => { const b = page.getByRole('button', { name: 'Show sidebar' }); if (await b.count()) await b.click(); };
+  await page.getByRole('button', { name: 'Close the artifact' }).click();
+  await until('the pane closed', async () => (await page.locator('.art-strip-title').count()) === 0);
+  await showPanel();
+  await until('the row in view', async () => (await pageRow.isVisible()) && (await pageRow.boundingBox())?.x >= 0);
+  await card.scrollIntoViewIfNeeded();
+  assert.equal(await dot.count(), 1, 'artifactsapp_17: the dot stays until the page is opened');
+  await shot(page, '8-card-in-message');
+  await shot(page, '9-row-new');
+  await pageRow.click();
+  await until('the page open from its row', async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === 'page');
+  await showPanel();
+  await until('the row in view beside the pane', async () => (await pageRow.boundingBox())?.x >= 0);
+  assert.equal(await page.locator('.art-strip-title span').innerText(), 'Oby artifact · Page · v2', 'artifactsapp_17: the row opens the latest version');
+  assert.match(await pageRow.getAttribute('class'), /\bis-on\b/, 'artifactsapp_17: the row is lit while its artifact is open');
+  assert.equal(await dot.count(), 0, 'artifactsapp_17: opened, the dot goes');
+  await shot(page, '10-row-open');
+  console.log('ok artifactsapp_17: a new version puts a New dot on the row under its conversation, and the row opens it, lit, the dot gone');
 
 
   // Close takes it away
