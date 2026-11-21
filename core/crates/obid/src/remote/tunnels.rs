@@ -28,9 +28,12 @@ struct Dial {
     why: Option<String>,
 }
 
+/// Each computer's route, by `(computer, route)`, and its dial: one at a time per route.
+type Dials = HashMap<(String, String), Arc<tokio::sync::Mutex<Dial>>>;
+
 #[derive(Default)]
 pub struct Tunnels {
-    dials: Mutex<HashMap<(String, String), Arc<tokio::sync::Mutex<Dial>>>>,
+    dials: Mutex<Dials>,
 }
 
 impl Tunnels {
@@ -115,7 +118,6 @@ impl Tunnels {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A stand-in `ssh` that counts its dials in `count` and runs `script` with `-L`'s local port in
     /// `$port`.
@@ -159,11 +161,9 @@ mod tests {
         let first = tunnels.port(&ssh, "c1", "ssh", "box", 8810).await;
         assert!(first.is_err());
         // Asked again and again within the second: the same words, no new ssh.
-        let tries = AtomicU32::new(0);
         for _ in 0..20 {
             let again = tunnels.port(&ssh, "c1", "ssh", "box", 8810).await;
             assert_eq!(again, first);
-            tries.fetch_add(1, Ordering::SeqCst);
         }
         assert_eq!(dials(&count), 1, "redialed within a second");
         // A second later, it's dialed again.
@@ -173,7 +173,6 @@ mod tests {
             let _ = tunnels.port(&ssh, "c1", "ssh", "box", 8810).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert_eq!(tries.load(Ordering::SeqCst), 20);
     }
 
     #[tokio::test]
