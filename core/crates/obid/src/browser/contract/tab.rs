@@ -25,4 +25,7 @@ pub struct Tab {
     pub ask: Option<Ask>,
     /// The dialog the page shows (an alert's words, the page's), if any.
     pub dialog: Option<String>,
+    /// For an agent's tab: the webview partition the window opens it in (the window's relay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<String>,
 }

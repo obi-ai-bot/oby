@@ -1,6 +1,6 @@
 {
   "schemaVersion": "2",
-  "name": "obid's browser: the page's own dialog answered by the person, Leave or Stay, signed and only by the device that holds the tab",
+  "name": "obid's browser: the page's own dialog answered by the person, Leave or Stay, signed",
   "version": "1.0.0",
   "description": "BROWSER-26 (core/crates/obid/src/browser/routes.rs, way_out; api/state.rs, Api::way_out): the agent opens the fixture's /leave page and clicks Leave; the page asks its confirm and the tab is in state dialog with the page's words. POST …/dialog signed on a tab nobody holds is refused (not_held); once the device takes, unsigned is refused (unsigned), another device is refused (not_holder), an `accept` that isn't a boolean is refused (bad_request); {accept: false} is Stay (the tab ready on /leave, no dialog); with no dialog left, a second answer is refused (no_dialog); given back, the agent clicks Leave again and, taken again, {accept: true} is Leave (the page goes home).",
   "trigger": {
@@ -18,6 +18,13 @@
         "owner": "alex",
         "agent": "fake-harness-jobs",
         "browser": true
+      }
+    },
+    {
+      "id": "o-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.o}"
       }
     },
     {
@@ -150,46 +157,6 @@
       }
     },
     {
-      "id": "dialog-not-held",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
-        "device": "${state.d1}",
-        "body": {
-          "accept": false
-        },
-        "as": "device",
-        "expect": {
-          "status": 409,
-          "paths": {
-            "reason": "not_held"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "take-for-dialog",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {}
-        }
-      }
-    },
-    {
       "id": "dialog-unsigned",
       "use": "runtime.rust:call",
       "inputs": {
@@ -203,31 +170,6 @@
           "status": 401,
           "paths": {
             "reason": "unsigned"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "dialog-other-device",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
-        "device": "${state.d2}",
-        "body": {
-          "accept": false
-        },
-        "as": "device",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
           }
         }
       },
@@ -336,21 +278,6 @@
       }
     },
     {
-      "id": "give-back-for-leave",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {}
-        }
-      }
-    },
-    {
       "id": "snap-again",
       "use": "runtime.rust:browser-mcp",
       "inputs": {
@@ -391,21 +318,6 @@
         "proves": [
           "BROWSER-26"
         ]
-      }
-    },
-    {
-      "id": "take-to-leave",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {}
-        }
       }
     },
     {

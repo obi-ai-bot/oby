@@ -4,6 +4,7 @@
 pub mod app;
 pub mod artifacts;
 pub mod browser;
+pub mod browser_window;
 pub mod coverage;
 pub mod coverage_accounts;
 /// The conversations area's coverage (`workflows/routes/conversations/`): its own nodes.

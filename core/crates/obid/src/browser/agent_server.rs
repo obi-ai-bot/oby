@@ -35,6 +35,12 @@ impl AgentServer {
         }
     }
 
+    /// The same server at `url`, where this run reaches obid: an own run on the host reaches it on
+    /// loopback, never at the box's address (LANES-26, `Jobs::agent_api`).
+    pub fn reached_at(self, url: String) -> AgentServer {
+        AgentServer { url, ..self }
+    }
+
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -149,6 +155,18 @@ mod tests {
         // Codex never gets the token as an argument.
         let codex = AgentServer::new(BASE, "s3cr3t").codex("OBY_MCP_TOKEN");
         assert!(!codex.concat().contains("s3cr3t"), "{codex:?}");
+    }
+
+    #[test]
+    fn browser_17_a_run_reaches_the_server_where_it_reaches_obid() {
+        let server = AgentServer::new("http://10.0.2.2:7777", "tok")
+            .reached_at("http://127.0.0.1:7777/v1/browser/mcp".into());
+        assert_eq!(server.url(), "http://127.0.0.1:7777/v1/browser/mcp");
+        assert_eq!(server.token(), "tok");
+        assert_eq!(
+            server.claude()["url"],
+            "http://127.0.0.1:7777/v1/browser/mcp"
+        );
     }
 
     #[test]

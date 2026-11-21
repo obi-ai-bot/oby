@@ -21,6 +21,13 @@
       }
     },
     {
+      "id": "o-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
       "id": "site",
       "use": "runtime.rust:browser-site",
       "inputs": {}
