@@ -5,8 +5,8 @@ import { HOME, send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { flag, safeInteger, string } from '../shared/decode';
 import { fillSecret } from './device';
-import { BROWSER_EVENTS, BROWSER_RELAY, browserTabPath, sseReader, type BrowserTab } from '../shared/obid-wire';
-import { relayCommand, relayHost, type RelayEvent, type TabKey } from './browserRelay';
+import { BROWSER_EVENTS, BROWSER_RELAY, browserTabPath, sseReader } from '../shared/obid-wire';
+import { namedPartitions, relayCommand, relayHost, type RelayEvent } from './browserRelay';
 import { hosting } from './browserGuest';
 
 // The browser, through main (docs/contracts/browser-app.md, BROWSERAPP-8 and 10). Main holds obid's
@@ -25,18 +25,9 @@ import { hosting } from './browserGuest';
 // closed nothing follows the relay: obid's agents are told `no_window`, never given another browser.
 
 // the partition obid named for each agent tab, from its `tab` events: the only one its webview may use
-const partitions = new Map<string, string>();
-const tabKey = (k: TabKey) => `${k.threadId}\0${k.tabId}`;
+const partitions = namedPartitions();
 function heard(name: string, data: string) {
-  if (name === 'tab') {
-    try {
-      const { tab } = JSON.parse(data) as { tab: BrowserTab };
-      if (tab.owner.kind === 'agent' && tab.partition) partitions.set(tabKey({ threadId: tab.owner.job, tabId: tab.id }), tab.partition);
-    } catch { /* not a tab: the page reads it as it does */ }
-  }
-  if (name === 'tabClosed') {
-    try { const { tabId } = JSON.parse(data) as { tabId: string }; for (const k of partitions.keys()) if (k.endsWith(`\0${tabId}`)) partitions.delete(k); } catch { /* the same */ }
-  }
+  if (partitions.heard(name, data) === 'refused') console.warn('The browser: a tab event named a partition main doesn’t take for that tab; the first one stands.');
 }
 async function post(events: RelayEvent[]): Promise<boolean> {
   const r = await send('POST', BROWSER_RELAY, { events });
@@ -50,7 +41,7 @@ let webviews: ReturnType<typeof hosting> | null = null;
 
 /** the window's webviews, once it exists: hardened, checked against obid's partitions, relayed */
 export function hostBrowser(win: BrowserWindow) {
-  webviews = hosting(win, relay!, (k) => partitions.get(tabKey(k)));
+  webviews = hosting(win, relay!, (k) => partitions.of(k));
 }
 
 // --- following obid's browser for the window

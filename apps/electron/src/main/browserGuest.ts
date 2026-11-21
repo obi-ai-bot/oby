@@ -1,19 +1,13 @@
 import { basename, join } from 'node:path';
 import { session, webContents, type BrowserWindow, type Session, type WebContents } from 'electron';
-import type { Guest, RelayHost, TabKey } from './browserRelay';
+import { partitionOk, type Guest, type RelayHost, type TabKey } from './browserRelay';
+export { PARTITION, partitionOk } from './browserRelay';
 
 // Each agent tab's `<webview>` in the window, as T3 Code hosts them (apps/desktop/src/window/
 // DesktopWindow.ts, preview/Manager.ts; docs/plans/browser-t3.md): hardened when it attaches, in
 // the partition obid named for its tab and no other, its debugger attached ("1.3") and handed to
 // the relay once its first page settled, and given back when DevTools takes it.
 
-/**
- * The partitions a page may live in, as obid names them: one per agent for the owner's own work
- * (sign-ins kept), and one per job for another Oby's or an untrusted job (not persistent). Never the
- * default session or the window's own.
- */
-export const PARTITION = /^(persist:oby-agent-(claude|codex|cursor)|oby-box-[A-Za-z0-9_-]{1,128})$/;
-export const partitionOk = (p: unknown): p is string => typeof p === 'string' && PARTITION.test(p);
 /** a page's address the window loads: the web, or a blank page */
 export const pageOk = (url: unknown) => typeof url === 'string' && /^(https?:\/\/|about:blank$)/.test(url);
 /** how long the first page may take to settle before the tab is announced anyway (T3: 5 s) */

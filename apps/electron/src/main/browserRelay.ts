@@ -9,6 +9,44 @@ import { isAbsolute, relative, resolve } from 'node:path';
 // with a fake one (browserRelay.test.ts).
 
 export type TabKey = { threadId: string; tabId: string };
+
+/**
+ * The partitions a page may live in, as obid names them: one per agent for the owner's own work
+ * (sign-ins kept), and one per job for another Oby's or an untrusted job (not persistent). Never the
+ * default session or the window's own.
+ */
+export const PARTITION = /^(persist:oby-agent-(claude|codex|cursor)|oby-box-[A-Za-z0-9_-]{1,128})$/;
+export const partitionOk = (p: unknown): p is string => typeof p === 'string' && PARTITION.test(p);
+
+/**
+ * The partition obid named for each agent tab, read from its `tab` events on /v1/browser/events: the
+ * only one that tab's webview may use. The first one named stands: a later `tab` event naming
+ * another for the same tab is refused, and the tab's `tabClosed` forgets it.
+ */
+export function namedPartitions() {
+  const named = new Map<string, string>();
+  const at = (k: TabKey) => `${k.threadId}\0${k.tabId}`;
+  return {
+    /** an events-stream message: 'kept', 'refused' (another partition than the first), or null (not one) */
+    heard(name: string, data: string): 'kept' | 'refused' | null {
+      let e: { tab?: { id?: unknown; owner?: { kind?: unknown; job?: unknown }; partition?: unknown }; tabId?: unknown };
+      try { e = JSON.parse(data); } catch { return null; }
+      if (name === 'tabClosed' && typeof e.tabId === 'string') {
+        for (const k of named.keys()) if (k.endsWith(`\0${e.tabId}`)) named.delete(k);
+        return null;
+      }
+      const t = e.tab;
+      if (name !== 'tab' || !t || t.owner?.kind !== 'agent' || typeof t.owner.job !== 'string' || typeof t.id !== 'string' || t.partition === undefined) return null;
+      const k = at({ threadId: t.owner.job, tabId: t.id });
+      if (!partitionOk(t.partition)) return 'refused';
+      const was = named.get(k);
+      if (was !== undefined && was !== t.partition) return 'refused';
+      named.set(k, t.partition);
+      return 'kept';
+    },
+    of: (k: TabKey) => named.get(at(k)),
+  };
+}
 export type RelayEvent = TabKey & (
   | { type: 'attached' }
   | { type: 'detached' }

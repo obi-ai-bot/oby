@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DOMAINS, KEPT, MAX_MESSAGE, insideDownloads, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
+import { DOMAINS, KEPT, MAX_MESSAGE, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
 import { sseReader } from '../../../shared/obid-wire';
 
 vi.mock('electron', () => ({ session: { fromPartition: () => ({}) }, webContents: { fromId: () => null } }));
@@ -180,6 +180,21 @@ describe('BROWSERAPP-24: a webview lives only in the partition obid named, harde
   it('browserapp_24: only the two partition shapes; never the default session or the window\'s own', () => {
     for (const p of ['persist:oby-agent-claude', 'persist:oby-agent-codex', 'persist:oby-agent-cursor', 'oby-box-job-12_ab']) expect(partitionOk(p)).toBe(true);
     for (const p of [undefined, '', 'persist:oby-agent-gemini', 'persist:main', 'oby-box-', 'oby-box-a/b', 'persist:oby-box-j1', 'oby-agent-codex', `oby-box-${'a'.repeat(129)}`]) expect(partitionOk(p)).toBe(false);
+  });
+
+  it('browserapp_24: the partition is the one obid\'s first tab event named for that tab; another one later for it, or a bad shape, is refused; tabClosed forgets it', () => {
+    const p = namedPartitions();
+    const tab = (partition: unknown, id = 't1', kind = 'agent') => JSON.stringify({ seq: 1, type: 'tab', tab: { id, owner: { kind, job: 'j1', agent: 'codex' }, url: 'https://example.test/', partition } });
+    expect(p.heard('tab', tab('persist:oby-agent-codex'))).toBe('kept');
+    expect(p.heard('tab', tab('persist:oby-agent-codex'))).toBe('kept');
+    expect(p.heard('tab', tab('oby-box-j1'))).toBe('refused');
+    expect(p.of(K)).toBe('persist:oby-agent-codex');
+    expect(p.heard('tab', tab('persist:main', 't2'))).toBe('refused');
+    expect(p.of({ threadId: 'j1', tabId: 't2' })).toBeUndefined();
+    expect(p.heard('tab', tab('persist:oby-agent-codex', 't3', 'you'))).toBeNull();
+    expect(p.heard('tabClosed', JSON.stringify({ seq: 2, type: 'tabClosed', tabId: 't1' }))).toBeNull();
+    expect(p.of(K)).toBeUndefined();
+    expect(p.heard('tab', tab('oby-box-j1'))).toBe('kept');
   });
 
   it('browserapp_24: its preferences are sandboxed with no Node and no preload, whatever the page asked; a page off the web isn\'t attached', () => {
