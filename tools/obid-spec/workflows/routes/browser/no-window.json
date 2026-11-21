@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: with no Oby window, an agent's page tool is refused no_window at once and runs nowhere else",
+  "version": "1.0.0",
+  "description": "BROWSER-31 (docs/plans/browser-t3.md): a scratch obid with nothing following GET /v1/browser/relay (no window: no stand-in started). A Claude Code job's agent finds Oby's browser server and its 11 tools, but its oby_browser_open is refused `no_window`, with words that say to open Oby, and no tab appears: there is no fallback browser (the owner's \"NO FALLBACK REMOVE CHROME ENTIRELY\", where T3 Code falls back to a headless one).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/browser/relay"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "claude",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.o}",
+        "agent": "claude",
+        "url": "${state.site.url}/"
+      }
+    },
+    {
+      "id": "its-tools-are-there",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.claude}",
+        "expect": {
+          "paths": {
+            "browsed.server.url": {
+              "$contains": "/v1/browser/mcp"
+            },
+            "browsed.calls.list.result.tools.10.name": "oby_browser_close_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    },
+    {
+      "id": "open-is-refused-no-window",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.claude}",
+        "expect": {
+          "paths": {
+            "browsed.calls.open.result.isError": true,
+            "browsed.calls.open.result.structuredContent.error.code": "no_window",
+            "browsed.calls.open.result.structuredContent.error.message": {
+              "$contains": "open Oby"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    },
+    {
+      "id": "no-tab-anywhere",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    }
+  ]
+}

@@ -60,6 +60,9 @@ pub const NODES: &[(&str, &str)] = &[
     ("browser-https-site", "Serves an HTTPS fixture on 127.0.0.1 (a free port) with a self-signed P-256 certificate for 127.0.0.1 made at run time (the lab's, src/lab/browserapi.rs): `certificate` names it (default `first`); naming another while the `site` (default `main`) is up swaps it behind the same port, the same origin with a new certificate. {url, port, site, certificate, fingerprint}."),
     ("browser-flaky-site", "A site that fails, then works, at one address (the lab's): `up: false` keeps a port nobody listens on (a navigation there is refused), `up: true` serves the fixture site on it. {url, port, up}."),
     ("browser-job", "Has a scratch obid (started with `browser: true`) start a stand-in job that stays active, a Codex job whose stand-in sleeps and hands back its broker token: {job, token}. With `end: true` and `job`, stops that job and waits until it isn't running: {job, ended, status}."),
+    ("browser-window", "Starts a stand-in for Oby's window for `obid` (docs/plans/browser-t3.md): it follows the browser's events and relay, mounts each agent tab (a `tab` event with a partition) as a page of a headless Chrome obid-spec runs (test tooling; obid has none), one browser context per partition, relays obid's page-level CDP to it, and keeps the window's guards (the CDP domains it lets through, the two partition shapes, downloads only into obid's folder). {window}"),
+    ("browser-window-seen", "What `obid`'s stand-in window refused (a CDP domain or session id it doesn't let through, a partition, a download folder), each tab's partition, and how many contexts it holds: {refused, partitions, contexts}."),
+    ("browser-agent-job", "Has a scratch obid (started with `browser: true`) start a job of `agent` (claude or codex; `mode` optional) whose stand-in uses Oby's browser only through what its agent was given (BROWSE: `url`): its MCP configuration's `browser` server and rules. Waits for what it found and got (.obi/browsed.json in its worktree): {job, status, browsed}."),
     ("browser-mcp", "One MCP request to a scratch obid's browser server (`POST /v1/browser/mcp`) as a job's agent: `method` (initialize, tools/list, tools/call), `tool`, `args`, `token` (the job's broker token; or `as`: none, wrong). `refFor` {role, name} picks a ref from `snapshot`'s result. `within`: asked again while the browser is still starting (its first download). {status, rpc, result, isError, structured, toolNames}; with expect."),
     ("browser-events", "Reads a scratch obid's browser events stream for `ms` (from `after`, default every event kept): {events, types, count, of, inOrder}; with expect."),
     ("browser-race", "The agent's act sent, then `takeAfterMs` later the device's signed take while the act still waits to run (a scratch obid started with OBID_TEST_BROWSER_COMMIT_DELAY_MS): {act, take}; with expect."),
@@ -90,7 +93,10 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
         let mut out = if name.starts_with("app.") {
             crate::app::act(run, name, &input).await?
         } else if name.starts_with("browser-") {
-            crate::browser::run_node(name, &input).await?
+            match crate::browser_window::run_node(run, name, &input).await {
+                Some(out) => out?,
+                None => crate::browser::run_node(name, &input).await?,
+            }
         } else if name.starts_with("artifacts-") {
             crate::artifacts::run_node(run, name, &input).await?
         } else if name.starts_with("lab.") {
@@ -236,6 +242,7 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
             "stopped": crate::procs::stop_all().await,
             "lab": crate::lab::cleanup().await,
             "browser": crate::browser::cleanup().await,
+            "testWindow": crate::browser_window::cleanup(),
             // Once every obid stopped: an engine one of them downloaded and checked, kept for the
             // next workflows (obid-start's `browser`).
             "browserCache": obid::keep_browser_engine(),

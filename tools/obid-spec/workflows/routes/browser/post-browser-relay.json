@@ -1,0 +1,151 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: the window's events reach obid only with obid's runner token, in order, and a type obid doesn't know is ignored",
+  "version": "1.0.0",
+  "description": "BROWSER-31 (docs/plans/browser-t3.md): POST /v1/browser/relay is the window's: with obid's runner token its events are taken (204), a type obid doesn't know yet is ignored, never refused, a body that isn't {events: [...]} is refused 400, and no token, or a made-up one, reaches nothing (401).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/relay"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "taken",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/relay",
+        "body": {
+          "events": [
+            {
+              "type": "shown",
+              "threadId": "j1",
+              "tabId": "tab-1",
+              "shown": true
+            }
+          ]
+        },
+        "expect": {
+          "status": 204
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    },
+    {
+      "id": "unknown-type-ignored",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/relay",
+        "body": {
+          "events": [
+            {
+              "type": "somethingNew",
+              "threadId": "j1"
+            }
+          ]
+        },
+        "expect": {
+          "status": 204
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    },
+    {
+      "id": "not-a-list",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/relay",
+        "body": {
+          "events": "no"
+        },
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    },
+    {
+      "id": "no-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/relay",
+        "as": "none",
+        "body": {
+          "events": [
+            {
+              "type": "shown",
+              "threadId": "j1",
+              "tabId": "tab-1",
+              "shown": true
+            }
+          ]
+        },
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    },
+    {
+      "id": "made-up-token",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/relay",
+        "as": "wrong",
+        "body": {
+          "events": [
+            {
+              "type": "shown",
+              "threadId": "j1",
+              "tabId": "tab-1",
+              "shown": true
+            }
+          ]
+        },
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-31"
+        ]
+      }
+    }
+  ]
+}

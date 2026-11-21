@@ -40,6 +40,10 @@ pub struct Service {
     /// debug build's test (`OBID_TEST_BROWSER_COMMIT_DELAY_MS`, the lab's `commitDelayMs`), the
     /// race's window for BROWSER-6.
     pub(super) commit_delay: Duration,
+    /// The window's relay (T3 Code's design): each agent tab a `<webview>` in the window.
+    relay: Arc<super::relay::Relay>,
+    /// The window's browser: the agents' tools run on it, over the relay, on the same core.
+    window: Arc<super::window::WindowDriver>,
 }
 
 impl Service {
@@ -50,15 +54,43 @@ impl Service {
         downloads_to: PathBuf,
         commit_delay: Duration,
     ) -> Service {
+        let relay = Arc::new(super::relay::Relay::new());
         Service {
             api: Mutex::new(api),
-            driver,
             events: broadcast::channel(CHANNEL).0,
             published: Mutex::new(0),
-            home,
             downloads_to,
             commit_delay,
+            window: Arc::new(super::window::WindowDriver::new(
+                relay.clone(),
+                driver.core().clone(),
+                &home,
+            )),
+            relay,
+            driver,
+            home,
         }
+    }
+
+    /// The window's browser.
+    pub fn window(&self) -> &Arc<super::window::WindowDriver> {
+        &self.window
+    }
+
+    /// A new tab of the window's is shown (its `tab` event, with its partition) before the
+    /// window is waited for, so the window mounts its webview.
+    fn wire(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        self.window.on_tabs(move |job| {
+            if let Some(s) = me.upgrade() {
+                s.sync(job);
+            }
+        });
+    }
+
+    /// The window's relay.
+    pub fn relay(&self) -> &Arc<super::relay::Relay> {
+        &self.relay
     }
 
     /// The browser for obid's `home`: browsers a stopped obid left reaped first, the switches as the
@@ -88,22 +120,20 @@ impl Service {
             .filter(|h| h.is_absolute())
             .unwrap_or_else(|| home.to_path_buf())
             .join("Downloads");
-        Arc::new(Service::new(
+        let service = Arc::new(Service::new(
             api,
             Arc::new(driver),
             home.to_path_buf(),
             downloads_to,
             test_commit_delay(),
-        ))
+        ));
+        service.wire();
+        service
     }
 
     /// The API core, under its lock.
     pub fn api<T>(&self, f: impl FnOnce(&mut Api) -> T) -> T {
         f(&mut self.api.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    pub(super) fn api_lock(&self) -> &Mutex<Api> {
-        &self.api
     }
 
     pub fn driver(&self) -> &Arc<Driver> {
@@ -129,11 +159,11 @@ impl Service {
     }
 
     /// A job the API doesn't know yet: its browser `notStarted`.
-    pub fn ensure_job(&self, job: &str, agent: &str) {
+    pub fn ensure_job(&self, job: &str, agent: &str, partition: &str) {
         let added = self.api(|a| {
             let new = a.job(job).is_none();
             if new {
-                a.add_job(job, agent);
+                a.add_job_in(job, agent, partition);
             }
             new
         });
@@ -176,6 +206,7 @@ impl Service {
     /// A job ended (BROWSER-25): its browser and every process it started stop, and its tabs
     /// leave the list.
     pub async fn end_job(&self, job: &str) {
+        self.window.end(job);
         self.driver.end(job).await;
         self.api(|a| a.end_job(job));
         self.flush();

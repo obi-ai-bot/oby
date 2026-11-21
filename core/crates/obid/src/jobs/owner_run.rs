@@ -868,7 +868,17 @@ impl Jobs {
                             .map(|tool| format!("mcp__tetrix__{tool}")),
                     );
                 }
-                if (broker.is_some() || tetrix.is_some()) && tool == Tool::Claude {
+                // Oby's browser (BROWSER-17): Claude Code's in its --mcp-config, Codex's in its `-c`
+                // settings (`Jobs::launch`); Cursor's comes with its session (`Jobs::turn`).
+                let browser = matches!(tool, Tool::Claude | Tool::Codex)
+                    .then(|| self.browser_server(&job))
+                    .flatten();
+                if browser.is_some() {
+                    mcp_rules.extend(crate::browser::AgentServer::rules());
+                }
+                if (broker.is_some() || tetrix.is_some() || browser.is_some())
+                    && tool == Tool::Claude
+                {
                     let file = mcp_config_path(own, &spec.temp, &self.login_path(id))?;
                     let mut config = json!({"mcpServers": {}});
                     if let Some((url, token)) = broker.as_ref().filter(|_| tool == Tool::Claude) {
@@ -876,6 +886,9 @@ impl Jobs {
                     }
                     if let Some((url, token)) = tetrix.as_ref().filter(|_| tool == Tool::Claude) {
                         config["mcpServers"]["tetrix"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});
+                    }
+                    if let Some(server) = &browser {
+                        config["mcpServers"][crate::browser::agent_server::NAME] = server.claude();
                     }
                     // An own run's first turn waits for none of the owner's servers, so obid's are
                     // each `alwaysLoad`: connected before it (LANES-24, `agent::MCP_STARTUP_WAIT`).

@@ -59,6 +59,11 @@ impl Api {
     /// A job starts. Who it is comes from obid's broker token (`crate::connections`), not from
     /// here.
     pub fn add_job(&mut self, id: &str, agent: &str) {
+        self.add_job_in(id, agent, &format!("persist:oby-agent-{agent}"));
+    }
+
+    /// A job the API hears of, its tabs opening in `partition`.
+    pub fn add_job_in(&mut self, id: &str, agent: &str, partition: &str) {
         self.jobs.insert(
             id.into(),
             Job {
@@ -69,6 +74,7 @@ impl Api {
                 seen_downloads: BTreeSet::new(),
                 browser: c::BrowserState::NotStarted,
                 browser_reason: None,
+                partition: partition.into(),
             },
         );
     }
@@ -261,8 +267,19 @@ impl Api {
     /// The person's way out of a page state (board 10, BROWSER-26), `verb` one of the contract's:
     /// only on a tab the signing device holds, and a dialog's answer only while the page shows one.
     /// Answers the tab's job.
-    pub fn way_out(&self, device: &str, tab: &str, verb: &str) -> Result<String, Refused> {
-        let job = self.person_holds(Some(device), tab)?;
+    /// The person's Reload, Back or dialog answer on a tab (the window's browser: the page is
+    /// theirs to use as they like, no hold to take first): the tab's job.
+    pub fn way_out(&self, tab: &str, verb: &str) -> Result<String, Refused> {
+        let job = match &self.rec(tab)?.tab.owner {
+            c::Owner::Agent { job, .. } => job.clone(),
+            _ => {
+                return Err(Refused::new(
+                    404,
+                    "no_such_tab",
+                    format!("There is no agent's tab {tab}."),
+                ));
+            }
+        };
         if verb == c::VERB_DIALOG && self.rec(tab)?.tab.dialog.is_none() {
             return Err(Refused::new(
                 409,
@@ -278,7 +295,11 @@ impl Api {
     /// A job's tabs as the engine's status says (`tabs` and the quoted titles): changes become
     /// `tab` and `tabClosed` events.
     pub fn sync_job(&mut self, job: &str, engine_tabs: &[Value], titles: &Value) {
-        let Some(agent) = self.jobs.get(job).map(|j| j.agent.clone()) else {
+        let Some((agent, partition)) = self
+            .jobs
+            .get(job)
+            .map(|j| (j.agent.clone(), j.partition.clone()))
+        else {
             return;
         };
         let mut present = BTreeSet::new();
@@ -307,6 +328,7 @@ impl Api {
                     computer: c::Computer::this_mac(),
                     ask: None,
                     dialog: None,
+                    partition: Some(partition.clone()),
                 },
                 inflight: 0,
                 last_error: None,
@@ -889,7 +911,7 @@ mod tests {
             a.lease("j1", "nope").unwrap_err(),
             a.saveable("dl-9").unwrap_err(),
             a.answer("ask-9", c::AnswerBody::default()).unwrap_err(),
-            a.way_out("d1", "tab-1", c::VERB_RELOAD).unwrap_err(),
+            a.way_out("tab-9", c::VERB_RELOAD).unwrap_err(),
             browser_off(),
         ];
         for r in rs {
@@ -899,28 +921,20 @@ mod tests {
     }
 
     #[test]
-    fn browser_26_a_way_out_needs_the_holding_device_and_a_dialog_answer_needs_a_dialog() {
+    fn browser_26_a_way_out_needs_an_agents_tab_and_a_dialog_answer_needs_a_dialog() {
         let mut a = api();
         with_tab(&mut a, "j1", "tab-1");
-        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
-            assert_eq!(
-                a.way_out("d1", "tab-1", verb).unwrap_err().reason,
-                "not_held"
-            );
-        }
-        a.take("d1", "tab-1").unwrap();
-        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
-            assert_eq!(
-                a.way_out("d2", "tab-1", verb).unwrap_err().reason,
-                "not_holder"
-            );
-        }
-        assert_eq!(a.way_out("d1", "tab-1", c::VERB_RELOAD).unwrap(), "j1");
-        assert_eq!(a.way_out("d1", "tab-1", c::VERB_BACK).unwrap(), "j1");
-        let no = a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap_err();
+        // The window's browser: the page is the person's to use, no hold taken first.
+        assert_eq!(a.way_out("tab-1", c::VERB_RELOAD).unwrap(), "j1");
+        assert_eq!(a.way_out("tab-1", c::VERB_BACK).unwrap(), "j1");
+        assert_eq!(
+            a.way_out("tab-9", c::VERB_BACK).unwrap_err().reason,
+            "no_such_tab"
+        );
+        let no = a.way_out("tab-1", c::VERB_DIALOG).unwrap_err();
         assert_eq!((no.status, no.reason), (409, "no_dialog"));
         a.dialog("tab-1", Some("Leave this page?".into()));
-        assert_eq!(a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap(), "j1");
+        assert_eq!(a.way_out("tab-1", c::VERB_DIALOG).unwrap(), "j1");
         let body: c::DialogBody = serde_json::from_value(json!({"accept": false})).unwrap();
         assert_eq!((body.accept, body.prompt_text), (false, None));
         assert!(serde_json::from_value::<c::ReloadBody>(json!({})).is_ok());
