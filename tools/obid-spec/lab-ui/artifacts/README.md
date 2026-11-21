@@ -6,11 +6,9 @@ whose files are `design/project/` here (people's names replaced).
 - `src/contract.ts`: the TypeScript twin of `src/lab/artifacts_contract.rs`, the routes and shapes
   the app will talk to. The Rust file is the source; `the_typescript_twin_matches` fails until the
   two agree.
-- `runtime/`: Oby's own runtime of Claude Design's `.dc.html` format (`dc-runtime.js`), written
-  from the format alone, and the canvas host (`canvas.html`). obid serves them beside a `design`
-  version (`src/lab/artifactview.rs`): `support.js` is React 18.3.1 and ReactDOM (`runtime/vendor/`,
-  MIT, from npm's `react@18.3.1` and `react-dom@18.3.1`, their production UMD builds unchanged) then
-  `dc-runtime.js`. No Babel, nothing from a CDN.
+- Oby's own runtime of Claude Design's `.dc.html` format, its canvas host and React 18.3.1 moved
+  to obid with the port plan's P4: `core/assets/oby-dc/` (its README). The lab's view
+  (`src/lab/artifactview.rs`) reads them from there.
 - `design/project/`: the canvas, as render fixtures (`design/README.md`).
 - `scripts/`: the workflows' generators (`workflows/lab/artifacts/`, `workflows/lab/artifactview/`).
   Edit them, not the JSON.

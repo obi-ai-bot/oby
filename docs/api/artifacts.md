@@ -31,6 +31,21 @@ X-Content-Type-Options: nosniff
 Referrer-Policy: no-referrer
 ```
 
+**A design's runtime** ([the contract](../contracts/artifacts.md), ARTIFACTS-13 to 15). For a `design` version, the file route also serves what draws it, built when asked and never stored:
+
+- `support.js`, and `<folder>/support.js` (what a board names as `./support.js`; ahead of any file of that name the version keeps): React 18.3.1, ReactDOM 18.3.1 (MIT, `core/assets/oby-dc/LICENSE-react`) and Oby's runtime of the `.dc.html` format (`core/assets/oby-dc/dc-runtime.js`);
+- `__dc/boards.js`: `window.__OBY_DC.boards`, every board's `{template, helmet, logic, defaults}` (`defaults`: its `data-props`' `default`s, `$`-named ones left out);
+- `__dc/logic/<board>.js`: that board's logic (`<script type="text/x-dc" data-dc-script>`) as a script of its own; `404` for a board with none;
+- `__canvas.html`: the canvas host, its `canvas.json` inside it as data (`</` and `<!--` escaped), each board of a page in a frame of its own with `sandbox="allow-scripts"`.
+
+These and every file of a design's version are served with the board policy, which is the policy below with `frame-ancestors 'self'` (its own version's canvas host may frame it); `support.js` and `__dc/…` also with `Access-Control-Allow-Origin: *` (a sandboxed board's origin is its own, so it loads them with CORS and a mistake in them names its file). `__canvas.html` has the host policy:
+
+```
+Content-Security-Policy: default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; frame-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'
+```
+
+The runtime's paths are root-relative (`/__dc/boards.js`, a board's `/_blob/<id>`), so a design draws only where its version is an origin of its own: the app's `oby-artifact://<id>-v<n>/`. Through this route, which puts `/v1/artifacts/{id}/{version}/` in front, a design shows as its files.
+
 A page's scripts run, but:
 
 - it loads only its own files (any file of obid's served on the same address, but every one needs the token) and `data:`/`blob:` URLs: no other server, no font or script from the web;

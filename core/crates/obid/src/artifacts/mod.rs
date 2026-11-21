@@ -39,6 +39,7 @@ use crate::store::{make_private_dir, write_private};
 mod blobs;
 mod design;
 mod limits;
+mod view;
 
 pub use limits::{MAX_BYTES, MAX_ENTRIES, MAX_FILES, MAX_JOB_BYTES};
 
@@ -522,6 +523,29 @@ impl Artifacts {
         let bytes = std::fs::read(&file).ok()?;
         Some((file, bytes))
     }
+
+    /// What version `version` of `id` serves at `path`: one of its files, a design's upload, or
+    /// for a design what draws it (crate::artifacts::view: Oby's runtime, the boards' parts, the
+    /// canvas host), with its type and policy: the board policy for all of a design's but its
+    /// host, obid's artifact policy for any other kind's.
+    fn served(&self, id: &str, version: &str, path: &str) -> Option<view::Served> {
+        let n: u32 = version.parse().ok()?;
+        let artifact = self.get(id)?;
+        let design = artifact.kind == Kind::Design;
+        if design {
+            let kept = artifact.versions.iter().find(|v| v.version == n)?;
+            if let Some(served) = view::serve(&self.version_path(id, n), &kept.files, path) {
+                return Some(served);
+            }
+        }
+        let (file, bytes) = self.file(id, version, path)?;
+        Some(view::Served {
+            content_type: type_of(&file),
+            policy: if design { view::BOARD_POLICY } else { POLICY },
+            bytes,
+            cors: false,
+        })
+    }
 }
 
 /// A lower-case UUID, as obid makes them: never `..` or a path.
@@ -924,25 +948,33 @@ pub async fn get(
     Ok(axum::Json(artifact).into_response())
 }
 
-/// `GET /v1/artifacts/{id}/{version}/{*path}`: one of its files, with [`POLICY`].
+/// `GET /v1/artifacts/{id}/{version}/{*path}`: one of its files, with [`POLICY`]; a design's
+/// with the board policy, and what draws it beside them (crate::artifacts::view).
 pub async fn file(
     State(shared): State<Arc<Shared>>,
     UrlPath((id, version, path)): UrlPath<(String, String, String)>,
 ) -> Result<Response, ApiError> {
-    let (file, bytes) = shared
+    let served = shared
         .artifacts
-        .file(&id, &version, &path)
+        .served(&id, &version, &path)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no such file."))?;
-    let mut response = (StatusCode::OK, bytes).into_response();
+    let mut response = (StatusCode::OK, served.bytes).into_response();
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static(type_of(&file)),
+        HeaderValue::from_static(served.content_type),
     );
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(POLICY),
+        HeaderValue::from_static(served.policy),
     );
+    // A sandboxed board's origin is its own: it loads the runtime and its logic with CORS.
+    if served.cors {
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+    }
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
