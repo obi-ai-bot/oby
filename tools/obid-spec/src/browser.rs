@@ -442,10 +442,9 @@ fn downloads(input: &Value) -> Result<Value> {
         !job.is_empty() && !job.contains('/') && !job.contains(".."),
         "{job} isn't a job's id"
     );
-    let profile = home
-        .join("browser/jobs")
-        .join(job)
-        .join("profile/Downloads");
+    // Where Oby's window saves an agent's download, the only folder it takes (the window's
+    // browser, docs/plans/browser-t3.md).
+    let profile = home.join("browser/downloads").join(job);
     Ok(json!({
         "inProfile": names_in(&profile),
         "delivered": names_in(&person.join("Downloads")),
