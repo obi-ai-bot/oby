@@ -41,6 +41,15 @@ export const previewAsk: Decoder<Ask> = (v) => {
   return { value: { id, version: version as number, bounds: { x: b.x as number, y: b.y as number, width: b.width as number, height: b.height as number }, ...(kept ? { edits: kept } : {}) } };
 };
 
+/** `{ id, version }` and no other key (a lower-case UUID, a version from 1): the version a card
+ * wants a picture of (ARTIFACTSAPP-18). */
+export const thumbAsk: Decoder<{ id: string; version: number }> = (v) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).sort().join() !== 'id,version') return undefined;
+  const { id, version } = v as Record<string, unknown>;
+  if (typeof id !== 'string' || !UUID.test(id) || !Number.isSafeInteger(version) || (version as number) < 1) return undefined;
+  return { value: { id, version: version as number } };
+};
+
 /** Whether the preview's session lets a request go: its host page, or the relay on its port. */
 export function allowed(url: string, relayPort: number, hostPage: string, devOrigin?: string): boolean {
   let u: URL;

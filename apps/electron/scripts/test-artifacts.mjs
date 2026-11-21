@@ -21,6 +21,9 @@
 //   ARTIFACTSAPP-3: the preview reaches nothing off its origin (another site, obid, the relay by
 //                   127.0.0.1), by fetch, image, script or navigation, while its own files load; and
 //                   it is sandboxed in its own partition, with no preload, no Node and no bridge.
+//   ARTIFACTSAPP-18: the page's card shows its first screen, a 720-wide PNG main took in the preview's
+//                   second, never-shown view (preview.html?thumb); taking it sent nothing but to its
+//                   host page and the pane's own relay, and refused nothing the pane's view didn't.
 // Screenshots go to OBY_ARTIFACTS_SHOTS (a folder) when it's set: the window, with the preview laid
 // where main lays it.
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts
@@ -188,10 +191,14 @@ async function main() {
   await app.evaluate(({ session }) => {
     globalThis.__previewRequests = [];
     globalThis.__previewSent = [];
+    globalThis.__previewSentBy = [];
+    globalThis.__previewErrors = [];
     const requests = session.fromPartition('oby-artifact-preview').webRequest;
     requests.onCompleted((d) => { globalThis.__previewRequests.push(d.url); });
     // what actually went out: its headers sent (main's own check cancels a request before that)
-    requests.onSendHeaders((d) => { globalThis.__previewSent.push(d.url); });
+    requests.onSendHeaders((d) => { globalThis.__previewSent.push(d.url); globalThis.__previewSentBy.push({ url: d.url, id: d.webContentsId }); });
+    // and what was refused or failed, by view (ARTIFACTSAPP-18)
+    requests.onErrorOccurred((d) => { globalThis.__previewErrors.push({ url: d.url, id: d.webContentsId, error: d.error }); });
   });
 
   // ARTIFACTSAPP-4: the card, in the message that reports its task's end, opens the pane
@@ -216,6 +223,27 @@ async function main() {
   }, { artifact, text });
   const placed = await inMessage(pageArtifact.id, report.text);
   assert.deepEqual(placed, { cards: 1, inTask: false, inEnd: true, said: placed.want, want: placed.want }, `artifactsapp_4: the card is in the task's report: ${JSON.stringify(placed)}`);
+  // ARTIFACTSAPP-18: the card's top is the page's first screen, as main took it
+  const picture = card.locator('img.art-thumb-img');
+  await until('the card’s picture', async () => (await picture.count()) === 1 && picture.evaluate((i) => i.complete), 30_000);
+  const pic = await picture.evaluate((img) => {
+    if (!img.naturalWidth) return { width: 0, height: 0, png: img.src.startsWith('data:image/png;base64,'), drawn: 0 };
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const { data } = g.getImageData(0, 0, c.width, Math.floor(c.height / 2));
+    let drawn = 0;
+    // an opaque pixel that isn't the page's white: the teal heading
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3] === 255 && (data[i] < 240 || data[i + 1] < 240 || data[i + 2] < 240)) drawn++;
+    return { width: img.naturalWidth, height: img.naturalHeight, png: img.src.startsWith('data:image/png;base64,'), drawn };
+  });
+  assert.equal(pic.width, 720, `artifactsapp_18: the picture is 720 wide: ${JSON.stringify(pic)}`);
+  assert.ok(pic.png, 'artifactsapp_18: the picture is a PNG data: URL');
+  assert.ok(pic.drawn > 0, `artifactsapp_18: the picture's top half holds the page, not only its white: ${JSON.stringify(pic)}`);
+  await card.scrollIntoViewIfNeeded();
+  await shot(page, '1-card-picture');
+  console.log(`ok artifactsapp_18_the_cards_picture_is_the_artifacts_first_screen (${pic.width}x${pic.height}, ${pic.drawn} drawn pixels in its top half)`);
   await shot(page, '1-card');
   await card.click();
   await until('the pane', async () => (await page.locator(`[data-artifact-view="${pageArtifact.id}"]`).count()) > 0);
@@ -247,6 +275,24 @@ async function main() {
   const off = requests.filter((u) => !u.startsWith('file://') && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u) && !u.startsWith('data:') && !u.startsWith('devtools:'));
   assert.deepEqual(off, [], 'artifactsapp_1: every request the preview made went to its host page or the relay');
   console.log(`ok artifactsapp_1: a page artifact draws in the real window, from loopback only (${requests.length} requests)`);
+
+  // ARTIFACTSAPP-18: the picture's view, once it took the page and the pane drew it too, sent nothing
+  // but to its host page and the pane's own relay, and was refused nothing the pane wasn't
+  const byView = await app.evaluate(({ webContents }) => {
+    const all = webContents.getAllWebContents();
+    return { pane: all.find((w) => w.getURL().endsWith('/preview.html'))?.id, thumb: all.find((w) => w.getURL().endsWith('/preview.html?thumb'))?.id,
+      sent: globalThis.__previewSentBy, errors: globalThis.__previewErrors };
+  });
+  assert.ok(byView.thumb !== undefined && byView.thumb !== byView.pane, `artifactsapp_18: the picture's view is its own: ${JSON.stringify([byView.pane, byView.thumb])}`);
+  const thumbSent = byView.sent.filter((r) => r.id === byView.thumb).map((r) => r.url);
+  assert.ok(thumbSent.length > 0, 'artifactsapp_18: the picture’s view loaded the page');
+  const thumbAway = thumbSent.filter((u) => !/^(file|data|blob|devtools):/.test(u) && !new RegExp(`^http://[a-z0-9]+-preview\\.localhost:${relayPort}/`).test(u));
+  assert.deepEqual(thumbAway, [], `artifactsapp_18: the picture's view sent nothing but to its host page and the pane's relay: ${thumbAway.join(', ')}`);
+  const blocked = (id) => new Set(byView.errors.filter((r) => r.id === id && r.error === 'net::ERR_BLOCKED_BY_CLIENT').map((r) => r.url));
+  const paneBlocked = blocked(byView.pane);
+  const onlyThumb = [...blocked(byView.thumb)].filter((u) => !paneBlocked.has(u));
+  assert.deepEqual(onlyThumb, [], `artifactsapp_18: the picture's view was refused only what the pane's was: ${onlyThumb.join(', ')}`);
+  console.log(`ok artifactsapp_18_taking_the_picture_reaches_nothing_new (${thumbSent.length} requests sent, ${blocked(byView.thumb).size} refused)`);
 
   // ARTIFACTSAPP-3 (1): nothing off its origin, while its own files load
   const tries = (await inFrame(TRIES(s.port))).value;

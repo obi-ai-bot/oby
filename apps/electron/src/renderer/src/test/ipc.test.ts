@@ -161,6 +161,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
   'artifact-preview': { args: [null], refusal: null },
   'artifact-export': { args: ['3f0c2a1e-1111-4222-8333-944455556666', 1, 'zip'], refusal: null },
+  'artifact-thumb': { args: [{ id: '3f0c2a1e-1111-4222-8333-944455556666', version: 1 }], refusal: null },
   'mac-pill': { args: [null], refusal: null },
   'mac-pill-stop': { args: [], refusal: undefined },
   'mac-pill-now': { args: [], refusal: null },
@@ -379,6 +380,22 @@ describe('ARTIFACTSAPP-11', () => {
     }
     expect(the.calls.length).toBe(before.calls);
     expect(the.dialogs).toBe(before.dialogs);
+  });
+});
+
+describe('ARTIFACTSAPP-18', () => {
+  it('artifactsapp_18_the_channel_refuses_a_bad_ask', async () => {
+    const before = the.calls.length;
+    // send never answers here, so an ask let through would hang: bounded, it fails instead
+    const bounded = (p: unknown) => Promise.race([p, new Promise((r) => setTimeout(() => r('hung'), 300))]);
+    const id = '3f0c2a1e-1111-4222-8333-944455556666';
+    for (const bad of [
+      { id: 'not-a-uuid', version: 1 }, { id: id.toUpperCase(), version: 1 }, { id, version: 0 }, { id, version: 1.5 }, { id, version: '1' },
+      { id, version: 1, bounds: { x: 0, y: 0, width: 10, height: 10 } }, { id, version: 1, edits: {} }, { id, version: 1, extra: 1 }, null,
+    ]) {
+      expect(await bounded(call('artifact-thumb', own(), bad)), JSON.stringify(bad)).toBeNull();
+    }
+    expect(the.calls.length).toBe(before);
   });
 });
 
