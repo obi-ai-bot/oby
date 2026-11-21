@@ -6,6 +6,8 @@
 //   ARTIFACTSAPP-1: Sandpack draws it in main's preview view, its stylesheet applied, from
 //                   <id>-preview.localhost on main's relay; every request the preview made went to
 //                   its host page or that relay.
+//   ARTIFACTSAPP-5: its Code tab shows each file of the version, index.html first.
+//   ARTIFACTSAPP-6: the conversation gives it version 2, and the open pane moves there by itself.
 //   ARTIFACTSAPP-3: the preview reaches nothing off its origin (another site, obid, the relay by
 //                   127.0.0.1), by fetch, image, script or navigation, while its own files load; and
 //                   it is sandboxed in its own partition, with no preload, no Node and no bridge.
@@ -245,6 +247,47 @@ async function main() {
   const hostReach = await inHost(reach);
   assert.deepEqual({ ...hostReach, parentBridge: undefined }, { process: 'undefined', require: 'undefined', bridge: 'undefined', parentBridge: undefined }, `artifactsapp_3: the host page reaches no Node and no bridge: ${JSON.stringify(hostReach)}`);
   console.log('ok artifactsapp_3: the preview is sandboxed in its own partition with no way into the app');
+
+  // ARTIFACTSAPP-5: Code shows the version's files, index.html first, and Preview's view goes meanwhile
+  const viewShown = () => app.evaluate(({ BrowserWindow, webContents }) => {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().endsWith('/preview.html'));
+    const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+    return !!win.contentView.children.find((c) => c.webContents === wc)?.getVisible();
+  });
+  await page.getByRole('tab', { name: 'Code' }).click();
+  await until('the page’s code', async () => (await page.locator('[data-artifact-code="index.html"] .cm-content').innerText().catch(() => '')).includes('<h1>Hello</h1>'));
+  assert.deepEqual(await page.locator('.art-file').allInnerTexts(), ['index.html', 'style.css'], 'artifactsapp_5: a tab per file, index.html first');
+  await until('Preview’s view gone while Code shows', async () => !(await viewShown()));
+  await shot(page, '3-code');
+  await page.getByRole('tab', { name: 'style.css' }).click();
+  await until('the stylesheet’s code', async () => (await page.locator('[data-artifact-code="style.css"] .cm-content').innerText().catch(() => '')).includes('h1 { color: teal }'));
+  await page.getByRole('tab', { name: 'Preview' }).click();
+  await until('Preview’s view back', viewShown);
+  console.log('ok artifactsapp_5: Code shows each file of the version');
+
+  // ARTIFACTSAPP-6: what the conversation's agent makes opens by itself, and its next version moves
+  // the pane there. Published with the conversation's own oby_artifact from its room, which any obid
+  // with artifacts takes (a version across a conversation's jobs, ARTIFACTS-7, is newer than the
+  // installed one this may run on)
+  const room = join(s.home, 'conversations', made.conversation, 'room', 'site');
+  const publish = async (h1, artifact) => {
+    mkdirSync(room, { recursive: true });
+    writeFileSync(join(room, 'index.html'), `<!doctype html><h1>${h1}</h1>`);
+    const said = await s.call('POST', '/v1/plans', { said: `OBY oby_artifact ${JSON.stringify({ title: 'site', path: 'site', ...(artifact ? { artifact } : {}) })}`, conversation: made.conversation });
+    assert.match(said.text ?? '', /Published artifact /, `the conversation published it: ${said.text}`);
+    return said;
+  };
+  await page.getByRole('button', { name: 'Close the artifact' }).click();
+  await until('the pane closed', async () => (await page.locator('.art-strip-title').count()) === 0);
+  const first = await publish('One');
+  const site = /Published artifact ([0-9a-f-]{36})/.exec(first.text)[1];
+  await until('the new artifact open by itself', async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === 'site', 60_000);
+  assert.equal(await until('its version 1 drawn', async () => (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value, 60_000), 'One');
+  await publish('Two', site);
+  await until('the pane on version 2', async () => (await page.locator('.art-strip-title span').innerText()) === 'Oby artifact · Page · v2', 60_000);
+  assert.equal(await until('version 2 drawn', async () => { const v = (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value; return v === 'Two' && v; }, 60_000), 'Two', 'artifactsapp_6: the preview draws version 2');
+  await shot(page, '4-followed');
+  console.log('ok artifactsapp_6: a new version from the agent moves the open pane to it');
 
   // ARTIFACTSAPP-3 (1), last, since it leaves the frame on an error page:
   // a navigation of the frame: the host page's CSP (frame-src) stops it before any request, and

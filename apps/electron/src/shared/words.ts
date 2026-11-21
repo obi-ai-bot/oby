@@ -128,6 +128,10 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
       // where the conversation the words start works (WORKSPACE-3, WORDS-20): "This folder" or
       // "A new worktree", with new only; signed with the body, never one of the words
       workspace: (w) => (w === 'folder' || w === 'worktree') && body.new === true,
+      // the artifact open beside the conversation (ARTIFACTS-12, WORDS-22): its id and version, in
+      // a conversation only; signed with the body, never one of the words
+      artifact: (a) => isBody(a) && typeof a.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(a.id)
+        && Number.isSafeInteger(a.version) && (a.version as number) >= 1 && shaped(a, { id: text, version: (v) => Number.isSafeInteger(v) }) && body.new !== true,
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;

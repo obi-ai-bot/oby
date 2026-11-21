@@ -161,7 +161,7 @@ export const api = {
   // words to Oby: in a conversation, or starting a new one. with: the words' id (sent again with
   // the same id, nothing happens twice), the files uploaded for them and the tasks attached
   plan: (said: string, answer: { question: string; option: string } | undefined, where: { conversation: string } | { new: true }, folders?: string[],
-    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[]; skill?: string; workspace?: Workspace } = {}) =>
+    with_: { id?: string; attachments?: string[]; jobs?: string[]; project?: string; defaults?: PlanDefaults; ask?: string[]; skill?: string; workspace?: Workspace; artifact?: { id: string; version: number } } = {}) =>
     call<PlanAnswer>('POST', '/v1/plans', <PlanRequest>{
       said, ...(answer ? { answer } : {}), ...where, ...(folders?.length ? { folders } : {}), ...(with_.id ? { id: with_.id } : {}),
       ...(with_.attachments?.length ? { attachments: with_.attachments } : {}), ...(with_.jobs?.length ? { jobs: with_.jobs } : {}),
@@ -173,6 +173,9 @@ export const api = {
       ...(with_.skill ? { skill: with_.skill } : {}),
       // where a new conversation works (workspace-v1, WORKSPACE-3): with new only
       ...(with_.workspace && 'new' in where ? { workspace: with_.workspace } : {}),
+      // the artifact open beside the conversation (artifact-turn-v1, ARTIFACTS-12): its agent is told
+      // which artifact and version the words are about (docs/contracts/artifacts-app.md, ARTIFACTSAPP-7)
+      ...(with_.artifact ? { artifact: with_.artifact } : {}),
     }),
   // a conversation's workspace and its finishing actions (workspace-v1, WORKSPACE-4 and 5)
   workspace: (c: string) => call<WorkspaceAnswer>('GET', `/v1/conversations/${id(c)}/workspace`),
@@ -289,6 +292,15 @@ export const api = {
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
   // a conversation's artifacts, newest first (docs/api/artifacts.md; the app's: docs/contracts/artifacts-app.md)
   artifacts: (opts: { conversation?: string; job?: string } = {}) => call<Artifact[]>('GET', `/v1/artifacts${q(opts)}`),
+  artifact: (a: string) => call<Artifact>('GET', `/v1/artifacts/${id(a)}`),
+  // one file of a version, as text (the Code tab; docs/contracts/artifacts-app.md, ARTIFACTSAPP-5)
+  artifactText: async (a: string, version: number, path: string) => {
+    const bridge = window.app?.obid;
+    if (!bridge) throw new ApiError(0, 'Oby’s engine is reached from the Mac app only.');
+    const { status, text } = await bridge.call('GET', `/v1/artifacts/${id(a)}/${version}/${path.split('/').map(id).join('/')}`, undefined);
+    if (status < 200 || status >= 300) throw new ApiError(status, status === 404 ? 'That file isn’t there.' : `Oby answered ${status}.`);
+    return text;
+  },
   // Stop: the turn under way in this conversation ends at once, its answer what Oby said until then
   stopConversation: (c: string) => call<{ stopped: true }>('POST', '/v1/conversation/stop', { conversation: c }),
 };
