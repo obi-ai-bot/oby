@@ -172,7 +172,7 @@ async fn forward(shared: &Arc<Shared>, id: &str, target: &str, request: Request)
             .body(body.clone());
         for name in CARRIED {
             if let Some(value) = parts.headers.get(*name) {
-                upstream = match there(&computer, *name, value) {
+                upstream = match there(&computer, name, value) {
                     Some(words) => upstream.header(*name, words),
                     None => upstream.header(*name, value),
                 };
