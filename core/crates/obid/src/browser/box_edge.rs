@@ -36,29 +36,45 @@ pub const EXCHANGES_LOOKED: usize = 500;
 /// Who `job` works for, from obid's records only: the incoming exchange that brought it (its peer
 /// and the peer's owner, from the Sphere's directory: `exchanges` as `Link::exchanges_json` gives
 /// them), or the Obi-to-Obi request it serves (`Job::obi`), else its `untrusted` mark or Oby's own
-/// review. Nothing its request says (its goal, its summary) is read here.
-pub fn origin_of(job: &crate::job::Job, exchanges: &serde_json::Value) -> Origin {
-    let brought = exchanges
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|e| e["direction"] == "incoming" && e["job"].as_str() == Some(job.id.as_str()));
-    if let Some(e) = brought {
-        return Origin::Obi {
-            peer: e["peer"].as_str().unwrap_or_default().into(),
-            peer_owner: e["peerOwner"].as_str().unwrap_or_default().into(),
-        };
+/// review. A follow-up is read the same way back along the jobs it follows up (`earlier` finds
+/// each), so one of another Oby's job or review, or of Oby's own review, is never the owner's. Its
+/// `foreign` mark isn't read: a page an own job's agent read sets it too. Nothing its request says
+/// (its goal, its summary) is read here.
+pub fn origin_of(
+    job: &crate::job::Job,
+    exchanges: &serde_json::Value,
+    earlier: impl Fn(&str) -> Option<crate::job::Job>,
+) -> Origin {
+    let mut next = Some(job.clone());
+    let mut untrusted = false;
+    // A line of follow-ups is short; this only stops a loop.
+    for _ in 0..64 {
+        let Some(j) = next else { break };
+        let brought = exchanges
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["direction"] == "incoming" && e["job"].as_str() == Some(j.id.as_str()));
+        if let Some(e) = brought {
+            return Origin::Obi {
+                peer: e["peer"].as_str().unwrap_or_default().into(),
+                peer_owner: e["peerOwner"].as_str().unwrap_or_default().into(),
+            };
+        }
+        if let Some(obi) = &j.obi {
+            return Origin::Obi {
+                peer: obi.from.clone(),
+                peer_owner: obi.from_owner.clone(),
+            };
+        }
+        untrusted |= j.untrusted || j.review_of.is_some();
+        next = j.follow_up_of.as_deref().and_then(&earlier);
     }
-    if let Some(obi) = &job.obi {
-        return Origin::Obi {
-            peer: obi.from.clone(),
-            peer_owner: obi.from_owner.clone(),
-        };
+    if untrusted {
+        Origin::Untrusted
+    } else {
+        Origin::Own
     }
-    if job.untrusted || job.review_of.is_some() {
-        return Origin::Untrusted;
-    }
-    Origin::Own
 }
 
 /// Whether a foreign job's browser may open `url`: a web page that isn't one of the host's own
@@ -105,6 +121,63 @@ mod tests {
     use super::*;
 
     const PORTS: &[u16] = &[7777, 7778];
+
+    fn job(id: &str, kind: &str) -> crate::job::Job {
+        crate::job::Job::new(
+            id.into(),
+            "o/r".into(),
+            kind.into(),
+            "t".into(),
+            "claude".into(),
+            "a".into(),
+        )
+    }
+
+    /// A follow-up keeps where its line of jobs came from: one of another Oby's review (its `obi`
+    /// on the review, not on the follow-up) works for that Oby, one of Oby's own review is
+    /// untrusted, and one of the owner's own job is the owner's (BROWSER-18).
+    #[test]
+    fn browser_18_a_follow_up_of_another_obys_review_is_foreign() {
+        let mut theirs = job("r1", "review");
+        theirs.review_of = Some("j0".into());
+        theirs.obi = Some(crate::job::ObiRef {
+            correlation_id: "c".into(),
+            from: "obi-b".into(),
+            from_owner: "ben".into(),
+            request_id: "q".into(),
+        });
+        let mut ours = job("r2", "review");
+        ours.review_of = Some("j0".into());
+        let own = job("j0", "build");
+        let earlier = [theirs, ours, own];
+        let get = |id: &str| earlier.iter().find(|j| j.id == id).cloned();
+        let follow = |of: &str| {
+            let mut f = job(&format!("f-{of}"), "build");
+            f.follow_up_of = Some(of.into());
+            // A follow-up of a foreign job carries `foreign`, which a page read also sets: never
+            // what decides.
+            f.foreign = Some("it follows up a job whose check got none of them".into());
+            f
+        };
+        let obi = Origin::Obi {
+            peer: "obi-b".into(),
+            peer_owner: "ben".into(),
+        };
+        assert_eq!(origin_of(&follow("r1"), &serde_json::Value::Null, get), obi);
+        let mut twice = follow("f-r1");
+        twice.follow_up_of = Some("f-r1".into());
+        let chain = [follow("r1")];
+        let get2 = |id: &str| get(id).or_else(|| chain.iter().find(|j| j.id == id).cloned());
+        assert_eq!(origin_of(&twice, &serde_json::Value::Null, get2), obi);
+        assert_eq!(
+            origin_of(&follow("r2"), &serde_json::Value::Null, get),
+            Origin::Untrusted
+        );
+        assert_eq!(
+            origin_of(&follow("j0"), &serde_json::Value::Null, get),
+            Origin::Own
+        );
+    }
 
     #[test]
     fn browser_18_a_foreign_browser_opens_web_pages_but_not_the_hosts_services_or_files() {

@@ -81,6 +81,18 @@ impl Api {
         );
     }
 
+    /// Job `id`, known as the owner's, is foreign by `origin`: it works for that one from now on,
+    /// in its box's partition. A foreign job's origin is kept as it was first found.
+    pub fn found_foreign(&mut self, id: &str, origin: c::Origin) {
+        if !origin.foreign() {
+            return;
+        }
+        if let Some(j) = self.jobs.get_mut(id).filter(|j| !j.origin.foreign()) {
+            j.partition = origin.partition(id, &j.agent);
+            j.origin = origin;
+        }
+    }
+
     /// Every job the API knows.
     pub fn job_ids(&self) -> Vec<String> {
         self.jobs.keys().cloned().collect()

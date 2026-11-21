@@ -137,7 +137,7 @@ fn know_running_jobs(shared: &Shared) {
         .exchanges_json(super::box_edge::EXCHANGES_LOOKED);
     for job in shared.jobs.list(usize::MAX) {
         if job.status == crate::job::Status::Running {
-            let origin = super::box_edge::origin_of(&job, &exchanges);
+            let origin = super::box_edge::origin_of(&job, &exchanges, |id| shared.jobs.get(id));
             shared.browser.ensure_job(&job.id, &job.agent, origin);
         }
     }
@@ -487,7 +487,8 @@ async fn mcp(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes)
             let exchanges = shared
                 .link
                 .exchanges_json(super::box_edge::EXCHANGES_LOOKED);
-            (j.agent.clone(), super::box_edge::origin_of(&j, &exchanges))
+            let origin = super::box_edge::origin_of(&j, &exchanges, |id| shared.jobs.get(id));
+            (j.agent.clone(), origin)
         })
         .unwrap_or_default();
     shared.browser.ensure_job(&job, &agent, origin);

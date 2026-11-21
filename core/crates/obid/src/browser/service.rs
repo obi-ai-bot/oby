@@ -143,12 +143,16 @@ impl Service {
         self.events.subscribe()
     }
 
-    /// A job the API doesn't know yet: its browser `notStarted`.
+    /// A job the API doesn't know yet: its browser `notStarted`. One it knows takes `origin` when
+    /// obid's records now find it foreign (BROWSER-18): read on every call, never only the first,
+    /// and never back to the owner's.
     pub fn ensure_job(&self, job: &str, agent: &str, origin: c::Origin) {
         let added = self.api(|a| {
             let new = a.job(job).is_none();
             if new {
                 a.add_job_for(job, agent, origin);
+            } else {
+                a.found_foreign(job, origin);
             }
             new
         });
@@ -215,4 +219,38 @@ fn test_commit_delay() -> Duration {
         return Duration::from_millis(ms.min(10_000));
     }
     Duration::ZERO
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// An own job the browser already knows, later found foreign in obid's records, is foreign
+    /// from its next call: its origin is never only the first one heard (BROWSER-18).
+    #[tokio::test]
+    async fn browser_18_a_job_that_becomes_foreign_loses_its_browser() {
+        let home = std::env::temp_dir().join(format!("oby-browser-18-{}", std::process::id()));
+        let service = Service::open(&home).await;
+        service.ensure_job("j1", "claude", c::Origin::Own);
+        service.ensure_job("j1", "claude", c::Origin::Untrusted);
+        assert_eq!(
+            service.api(|a| a.job("j1").map(|j| j.origin.clone())),
+            Some(c::Origin::Untrusted)
+        );
+        let answer = service
+            .call_tool("j1", &home, "oby_browser_snapshot", &json!({}))
+            .await;
+        assert_eq!(
+            answer["structuredContent"]["error"]["code"], "browser_off",
+            "{answer}"
+        );
+        // A job found foreign never goes back to its agent's partition.
+        service.ensure_job("j1", "claude", c::Origin::Own);
+        assert_eq!(
+            service.api(|a| a.job("j1").map(|j| j.partition.clone())),
+            Some("oby-box-j1".into())
+        );
+    }
 }

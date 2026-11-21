@@ -24,7 +24,9 @@ impl Jobs {
     /// loopback, as Oby's other servers (LANES-26).
     pub(super) fn browser_server(&self, job: &Job) -> Option<crate::browser::AgentServer> {
         use crate::browser::box_edge;
-        if !box_edge::FOREIGN_BROWSER && box_edge::origin_of(job, &Value::Null).foreign() {
+        if !box_edge::FOREIGN_BROWSER
+            && box_edge::origin_of(job, &Value::Null, |id| self.get(id)).foreign()
+        {
             return None;
         }
         let browser = self.browser.get()?;
