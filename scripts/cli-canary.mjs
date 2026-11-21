@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The CLI canary's report and its two-in-a-row rule (docs/contracts/ci.md, CI-14 to 16; docs/ci.md,
-// "The CLI canary"), for .github/workflows/cli-canary.yml. Node alone, no npm package.
+// The CLI canary's report and its two-in-a-row rule (docs/ci.md, "The CLI canary"), run by hand
+// after tests/cli_canary.rs. Node alone, no npm package.
 //
 //   node scripts/cli-canary.mjs report --results <dir> --run <id> --out <file>
 //                                      [--record <cli>/<case>=passed|failed]...

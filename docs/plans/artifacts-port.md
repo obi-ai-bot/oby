@@ -583,7 +583,7 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 - Now: P2 and P3 land as planned; L1 and L3a side by side, each owning its files; then L2, L3b, L4
   and L5; L6 last. `api.rs` is touched by P2 and L3a, and `shared/words.ts` by L2, L3b and L4:
   those land one after another, never at once.
-- Every PR runs `scripts/preflight.sh` before its push and carries `full-suite`; each obid PR's Blok
+- Every PR runs `scripts/preflight.sh` before its push; each obid PR's Blok
   proof runs in its own PR, red before its code and green after.
 
 ## Decided

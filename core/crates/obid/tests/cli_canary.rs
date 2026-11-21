@@ -1,5 +1,5 @@
-//! The CLI canary (docs/contracts/ci.md, CI-14 to 16; docs/ci.md, "The CLI canary"): the newest
-//! Claude Code and Codex, which .github/workflows/cli-canary.yml installs every 6 hours, run through
+//! The CLI canary (docs/ci.md, "The CLI canary"; docs/cli-canary.md): the newest Claude Code and
+//! Codex, installed by hand and named by `CLI_CANARY_CLAUDE` and `CLI_CANARY_CODEX`, run through
 //! the real obid binary's adapters against fakes on 127.0.0.1, with no login and no secret. Each
 //! case drives the job through obid's API only.
 //!
