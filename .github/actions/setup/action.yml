@@ -1,0 +1,33 @@
+# What a Linux runner needs before it scans a change or runs obid's tests (docs/ci.md).
+name: setup
+description: gitleaks at the workflow's pinned version and, when asked, bubblewrap for obid's job sandbox
+inputs:
+  sandbox:
+    description: "true: also install bubblewrap"
+    default: "false"
+runs:
+  using: composite
+  steps:
+    # The secret scan's own tool, and obid's: its tests run gitleaks from PATH. The version and its
+    # SHA-256 are the workflow's (GITLEAKS_VERSION, GITLEAKS_SHA256 in ci.yml's env).
+    - name: gitleaks
+      shell: bash
+      run: |
+        archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+        echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+        mkdir -p "$RUNNER_TEMP/gitleaks"
+        tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
+        echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+    # obid's job sandbox on Linux is bubblewrap (with slirp4netns for an agent's network). Ubuntu
+    # 24.04's AppArmor refuses the unprivileged user namespaces it needs, so this throwaway runner
+    # allows them. The workflow's next step proves bubblewrap works here: a sandbox test that fails
+    # after it is the sandbox's failure, not the runner's.
+    - name: bubblewrap
+      if: inputs.sandbox == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq bubblewrap slirp4netns
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
