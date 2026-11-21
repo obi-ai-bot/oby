@@ -90,7 +90,8 @@ function startOnce() {
     const { list, ui } = demoScreen(new URLSearchParams(location.search).get('computers'));
     void startComputers(demoApi(list), ui);
   } else if (onObid) {
-    void obidComputers().then((on) => startComputers(on));
+    // whatever obid answers, or doesn't: nothing offered (This Mac only), never an error unhandled
+    void obidComputers().then((on) => startComputers(on)).catch(() => startComputers(null));
   }
 }
 

@@ -182,7 +182,7 @@ function refused(mine: number, status: number, text: string) {
   // the profile kept is none of obid's (gone, or another obid): obid's default profile, followed again
   if (status === 400 && openedProfile() && !openedComputer()) { openProfile(null); return; }
   // the computer in use is none the Mac keeps now: its list says which is (obid.ts, heard)
-  if (status === 404 && openedComputer()) void obid('GET', '/v1/computers');
+  if (status === 404 && openedComputer()) void Promise.resolve().then(() => obid('GET', '/v1/computers')).catch(() => {});
   if (status === 401) return down(mine, 'obid refused this Mac’s token (api-token).');
   let said: { error?: unknown; starting?: unknown } | null = null;
   try { said = JSON.parse(text); } catch { /* not obid's JSON */ }
@@ -224,7 +224,7 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     post({ kind: 'snapshot', ...now() });
     // which computer obid keeps the window on, once a launch (obid keeps it across restarts): its
     // answer moves the window there (obid.ts, heard); an obid with no computers answers 404, and nothing moves
-    if (!askedComputers) { askedComputers = true; void obid('GET', '/v1/computers'); }
+    if (!askedComputers) { askedComputers = true; void Promise.resolve().then(() => obid('GET', '/v1/computers')).catch(() => {}); }
     pending.splice(0).forEach((e) => take(e, false));
     onSynced();
     state.inbox.forEach(lookUpJobOf);
@@ -282,7 +282,7 @@ function openComputer(id: string | null) {
   stream?.abort();
   stream = null;
   void follow();
-  if (id) { if (!mac) void followMac(); } else stopMac();
+  if (id) { if (!mac) void followMac().catch(() => {}); } else stopMac();
 }
 
 let askedComputers = false;
@@ -294,7 +294,7 @@ async function followMac() {
   const again = () => {
     if (mac !== control) return;
     mac = null;
-    if (openedComputer()) setTimeout(() => { if (!mac && openedComputer()) void followMac(); }, Math.min(10_000, 1000 * 2 ** macRetry++));
+    if (openedComputer()) setTimeout(() => { if (!mac && openedComputer()) void followMac().catch(() => {}); }, Math.min(10_000, 1000 * 2 ** macRetry++));
   };
   const r = await send('GET', '/v1/events?alerts=1', undefined, control.signal, undefined, true);
   if (!(r instanceof Response) || !r.ok || !r.body) return again();

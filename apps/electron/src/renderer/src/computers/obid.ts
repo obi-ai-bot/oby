@@ -14,7 +14,7 @@
 // computer's own code for another Mac, and its reach switches. Each answers that it isn't in Oby
 // yet, in words the owner reads, and his controls stay where his screens have them.
 import type { AddProgress, Computer, ComputerList, ComputerState, Invitation, LinkRead, RouteKind, Tried } from './view';
-import type { ComputerWire, ComputersWire, Event } from '../../../shared/obid-wire';
+import { isComputersWire, type ComputerWire, type ComputersWire, type Event } from '../../../shared/obid-wire';
 
 /** obid's events about the window's computers, as the page's live store passes them on (live.ts, onComputerEvent). */
 export type ComputerEvents = (f: (e: Extract<Event, { kind: 'computers' | 'computerRoute' }>) => void) => () => void;
@@ -67,12 +67,34 @@ export function computerOf(c: ComputerWire): Computer {
 export const listOf = (w: ComputersWire): ComputerList => ({ current: w.current, computers: w.computers.map(computerOf) });
 
 type Call = (method: string, path: string, body?: unknown) => Promise<{ status: number; text: string }>;
+type Answer = { status: number; text: string };
+// (`Oby didn’t answer.` and `Oby didn’t say which computer it added.` are proposed words, Sangam's to change)
+// The bridge's answer, never assumed: a call that throws, or a bridge that answers nothing (a page
+// whose obid isn't this Mac app's), reads as no answer, status 0
+async function answer(call: Call, method: string, path: string, body?: unknown): Promise<Answer> {
+  try {
+    const a = await call(method, path, body) as Partial<Answer> | undefined | null;
+    return a && typeof a.status === 'number' ? { status: a.status, text: typeof a.text === 'string' ? a.text : '' } : { status: 0, text: '' };
+  } catch (e) {
+    return { status: 0, text: e instanceof Error ? e.message : String(e) };
+  }
+}
+// obid's list, only in its shape: anything else is none
+function listIn(a: Answer): ComputerList | null {
+  if (a.status !== 200) return null;
+  try { const v: unknown = JSON.parse(a.text); return isComputersWire(v) ? listOf(v) : null; } catch { return null; }
+}
+// a computer as obid's list has it, only in its shape
+const rowIn = (v: unknown): ComputerWire | null => {
+  const c = v as ComputerWire | null;
+  return c && typeof c.id === 'string' && typeof c.name === 'string' && typeof c.state === 'string' ? c : null;
+};
 // obid's answer, or its refusal in its own words (`error`), as a Refusal
 async function asked<T>(call: Call, method: string, path: string, body?: unknown): Promise<T> {
-  const { status, text } = await call(method, path, body);
+  const { status, text } = await answer(call, method, path, body);
   let value: unknown = null;
   try { value = text ? JSON.parse(text) : null; } catch { /* not JSON: said below */ }
-  if (status === 0) throw new Refusal(text);
+  if (status === 0) throw new Refusal(text || `Oby didn’t answer.`);
   if (status < 200 || status >= 300) {
     const said = (value as { error?: unknown } | null)?.error;
     throw new Refusal(typeof said === 'string' ? said : `Oby answered ${status}.`);
@@ -83,10 +105,10 @@ const id = encodeURIComponent;
 
 /** obid's ComputersApi on `call` (the bridge's), with `events` its computers' events; null when obid serves no list of computers (an obid before them answers 404). */
 export async function computersOn(call: Call, events: ComputerEvents): Promise<ComputersApi | null> {
-  const first = await call('GET', '/v1/computers');
-  if (first.status !== 200) return null;
-  let latest: ComputerList;
-  try { latest = listOf(JSON.parse(first.text) as ComputersWire); } catch { return null; }
+  // no answer, a refusal, or not obid's list (an obid before computers answers 404): This Mac only
+  const first = listIn(await answer(call, 'GET', '/v1/computers'));
+  if (!first) return null;
+  let latest: ComputerList = first;
   const ons = new Set<(l: ComputerList) => void>();
   const tell = (l: ComputerList) => { latest = l; ons.forEach((on) => on(l)); };
   // a route moved, or none answers: the computer as obid says, until its list comes again
@@ -105,21 +127,27 @@ export async function computersOn(call: Call, events: ComputerEvents): Promise<C
       const read = await asked<{ name: string; fingerprint: string }>(call, 'POST', '/v1/computers/link', { link });
       return { name: read.name, fingerprint: read.fingerprint };
     },
-    addWithCode: async (link, code) => (await asked<ComputerWire>(call, 'POST', '/v1/computers', { link, code })).id,
+    addWithCode: async (link, code) => {
+      const added = rowIn(await asked<unknown>(call, 'POST', '/v1/computers', { link, code }));
+      if (!added) throw new Refusal('Oby didn’t say which computer it added.');
+      return added.id;
+    },
     invite: async () => { throw new Refusal(NOT_YET.code); },
     setReach: async () => { throw new Refusal(NOT_YET.code); },
     use: async (to) => {
       try {
-        tell(listOf(await asked<ComputersWire>(call, 'PUT', '/v1/computers/current', { id: to })));
+        const got = await asked<unknown>(call, 'PUT', '/v1/computers/current', { id: to });
+        const list = isComputersWire(got) ? listOf(got) : listIn(await answer(call, 'GET', '/v1/computers'));
+        if (list) tell(list);
       } catch (e) {
         // the list changed under it (no_such_computer): obid's list again, then its words
-        const again = await call('GET', '/v1/computers');
-        if (again.status === 200) { try { tell(listOf(JSON.parse(again.text) as ComputersWire)); } catch { /* the words below */ } }
+        const again = listIn(await answer(call, 'GET', '/v1/computers'));
+        if (again) tell(again);
         throw e;
       }
     },
-    retry: async (c) => { const got = computerOf(await asked<ComputerWire>(call, 'POST', `/v1/computers/${id(c)}/retry`)); change(c, () => got); },
-    rename: async (c, name) => { const got = computerOf(await asked<ComputerWire>(call, 'PATCH', `/v1/computers/${id(c)}`, { name })); change(c, () => got); },
+    retry: async (c) => { const got = rowIn(await asked<unknown>(call, 'POST', `/v1/computers/${id(c)}/retry`)); if (got) change(c, () => computerOf(got)); },
+    rename: async (c, name) => { const got = rowIn(await asked<unknown>(call, 'PATCH', `/v1/computers/${id(c)}`, { name })); if (got) change(c, () => computerOf(got)); },
     remove: async (c) => { await asked(call, 'DELETE', `/v1/computers/${id(c)}`); tell({ ...latest, computers: latest.computers.filter((x) => x.id !== c), ...(latest.current === c ? { current: 'this' } : {}) }); },
   };
 }

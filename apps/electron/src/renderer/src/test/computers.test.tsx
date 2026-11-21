@@ -428,6 +428,40 @@ describe('COMPUTERSAPP-12: on obid, offered once obid answers its list of comput
   it('computersapp_12: without the Mac app’s bridge there is no obid to ask', async () => {
     expect(await obidComputers()).toBeNull();
   });
+  it('computersapp_12: a window with no computers route raises nothing: no answer, a throw, or not obid’s list is This Mac only', async () => {
+    const quiet = vi.fn();
+    const none: ComputerEvents = () => () => {};
+    // a bridge that answers nothing (a test's, or a page whose obid isn't this app's), one that throws,
+    // and answers that aren't obid's list
+    for (const call of [
+      async () => undefined as unknown as { status: number; text: string },
+      async () => { throw new Error('gone'); },
+      async () => ({ status: 200, text: '{}' }),
+      async () => ({ status: 200, text: 'not json' }),
+      async () => ({ status: 0, text: 'obid isn’t running' }),
+    ]) {
+      expect(await computersOn(call, none).catch(quiet)).toBeNull();
+    }
+    expect(quiet).not.toHaveBeenCalled();
+    // the page's own start, on a bridge that answers nothing: nothing offered, no error left behind
+    (window as unknown as { app: unknown }).app = { obid: { call: async () => undefined } };
+    expect(await obidComputers()).toBeNull();
+    delete (window as unknown as { app?: unknown }).app;
+  });
+  it('computersapp_12: answers not in obid’s shape read as none, never a TypeError', async () => {
+    const o = fakeObid({ current: 'studio', computers: [STUDIO_WIRE] });
+    const api = (await computersOn(o.call, o.events))!;
+    o.answers.set('PUT /v1/computers/current', { status: 200, body: null });
+    await api.use('this');
+    expect((await api.list()).current).toBe('studio');
+    o.answers.set('PATCH /v1/computers/studio', { status: 200, body: {} });
+    await api.rename('studio', 'Big Mac');
+    expect((await api.list()).computers[0].name).toBe('Studio');
+    o.answers.set('POST /v1/computers/studio/retry', { status: 200, body: null });
+    await api.retry('studio');
+    o.answers.set('POST /v1/computers', { status: 201, body: {} });
+    await expect(api.addWithCode('oby-computer:x', '482913')).rejects.toBeInstanceOf(Refusal);
+  });
   it('computersapp_12: nothing of the demo data shows outside ?everything', async () => {
     await act(async () => root.render(<ComputerButton />));
     expect($('.rail-computer')).toBeNull();
