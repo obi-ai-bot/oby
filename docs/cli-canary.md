@@ -215,16 +215,15 @@ The canary should drive these through obid's adapters, as R01-11 says. Line numb
 
 ## What R01-11 built
 
-The canary itself (docs/ci.md, "The CLI canary"; docs/contracts/ci.md, CI-14 to 16):
+The canary itself (docs/ci.md, "The CLI canary"), run by hand since GitHub stopped running it (the owner's decision of 2026-11-21, [docs/decisions/2026-11-21-lean-ci.md](decisions/2026-11-21-lean-ci.md)):
 
-- `.github/workflows/cli-canary.yml`: every 6 hours and on demand, the install commands above, the cases, the report and the two-in-a-row rule.
 - `core/crates/obid/tests/agents/fake-model-server`: the fake model, Anthropic's Messages API only, as "What the fake model must send" describes it, logging every request.
 - `core/crates/obid/tests/cli_canary.rs`: the cases of the table above that a runner can run, through obid's API, each recording its result; and the tests of the report and the rule.
 - `scripts/cli-canary.mjs`: the report and the rule, which opens or comments on one `cli-drift` issue.
 
 Codex doesn't reach the fake through a `-c` model provider, as the spike's driver did. Through obid, a Codex job on Linux is boxed and gets no model provider of the test's choosing, so the canary signs a Codex account in with ChatGPT and goes through obid's own ChatGPT relay to the stand-in OpenAI the ChatGPT tests use (`core/crates/obid/tests/support/stand_in_openai.rs`), which is both the sign-in issuer and the model. Claude Code reaches the fake model through an own job's login-shell environment (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY=dummy`). cursor-agent gets only the signed-out check.
 
-The workflow installs Claude Code and Codex into `/opt/cli-canary`, not the temporary prefix above: obid's box hides the home and `/tmp`, and a boxed Codex installed there fails with "Missing optional dependency @openai/codex-linux-arm64" (measured on Linux, codex-cli 0.169.0), since the box shows its own package's folder but not the platform package beside it.
+Install Claude Code and Codex into a folder such as `/opt/cli-canary`, not the temporary prefix above: obid's box hides the home and `/tmp`, and a boxed Codex installed there fails with "Missing optional dependency @openai/codex-linux-arm64" (measured on Linux, codex-cli 0.169.0), since the box shows its own package's folder but not the platform package beside it.
 
 ## Open risks
 

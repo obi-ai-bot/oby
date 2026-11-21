@@ -112,7 +112,7 @@ impl WindowDriver {
                 .tab(id)
                 .is_some_and(|t| t.dialog.is_some())
         });
-        let url_now = if ticket.refs.is_empty() && !(works && !dialog_open) {
+        let url_now = if ticket.refs.is_empty() && (!works || dialog_open) {
             None
         } else {
             match before(
