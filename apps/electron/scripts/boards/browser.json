@@ -1,0 +1,90 @@
+[
+  {
+    "n": 1, "board": "Closed", "query": "browser=1", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [
+      {
+        "tolerance": 4,
+        "before": [
+          { "op": "click", "target": { "role": "button", "name": "Show the browser, 2 tabs, Codex is using one" }, "hover": true },
+          { "wait": { "role": "tooltip" } }
+        ]
+      }
+    ]
+  },
+  {
+    "n": 2, "board": "Main", "query": "browser=2", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4 }]
+  },
+  {
+    "n": 3, "board": "Together", "query": "browser=3", "size": { "width": 1440, "height": 900 }, "storage": { "oby.chatPanelOpen": "1" },
+    "checks": [{ "tolerance": 4, "skip": [".br-tabs-end .icon-button", ".br-tab"] }]
+  },
+  {
+    "n": 4, "board": "Narrow", "query": "browser=4", "size": { "width": 994, "height": 670 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4, "skip": [".br-address"] }]
+  },
+  {
+    "n": 5, "board": "Full", "query": "browser=5", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4, "skip": [".br-tab"] }]
+  },
+  {
+    "n": 6, "board": "Hold", "query": "browser=6", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [
+      { "state": "held", "tolerance": 4 },
+      { "state": "gaveBack", "tolerance": 4, "before": [{ "op": "click", "target": { "role": "button", "name": "Give back" } }] }
+    ]
+  },
+  {
+    "n": 7, "board": "AsksYou", "query": "browser=7", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4, "skip": [".decision-card", ".tc-ask-line", ".tc-ask-text"] }]
+  },
+  {
+    "n": 8, "board": "Secret", "query": "browser=8", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4, "skip": [".decision-card", ".tc-ask-line", ".secret-row", ".secret-note"] }]
+  },
+  {
+    "n": 9, "board": "Asks", "query": "browser=9", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "gap": "a sheet of the four ask cards side by side, where the app shows one at a time over the message box: its cards are checked word by word in browser-09-every-ask.json, not by the sheet's places"
+  },
+  {
+    "n": 10, "board": "PageStates", "query": "browser=10", "size": { "width": 1280, "height": 880 }, "storage": { "oby.chatPanelOpen": "0" },
+    "gap": "a sheet of six page states side by side, where the app shows one tab's at a time: each is checked word by word in browser-10-page-states.json; the picture is the crashed page",
+    "before": [
+      { "op": "click", "target": { "css": ".br-tab", "nth": 5 } },
+      { "wait": { "css": "[data-browser=page-crashed]" } }
+    ]
+  },
+  {
+    "n": 11, "board": "Script", "query": "browser=11", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4, "skip": [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"] }]
+  },
+  {
+    "n": 12, "board": "Downloads", "query": "browser=12", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4, "skip": [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"] }]
+  },
+  {
+    "n": 13, "board": "SettingsBrowser", "query": "browser=13", "size": { "width": 1200, "height": 860 }, "storage": { "oby.chatPanelOpen": "1" },
+    "gap": "today's Settings has more groups than the board draws: its Browser group is checked by its words, switches and place after Permissions in browser-13-settings.json, not by the board's places",
+    "before": [
+      { "op": "press", "keys": "Meta+Comma" },
+      { "op": "click", "target": { "css": ".sidebar-item", "hasText": "General" } },
+      { "wait": { "css": "[data-browser=settings] .set-head" } }
+    ]
+  },
+  {
+    "n": 14, "board": "OtherComputer", "query": "browser=14", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4, "skip": [".br-tabs-end .icon-button", ".br-address", ".br-control-text", ".br-control .tc-option"] }]
+  },
+  {
+    "n": 15, "board": "Desktop", "query": "browser=15", "size": { "width": 1440, "height": 900 }, "storage": { "oby.chatPanelOpen": "0" },
+    "gap": "the board draws the Mac's own screen around Oby's pill and frame, which the app shows in windows of their own: the pill is checked word by word in its window in browser-15-the-mac.json"
+  },
+  {
+    "n": 16, "board": "DesktopPermission", "query": "browser=16", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4 }]
+  },
+  {
+    "n": 17, "board": "Empty", "query": "browser=17", "size": { "width": 1280, "height": 800 }, "storage": { "oby.chatPanelOpen": "0" },
+    "checks": [{ "tolerance": 4 }]
+  }
+]
