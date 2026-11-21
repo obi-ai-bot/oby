@@ -37,6 +37,13 @@ serde_json.workspace = true
 # through obi-protocol.
 sha2.workspace = true
 thiserror.workspace = true
+# Oby Artifacts' sharing (src/artifacts/seal.rs, ARTSHARE-1 to 3): a version as a deterministic tar,
+# sealed once with age (age-encryption.org/v1) for every member. `age` was decided over writing its
+# format by hand (docs/plans/artifacts-port.md, "Decided"): it brings i18n-embed, not optional.
+age = { version = "0.11", default-features = false }
+# A card's X25519 seal key written as age's recipient (`age1…`), as age itself writes it.
+bech32 = "0.9"
+tar = { version = "0.4", default-features = false }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
