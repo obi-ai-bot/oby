@@ -108,6 +108,9 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
   if (ui.card === 'password') {
     return <div className="br-control is-held" role="status" data-browser="control"><span className="br-control-text"><KeyRound size={14} strokeWidth={1.6} /><span><b>You’re filling the password.</b> {who} waits.</span></span></div>;
   }
+  // On obid nobody holds a tab (O1): the page is the tab's own webview, which you and the agent both
+  // use, so no tab reads as yours and the strip stays as the board draws a tab nobody holds. Sangam's
+  // screens have no words yet for "you're on the page" (docs/plans/browser-t3.md, Open).
   if (tab.holder === 'you') {
     return (
       <div className="br-control is-held" role="status" data-browser="control">
@@ -166,50 +169,18 @@ export function PageState({ tab }: { tab: Tab }) {
   }
 }
 
-/**
- * The live page: the stream's newest frame, drawn from the top left at the panel's width. While you
- * hold the tab, your mouse and keys on it go to the page (POST …/input, signed by main right after
- * the very input it saw: BROWSERAPP-10), in the page's own px; never unless you hold it.
- */
-function LiveFrame({ tab, url, size }: { tab: Tab; url: string; size: { width: number; height: number } }) {
-  const { api } = useBrowser();
-  const held = tab.holder === 'you';
-  const at = (e: { clientX: number; clientY: number; currentTarget: Element }) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const scale = Math.min(r.width / size.width, r.height / size.height) || 1;
-    return { x: Math.round((e.clientX - r.left) / scale), y: Math.round((e.clientY - r.top) / scale) };
-  };
-  const send = (e: Parameters<NonNullable<typeof api.input>>[1]) => { if (held) void api.input?.(tab.id, e); };
-  return (
-    <div
-      className="br-frame" tabIndex={held ? 0 : -1} data-browser="frame-input" aria-label={held ? 'The page: you have it' : undefined}
-      style={{ position: 'absolute', inset: 0, outline: 'none', cursor: held ? 'default' : 'not-allowed' }}
-      onPointerDown={(e) => { if (!held) return; e.currentTarget.focus(); const p = at(e); send({ type: 'mouse', eventType: 'mouseMoved', ...p }); send({ type: 'mouse', eventType: 'mousePressed', ...p, button: 'left', clickCount: 1 }); }}
-      onPointerUp={(e) => send({ type: 'mouse', eventType: 'mouseReleased', ...at(e), button: 'left', clickCount: 1 })}
-      onWheel={(e) => send({ type: 'mouse', eventType: 'mouseWheel', ...at(e), deltaX: e.deltaX, deltaY: e.deltaY })}
-      onKeyDown={(e) => { if (!held) return; e.preventDefault(); send({ type: 'key', eventType: 'keyDown', key: e.key, code: e.code, text: e.key.length === 1 ? e.key : null }); }}
-      onKeyUp={(e) => { if (!held) return; e.preventDefault(); send({ type: 'key', eventType: 'keyUp', key: e.key, code: e.code }); }}
-    >
-      <img src={url} alt="" data-browser="frame" draggable={false} style={{ display: 'block', width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'top left', pointerEvents: 'none' }} />
-    </div>
-  );
-}
-
 const STOPPED = ['failed', 'timedOut', 'certificate', 'crashed'];
 
 /** The page: the demo's site, or on obid the tab's own webview (its slot: Webviews.tsx), and the page's own states. */
 export function View({ tab, label, page, children, className = '', style }: { tab: Tab; label: string; page: ReactNode; children?: ReactNode; className?: string; style?: CSSProperties }) {
-  const { mode, frame } = useBrowser();
+  const { mode } = useBrowser();
   const held = tab.holder === 'you' && tab.owner.kind === 'agent';
-  const live = mode === 'obid' ? frame(tab.id) : null;
   return (
     <div className={`br-view${held ? ' is-held' : ''} ${className}`.trim()} role="img" aria-label={label} style={style} data-browser="view">
       {STOPPED.includes(tab.state)
         ? <div className="br-view is-blank" style={{ position: 'absolute', inset: 0 }}><PageState tab={tab} /></div>
-        : mode === 'obid' && tab.partition
-        ? (tab.state === 'dialog' ? null : <Slot tab={tab} />)
         : mode === 'obid'
-        ? (live ? <LiveFrame tab={tab} url={live.url} size={live} /> : <div className="br-state"><span className="br-state-text"><Sheen>Waiting for the page</Sheen></span></div>)
+        ? (tab.partition ? (tab.state === 'dialog' ? null : <Slot tab={tab} />) : <div className="br-state"><span className="br-state-text"><Sheen>Waiting for the page</Sheen></span></div>)
         : page}
       {tab.state === 'dialog' && <PageState tab={tab} />}
       {children}

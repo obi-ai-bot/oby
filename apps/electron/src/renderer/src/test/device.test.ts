@@ -313,27 +313,6 @@ describe('obid-finish', () => {
   });
 });
 
-// The owner's mouse and keys on a browser tab they hold (docs/contracts/browser-app.md, BROWSERAPP-10):
-// main signs a `…/input` only right after the very input it saw itself, never on the page's say.
-describe('BROWSERAPP-10: main signs browser input only right after the input it saw', () => {
-  const path = '/v1/browser/tabs/t1/input';
-  const press = { type: 'mouse', eventType: 'mousePressed', x: 4, y: 5, button: 'left', clickCount: 1 };
-  const words = async (body: unknown) => { await ownersWords('POST', path, body, false); return the.calls.at(-1)?.words; };
-
-  it('browserapp_10_input_is_signed_once_per_real_input_and_never_without_one', async () => {
-    const { sawInput } = await import('../../../main/browserInput');
-    expect(await words(press)).toBeUndefined();
-    sawInput('mouseDown');
-    const signed = await words(press);
-    expect(signed).toMatch(/^d1 \S+ \S+$/);
-    expect(await words(press)).toBeUndefined();
-    // a take or give back is the owner's words, never an input's: no real input, no signature
-    sawInput('mouseDown');
-    await ownersWords('POST', '/v1/browser/tabs/t1/take', {}, false);
-    expect(the.calls.at(-1)?.words).toBeUndefined();
-  });
-});
-
 // A password typed in Oby's card, filled by main on the owner's press of Fill in (BROWSERAPP-12)
 describe('BROWSERAPP-12: main fills the page\'s field on the owner\'s own Fill in', () => {
   const SECRET = 'device-test-secret-4417';
@@ -345,25 +324,16 @@ describe('BROWSERAPP-12: main fills the page\'s field on the owner\'s own Fill i
     takeInput(); takeInput();
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBe('Filling in takes your own click.');
     expect(the.calls.length).toBe(before);
-    // with both: take (this device doesn't hold it), the secret, the ask answered, given back, each signed
+    // with both: the secret, then the ask answered, each signed; no take or give back around it (no holds, O1)
     input();
     before = the.calls.length;
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBeNull();
     const sent = the.calls.slice(before).filter((c) => c.method === 'POST');
     expect(sent.map((c) => [c.path, c.body])).toEqual([
-      ['/v1/browser/tabs/t1/take', {}],
       ['/v1/browser/tabs/t1/secret', { field: '#pw', value: SECRET }],
       ['/v1/browser/asks/a1/answer', {}],
-      ['/v1/browser/tabs/t1/giveBack', {}],
     ]);
     expect(sent.every((c) => /^d1 \S+ \S+$/.test(c.words ?? ''))).toBe(true);
-    // a tab this device already holds: no take, no give back
-    (the as { browserList?: string }).browserList = JSON.stringify({ tabs: [{ id: 't1', heldBy: 'd1' }] });
-    input();
-    before = the.calls.length;
-    expect(await fillSecret('t1', '#pw', SECRET, undefined, true)).toBeNull();
-    expect(the.calls.slice(before).filter((c) => c.method === 'POST').map((c) => c.path)).toEqual(['/v1/browser/tabs/t1/secret']);
-    delete (the as { browserList?: string }).browserList;
     expect(errors.mock.calls.flat().join(' ')).not.toContain(SECRET);
   });
 });
