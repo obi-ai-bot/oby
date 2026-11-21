@@ -48,3 +48,21 @@ export function allowed(url: string, relayPort: number, hostPage: string, devOri
   }
   return u.protocol === 'file:' && url.startsWith(hostPage);
 }
+
+/** A version's files read from obid, by path: no prototype, so a file named `__proto__` or
+ * `constructor` is one of them like any other. */
+export type Files = Record<string, { text: string } | { base64: string }>;
+export const noFiles = (): Files => Object.create(null) as Files;
+
+/** The owner's unsaved edits laid over a version's files (ARTIFACTSAPP-8): each over its own file of
+ * that version, never a new file, and never a name the files only inherit (`__proto__`). */
+export function overlay(files: Files, edits?: Record<string, string>): Files {
+  if (edits) for (const [path, text] of Object.entries(edits)) if (Object.hasOwn(files, path)) files[path] = { text };
+  return files;
+}
+
+/** The host page's call that shows `what`: the files go as data, never as code, and as a string
+ * JSON.parse reads, where `__proto__` is a key like any other (in an object literal it would set
+ * the object's prototype, and that file would go missing). */
+export const shownAs = (what: unknown) => `window.obyShow(JSON.parse(${JSON.stringify(JSON.stringify(what))}))`;
+
