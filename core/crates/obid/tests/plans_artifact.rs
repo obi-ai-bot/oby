@@ -198,12 +198,14 @@ fn made_page(obid: &Obid) -> (String, String) {
 /// The page's text as `MAKEPAGE` writes it (tests/agents/fake-harness).
 const PAGE: &str = "<!doctype html><title>Functions</title><ul><li>greet</li></ul>\n";
 
-/// The task the owner starts with `artifact` open, whose agent edits what it was given
-/// (tests/agents/fake-claude, EDITARTIFACT), waited on to its end.
+/// The task the owner starts with `artifact` open, on words their app signed, whose agent edits
+/// what it was given (tests/agents/fake-claude, EDITARTIFACT), waited on to its end.
 fn edited_with_open(obid: &Obid, artifact: &str) -> Value {
-    let started = plan(
+    let started = call_typed(
         obid,
-        json!({"said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"EDITARTIFACT\", \"kind\": \"research\"}",
+        "POST",
+        "/v1/plans",
+        &json!({"said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"EDITARTIFACT\", \"kind\": \"research\"}",
                "artifact": {"id": artifact}}),
     );
     assert_eq!(started.status, 200, "{}", started.text);
@@ -463,4 +465,60 @@ fn artifacts_25_a_tainted_turns_version_keeps_its_mark_after_its_conversation_is
     );
     assert!(kept["foreign"].is_string(), "{kept}");
     assert_eq!(job["untrusted"], json!(true), "{job}");
+}
+
+/// ARTIFACTS-24 (LANE-3a): a version an own-lane job made (no egress proxy of obid's) keeps
+/// `unproxied`, and opening it makes no turn untrusted: the next task the owner starts with it
+/// open isn't `untrusted`, and makes the next version.
+#[test]
+fn artifacts_24_an_unproxied_jobs_version_opened_in_a_turn_starts_no_untrusted_task() {
+    let folder = Folder::new("artifacts-24-unproxied-turn");
+    let obid = started_with_jobs(&folder);
+    let (_, artifact) = made_page(&obid);
+    let first = edited_with_open(&obid, &artifact);
+    assert_eq!(first["artifacts"][0]["version"], json!(2), "{first}");
+    let kept = artifact_of(&obid, &artifact);
+    assert_eq!(
+        kept["versions"][1]["marks"],
+        json!({"unproxied": true}),
+        "{kept}"
+    );
+    let second = edited_with_open(&obid, &artifact);
+    assert!(second.get("untrusted").is_none(), "{second}");
+    assert_eq!(
+        second["artifacts"],
+        json!([{"id": artifact, "version": 3}]),
+        "{second}"
+    );
+}
+
+/// ARTIFACTS-24 (LANE-3a): what Oby's turn publishes from a version laid in its room keeps that
+/// version's marks, here `unproxied`, even as a new artifact: an unproxied job's files never
+/// become a clean artifact through Oby.
+#[test]
+fn artifacts_24_obys_new_artifact_from_laid_files_keeps_their_marks() {
+    let folder = Folder::new("artifacts-24-unproxied-copy");
+    let obid = started_with_jobs(&folder);
+    let (c1, artifact) = made_page(&obid);
+    edited_with_open(&obid, &artifact);
+    let entry = &artifact[..8];
+    let said = format!("OBY oby_artifact {{\"title\": \"Copy\", \"path\": \"artifacts/{entry}\"}}");
+    let copied = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": said, "conversation": c1, "artifact": {"id": artifact}}),
+    );
+    assert_eq!(copied.status, 200, "{}", copied.text);
+    let new = copied.body["artifacts"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no artifact: {}", copied.text))
+        .to_owned();
+    assert_ne!(new, artifact);
+    let kept = artifact_of(&obid, &new);
+    assert_eq!(
+        kept["versions"][0]["marks"]["unproxied"],
+        json!(true),
+        "{kept}"
+    );
 }
