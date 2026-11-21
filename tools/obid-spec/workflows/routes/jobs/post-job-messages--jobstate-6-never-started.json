@@ -103,8 +103,7 @@
         "proves": [
           "JOBSTATE-6",
           "TASKS-20"
-        ],
-        "flaky": "#2820: Try again's answer is read after the rerun started, and a rerun whose clone fails at once has already failed again"
+        ]
       }
     },
     {
