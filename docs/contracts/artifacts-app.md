@@ -1,15 +1,15 @@
 # Artifacts, in the app
 
-The business behavior contract for artifacts in the Electron app, from [the template](../business-contract-template.md): an agent's artifact in its conversation, and beside it, drawn by Sandpack, fully local. Scenarios are numbered `ARTIFACTSAPP-n`. The app's unit tests are named after them (`apps/electron/src/renderer/src/test/artifactsApp.test.ts`, `artifactsPane.test.tsx`), and so are the checks of the real window, which run on the Mac (`apps/electron/scripts/test-artifacts.mjs`, `npm run test:artifacts`). obid's side, the store and its API, is [artifacts.md](artifacts.md).
+The business behavior contract for artifacts in the Electron app, from [the template](../business-contract-template.md): an agent's artifact in its conversation, and beside it, drawn by Sandpack, fully local. Scenarios are numbered `ARTIFACTSAPP-n`. The app's unit tests are named after them (`apps/electron/src/renderer/src/test/artifactsApp.test.ts`, `artifactsPane.test.tsx`, `artifactsFollow.test.tsx`, `artifactsRow.test.tsx`), and so are the checks of the real window, which run on the Mac (`apps/electron/scripts/test-artifacts.mjs`, `npm run test:artifacts`). obid's side, the store and its API, is [artifacts.md](artifacts.md).
 
 ## Feature and status
 
-- **Outcome:** An agent makes an artifact in a conversation, such as a page, a document or a picture. The owner sees its card under the task that made it, clicks it, and sees the artifact beside the conversation, drawn as it is. Nothing about it leaves the Mac: no hosted bundler, no CDN, no CodeSandbox server.
+- **Outcome:** An agent makes an artifact in a conversation, such as a page, a document or a picture. The owner sees its card in the first Oby message that tells of it (the turn that published it, or the report of the task that made it), and after the last turn when none does. They click it, or its row under the conversation in the side panel, and see the artifact beside the conversation, drawn as it is. Nothing about it leaves the Mac: no hosted bundler, no CDN, no CodeSandbox server.
 - **Status:**
-  - **Implemented:** the card, the pane beside the conversation, Preview of a version (ARTIFACTSAPP-1 to 4); Code, following the agent's new versions, and the open artifact sent with the owner's words (ARTIFACTSAPP-5 to 7); the owner's edits, Save and the version menu (ARTIFACTSAPP-8 to 10); and Download, Copy and Import (ARTIFACTSAPP-11, 12).
+  - **Implemented:** the card, the pane beside the conversation, Preview of a version (ARTIFACTSAPP-1 to 4); Code, following the agent's new versions, and the open artifact sent with the owner's words (ARTIFACTSAPP-5 to 7); the owner's edits, Save and the version menu (ARTIFACTSAPP-8 to 10); Download, Copy and Import (ARTIFACTSAPP-11, 12); and the card in its message and its row (ARTIFACTSAPP-15 to 17).
   - **Proposed:** React artifacts, in the order of [the port plan](../plans/artifacts-port.md) (L5).
-- **Design:** Sangam's board 1b, "Beside its conversation", on the Oby Artifacts canvas (`tools/obid-spec/lab-ui/artifacts/design/project/Viewer.dc.html`). The words are his.
-- **Scope:** the Electron app: `src/renderer/src/artifacts/`, its mount in `Home.tsx` and `ChatView.tsx`, `src/main/artifactPreview.ts`, `src/main/sandpackRelay.ts`, `src/main/previewRules.ts`, `resources/sandpack-relay/`, `stubs/nodebox/` and `scripts/local-only.mjs`.
+- **Design:** Sangam's Oby Artifacts canvas (`tools/obid-spec/lab-ui/artifacts/design/project/`), 1280 by 800: board 1a, the card in Oby's message and the row under its conversation (`Conversation.dc.html`); board 1b, "Beside its conversation", the row lit while its artifact is open (`Viewer.dc.html`); and the kind words, `Canvas`, `Page`, `Document`, `Image` and `PDF` (`Main.dc.html`). The words are his.
+- **Scope:** the Electron app: `src/renderer/src/artifacts/`, its mount in `Home.tsx` and `ChatView.tsx`, its rows in `Sidebar.tsx`, `src/main/artifactPreview.ts`, `src/main/sandpackRelay.ts`, `src/main/previewRules.ts`, `resources/sandpack-relay/`, `stubs/nodebox/` and `scripts/local-only.mjs`.
 - **Out of scope:**
   - obid: the store, its kinds and its API ([artifacts.md](artifacts.md)).
   - Claude Design boards drawn by Oby's runtime (P4), and sharing (P9 to P12).
@@ -19,18 +19,25 @@ The business behavior contract for artifacts in the Electron app, from [the temp
 ### Actors and ownership
 
 - **obid** keeps every artifact and version, and serves their files (`GET /v1/artifacts?conversation=`, `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/{version}/{*path}`).
-- **The page** lists a conversation's artifacts and draws the card and the pane. It never reads an artifact's files.
+- **The page** lists a conversation's artifacts and draws the card and the pane. It also lists every artifact once, for the side panel's rows. It never reads an artifact's files.
 - **Main** reads the version's files from obid with the token it holds. It shows them in a view of its own, laid over the pane's box for the preview, and serves Sandpack's relay on loopback.
 - **Sandpack's `static` client** (`@codesandbox/sandpack-client` 2.19.8, Apache-2.0) runs in that view's host page. It shows the files in a frame of the relay's origin, `<id>-preview.localhost`, a new origin each time.
 
 ### Triggers and states
 
-- **The card.** A conversation's artifacts are read when it opens, and again whenever its turns or its tasks' states change.
-  - Each artifact a task made shows under that task's card.
-  - The conversation's own artifacts (`oby_artifact`), and any whose task isn't shown here, show after the last turn.
+- **The card.** A conversation's artifacts are read when it opens, and again whenever its turns or its tasks' states change. Board 1a is the authority.
+  - Each artifact's card sits in the first Oby message that tells of it: the turn that published it (`Turn.artifacts`), or the report of the task that made it (the turn obid writes when the task ends). A later message naming a newer version adds no second card, and the card stays, on the latest version.
+  - The cards come last in their message. With the message's words just before them, words, cards and time end it together, as board 1a draws it; Copy of Oby's words is on the time's line.
+  - An artifact no message tells of (an obid that names none, a task whose report hasn't come) shows after the last turn.
+  - Wherever it sits, the card names its task's agent when the window knows that task.
+- **The row under its conversation.** In the side panel, each artifact of a conversation has a row after the conversation's tasks, in their group, in the order obid lists them: the Frame, `<b><title></b> · <kind>`, and `<title>, made in this conversation` as its title. A conversation with an artifact and no task gets the group as one with tasks does.
+  - The row is lit (`is-on`) while its artifact is open.
+  - Its click opens the conversation and the artifact beside it on its latest version, as the card's does; the artifact stays open once the conversation left has gone.
+  - The side panel reads every artifact with one `GET /v1/artifacts`, never one per row or conversation, and again at each `artifact` event; on the mock, none. A read that fails keeps the last list.
+  - **New**, a dot at the row's end, is the window's own state, never obid's or kept on disk: an artifact made, or given a version, while the window runs gets it, unless it is the one open, until it is opened from its card, its row or by itself. A rename gives none, and after a restart nothing is New. On board 1a the dot follows a reply to a share; sharing is parked, so here it follows a new artifact or version.
 - **The pane.** A click on a card opens the pane in the browser panel's place, at its width, on the artifact's latest version.
   - One artifact is open at a time.
-  - Close takes the pane and its preview away, and so does leaving the conversation.
+  - Close takes the pane and its preview away, and so does leaving the conversation for one that isn't the artifact's.
 - **Preview and Code.** The pane's strip has Preview and Code, as LibreChat's panel has them; it opens on Preview.
   - Code lists the version's files as tabs, `index.html` first, then by name, and shows the one picked in CodeMirror 6, read-only, with its language's colours. A file that isn't text (a picture, a font) is named, never read.
   - While Code shows, main's preview view is hidden; back on Preview, it shows again.
@@ -93,7 +100,8 @@ As LibreChat does, the `static` template always opens `index.html`:
 
 ## Interfaces and dependencies
 
-- **obid:** `GET /v1/artifacts?conversation=`, `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/{version}/{*path}` ([docs/api/artifacts.md](../api/artifacts.md)), unchanged.
+- **obid:** `GET /v1/artifacts?conversation=`, `GET /v1/artifacts` (no filter, for the side panel), `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/{version}/{*path}` ([docs/api/artifacts.md](../api/artifacts.md)), unchanged.
+- **obid's turns:** `Turn.artifacts` (`shared/obid-wire.ts`, `[{id, version}]`, on Oby's turn that published them; none from an older obid) and the report turn (`ended`, `jobs: [<job>]`), [docs/api/conversations.md](../api/conversations.md).
 - **obid's events:** `artifact` (`shared/obid-wire.ts`, `{id, version, conversation, renamed, title}`), passed on by main as every event is; `POST /v1/plans`' `artifact` (`artifact-turn-v1`).
 - **The page into main:** `artifact-preview` ([ipc.md](ipc.md)), with `{ id, version, bounds, edits? }` or `null`; `artifact-export`, with the id, the version and `zip` or `html`, answering `{ saved }`, `{ cancelled: true }` or `{ error }`. It answers `{ shown: true }`, or `{ error }` saying why nothing shows.
 - **Packages:** `@codesandbox/sandpack-client` 2.19.8, and through it `static-browser-server` 1.0.3 (both Apache-2.0); CodeMirror 6 (`@codemirror/state`, `view`, `language`, `lang-html`, `lang-css`, `lang-javascript`, `lang-markdown`, `lang-json`, `@lezer/highlight`, all MIT, pinned exactly); `marked` (MIT), already the app's.
@@ -119,12 +127,12 @@ As LibreChat does, the `static` template always opens `index.html`:
 
   Unit tests: `artifactsapp_3_the_relay_answers_only_preview_hosts_on_its_own_port`, `artifactsapp_3_the_worker_sends_other_origins_to_the_network_and_puts_the_csp_on_every_answer`, `artifactsapp_3_the_preview_session_lets_go_only_its_host_page_and_the_relay`, `artifactsapp_3_the_page_asks_for_an_artifact_a_version_and_a_box_nothing_else`. Mac: `artifactsapp_3: the preview reaches nothing off its origin`, `artifactsapp_3: the preview is sandboxed in its own partition with no way into the app`.
 - **ARTIFACTSAPP-4** Given a conversation where a task made an artifact:
-  - its card shows under the task's card, saying "Oby artifact · <kind> · v<n> · made by <agent>" (board 1b);
+  - its card shows in the first Oby message that tells of it (the report of the task that made it, or the turn that published it), and after the last turn when none does, saying "Oby artifact · <kind> · v<n> · made by <agent>" (board 1a);
   - a click opens the pane beside the conversation on its latest version, with its title and the same line;
   - main gets the artifact, the version and the preview's box, and nothing else;
   - Close takes the pane and the preview away, and an error from main shows in the pane.
 
-  Unit tests: `artifactsapp_4_the_card_says_what_it_is_and_a_click_opens_it_beside_the_conversation_on_its_latest_version`, `artifactsapp_4_an_error_from_main_shows_in_the_pane`. Mac: `artifactsapp_4: the card under its task opens the pane`.
+  Unit tests: `artifactsapp_4_the_card_says_what_it_is_and_a_click_opens_it_beside_the_conversation_on_its_latest_version`, `artifactsapp_4_an_error_from_main_shows_in_the_pane`. Mac: `artifactsapp_4: the card in its message opens the pane`.
 - **ARTIFACTSAPP-5** Given the pane open on a version of a page (`index.html`, `style.css`, `logo.png`), when the owner picks Code:
   - Preview's view goes;
   - the files show as tabs, `index.html` first, and `index.html`'s text shows in CodeMirror, read-only;
@@ -166,4 +174,19 @@ As LibreChat does, the `static` template always opens `index.html`:
 - **ARTIFACTSAPP-12** Given a conversation, when the owner drops a page on its thread, then the bar offers it, and nothing is sent until their click on **Import**. Then its bytes go, exactly, signed, and the pane opens on the imported artifact, drawn. A picture dropped is offered nothing, and a refusal shows obid's words in the bar.
 
   Unit tests: `artifactsapp_12_a_dropped_page_is_imported_on_import_and_opens_beside_the_conversation`, `artifactsapp_12_only_an_archive_a_page_or_a_document_is_offered_and_a_refusal_says_why`, `artifactsapp_12_an_import_is_sent_as_what_its_bytes_are`; signed: `words_21_an_artifacts_import_signs_its_bytes_as_they_are_by_its_own_import`. Mac: `artifactsapp_12` (dropped, imported on the real click, signed, kept by obid as `origin: import`, drawn).
+- **ARTIFACTSAPP-15** Given an artifact's card, then it draws the Frame at 16, its title, `Oby artifact · <kind> · v<n> · made by <agent>` and a chevron at 14, both with stroke 1.6 (board 1a). The card and the pane name a kind with the board's word: `html` Page, `markdown` Document, `image` Image, `pdf` PDF, `canvas` and `design` Canvas.
 
+  Unit tests: `artifactsapp_15_the_card_draws_the_frame_its_title_and_what_it_is_with_a_chevron_at_14`, `artifactsapp_15_each_kind_says_the_boards_word` (`artifactsPane.test.tsx`).
+- **ARTIFACTSAPP-16** Given a conversation's artifacts:
+  - one an Oby turn published shows in that turn's message, after its words and before its time, and nowhere else; a later turn naming its v2 adds no card, and the one card says v2;
+  - one a task made shows in the message that reports the task's end, never in or beside the task's card, naming the task's agent;
+  - one no message tells of (an obid whose turns name none, a task whose report hasn't come, a turn whose `artifacts` holds nothing readable) shows after the last turn, and a malformed entry makes no card.
+
+  Unit tests: `artifactsapp_16_an_artifact_oby_published_shows_in_the_message_that_published_it`, `artifactsapp_16_a_tasks_artifact_shows_in_the_message_that_reports_its_end_not_under_its_card`, `artifactsapp_16_with_no_message_to_hold_it_the_card_shows_after_the_last_turn` (`artifactsFollow.test.tsx`). Mac: `artifactsapp_16` (the page's card in its task's report, on v2 too, and the site's in the turn that published it).
+- **ARTIFACTSAPP-17** Given a conversation with a task and an artifact, and one with only an artifact:
+  - each artifact's row comes after the conversation's tasks in its group, titled `<title>, made in this conversation`, with the Frame at 14 and `<b><title></b> · <kind>`; the conversation with only an artifact gets the twist and the group;
+  - a click from another conversation opens the row's conversation and the artifact on its latest version, still open once the conversation left has gone, and the row is lit;
+  - an artifact event for a new artifact, or a new version of another, puts New on its row, a rename none; opened from its card or its row, the dot goes; a fresh window shows none;
+  - the side panel reads the list once, and once more at each artifact event; on the mock, never.
+
+  Unit tests: `artifactsapp_17_the_row_under_its_conversation_says_what_it_is_and_opens_it` (`artifactsRow.test.tsx`), `artifactsapp_17_the_new_dot_shows_until_the_owner_opens_it`, `artifactsapp_17_the_side_panel_reads_the_artifacts_once_not_per_row` (`artifactsFollow.test.tsx`). Mac: `artifactsapp_17` (at 1280 by 800, a version made while the import is open dots the page's row; its click opens v2, lit, the dot gone).
