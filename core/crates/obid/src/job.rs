@@ -891,7 +891,8 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub foreign_by_api: bool,
     /// Its subject is someone else's code, found before its agent ran: the owner's review of a
-    /// pull request whose head has commits obid didn't record (MERGING-36). Its `foreign` mark
+    /// pull request whose head has commits obid didn't record, or that anyone else wrote in
+    /// (MERGING-36). Its `foreign` mark
     /// says so too, but so does a page an own job's agent read, which this doesn't: Oby's browser
     /// reads this one (BROWSER-18). Never in the API's job.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

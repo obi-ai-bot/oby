@@ -51,6 +51,10 @@ impl Jobs {
                 format!("{when}, {why}"),
                 members && !job.read_only(),
             );
+            // Oby's browser reads this start mark, never a page read's (BROWSER-18).
+            if job.read_only() {
+                self.update(&job.id, |job| job.someone_elses_code = true);
+            }
         }
     }
 }

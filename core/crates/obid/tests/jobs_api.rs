@@ -4791,6 +4791,42 @@ fn browser_18_a_review_of_someone_elses_commits_gets_no_browser() {
     assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
 }
 
+/// BROWSER-18: the owner's review of a pull request someone else wrote in (a member, here) reads
+/// someone else's code from its start, though obid recorded its commits: its run loads no browser
+/// server.
+#[test]
+fn browser_18_a_review_of_a_pull_request_someone_else_wrote_in_gets_no_browser() {
+    let folder = Folder::new("review-member-browser");
+    let remote = fixture(&folder.0.join("fixture"));
+    pull_request_90(&remote);
+    let (config, _account) = recording_config(&folder.0, &remote);
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let obid = start_with(&folder.0, &config, Some(&agents));
+    // The stand-in gh (tests/agents/gh): the owner is wellington of obi-e2e, and sangam, a
+    // member, wrote the pull request.
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("user"), "wellington\n").unwrap();
+    std::fs::write(gh.join("orgs"), "obi-e2e\n").unwrap();
+    let none = json!({"pageInfo": {"hasNextPage": false}, "nodes": []});
+    let pr = json!({"author": {"login": "sangam"}, "authorAssociation": "MEMBER", "body": "A line",
+                    "userContentEdits": none, "timelineItems": none, "comments": none, "reviews": none});
+    let who = json!({"data": {"viewer": {"login": "wellington"}, "repository": {"issueOrPullRequest": pr}}});
+    std::fs::write(gh.join("who.json"), who.to_string()).unwrap();
+    let started = typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 90,
+                        "task": "REPORT"}}),
+    );
+    assert_eq!(started.status, 201, "{}", started.text);
+    let id = started.body["id"].as_str().unwrap();
+    assert_eq!(wait(&obid, id)["status"], "done");
+    let loaded = loaded(&obid, id);
+    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
+}
+
 /// MERGING-36: a review the owner dispatched (signed, so obid asks GitHub who wrote the pull
 /// request) on a pull request a member of the owner's organization wrote is someone else's code
 /// (`foreign`, not only `reached` as a fix on it would be: ISSUETASK-5), so it runs in Oby's box.
