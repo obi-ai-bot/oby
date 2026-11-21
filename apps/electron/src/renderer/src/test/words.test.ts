@@ -272,6 +272,21 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan('elsewhere'))).toBeNull();
   });
 
+  it('words_22_the_artifact_open_signs_with_its_words', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const artifact = { id: '3f0c2a1e-1111-4222-8333-944455556666', version: 2 };
+    const plan = (a: unknown, more: Record<string, unknown> = { conversation: 'c1' }) => ({ said: 'Make the heading red', ...more, artifact: a });
+    // the shape: the open artifact's id and version, in a conversation, never one of the words
+    expect(wordsOf('POST', '/v1/plans', plan(artifact))).toEqual(['Make the heading red']);
+    expect(owners('POST', '/v1/plans', plan(artifact), ['Make the heading red'], [])).toEqual([0]);
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan(artifact))).not.toBeNull();
+    for (const a of [null, 'x', {}, { id: artifact.id }, { id: 'c1', version: 1 }, { ...artifact, version: 0 }, { ...artifact, version: 1.5 }, { ...artifact, title: 'page' }, { id: artifact.id.toUpperCase(), version: 1 }]) {
+      expect(wordsOf('POST', '/v1/plans', plan(a)), JSON.stringify(a)).toBeNull();
+    }
+    // with new, it isn't a shape the app sends: nothing is signed
+    expect(wordsOf('POST', '/v1/plans', plan(artifact, { new: true }))).toBeNull();
+  });
+
   it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {
     const path = '/v1/obid/vault/staging-key';
     expect([VAULT_ADD, VAULT_REMOVE]).toEqual(['Add Secret', 'Remove Secret']);

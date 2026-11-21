@@ -162,8 +162,10 @@ route workflow, red before green. Sangam's artifact screens (the Oby Artifacts c
 
 - **Lane:** dispatcher. **Depends:** L1, P3 (merged).
 - **What:**
-  - **Code.** Code and Preview tabs in the pane. Code is `SandpackCodeEditor` (`sandpack-react`
-    2.20.0, CodeMirror 6), read-only here, with a tab per file.
+  - **Code.** Code and Preview tabs in the pane. Code is CodeMirror 6, the editor Sandpack's
+    `SandpackCodeEditor` wraps, read-only here, with a tab per file. `sandpack-react` itself isn't
+    built in: it names CodeSandbox's hosted services (its Open in CodeSandbox, its client's hosted
+    `runtime`), which the build's guard refuses.
   - **Following the agent.** An `artifact` event for the open conversation opens or moves the
     pane to the new version. LibreChat's panel follows the latest the same way.
   - **Asking for a change.** Words said while the pane is open carry `artifact: {id, version}`,
@@ -560,9 +562,9 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 | P1 Store v2 | none | | merged (#2776) |
 | P2 Export and import | P1 | L1, L2, L3a | built, opens next |
 | P3 The turn’s artifact | P1 | L1, L3a | merged (#2799) |
-| **L1** Sandpack, local, the card and Preview | P1 | P2, L3a | in review |
-| **L2** Code, following the agent | L1, P3 | L3a | |
-| **L3a** The owner's edit (obid) | P1 | L1, L2 | next |
+| **L1** Sandpack, local, the card and Preview | P1 | P2, L3a | merged (#2807) |
+| **L2** Code, following the agent | L1, P3 | L3a | in review |
+| **L3a** The owner's edit (obid) | P1 | L1, L2 | merged (#2809) |
 | **L3b** Edit, save, versions (app) | L2, L3a | L5 | |
 | **L4** Export and import (app) | L2, P2 | L5 | |
 | **L5** React artifacts, local | L1 | L3b, L4 | |

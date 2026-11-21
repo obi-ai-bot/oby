@@ -20,3 +20,14 @@
 .art-br .art-strip-title span { font-size: var(--text-sm); color: var(--muted); }
 .art-br .art-view { position: relative; flex: 1; min-height: 0; background: #fff; }
 .art-br .art-view-note { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); background: var(--bg); }
+
+/* Preview and Code, as LibreChat's panel has them; the Code tab's files and CodeMirror */
+.art-br .art-tabs { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); }
+.art-br .art-tab { font: inherit; font-size: var(--text-sm); color: var(--muted); background: none; border: 0; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+.art-br .art-tab.is-on { color: var(--ink); background: var(--active); }
+.art-br .art-code { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.art-br .art-files { flex: none; display: flex; gap: 2px; overflow-x: auto; padding: 6px 8px; border-bottom: 1px solid var(--divider); }
+.art-br .art-file { font: inherit; font-size: var(--text-sm); color: var(--muted); background: none; border: 0; padding: 4px 8px; border-radius: 6px; white-space: nowrap; cursor: pointer; }
+.art-br .art-file.is-on { color: var(--ink); background: var(--hover); }
+.art-br .art-code-body { position: relative; flex: 1; min-height: 0; }
+.art-br .art-code-editor { position: absolute; inset: 0; }

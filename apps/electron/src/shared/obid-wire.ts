@@ -407,6 +407,8 @@ export type PlanRequest = {
   // where a new conversation works (obid only, workspace-v1; docs/api/folders.md, "Workspace"): with
   // new only, never changed after (WORKSPACE-3)
   workspace?: Workspace;
+  // the artifact open while the words were said (obid only, artifact-turn-v1; docs/api/artifacts.md, ARTIFACTS-12)
+  artifact?: { id: string; version: number };
 };
 // "GET /v1/conversations/{id}/workspace" (obid only, workspace-v1; docs/api/folders.md, "Workspace"):
 // where the conversation works in each of its folders, and what finishing can do there now
@@ -533,10 +535,15 @@ export function rememberedOf(value: unknown): RememberedDecision | null {
   };
 }
 
+/** `artifact` on /v1/events: which artifact, its new version when it got one, its conversation. */
+export type ArtifactEvent = { id: string; version: number | null; conversation: string | null; renamed: boolean; title: string | null };
 export type Event =
   | { kind: 'roomPost'; post: RoomPost }
   // its posts aren't taken from it: the thread is read again (peers.ts)
   | { kind: 'peerThread'; owner: string }
+  // an artifact made, given a new version, renamed or given a conversation (docs/api/events.md):
+  // the app reads it again where it shows it (docs/contracts/artifacts-app.md, ARTIFACTSAPP-6)
+  | { kind: 'artifact'; artifact: ArtifactEvent }
   | { kind: 'job'; job: Job }
   | { kind: 'jobGone'; id: string }
   | { kind: 'inbox'; item: InboxItem }
@@ -604,6 +611,11 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
     case 'roomPost': { const post = roomPostOf(value); return post ? { kind: 'roomPost', post } : null; }
     case 'peerThread': return typeof v.owner === 'string' ? { kind: 'peerThread', owner: v.owner } : null;
+    case 'artifact': return typeof v.id === 'string' ? { kind: 'artifact', artifact: {
+      id: v.id, version: typeof v.version === 'number' ? v.version : null,
+      conversation: typeof v.conversation === 'string' ? v.conversation : null,
+      renamed: v.renamed === true, title: typeof v.title === 'string' ? v.title : null,
+    } } : null;
     case 'accounts': return Array.isArray(value) ? { kind: 'accounts', accounts: value as Account[] } : null;
     case 'conversation':
       if (typeof v.id !== 'string') return null;

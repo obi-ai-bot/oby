@@ -37,7 +37,7 @@ import { api, ApiError, type FinishAction, type WorkspaceAnswer } from './obid';
 import { FINISH_WORDS } from '../../shared/finish';
 import { onObid } from './lean';
 import { ArtifactCard } from './artifacts/Card';
-import { closeArtifact, useConversationArtifacts } from './artifacts/store';
+import { closeArtifact, useConversationArtifacts, viewing } from './artifacts/store';
 import { box as draftBox } from './drafts';
 import { useHelpers } from './helpers';
 import FindBar from './FindBar';
@@ -152,6 +152,12 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const artifacts = useConversationArtifacts(kind === 'oby' && ofObid(id) ? realId(id) : null, `${thread.length}:${tasks.map((t) => `${t.id}${t.status}`).join()}`);
   const ownArtifacts = artifacts.filter((a) => !a.job || !thread.some((m) => 'jobs' in m && m.jobs?.includes(a.job!)));
   useEffect(() => () => closeArtifact(), [id]);
+  // on view, an artifact its agent makes opens beside it (ARTIFACTSAPP-6)
+  useEffect(() => {
+    if (kind !== 'oby' || !ofObid(id) || covered || leaving) return;
+    viewing(realId(id));
+    return () => viewing(null);
+  }, [id, kind, covered, leaving]);
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
   useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && ofObid(id)) void openConversation(id); }, [id, kind]);
   // in sight, a conversation is seen: obid's unread goes, and a turn that comes while it shows is
