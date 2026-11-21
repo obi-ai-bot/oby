@@ -1,0 +1,54 @@
+# Artifacts: what agents make to be looked at, every version kept
+
+The business behavior contract for Oby Artifacts in obid's store, from [the template](../business-contract-template.md). Proven first in the Blok lab (`tools/obid-spec/src/lab/artifacts.rs`, `artifacts_contract.rs`; #2682), then ported piece by piece as [the port plan](../plans/artifacts-port.md) orders it. Its runner API is [docs/api/artifacts.md](../api/artifacts.md).
+
+## Feature and status
+
+- **Outcome:** Whatever an agent makes to be looked at (a page, a document, an image, a PDF, a canvas of pages, or a design made in Claude Design) is kept by obid with every version, exactly as the agent made it, so the owner can open, rename and export it, and a later turn or job of the same conversation can improve it.
+- **Status:** **Partly implemented.** ARTIFACTS-1 to 8, the store (the port plan's P1), are implemented, each naming its tests. The rest of the plan (export and import, the turn's artifact, Oby's runtime, the agents' tools, the artifact tab, sharing, public links, Settings) adds its scenarios here as it lands. The owner's decisions behind it are in the port plan's "Decided" (2026-11-20): Claude's limits, and one origin per version.
+- **Scope:** obid's `artifacts` module: what it copies and refuses, the kinds, a design's uploads, the limits, versions, renames and the files it serves. Outside it: how an artifact is drawn (the apps, and Oby's runtime in P4), and anything an agent does to make one.
+
+## Behavior
+
+### Actors and ownership
+
+- **obid** owns every artifact: `home/artifacts/<id>/artifact.json` and each version's folder. It copies, checks, scans and keeps; rules decide, no model call of obid's.
+- **Agents** publish by writing into a job's `.obi/artifacts/` (published when the job ends) or with the conversation's `oby_artifact` tool, from its room.
+- **The owner's apps** list and read artifacts and their files, rename and delete them (`/v1/artifacts`).
+
+### Rules
+
+- **Kinds come from the shape.** A folder with `index.html` is `html`; with a `canvas.json` that is a list of frames, or Swift's `{"frames": […]}`, a `canvas`; with Claude Design's `canvas.json` (an object with `boards` or `v`), a `design`. A single file is `html`, `markdown`, `image` or `pdf` by its extension.
+- **A design is kept byte for byte.** obid checks Claude Design's `canvas.json` and its `.dc.html` boards as they are and never rewrites them: `v` is 3; each board is a file of the folder holding `<x-dc>` and one logic script; `order` and `launch` name its boards or pages; page ids are plain; `notes` under 1 MB; each design system's folder is there. A refusal says which.
+- **A design's uploads are kept under `assets/`.** Claude names an upload `/_blob/<id>`, with no extension. obid keeps it as `assets/<id>.<ext>`, its type from its bytes, and the version's `blobs` maps the id to it; `{version}/_blob/<id>` serves it, inside that version only. An id that looks like a token is kept under a hash of it instead, so the design isn't refused for a name Claude chose.
+- **Claude's limits** (the owner's decision, 2026-11-20): a text file 16 MB, a binary file 15 MB, an SVG 2 MB; a version 512 files and 256 MB; an artifact 50 versions; a job's artifacts, or a conversation's own, 4096 MB between them; no cap on the store. Each refusal says what is over and by how much.
+- **Versions follow the conversation.** A new version comes from the conversation the artifact belongs to, from any of its jobs (a follow-up is a new job of the same conversation), or, for one with no conversation, from the job that made it. Each version says which job published it. A job publishing files it already published (its `.obi/artifacts/` again, as its end may) gets the version it made back, never a new one over a version made since.
+- **A rename is said.** Renaming sends `artifact` with `renamed`, so every open view retitles it.
+- **Nothing untrusted is followed.** Every file is opened without following a link and only from inside the folder obid names; links, hard links, other disks and paths out are refused, as before this contract.
+- **The secret scan.** Every file and every name (the path, the title, each kept file's path, each upload's id) passes the publish gate's scan before anything is kept; a name that looks like a token is refused, an upload's id excepted, as no file is kept by it.
+
+### Failures and recovery
+
+- A refusal is one line starting `Not published: `; nothing is kept and no event goes out. A refusal that would repeat a name that looks like a secret says so instead of the name.
+- A publish cut short (obid stopping) leaves a `.staging-*` folder, removed when obid next starts.
+- The same files again make no new version: the latest is the answer.
+
+## Interfaces and dependencies
+
+- **API:** [docs/api/artifacts.md](../api/artifacts.md), add-only: `kind` gains `design`; a version gains `blobs` and `job`, each left out when empty; the file route serves `_blob/<id>`; the types gain `font/ttf`, `font/otf`, `video/mp4`, `video/webm` and `image/avif`.
+- **Events:** `artifact` on `/v1/events` ([docs/api/events.md](../api/events.md)), now also `{renamed: true}` on a rename.
+- **Persistence:** `home/artifacts/<id>/artifact.json` and `home/artifacts/<id>/<version>/`, files 0600, folders 0700.
+- **The agent's tool:** `oby_artifact`'s `kind` enum still lists the five older kinds; left out, a design is found from its shape. The agents' tools gain `design` with the guide (the port plan's P5).
+
+## Acceptance scenarios
+
+Each is a test named after it: unit tests in `core/crates/obid/src/artifacts/scenarios.rs`, and the lab's workflow pointed at a running obid in `tools/obid-spec/workflows/routes/artifacts/`.
+
+- **ARTIFACTS-1** (implemented). Given a Claude Design folder in a conversation's room, when `oby_artifact` publishes it, then it is a `design`, each board, `canvas.json` and design-system file served byte for byte as written, its uploads under `assets/`. Lab: LAB-ARTIFACTS-1. Tests: unit `artifacts_1_a_design_is_kept_byte_for_byte`; `routes/artifacts/design.json`.
+- **ARTIFACTS-2** (implemented). Given obid's list of frames and Swift's `{"frames": […]}`, both publish as `canvas`; given a design with a missing board, a board with no `<x-dc>`, a board with no or two logic scripts, an `order` or `launch` naming no board or page, a bad page id or a missing design system, or holding a link, then it is refused saying which, and nothing is kept. Lab: LAB-ARTIFACTS-2. Tests: unit `artifacts_2_both_canvas_shapes_and_a_spoiled_design_refused`; `routes/artifacts/shapes.json`.
+- **ARTIFACTS-3** (implemented). Given a published design, `GET …/{version}/_blob/<id>` serves the upload that version keeps for it; another id, a path out, or a later version without that upload is `404`. Lab: LAB-ARTIFACTS-3. Tests: unit `artifacts_3_an_upload_is_served_at_its_alias_inside_its_version`; `routes/artifacts/blobs.json`.
+- **ARTIFACTS-4** (implemented). Fonts (`.ttf`, `.otf`, `.woff2`), video (`.mp4`, `.webm`) and AVIF are served with their types and obid's CSP. Lab: LAB-ARTIFACTS-4. Tests: unit `artifacts_4_fonts_video_and_avif_have_their_types`; `routes/artifacts/types.json`.
+- **ARTIFACTS-5** (implemented). Given a design whose upload id looks like a token, it publishes, the upload kept under the first 16 hex of the id's SHA-256 and no kept file named by the id; a file of the agent's own named like a token is still refused. Lab: LAB-ARTIFACTS-1. Tests: unit `artifacts_5_a_token_like_upload_id_is_kept_hashed`; `routes/artifacts/design.json`.
+- **ARTIFACTS-6** (implemented). When the owner renames an artifact, `artifact` goes out with `{id, renamed: true, title, kind, conversation, job}`. Lab: LAB-ARTIFACTS-5. Tests: unit `artifacts_6_a_rename_says_so`; `routes/artifacts/rename.json`.
+- **ARTIFACTS-7** (implemented). Given an artifact of a conversation, a follow-up job of that conversation publishing it again makes its next version, the version naming the job; another conversation's publish is refused; an artifact with no conversation gets versions only from the job that made it; the job publishing the same files again after the conversation's newer version gets its own version back, and nothing new. Lab: LAB-ARTIFACTS-6. Tests: unit `artifacts_7_a_follow_up_job_of_the_conversation_versions_it`; `routes/artifacts/versions.json`.
+- **ARTIFACTS-8** (implemented). Each of Claude's limits takes its value and refuses one byte or one file more, saying which file, what it is and the limit: a text file 16 MB, a binary 15 MB, an SVG 2 MB, 512 files, 256 MB a version. Lab: LAB-ARTIFACTS-23. Tests: unit `artifacts_8_a_version_holds_claudes_limits`; `routes/artifacts/limits.json`.

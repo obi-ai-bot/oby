@@ -36,6 +36,7 @@ impl Jobs {
                     conversation: job.conversation.as_deref(),
                     job: Some(id),
                     artifact: before.map(|i| listed[i].id.as_str()),
+                    kept: before.map(|i| listed[i].version),
                 })
                 .await;
             match (published, before) {
