@@ -413,7 +413,7 @@ mod tests {
                 review, approvals, review_of, security_paths, no_reviewer, review_failed,
                 summaries, issue, issue_url, agent_version, check, check_asked, checked, model, effort,
                 model_from_account, effort_named, complex, issue_unread, notes, files, attachments,
-                attachments_gone, start_commit, checked_head, mode, cut, after_pr_rebase,
+                attachments_gone, start_commit, checked_head, kept, mode, cut, after_pr_rebase,
                 checks_rounds, autofix, changes_rounds, crash_resumes, recovery, worktree, obi,
                 conversation, profile, project, turn, review_result, approvable, obi_request, permission,
                 question_call, parked, mac_check, apple_check, apple_ran, apple_token, answered,
