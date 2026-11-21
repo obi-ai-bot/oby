@@ -98,6 +98,12 @@ async fn run_once(name: &str, input: &Value) -> Result<Value> {
         "browser-flaky-site" => lab::flaky(input).await,
         "browser-job" => job(input).await,
         "browser-agent-job" => agent_job(input).await,
+        "browser-reach" => reach(input).await,
+        "browser-sphere-site" => {
+            let mut site = crate::lab::browsersphere::up().await?;
+            site["token"] = json!(crate::lab::browsersphere::page_secrets().1);
+            Ok(site)
+        }
         "browser-mcp" => {
             let out = lab::mcp_call(&as_lab(input)).await?;
             seen(&out);
@@ -207,30 +213,60 @@ async fn job(input: &Value) -> Result<Value> {
 async fn agent_job(input: &Value) -> Result<Value> {
     let obid = &input["obid"];
     let home = PathBuf::from(crate::sphere::str_of(obid, "home")?);
-    let agent = crate::sphere::str_of(input, "agent")?;
-    let url = crate::sphere::str_of(input, "url")?;
-    let mut job = json!({"repo": "obi-e2e/fixture-app", "kind": "build",
-        "task": format!("BROWSE: {url}"), "agent": agent});
-    if let Some(mode) = input["mode"].as_str() {
-        job["mode"] = json!(mode);
-    }
-    let made =
-        crate::sphere::obid_call(obid, "POST", "/v1/jobs", Some(&json!({"job": job}))).await?;
-    anyhow::ensure!(made.status == 201, "the job: {} {}", made.status, made.text);
-    let id = made.body["id"]
-        .as_str()
-        .context("the job's id")?
-        .to_string();
-    let file = home.join("worktrees").join(&id).join(".obi/browsed.json");
+    // A job already there (another Oby's task, whose goal says what to browse, BROWSER-18), or a
+    // new one of the owner's whose task does.
+    let id = match input["job"].as_str() {
+        Some(id) => id.to_string(),
+        None => {
+            let agent = crate::sphere::str_of(input, "agent")?;
+            let url = crate::sphere::str_of(input, "url")?;
+            let mut task = format!("BROWSE: {url}");
+            if input["then"].is_array() {
+                task = format!("{task} THEN {}", input["then"]);
+            }
+            if input["stay"] == true {
+                task.push_str(" STAY");
+            }
+            let mut job = json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+                "task": task, "agent": agent});
+            if let Some(mode) = input["mode"].as_str() {
+                job["mode"] = json!(mode);
+            }
+            let made =
+                crate::sphere::obid_call(obid, "POST", "/v1/jobs", Some(&json!({"job": job})))
+                    .await?;
+            anyhow::ensure!(made.status == 201, "the job: {} {}", made.status, made.text);
+            made.body["id"]
+                .as_str()
+                .context("the job's id")?
+                .to_string()
+        }
+    };
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
-        if let Ok(browsed) =
+        // Its worktree, where obid made it (another Oby's task is in a clone apart).
+        let j = crate::sphere::obid_call(obid, "GET", &format!("/v1/jobs/{id}"), None).await?;
+        let file = j.body["worktree"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("worktrees").join(&id))
+            .join(".obi/browsed.json");
+        // `until`: a path in what it found that must be there (a stand-in that writes as it goes).
+        let browsed =
             serde_json::from_str::<Value>(&std::fs::read_to_string(&file).unwrap_or_default())
-        {
-            let j = crate::sphere::obid_call(obid, "GET", &format!("/v1/jobs/{id}"), None).await?;
+                .ok()
+                .filter(|b| {
+                    input["until"].as_str().is_none_or(|path| {
+                        let at = path.split('.').fold(b, |v, k| match k.parse::<usize>() {
+                            Ok(i) if v.is_array() => &v[i],
+                            _ => &v[k],
+                        });
+                        !at.is_null()
+                    })
+                });
+        if let Some(browsed) = browsed {
             return Ok(json!({"job": id, "status": j.body["status"], "browsed": browsed}));
         }
-        let j = crate::sphere::obid_call(obid, "GET", &format!("/v1/jobs/{id}"), None).await?;
         let status = j.body["status"].as_str().unwrap_or_default();
         anyhow::ensure!(
             status == "running" || status == "queued",
@@ -243,6 +279,111 @@ async fn agent_job(input: &Value) -> Result<Value> {
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+/// Owner B against owner A's browser (BROWSER-20): every route obid serves under `/v1/browser`
+/// (the contract's list), on A's obid and A's gateway, with no token, B's obid's token, B's
+/// device's signed words (with B's token) and a made-up token. A route that answers 2xx, names A's
+/// tab, or keeps streaming past 5 s reached A. {tried, reached, answers}.
+async fn reach(input: &Value) -> Result<Value> {
+    let a = &input["a"];
+    let b_token = crate::sphere::str_of(&input["b"], "token")?.to_string();
+    let tab = crate::sphere::str_of(input, "tab")?.to_string();
+    let b_device = &input["bDevice"];
+    let (device_id, device_key) = (
+        crate::sphere::str_of(b_device, "id")?.to_string(),
+        crate::keys::DeviceKey::from_hex(crate::sphere::str_of(b_device, "key")?)?,
+    );
+    let mut bases = vec![crate::sphere::str_of(a, "base")?.to_string()];
+    if let Some(g) = a["gatewayBase"].as_str() {
+        bases.push(g.to_string());
+    }
+    let mut answers = vec![];
+    let (mut tried, mut reached) = (0, 0);
+    for base in &bases {
+        for route in crate::lab::browser_contract::ROUTES {
+            let (method, path) = route.split_once(' ').unwrap_or(("GET", route));
+            let id = if path.contains("/asks/") {
+                "ask-1"
+            } else if path.contains("/downloads/") {
+                "dl-1"
+            } else {
+                tab.as_str()
+            };
+            let path = path.replace("{id}", id);
+            let body = if method == "GET" {
+                None
+            } else if path.ends_with("/mcp") {
+                Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_list_tabs", "arguments": {}}}))
+            } else if path.ends_with("/settings") {
+                Some(json!({"agentsUseBrowser": true}))
+            } else if path.ends_with("/secret") {
+                Some(json!({"field": "#pw", "value": "from-owner-b"}))
+            } else {
+                Some(json!({}))
+            }
+            .map(|b| b.to_string());
+            let words = crate::keys::words_header(
+                &device_id,
+                &device_key,
+                method,
+                &path,
+                body.as_deref().unwrap_or(""),
+            );
+            let ways: [(&str, Vec<(String, String)>); 4] = [
+                ("none", vec![]),
+                (
+                    "ownerB-token",
+                    vec![("Authorization".into(), format!("Bearer {b_token}"))],
+                ),
+                (
+                    "ownerB-device",
+                    vec![
+                        ("Authorization".into(), format!("Bearer {b_token}")),
+                        ("X-Oby-Words".into(), words),
+                    ],
+                ),
+                (
+                    "made-up-token",
+                    vec![(
+                        "Authorization".into(),
+                        "Bearer not-a-token-anyone-gave".into(),
+                    )],
+                ),
+            ];
+            for (who, headers) in ways {
+                let request = crate::http::Request {
+                    method: method.into(),
+                    base: base.clone(),
+                    target: path.clone(),
+                    headers,
+                    body: body.clone().map(String::into_bytes),
+                    content_type: body.as_ref().map(|_| "application/json".into()),
+                };
+                tried += 1;
+                let started = Instant::now();
+                let (status, got_in) =
+                    match crate::http::send(&request, Duration::from_secs(5)).await {
+                        Ok(answer) => (
+                            answer.status,
+                            (200..300).contains(&answer.status) || answer.text.contains(&tab),
+                        ),
+                        // Still answering after 5 s: a stream it was let into. A refused
+                        // connection reached nothing.
+                        Err(_) => (0, started.elapsed() >= Duration::from_millis(4500)),
+                    };
+                if got_in {
+                    reached += 1;
+                }
+                answers.push(
+                    json!({"as": who, "at": base, "route": format!("{method} {path}"),
+                    "status": status, "reached": got_in}),
+                );
+            }
+        }
+    }
+    Ok(json!({"tried": tried, "reached": reached, "answers": answers}))
 }
 
 /// The tab's holder now, by `GET /v1/browser`.

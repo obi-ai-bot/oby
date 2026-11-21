@@ -495,7 +495,7 @@ fn with_lab<T>(f: impl FnOnce(&mut Lab) -> T) -> T {
     f(lab)
 }
 
-fn page_secrets() -> (String, String) {
+pub(crate) fn page_secrets() -> (String, String) {
     let mut guard = PAGE.lock().unwrap();
     guard
         .get_or_insert_with(|| {
@@ -585,7 +585,7 @@ async fn fixture(listener: tokio::net::TcpListener) {
     }
 }
 
-async fn up() -> Result<Value> {
+pub(crate) async fn up() -> Result<Value> {
     if let Some(s) = SITE.lock().unwrap().as_ref() {
         return Ok(json!({"url": format!("http://127.0.0.1:{}", s.port), "port": s.port}));
     }

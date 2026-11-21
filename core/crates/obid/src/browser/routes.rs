@@ -132,10 +132,13 @@ fn signed(
 
 /// The jobs running now, known to the browser: each one's agent may use it.
 fn know_running_jobs(shared: &Shared) {
+    let exchanges = shared
+        .link
+        .exchanges_json(super::box_edge::EXCHANGES_LOOKED);
     for job in shared.jobs.list(usize::MAX) {
         if job.status == crate::job::Status::Running {
-            let partition = super::relay::partition_of(&job);
-            shared.browser.ensure_job(&job.id, &job.agent, &partition);
+            let origin = super::box_edge::origin_of(&job, &exchanges);
+            shared.browser.ensure_job(&job.id, &job.agent, origin);
         }
     }
 }
@@ -477,12 +480,17 @@ async fn mcp(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes)
             }
         },
     };
-    let (agent, partition) = shared
+    let (agent, origin) = shared
         .jobs
         .get(&job)
-        .map(|j| (j.agent.clone(), super::relay::partition_of(&j)))
+        .map(|j| {
+            let exchanges = shared
+                .link
+                .exchanges_json(super::box_edge::EXCHANGES_LOOKED);
+            (j.agent.clone(), super::box_edge::origin_of(&j, &exchanges))
+        })
         .unwrap_or_default();
-    shared.browser.ensure_job(&job, &agent, &partition);
+    shared.browser.ensure_job(&job, &agent, origin);
     let value: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {

@@ -40,6 +40,9 @@ pub struct Service {
     relay: Arc<super::relay::Relay>,
     /// The window's browser: the agents' tools run on it, over the relay, on the engine's core.
     window: Arc<super::window::WindowDriver>,
+    /// The host's own services on loopback (obid's port, its gateway's): the box's edge a foreign
+    /// job's browser stops at (BROWSER-18). obid's start sets them ([`Service::set_host_ports`]).
+    host_ports: Mutex<Vec<u16>>,
 }
 
 impl Service {
@@ -58,7 +61,20 @@ impl Service {
             )),
             relay,
             home,
+            host_ports: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The host's own services' ports on loopback: obid's and its gateway's (BROWSER-18).
+    pub fn set_host_ports(&self, ports: Vec<u16>) {
+        *self.host_ports.lock().unwrap_or_else(|e| e.into_inner()) = ports;
+    }
+
+    pub(super) fn host_ports(&self) -> Vec<u16> {
+        self.host_ports
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The window's browser.
@@ -128,11 +144,11 @@ impl Service {
     }
 
     /// A job the API doesn't know yet: its browser `notStarted`.
-    pub fn ensure_job(&self, job: &str, agent: &str, partition: &str) {
+    pub fn ensure_job(&self, job: &str, agent: &str, origin: c::Origin) {
         let added = self.api(|a| {
             let new = a.job(job).is_none();
             if new {
-                a.add_job_in(job, agent, partition);
+                a.add_job_for(job, agent, origin);
             }
             new
         });

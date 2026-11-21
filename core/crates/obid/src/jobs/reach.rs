@@ -18,11 +18,13 @@ impl Jobs {
     }
 
     /// obid's browser server for `job`'s agent, with its broker token (BROWSER-17), while "Agents
-    /// can use the browser" is on: for the owner's own work only. Another Oby's task, or one
-    /// marked `untrusted`, gets none until its browser runs in Oby's box (BROWSER-18). An own run
-    /// reaches it on loopback, as Oby's other servers (LANES-26).
+    /// can use the browser" is on. Another Oby's task, one marked `untrusted` or Oby's own review
+    /// gets none until the window's side of the box's edge lands
+    /// (`crate::browser::box_edge::FOREIGN_BROWSER`, BROWSER-18). An own run reaches it on
+    /// loopback, as Oby's other servers (LANES-26).
     pub(super) fn browser_server(&self, job: &Job) -> Option<crate::browser::AgentServer> {
-        if job.obi.is_some() || job.untrusted {
+        use crate::browser::box_edge;
+        if !box_edge::FOREIGN_BROWSER && box_edge::origin_of(job, &Value::Null).foreign() {
             return None;
         }
         let browser = self.browser.get()?;
