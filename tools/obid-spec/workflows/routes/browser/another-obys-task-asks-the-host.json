@@ -197,6 +197,9 @@
         "obid": "${state.a}",
         "job": "${state.handoff-job.body.job}",
         "until": "calls.then.1"
+      },
+      "ui": {
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {
@@ -217,7 +220,8 @@
       "ui": {
         "proves": [
           "BROWSER-19"
-        ]
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {
@@ -247,7 +251,8 @@
       "ui": {
         "proves": [
           "BROWSER-19"
-        ]
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {
@@ -270,7 +275,8 @@
       "ui": {
         "proves": [
           "BROWSER-19"
-        ]
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {
@@ -290,7 +296,8 @@
       "ui": {
         "proves": [
           "BROWSER-19"
-        ]
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {
@@ -300,6 +307,9 @@
         "obid": "${state.a}",
         "job": "${state.handoff-job.body.job}",
         "until": "calls.filled"
+      },
+      "ui": {
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {
@@ -316,7 +326,8 @@
       "ui": {
         "proves": [
           "BROWSER-19"
-        ]
+        ],
+        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {

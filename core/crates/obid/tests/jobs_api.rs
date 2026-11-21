@@ -7150,8 +7150,9 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     let loaded = loaded(&obid, job["id"].as_str().unwrap());
     assert_eq!(loaded["sources"], json!([]), "{loaded}");
     assert_eq!(loaded["skills"], json!([]), "{loaded}");
-    // None of the owner's or the repository's servers: only Oby's browser, in its box (BROWSER-18).
-    assert_eq!(loaded["mcpServers"], json!(["browser"]), "{loaded}");
+    // None of the owner's or the repository's servers, and no browser: an untrusted job gets none
+    // until the window's side of the box's edge lands (box_edge::FOREIGN_BROWSER, BROWSER-18).
+    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
 }
 
 /// LANES-23: an owner's settings file with what obid used to refuse (commands out of the

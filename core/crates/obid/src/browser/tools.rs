@@ -35,6 +35,9 @@ impl Service {
         args: &Value,
     ) -> Value {
         let foreign = self.api(|a| a.job(job).is_some_and(|j| j.origin.foreign()));
+        if foreign && !box_edge::FOREIGN_BROWSER {
+            return mcp_refusal(&box_edge::not_yet());
+        }
         if let Err(e) = self.api(|a| a.tools_allowed()) {
             // Another Oby's task finishes without one: its own owner can't turn it on (BROWSER-18).
             return mcp_refusal(&if foreign {

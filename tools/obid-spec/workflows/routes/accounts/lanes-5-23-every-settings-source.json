@@ -332,18 +332,15 @@
             "paths": {
               "loaded.sources": [],
               "loaded.skills": [],
-              "loaded.mcpServers": [
-                "browser"
-              ]
+              "loaded.mcpServers": []
             }
           }
         }
       },
       "ui": {
         "proves": [
-          "BROWSER-18",
-          "LANES-23",
-          "LANES-5"
+          "LANES-5",
+          "LANES-23"
         ]
       }
     }

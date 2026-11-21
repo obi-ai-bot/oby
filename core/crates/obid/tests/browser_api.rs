@@ -169,10 +169,12 @@ fn browser_16_no_token_a_made_up_one_the_owners_or_an_ended_jobs_is_refused() {
     stop_with_no_browser_left(&mut obid);
 }
 
-/// A job marked `untrusted` browses at the box's edge: its navigate to obid's own API on loopback
-/// is refused `outside_box` (BROWSER-18). Written before obid starts, as a foreign job is.
+/// A job marked `untrusted` gets no browser until the window's side of the box's edge lands
+/// (box_edge::FOREIGN_BROWSER, BROWSER-18): its agent, which holds its broker token, has every tool
+/// refused, its navigate to obid's own API on loopback too. Written before obid starts, as a
+/// foreign job is.
 #[test]
-fn browser_18_an_untrusted_jobs_navigate_to_obids_own_api_is_refused_outside_box() {
+fn browser_18_a_foreign_jobs_browser_tools_are_refused_until_the_windows_edge() {
     let folder = Folder::new("browser-18");
     let config = browser_config(&folder);
     let mut foreign = obid::job::Job::new(
@@ -201,8 +203,15 @@ fn browser_18_an_untrusted_jobs_navigate_to_obids_own_api_is_refused_outside_box
             .filter(|t| t.len() == 64)
     });
     let url = format!("http://127.0.0.1:{}/v1/jobs", obid.port);
-    let refused = tool(&obid, &token, "oby_browser_navigate", json!({"url": url}));
-    assert_eq!(refused["error"]["code"], "outside_box", "{refused}");
+    for (name, args) in [
+        ("oby_browser_navigate", json!({"url": url})),
+        ("oby_browser_snapshot", json!({})),
+    ] {
+        let refused = tool(&obid, &token, name, args);
+        assert_eq!(refused["error"]["code"], "browser_off", "{refused}");
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("no browser on this Oby yet"), "{refused}");
+    }
     stop_with_no_browser_left(&mut obid);
 }
 
