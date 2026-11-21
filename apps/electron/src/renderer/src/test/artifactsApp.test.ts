@@ -110,6 +110,17 @@ describe('ARTIFACTSAPP-2', () => {
   });
 });
 
+describe('ARTIFACTSAPP-8', () => {
+  it('artifactsapp_8_main_takes_the_owners_unsaved_edits_to_lay_over_the_version_and_nothing_more', () => {
+    const id = '3f0c2a1e-1111-4222-8333-944455556666', bounds = { x: 0, y: 0, width: 10, height: 10 };
+    expect(previewAsk({ id, version: 1, bounds, edits: { 'style.css': 'h1 { color: crimson }' } })).toEqual({ value: { id, version: 1, bounds, edits: { 'style.css': 'h1 { color: crimson }' } } });
+    expect(previewAsk({ id, version: 1, bounds })).toEqual({ value: { id, version: 1, bounds } });
+    for (const edits of [null, 'x', ['a'], { 'a.css': 1 }, { '': 'x' }, { ['p'.repeat(1025)]: 'x' }, Object.fromEntries(Array.from({ length: 513 }, (_, i) => [`f${i}`, 'x'])), { 'big.html': 'x'.repeat((17 << 20) + 1) }]) {
+      expect(previewAsk({ id, version: 1, bounds, edits }), JSON.stringify(edits).slice(0, 40)).toBeUndefined();
+    }
+  });
+});
+
 describe('ARTIFACTSAPP-3', () => {
   it('artifactsapp_3_the_relay_answers_only_preview_hosts_on_its_own_port', async () => {
     for (const host of [`127.0.0.1:${relay.port}`, `localhost:${relay.port}`, `evil.com`, `k3j9-preview.localhost:${relay.port + 1}`, `a.b-preview.localhost:${relay.port}`, `preview.localhost.evil.com:${relay.port}`]) {

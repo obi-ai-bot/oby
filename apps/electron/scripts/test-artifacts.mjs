@@ -8,6 +8,9 @@
 //                   its host page or that relay.
 //   ARTIFACTSAPP-5: its Code tab shows each file of the version, index.html first.
 //   ARTIFACTSAPP-6: the conversation gives it version 2, and the open pane moves there by itself.
+//   ARTIFACTSAPP-8 to 10: an edit typed in Code shows in Preview unsaved; Save makes the next version
+//                   (on an obid with the edit route; an older one's refusal shows, the edit kept);
+//                   the version menu opens any version, an older one read-only.
 //   ARTIFACTSAPP-3: the preview reaches nothing off its origin (another site, obid, the relay by
 //                   127.0.0.1), by fetch, image, script or navigation, while its own files load; and
 //                   it is sandboxed in its own partition, with no preload, no Node and no bridge.
@@ -31,6 +34,7 @@ const shots = process.env.OBY_ARTIFACTS_SHOTS;
 const scratch = mkdtempSync(join(tmpdir(), 'oby-artifacts-'));
 const json = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 let daemon, app;
+const mainLogs = [];
 
 async function freePort() {
   const server = createServer();
@@ -81,12 +85,14 @@ async function inFrame(js) {
     const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
     const frame = wc?.mainFrame.framesInSubtree.find((f) => /^http:\/\/[a-z0-9]+-preview\.localhost:\d+$/.test(f.origin) && !f.url.includes('/__csb_relay/'));
     if (!frame) return { none: true };
-    return { value: await frame.executeJavaScript(js) };
+    // a frame being replaced (the next version drawn) may never answer: asked again, never waited on
+    const stalled = new Promise((done) => setTimeout(() => done({ none: true, stalled: true }), 5_000));
+    return Promise.race([frame.executeJavaScript(js).then((value) => ({ value })), stalled]);
   }, js);
 }
 const inHost = (js) => app.evaluate(async ({ webContents }, js) => {
   const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
-  return wc ? wc.executeJavaScript(js) : null;
+  return wc ? Promise.race([wc.executeJavaScript(js), new Promise((done) => setTimeout(() => done(null), 5_000))]) : null;
 }, js);
 
 // what a request from the preview's frame came to: loaded, or blocked before it got anything
@@ -138,11 +144,32 @@ async function main() {
 
   app = await launch({ dir: s.root, userData: join(s.root, 'electron-data'), env: { ...process.env, OBID_HOME: s.home, OBID_PORT: String(s.port) } });
   const page = await app.firstWindow();
+  // main's own output, said when the run fails
+  app.process().stdout?.on('data', (b) => mainLogs.push(b.toString()));
+  app.process().stderr?.on('data', (b) => mainLogs.push(b.toString()));
+  app.process().on('exit', (code, signal) => mainLogs.push(`main exited: ${code} ${signal}`));
+  // everything that ends the app or a window, each with where it came from (a quit nobody asked
+  // for is a bug, never noise)
+  await app.evaluate(({ app: a, BrowserWindow }) => {
+    const said = (what) => console.log(`[ends] ${what} at ${new Date().toISOString()}\n${new Error().stack?.split('\n').slice(2, 9).join('\n')}`);
+    for (const ev of ['before-quit', 'will-quit', 'quit', 'window-all-closed']) a.on(ev, () => said(`app ${ev}`));
+    a.on('render-process-gone', (_e, wc, d) => said(`render-process-gone ${wc.getURL()} ${JSON.stringify(d)}`));
+    a.on('child-process-gone', (_e, d) => said(`child-process-gone ${JSON.stringify(d)}`));
+    const watch = (w) => w.on('closed', () => said(`window closed`));
+    BrowserWindow.getAllWindows().forEach(watch);
+    a.on('browser-window-created', (_e, w) => watch(w));
+    process.on('SIGTERM', () => said('SIGTERM'));
+    process.on('SIGINT', () => said('SIGINT'));
+  });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForLoadState('domcontentloaded');
   await skipFirstRun(page);
-  await until('Home', async () => (await page.locator('.app').count()) > 0);
+  await until('Home', async () => (await page.locator('.app').count()) > 0).catch(async (e) => {
+    console.error('the window shows:', (await page.evaluate(() => document.body.innerText).catch(() => '')).slice(0, 600));
+    console.error('obid says:', s.logs.join('').slice(-1500));
+    throw e;
+  });
   // the window at its own size (main/index.ts, 994 by 670), as the owner has it once set up
   await until('the window at its size', () => app.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -248,6 +275,31 @@ async function main() {
   assert.deepEqual({ ...hostReach, parentBridge: undefined }, { process: 'undefined', require: 'undefined', bridge: 'undefined', parentBridge: undefined }, `artifactsapp_3: the host page reaches no Node and no bridge: ${JSON.stringify(hostReach)}`);
   console.log('ok artifactsapp_3: the preview is sandboxed in its own partition with no way into the app');
 
+  // ARTIFACTSAPP-3 (1): a navigation of the frame (it leaves the frame on an error page; the next
+  // version shown makes a new one):
+  // a navigation of the frame: the host page's CSP (frame-src) stops it before any request, and
+  // the frame is left on Chromium's error page, an opaque origin, with nothing of the site
+  await app.evaluate(({ webContents }) => {
+    const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+    globalThis.__failedLoads = [];
+    wc.on('did-fail-provisional-load', (_e, code, desc, url) => { globalThis.__failedLoads.push({ url, desc }); });
+  });
+  await inFrame(`location.href = 'https://example.com/'; true`);
+  const failed = await until('the navigation refused', () => app.evaluate(() => globalThis.__failedLoads.find((f) => f.url === 'https://example.com/'))).catch(async (e) => {
+    console.error('failed loads:', JSON.stringify(await app.evaluate(() => globalThis.__failedLoads)));
+    console.error('frames:', JSON.stringify(await app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html')).mainFrame.framesInSubtree.map((f) => [f.url, f.origin]))));
+    throw e;
+  });
+  assert.match(failed.desc, /^ERR_BLOCKED_BY_(CSP|CLIENT)$/, `artifactsapp_3: the navigation was refused: ${failed.desc}`);
+  const frames = await app.evaluate(({ webContents }) => {
+    const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+    return wc.mainFrame.framesInSubtree.map((f) => ({ url: f.url, origin: f.origin }));
+  });
+  assert.ok(frames.every((f) => !f.origin.includes('example.com')), `artifactsapp_3: no frame holds the site: ${JSON.stringify(frames)}`);
+  const sentAfter = await app.evaluate(() => globalThis.__previewSent);
+  assert.ok(!sentAfter.some((u) => u.includes('example.com')), 'artifactsapp_3: the navigation sent nothing');
+  console.log('ok artifactsapp_3: a navigation of the preview goes nowhere');
+
   // ARTIFACTSAPP-5: Code shows the version's files, index.html first, and Preview's view goes meanwhile
   const viewShown = () => app.evaluate(({ BrowserWindow, webContents }) => {
     const win = BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().endsWith('/preview.html'));
@@ -289,25 +341,50 @@ async function main() {
   await shot(page, '4-followed');
   console.log('ok artifactsapp_6: a new version from the agent moves the open pane to it');
 
-  // ARTIFACTSAPP-3 (1), last, since it leaves the frame on an error page:
-  // a navigation of the frame: the host page's CSP (frame-src) stops it before any request, and
-  // the frame is left on Chromium's error page, an opaque origin, with nothing of the site
-  await app.evaluate(({ webContents }) => {
-    const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
-    globalThis.__failedLoads = [];
-    wc.on('did-fail-provisional-load', (_e, code, desc, url) => { globalThis.__failedLoads.push({ url, desc }); });
-  });
-  await inFrame(`location.href = 'https://example.com/'; true`);
-  const failed = await until('the navigation refused', () => app.evaluate(() => globalThis.__failedLoads.find((f) => f.url === 'https://example.com/')));
-  assert.match(failed.desc, /^ERR_BLOCKED_BY_(CSP|CLIENT)$/, `artifactsapp_3: the navigation was refused: ${failed.desc}`);
-  const frames = await app.evaluate(({ webContents }) => {
-    const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
-    return wc.mainFrame.framesInSubtree.map((f) => ({ url: f.url, origin: f.origin }));
-  });
-  assert.ok(frames.every((f) => !f.origin.includes('example.com')), `artifactsapp_3: no frame holds the site: ${JSON.stringify(frames)}`);
-  const sentAfter = await app.evaluate(() => globalThis.__previewSent);
-  assert.ok(!sentAfter.some((u) => u.includes('example.com')), 'artifactsapp_3: the navigation sent nothing');
-  console.log('ok artifactsapp_3: a navigation of the preview goes nowhere');
+  // ARTIFACTSAPP-8 and 10: the owner types in Code; Preview shows the edit unsaved; Save sends it,
+  // signed by main on the click of "Save as v3". An obid with the edit route (ARTIFACTS-16, it answers
+  // an unsigned edit 401) makes version 3; an older one answers 404, which the pane says, the edit kept
+  const token = readFileSync(join(s.home, 'api-token'), 'utf8').trim();
+  const probe = await fetch(`http://127.0.0.1:${s.port}/v1/artifacts/${site}/versions`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}' });
+  const edits = probe.status === 401;
+  await page.getByRole('tab', { name: 'Code' }).click();
+  const editor = page.locator('[data-artifact-code="index.html"] .cm-content');
+  await until('the editor', async () => (await editor.innerText().catch(() => '')).includes('<h1>Two</h1>'));
+  await editor.click();
+  await page.keyboard.press('Meta+A');
+  await page.keyboard.insertText('<!doctype html><h1>Three</h1>');
+  const saveButton = page.getByRole('button', { name: 'Save as v3', exact: true });
+  await until('Save as v3', async () => (await saveButton.count()) === 1);
+  await page.getByRole('tab', { name: 'Preview' }).click();
+  assert.equal(await until('the unsaved edit drawn', async () => { const v = (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value; return v === 'Three' && v; }, 60_000), 'Three', 'artifactsapp_8: Preview shows the edit before it is saved');
+  await shot(page, '5-edited');
+  await saveButton.click();
+  if (edits) {
+    await until('the pane on version 3', async () => (await page.locator('.art-strip-title span').innerText()) === 'Oby artifact · Page · v3', 60_000);
+    const v3 = await s.call('GET', `/v1/artifacts/${site}`);
+    assert.equal(v3.versions.at(-1).by, 'owner', 'artifactsapp_8: version 3 is the owner’s');
+    assert.equal(await (await fetch(`http://127.0.0.1:${s.port}/v1/artifacts/${site}/3/index.html`, { headers: { Authorization: `Bearer ${token}` } })).text(), '<!doctype html><h1>Three</h1>');
+    console.log('ok artifactsapp_8: an edit shows in Preview unsaved, and Save makes version 3, the owner’s');
+  } else {
+    await until('obid’s refusal shown', async () => (await page.locator('.art-refused').count()) === 1);
+    assert.equal(await saveButton.count(), 1, 'artifactsapp_10: the edit stays to save again');
+    console.log(`ok artifactsapp_8 (Preview of the unsaved edit) and artifactsapp_10 (refused: ${await page.locator('.art-refused').innerText()}); this obid has no edit route (${probe.status}), so Save isn't checked here`);
+  }
+  await shot(page, '6-saved');
+
+  // ARTIFACTSAPP-9: the version menu, the latest marked; an older version is read-only
+  const menu = page.getByRole('combobox', { name: 'Version' });
+  const options = await menu.locator('option').allInnerTexts();
+  assert.equal(options[0], `v${options.length}, the latest`, `artifactsapp_9: the latest first and marked: ${options.join(', ')}`);
+  await menu.selectOption('1');
+  await until('version 1 on view', async () => (await page.locator('.art-strip-title span').innerText()) === 'Oby artifact · Page · v1');
+  await page.getByRole('tab', { name: 'Code' }).click();
+  await until('version 1’s code', async () => (await editor.innerText().catch(() => '')).includes('<h1>One</h1>'));
+  assert.equal(await editor.getAttribute('contenteditable'), 'false', 'artifactsapp_9: an older version is read-only');
+  await page.getByRole('tab', { name: 'Preview' }).click();
+  await until('version 1 drawn again', async () => (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value === 'One', 60_000);
+  console.log('ok artifactsapp_9: the version menu opens any version, an older one read-only');
+
 
   // Close takes it away
   await page.getByRole('button', { name: 'Close the artifact' }).click();
@@ -319,7 +396,7 @@ async function main() {
   assert.deepEqual(errors, [], 'the page threw nothing');
 }
 
-main().then(() => { console.log('test-artifacts: all passed'); }, (e) => { console.error(e); process.exitCode = 1; }).finally(async () => {
+main().then(() => { console.log('test-artifacts: all passed'); }, (e) => { console.error(e); console.error('main said:', mainLogs.join('').slice(-3000)); process.exitCode = 1; }).finally(async () => {
   await app?.close().catch(() => {});
   if (daemon && daemon.exitCode === null) { const gone = new Promise((done) => daemon.once('exit', done)); daemon.kill(); await gone; }
   if (!process.env.OBY_KEEP) rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
