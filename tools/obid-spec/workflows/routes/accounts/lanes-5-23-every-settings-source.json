@@ -189,7 +189,8 @@
                 ],
                 "mcpServers": [
                   "owners-github",
-                  "repos-server"
+                  "repos-server",
+                  "browser"
                 ],
                 "sandbox": false
               }
