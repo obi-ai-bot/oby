@@ -39,6 +39,7 @@ use crate::store::{make_private_dir, write_private};
 mod blobs;
 mod design;
 mod limits;
+pub mod seal;
 
 pub use limits::{MAX_BYTES, MAX_ENTRIES, MAX_FILES, MAX_JOB_BYTES};
 

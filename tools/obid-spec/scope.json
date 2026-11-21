@@ -2257,6 +2257,15 @@
             "ARTIFACTS-8"
           ],
           "elsewhere": {}
+        },
+        "artifact-sharing.md": {
+          "obid": [
+            "ARTSHARE-1",
+            "ARTSHARE-2",
+            "ARTSHARE-3"
+          ],
+          "elsewhere": {},
+          "backlog": "ARTSHARE-1 to 3 are proven by Rust tests (core/crates/obid/src/artifacts/seal/tests.rs, each check mutated off and its red recorded in P9's pull request) until P10 gives obid a Sphere to receive from: P10's pull request carries the lab's forged offers (workflows/lab/artifactsphere/receive.json: wrong hash, a link in the tar, a path out, instruction files, the scanner down) as Blok workflows against the real Sphere."
         }
       }
     }
