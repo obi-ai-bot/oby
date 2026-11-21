@@ -1026,3 +1026,252 @@ fn computers_22_its_token_is_in_no_answer_event_log_or_error() {
         assert!(!text.contains(&token), "the token in {what}");
     }
 }
+
+/// A stand-in for the person's `ssh`, first on the Mac obid's `PATH`: it writes each call's
+/// arguments to `ssh-calls`. With `-L` it holds the forward as ssh does (perl relays this Mac's
+/// port to the other obid's own, its pid in `tunnel-<port>.pid`). Otherwise it runs what that
+/// destination's computer would: `studio` and `studio-b` their own `obid pair-computer`, stdin as
+/// it came; `unknown-host`, `no-ssh` and `no-obid` what ssh and a shell say then.
+fn stand_in_ssh(folder: &Path, studios: &[(&str, &Obid)]) -> PathBuf {
+    let bin = folder.join("ssh-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let calls = folder.join("ssh-calls");
+    let relay = "use IO::Socket::INET; use IO::Select; my ($l, $r) = @ARGV; \
+        my $s = IO::Socket::INET->new(LocalAddr => \"127.0.0.1\", LocalPort => $l, Listen => 16, ReuseAddr => 1) \
+        or die \"bind [127.0.0.1]:$l: Address already in use\\n\"; $SIG{CHLD} = \"IGNORE\"; \
+        while (my $c = $s->accept) { if (fork() == 0) { close $s; \
+        my $u = IO::Socket::INET->new(PeerAddr => \"127.0.0.1\", PeerPort => $r) or exit 1; \
+        my $sel = IO::Select->new($c, $u); while (my @ready = $sel->can_read) { for my $h (@ready) { \
+        my $n = sysread($h, my $b, 65536); exit 0 unless $n; syswrite($h == $c ? $u : $c, $b); } } exit 0; } close $c; }";
+    let mut cases = String::new();
+    for (name, obid) in studios {
+        cases.push_str(&format!(
+            "  {name}) exec '{OBID}' pair-computer --config '{}' ;;\n",
+            obid.folder.join("config.json").display()
+        ));
+    }
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> '{calls}'\nspec=; dest=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -L) spec=$2; shift ;;\n    --) dest=$2; break ;;\n  esac\n  shift\ndone\nif [ -n \"$spec\" ]; then\n  local=$(echo \"$spec\" | cut -d: -f2); remote=$(echo \"$spec\" | cut -d: -f4)\n  echo $$ > '{dir}/tunnel-'$local'.pid'\n  exec perl -e '{relay}' \"$local\" \"$remote\"\nfi\ncase \"$dest\" in\n{cases}  unknown-host) echo 'Host key verification failed.' >&2; exit 255 ;;\n  no-ssh) echo \"ssh: connect to host $dest port 22: Connection refused\" >&2; exit 255 ;;\n  no-obid) echo 'sh: obid: command not found' >&2; exit 127 ;;\nesac\necho \"ssh: Could not resolve hostname $dest\" >&2; exit 255\n",
+        calls = calls.display(),
+        dir = folder.display(),
+    );
+    let program = bin.join("ssh");
+    std::fs::write(&program, script).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// The `computer.adding` events for adding `id`, up to its last: done or failed.
+fn adding_of(events: &std::sync::mpsc::Receiver<(String, Value)>, id: &str) -> Vec<Value> {
+    events_named(events, "computer.adding", 60, |got| {
+        got.iter().any(|e| {
+            e["id"] == id
+                && (e["state"] == "failed" || (e["step"] == "routes" && e["state"] == "done"))
+        })
+    })
+    .into_iter()
+    .filter(|e| e["id"] == id)
+    .collect()
+}
+
+/// COMPUTERS-25, 17 and 18, on real obids: the Mac adds Studio over the person's own ssh (a
+/// stand-in here), as its owner's signed act. ssh runs `obid pair-computer` there, once, with this
+/// Mac's name and key on stdin only; the invitation is redeemed through the tunnel, and each step
+/// is told as it happens. The window's requests then go through that tunnel; SSH's own refusals
+/// say what to do and keep nothing; removing it ends its tunnel. A Studio with a direct address
+/// is kept with that faster route first, SSH last.
+#[test]
+fn computers_25_the_mac_adds_studio_over_ssh_and_works_there_through_its_tunnel() {
+    let studio_folder = Folder::new("remote-ssh-studio");
+    let studio = started(&studio_folder);
+    let fast_folder = Folder::new("remote-ssh-studio-b");
+    let fast = start(&fast_folder.0, &with_direct(&fast_folder), None);
+    direct_of(&fast);
+    let mac_folder = Folder::new("remote-ssh-mac");
+    let bin = stand_in_ssh(&mac_folder.0, &[("studio", &studio), ("studio-b", &fast)]);
+    let remote = fixture(&mac_folder.0.join("fixture"));
+    let mac = start(
+        &mac_folder.0,
+        &config(&mac_folder.0, &remote, &agent()),
+        Some(&bin),
+    );
+    let calls = || std::fs::read_to_string(mac_folder.0.join("ssh-calls")).unwrap_or_default();
+    let events = follow_events(&mac);
+
+    // The owner's act, and a host that can't be an option: refused before ssh runs.
+    let asked = json!({"ssh": "studio"});
+    let unsigned = call(&mac, "POST", "/v1/computers", Some(&asked));
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    let option = call_signed(
+        &mac,
+        "POST",
+        "/v1/computers",
+        Some(&json!({"ssh": "-oProxyCommand=id"})),
+    );
+    assert_eq!(option.status, 422, "{}", option.text);
+    assert_eq!(option.body["reason"], "not_a_host");
+    assert_eq!(calls(), "", "ssh ran for a refused host");
+
+    // Added over SSH, each step told as it happens.
+    let started_adding = call_signed(&mac, "POST", "/v1/computers", Some(&asked));
+    assert_eq!(started_adding.status, 202, "{}", started_adding.text);
+    let adding = started_adding.body["adding"].as_str().unwrap().to_owned();
+    let steps = adding_of(&events, &adding);
+    let said: Vec<String> = steps
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {}",
+                e["step"].as_str().unwrap(),
+                e["state"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "ssh doing",
+            "ssh done",
+            "pair doing",
+            "pair done",
+            "routes doing",
+            "routes done"
+        ],
+        "{steps:?}"
+    );
+    let computer = steps.last().unwrap()["computer"].clone();
+    let id = computer["id"].as_str().unwrap().to_owned();
+    assert_eq!(computer["route"]["kind"], "ssh", "{computer}");
+    assert_eq!(computer["state"], "connected", "{computer}");
+    // ssh ran `obid pair-computer` once, the destination last after `--`, nothing else on its
+    // command line: the Mac's name and key went on stdin.
+    let all = calls();
+    let ran: Vec<&str> = all
+        .lines()
+        .filter(|l| !l.contains(" -L "))
+        .collect::<Vec<_>>();
+    assert_eq!(ran.len(), 1, "{ran:?}");
+    assert!(
+        ran[0].ends_with(" -- studio obid pair-computer"),
+        "{}",
+        ran[0]
+    );
+    assert!(ran[0].contains("BatchMode=yes"), "{}", ran[0]);
+    let pairings = call(&studio, "GET", "/v1/pairing/devices", None);
+    assert_eq!(pairings.body[0]["computer"], true, "{}", pairings.text);
+    let kept = std::fs::read_to_string(mac.home.join("computers.json")).unwrap();
+    assert!(!kept.contains("token"), "{kept}");
+
+    // The window's requests for Studio go through the tunnel: the owner's words signed on the
+    // Mac set Studio's mode, not the Mac's.
+    let path = "/v1/settings/permissions";
+    for obid in [&mac, &studio] {
+        let ask = call(obid, "PUT", path, Some(&json!({"mode": "ask"})));
+        assert_eq!(ask.status, 200, "{}", ask.text);
+    }
+    let wider = json!({"mode": "bypass"});
+    let words = words_header(&mac, "PUT", path, Some(&wider));
+    let set = call_with_headers(
+        &mac,
+        TOKEN,
+        "PUT",
+        path,
+        Some(&wider),
+        &[("Oby-Computer", id.as_str()), ("X-Oby-Words", &words)],
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(call(&studio, "GET", path, None).body["mode"], "bypass");
+    assert_eq!(call(&mac, "GET", path, None).body["mode"], "ask");
+    let tunnels: Vec<String> = calls()
+        .lines()
+        .filter(|l| l.contains(" -L "))
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        tunnels
+            .iter()
+            .all(|l| l.contains("ExitOnForwardFailure=yes") && l.ends_with(" -- studio")),
+        "{tunnels:?}"
+    );
+    // COMPUTERS-18: trying again finds obid answering through the tunnel.
+    let retried = call(&mac, "POST", &format!("/v1/computers/{id}/retry"), None);
+    assert_eq!(retried.status, 200, "{}", retried.text);
+    assert_eq!(retried.body["state"], "connected", "{}", retried.text);
+
+    // Removing it ends its pairing there and its tunnel here.
+    let pids: Vec<i32> = std::fs::read_dir(&mac_folder.0)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().into_string().ok()?;
+            name.starts_with("tunnel-").then(|| {
+                std::fs::read_to_string(mac_folder.0.join(&name))
+                    .ok()?
+                    .trim()
+                    .parse()
+                    .ok()
+            })?
+        })
+        .collect();
+    assert!(!pids.is_empty(), "no tunnel ran");
+    let removed = call_signed(&mac, "DELETE", &format!("/v1/computers/{id}"), None);
+    assert_eq!(removed.status, 200, "{}", removed.text);
+    assert_eq!(removed.body["there"], true, "{}", removed.text);
+    within(10, "its tunnels to end", || {
+        pids.iter()
+            .all(|pid| {
+                !Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            })
+            .then_some(())
+    });
+
+    // SSH's refusals say what to do, in obid's words, and keep nothing.
+    for (host, step, kind, words) in [
+        ("unknown-host", "ssh", "hostKeyUnknown", "ssh unknown-host"),
+        ("no-ssh", "ssh", "noSshServer", "Remote Login"),
+        ("no-obid", "pair", "noObid", "install Oby there"),
+    ] {
+        let tried = call_signed(&mac, "POST", "/v1/computers", Some(&json!({"ssh": host})));
+        assert_eq!(tried.status, 202, "{}", tried.text);
+        let steps = adding_of(&events, tried.body["adding"].as_str().unwrap());
+        let last = steps.last().unwrap();
+        assert_eq!(
+            (last["step"].as_str(), last["state"].as_str()),
+            (Some(step), Some("failed")),
+            "{steps:?}"
+        );
+        assert_eq!(last["trouble"]["trouble"], kind, "{last}");
+        let say = last["trouble"]["say"].as_str().unwrap();
+        assert!(say.contains(words), "{host}: {say}");
+    }
+    assert_eq!(
+        call(&mac, "GET", "/v1/computers", None).body["computers"],
+        json!([])
+    );
+
+    // A Studio with a direct address: kept with it first, SSH the fallback, and the window starts
+    // on the faster one.
+    let tried = call_signed(
+        &mac,
+        "POST",
+        "/v1/computers",
+        Some(&json!({"ssh": "studio-b"})),
+    );
+    assert_eq!(tried.status, 202, "{}", tried.text);
+    let steps = adding_of(&events, tried.body["adding"].as_str().unwrap());
+    let computer = &steps.last().unwrap()["computer"];
+    assert_eq!(computer["route"]["kind"], "loopback", "{steps:?}");
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(mac.home.join("computers.json")).unwrap()).unwrap();
+    let kinds: Vec<&str> = kept["computers"][0]["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["loopback", "ssh"], "{kept}");
+}

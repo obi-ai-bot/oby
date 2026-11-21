@@ -88,8 +88,11 @@ pub async fn add(
     };
     let asked = body_of(
         &body,
-        "{\"link\": \"oby-computer:…\", \"code\": \"123456\"}",
+        "{\"link\": \"oby-computer:…\", \"code\": \"123456\"} or {\"ssh\": \"<host>\"}",
     )?;
+    if let Some(host) = asked["ssh"].as_str() {
+        return over_ssh(shared, &device, host.trim());
+    }
     let (Some(link), Some(code)) = (asked["link"].as_str(), asked["code"].as_str()) else {
         return Err(refused(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -132,26 +135,41 @@ pub async fn add(
         .into_response())
 }
 
+/// `POST /v1/computers` `{"ssh": "<host>"}` (COMPUTERS-25): adding over the person's own SSH, its
+/// steps told as `computer.adding` events. A host that could be read as an option, or isn't one,
+/// is refused before ssh runs.
+fn over_ssh(shared: Arc<Shared>, device: &str, host: &str) -> Result<Response, ApiError> {
+    super::ssh::check_destination(host)
+        .map_err(|why| refused(StatusCode::UNPROCESSABLE_ENTITY, why, "not_a_host"))?;
+    let key = shared.devices.public_key(device).ok_or_else(|| {
+        refused(
+            StatusCode::FORBIDDEN,
+            "That device isn't registered with this Oby.",
+            "unknown_device",
+        )
+    })?;
+    let asked = super::adding::Asked {
+        destination: host.to_owned(),
+        signer: device.to_owned(),
+        key,
+        name: shared.host.clone(),
+    };
+    let id = super::adding::start(shared, asked)
+        .map_err(|why| refused(StatusCode::INTERNAL_SERVER_ERROR, why, "not_started"))?;
+    Ok((StatusCode::ACCEPTED, axum::Json(json!({"adding": id}))).into_response())
+}
+
 /// `mac` or `linux`, as the other obid's status says, through the route the code went over.
 async fn os_of(paired: &super::code::Paired) -> Option<String> {
     let route = paired.routes.iter().find(|r| r.id == paired.route)?;
     let Via::Https { host, port, pin } = &route.via else {
         return None;
     };
-    let client = super::pinned::client(*pin, Duration::from_secs(10)).ok()?;
-    let status: Value = client
-        .get(format!("https://{host}:{port}/v1/status"))
-        .bearer_auth(&paired.token)
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-    status["runner"]["os"]
-        .as_str()
-        .filter(|os| matches!(*os, "mac" | "linux"))
-        .map(str::to_owned)
+    let way = super::reach::Way {
+        client: super::pinned::client(*pin, Duration::from_secs(10)).ok()?,
+        base: format!("https://{host}:{port}"),
+    };
+    super::reach::os(&super::reach::status(&way, &paired.token).await.ok()?)
 }
 
 /// `PUT /v1/computers/current` `{"id": <id> | "this"}`: which computer the window is on, kept so
@@ -207,7 +225,8 @@ pub async fn rename(
     }
 }
 
-/// `POST /v1/computers/{id}/retry`: every route probed now, best first, until one answers.
+/// `POST /v1/computers/{id}/retry`: every route probed now, best first, until obid answers on one
+/// (COMPUTERS-18: something on the port isn't enough).
 pub async fn retry(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
@@ -226,17 +245,8 @@ pub async fn retry(
         .flatten()
         .unwrap_or_default();
     for route in &computer.routes {
-        let Via::Https { host, port, pin } = &route.via else {
-            continue;
-        };
-        let answered = match super::pinned::client(*pin, Duration::from_secs(5)) {
-            Ok(client) => client
-                .get(format!("https://{host}:{port}/v1/status"))
-                .bearer_auth(&token)
-                .send()
-                .await
-                .map(|_| ())
-                .map_err(|e| super::pinned::said(&e)),
+        let answered = match super::reach::way(&shared, &id, route, true).await {
+            Ok(way) => super::reach::status(&way, &token).await.map(|_| ()),
             Err(why) => Err(why),
         };
         let ok = answered.is_ok();
@@ -281,14 +291,12 @@ pub async fn remove(
         .unwrap_or_default();
     let mut there = false;
     for route in shared.computers.to_probe(&id) {
-        let Via::Https { host, port, pin } = &route.via else {
+        let Ok(way) = super::reach::way(&shared, &id, &route, true).await else {
             continue;
         };
-        let Ok(client) = super::pinned::client(*pin, Duration::from_secs(10)) else {
-            continue;
-        };
-        if let Ok(answer) = client
-            .delete(format!("https://{host}:{port}/v1/pairing"))
+        if let Ok(answer) = way
+            .client
+            .delete(format!("{}/v1/pairing", way.base))
             .bearer_auth(&token)
             .send()
             .await

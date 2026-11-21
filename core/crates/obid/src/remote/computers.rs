@@ -4,8 +4,9 @@
 //! `oby.computer.<id>`, so every answer, log line and push has them taken out; never in
 //! `home/computers.json` (0600) or an answer.
 //!
-//! It owns that file, the tokens' names, and each computer's [`Supervisor`] while obid runs. It
-//! never talks to a computer itself: crate::remote::forward does, with what it hands out.
+//! It owns that file, the tokens' names, and each computer's [`Supervisor`] and SSH tunnels
+//! (crate::remote::tunnels) while obid runs. It never talks to a computer itself:
+//! crate::remote::reach does, with what it hands out.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +33,7 @@ pub struct Computer {
     /// `mac` or `linux`, as its obid said when it was added.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os: Option<String>,
-    /// From its link, in the owner's order: direct routes, each pinned.
+    /// In the owner's order: its direct routes, each pinned, and the SSH route it was added over.
     pub routes: Vec<Route>,
     /// Its pairing there (its gateway's `deviceID`), and this Mac's key's id there, if it took it.
     pub pairing: String,
@@ -61,6 +62,8 @@ pub struct Computers {
     /// Bumped whenever the window's computer changes or one is forgotten: a forwarded stream ends
     /// on it (crate::remote::forward).
     changes: tokio::sync::watch::Sender<u64>,
+    /// The SSH tunnels to them, while obid runs.
+    pub tunnels: super::tunnels::Tunnels,
 }
 
 /// The vault name of computer `id`'s device token.
@@ -97,6 +100,7 @@ impl Computers {
             saved: Mutex::new(saved),
             supervisors: Mutex::new(HashMap::new()),
             changes: tokio::sync::watch::channel(0).0,
+            tunnels: super::tunnels::Tunnels::default(),
         }
     }
 
@@ -119,8 +123,8 @@ impl Computers {
         self.vault.value(&token_name(id))
     }
 
-    /// Keeps a computer paired with a code (crate::remote::code), its token in the vault first:
-    /// with no token kept, nothing is.
+    /// Keeps a computer paired with a code (crate::remote::code) or over SSH
+    /// (crate::remote::adding), its token in the vault first: with no token kept, nothing is.
     pub fn add(
         &self,
         paired: super::code::Paired,
@@ -217,6 +221,7 @@ impl Computers {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
+        self.tunnels.forget(id);
         self.changed();
         self.vault.remove(&token_name(id))?;
         Ok(true)
