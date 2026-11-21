@@ -10,7 +10,6 @@ const MIN = 60_000;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const ASKS = 'section[aria-label="Oby is asking"]';
 const REPLY = '.msg.is-oby .msg-bubble';
-const PR_OPEN = /Pull request open · waiting for your review on GitHub|Merged into \S+|Oby is reviewing|Waiting for review[^\n]*/;
 const ended = (j) => ['done', 'failed', 'interrupted', 'stopped'].includes(j?.status);
 const stamp = new Date().toISOString().slice(0, 16);
 // a task name no earlier run used: the side panel finds tasks by name
@@ -21,7 +20,8 @@ async function home(t) {
   if (await t.page.getByRole('button', { name: 'Show sidebar' }).isVisible()) await t.click('Show sidebar');
   const oby = t.page.locator('.rail-button[aria-label="Chats"]');
   if ((await oby.getAttribute('aria-pressed')) !== 'true') await oby.click();
-  await t.click('New conversation');
+  // its accessible name ends with its shortcut, “New conversation ⌘N” (#2789)
+  await t.click(/^New conversation/);
   await t.see('What do you want me to work on?', { label: 'the empty chat' });
 }
 
@@ -99,6 +99,23 @@ async function openTask(t, title) {
     await sleep(500);
   }
   await t.see('Reply to Oby…', { label: 'its conversation' });
+}
+
+// a task's nested row clicked: its conversation opens at its card (LIVETASK-22, 28), the conversation's
+// row lit. Whether the card is in view, above the decision drawer, is noted, not failed on (#2786)
+async function openAtTask(t, kid, title) {
+  await kid.click();
+  const card = t.page.locator('.msg-task', { has: t.page.locator('.msg-task-title', { hasText: title }) }).last();
+  await card.waitFor({ state: 'attached', timeout: 10_000 });
+  await t.page.locator('.convo-row.is-active').first().waitFor({ timeout: 10_000 });
+  await sleep(800);
+  const inView = await card.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const bar = [...document.querySelectorAll('.decision-bar')].filter((e) => e.checkVisibility()).pop();
+    return r.top >= 0 && r.bottom <= (bar ? bar.getBoundingClientRect().top : innerHeight);
+  });
+  t.note(`its conversation opened; its card is ${inView ? 'in view' : 'NOT in view (LIVETASK-28, #2786)'}`);
+  return card;
 }
 
 // this run's repository and pull request only, never another of the owner's: `<repo>#<n>`
@@ -246,11 +263,17 @@ export default [
       await home(t);
       await answerCards(t, { done: () => { const j = t.job(id); return j?.published || ended(j); } });
       await openTask(t, t.state.task.title);
-      const seen = await t.see(PR_OPEN, { ms: 5 * MIN, label: 'its pull request in its conversation' });
-      await t.shot('pull-request');
+      // its pull request: the link on its card's head (a done card shows its head alone, LIVETASK-29;
+      // nothing there says whether it's open or merging, #2785)
       const job = t.job(id);
+      const n = job.published?.match(/\/pull\/(\d+)$/)?.[1];
+      if (!n) throw new Error(`the task published no pull request: ${job.publishError ?? job.status}`);
+      const card = t.page.locator('.msg-task', { has: t.page.locator('.msg-task-title', { hasText: t.state.task.title }) }).last();
+      const link = card.locator('.tc-result a', { hasText: new RegExp(`#${n}$`) });
+      await until(t, () => link.isVisible(), 5 * MIN).catch(() => { throw new Error(`its card doesn't show its pull request #${n}`); });
+      await t.shot('pull-request');
       t.state.job = job;
-      t.note(`it says: ${seen}; evidence: ${job.agent}/${job.account}, mode ${job.mode}, vetted ${job.vetted}, ${job.published ?? job.publishError}`);
+      t.note(`its card: ${(await card.innerText()).replace(/\n+/g, ' · ')}; evidence: ${job.agent}/${job.account}, mode ${job.mode}, vetted ${job.vetted}, ${job.published}`);
     },
   },
   {
@@ -409,12 +432,12 @@ export default [
   },
   {
     id: 'nested',
-    title: 'A task nests under its conversation and opens its own thread',
-    contract: 'live-task.md (LIVETASK-19 to 22)',
+    title: 'A task nests under its conversation; its row opens the conversation at its card',
+    contract: 'live-task.md (LIVETASK-19 to 22, 28)',
     run: async (t) => {
       await home(t);
       const since = Date.now();
-      await t.say(`Start a task now in ${t.repo} on Claude Code, in Ask mode: before writing anything, its agent asks me (not you) one question: should the word be "yes" or "no"? Then it makes docs/oby-decision.md with that one word. Change nothing else.`);
+      await t.say(`Start a task now in ${t.repo} on Claude Code, in Ask mode: before writing anything, its agent asks me (not you) one question: should the word be "yes" or "no"? Then it makes docs/oby-decision.md with that one word. Change nothing else. Call the task "Oby decision ${stamp.slice(11)}".`);
       const task = track(t, await newTask(t, since));
       t.state.decision = task;
       // its conversation's row, with the task under it
@@ -429,13 +452,10 @@ export default [
       const row = t.page.locator('.convo-row.is-active');
       if (await row.count()) t.note(`its conversation's row: ${(await row.innerText()).replace(/\n+/g, ' · ')}`);
       await t.shot('nested-row');
-      await kid.click();
-      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
-      t.note(`its thread: ${(await t.page.locator('.agent-layer').last().innerText()).slice(0, 300).replace(/\n+/g, ' · ')}`);
-      await t.shot('task-thread');
-      await t.page.keyboard.press('Escape');
-      await sleep(600);
-      await t.shot('back');
+      // a click opens its conversation at its card, never a page of its own (LIVETASK-22, 28)
+      const card = await openAtTask(t, kid, task.title);
+      t.note(`its card: ${(await card.innerText()).replace(/\n+/g, ' · ')}`);
+      await t.shot('at-its-card');
     },
   },
   {
@@ -463,15 +483,10 @@ export default [
       // found again: its nested row
       const kid = t.page.locator('.convo-kid', { hasText: task.title }).first();
       t.note(`its row after Later: ${(await kid.isVisible()) ? (await kid.innerText()).replace(/\n+/g, ' ') : 'not shown'}`);
-      // its own thread
-      await kid.click();
-      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
-      await sleep(600);
-      const inThread = await t.page.locator('.agent-layer .decision-bar').count();
-      t.note(`in its thread the decision is ${inThread ? 'there' : 'MISSING'}`);
-      await t.shot('in-thread');
-      await t.page.keyboard.press('Escape');
-      await sleep(600);
+      // its row: its conversation opened at it, where Later's decision is back (LIVETASK-24 to 28)
+      await openAtTask(t, kid, task.title);
+      t.note(`opened at its task the decision is ${(await bar().count()) ? 'back' : 'MISSING'}`);
+      await t.shot('at-its-card');
       // Waiting for you
       const waiting = t.page.getByRole('button', { name: /Waiting for you/ });
       if (await waiting.count()) {
@@ -606,7 +621,7 @@ export default [
   },
   {
     id: 'stop-left',
-    title: 'Stop a task an earlier run left running, from its own thread (OBY_DRIVE_STOP names it)',
+    title: 'Stop a task an earlier run left running, from its card’s menu (OBY_DRIVE_STOP names it)',
     contract: 'live-task.md (LIVETASK-22)',
     run: async (t) => {
       const title = process.env.OBY_DRIVE_STOP;
@@ -618,10 +633,11 @@ export default [
         const twist = t.page.locator('.convo-nest').nth(i).locator('.convo-twist[aria-expanded="false"]');
         if (await twist.count()) { await twist.click(); await sleep(300); }
       }
-      await kid.click();
-      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
-      await t.shot('its-thread');
-      await t.click('Stop', '.agent-layer');
+      // its conversation at its card (LIVETASK-28), then Stop from the card's menu
+      await openAtTask(t, kid, title);
+      await t.shot('at-its-card');
+      await t.click(`More for ${title}`);
+      await t.page.getByRole('menuitem', { name: 'Stop task', exact: true }).click();
       await sleep(3000);
       await t.shot('stopped');
       t.note(`its row now: ${(await kid.innerText()).replace(/\n+/g, ' ')}`);
