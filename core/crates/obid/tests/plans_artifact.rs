@@ -513,14 +513,20 @@ fn ran_unproxied(obid: &Obid, id: &str) -> bool {
     kept["ranUnproxied"] == json!(true)
 }
 
-/// The job `words` (an `oby_dispatch` of a task with nothing to do) start in `conversation`,
-/// unsigned so it runs in Oby's box, behind obid's proxy, waited on to its end: its id.
+/// A task with nothing to do that a turn of `conversation` starts after reading the web, so it
+/// is `untrusted` and runs in Oby's box, behind obid's proxy, waited on to its end: its id.
 fn boxed_task(obid: &Obid, conversation: &str) -> String {
     let started = told(
         obid,
         conversation,
-        "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"research\"}",
-        false,
+        "WEB OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"research\"}",
+        true,
+    );
+    assert_eq!(
+        started.body["jobs"][0]["untrusted"],
+        json!(true),
+        "{}",
+        started.text
     );
     let id = started.body["jobs"][0]["id"]
         .as_str()
@@ -570,10 +576,16 @@ fn artifacts_24_a_conversation_that_laid_an_unproxied_version_keeps_it() {
         json!({"unproxied": true}),
         "{kept}"
     );
-    // A job it plans, boxed, is LANE-3a's; one of a clean conversation isn't.
+    // A job it plans, boxed (so its own run never makes it LANE-3a's), is LANE-3a's; one of a
+    // clean conversation isn't.
     let theirs = boxed_task(&obid, &c1);
     assert!(ran_unproxied(&obid, &theirs), "{theirs}");
-    let clean = plan(&obid, json!({"said": "SAY hello", "new": true}));
+    let clean = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": "SAY hello", "new": true}),
+    );
     let c2 = clean.body["conversation"].as_str().unwrap().to_owned();
     let other = boxed_task(&obid, &c2);
     assert!(!ran_unproxied(&obid, &other), "{other}");

@@ -203,6 +203,7 @@ fn planned_job(
         brief: d.brief(),
         complex: d.complexity == super::plan::Complexity::Complex,
         artifacts: open_artifact(shared, asked),
+        ran_unproxied: super::open_artifact::laid_unproxied(shared, asked.conversation),
         ..NewJob::default()
     };
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the

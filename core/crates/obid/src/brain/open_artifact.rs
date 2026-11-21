@@ -13,8 +13,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::api::{ApiError, Shared};
-use crate::artifacts::seed::carried;
-use crate::artifacts::{Kind, Marks};
+use crate::artifacts::Kind;
 use crate::conversation::{Begun, Target};
 
 /// `artifact` as the app sends it: the artifact open, and the version it shows (left out, the
@@ -158,52 +157,24 @@ pub fn into_room(shared: &Shared, room: &Path, open: &OpenArtifact) -> Result<St
 /// The room's folder [`into_room`] lays artifacts in.
 const LAID: &str = "artifacts";
 
-/// What files the turn publishes from `path` (relative to its room) carry of the artifacts laid
-/// there (ARTIFACTS-24, LANE-3a), so a new artifact made of them is never cleaner than they are:
-/// the turn's `open` artifact's, wherever in the room the files were copied, and for a path
-/// under `artifacts/`, every artifact laid there, an earlier turn's too, by the id its entry's
-/// name starts with. An entry of none of the conversation's artifacts withholds the declared
-/// secrets, as obid can't tell where its files came from.
-pub fn laid_marks(
-    shared: &Shared,
-    room: &Path,
-    conversation: &str,
-    path: &str,
-    open: Option<&OpenArtifact>,
-) -> Marks {
-    let mut marks = Marks::default();
-    if let Some(open) = open
-        && let Some(artifact) = shared.artifacts.get(&open.id)
-    {
-        marks.join(carried(&artifact, open.version));
-    }
-    let mut parts = path.split('/');
-    if parts.next() != Some(LAID) {
-        return marks;
-    }
-    let entries: Vec<String> = match parts.next().filter(|p| !p.is_empty()) {
-        Some(entry) => vec![entry.to_owned()],
-        None => std::fs::read_dir(room.join(LAID))
-            .map(|dir| {
-                dir.flatten()
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .filter(|name| !name.starts_with('.'))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    };
-    let theirs = shared.artifacts.list(Some(conversation), None);
-    for entry in entries {
-        let id: String = entry.chars().take(8).collect();
-        match theirs
-            .iter()
-            .find(|a| id.len() == 8 && a.id.starts_with(&id))
-        {
-            Some(artifact) => marks.join(carried(artifact, u32::MAX)),
-            None => marks.unproxied = true,
-        }
-    }
-    marks
+/// The file in the conversation's own folder (never its room, which its agent writes) that says
+/// an unproxied version (LANE-3a) was laid in its room ([`note_unproxied`]).
+const UNPROXIED: &str = "laid-unproxied";
+
+/// Keeps for good that `conversation` had a version laid in its room whose job ran with no
+/// egress proxy of obid's (ARTIFACTS-24), as a taint is kept: before the files are laid, so
+/// none is there unless it's kept. From then on what it publishes and the jobs it plans are
+/// LANE-3a's ([`laid_unproxied`]), and nothing more.
+pub fn note_unproxied(shared: &Shared, conversation: &str) -> Result<(), String> {
+    let place = super::harness::Place::of(&shared.config.home, conversation);
+    crate::store::write_private(&place.folder.join(UNPROXIED), b"").map_err(|e| e.to_string())
+}
+
+/// Whether [`note_unproxied`] kept it for `conversation`: what its turns publish records
+/// `unproxied`, and the jobs it plans run as LANE-3a's (no declared secrets for their checks).
+pub fn laid_unproxied(shared: &Shared, conversation: &str) -> bool {
+    let place = super::harness::Place::of(&shared.config.home, conversation);
+    std::fs::symlink_metadata(place.folder.join(UNPROXIED)).is_ok()
 }
 
 /// The line that tells the brain which artifact is open: its id, version and kind, its title

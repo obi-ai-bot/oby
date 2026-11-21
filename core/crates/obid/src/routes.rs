@@ -1019,6 +1019,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         client_request_id: None,
         // Never the body's: a job starts with an artifact only as obid planned it (ARTIFACTS-23).
         artifacts: Vec::new(),
+        ran_unproxied: false,
     })
 }
 

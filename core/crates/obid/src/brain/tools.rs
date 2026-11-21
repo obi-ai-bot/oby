@@ -1099,21 +1099,14 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
             .conversations
             .foreign(&session.conversation)
             .is_some();
-    let mut marks = crate::artifacts::Marks {
+    // A conversation that had an unproxied version laid in its room: LANE-3a's (ARTIFACTS-24).
+    let marks = crate::artifacts::Marks {
         foreign: shaped.then(|| {
             "an artifact's files Oby's turn made after it read something untrusted".into()
         }),
-        ..Default::default()
+        reached: None,
+        unproxied: super::open_artifact::laid_unproxied(shared, &session.conversation),
     };
-    // And what the files laid in its room carry, should it publish them as a new artifact.
-    let open = session.control.artifact();
-    marks.join(super::open_artifact::laid_marks(
-        shared,
-        &session.room,
-        &session.conversation,
-        &path,
-        open.as_ref(),
-    ));
     let (id, version) = shared
         .artifacts
         .publish(crate::artifacts::Publish {

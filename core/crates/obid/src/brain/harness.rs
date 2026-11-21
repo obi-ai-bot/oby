@@ -2136,13 +2136,21 @@ async fn attempts(
     // The artifact open where the owner said the words (ARTIFACTS-12): what they're about, its
     // files in the room (ARTIFACTS-21). Text someone else's made reaches the turn with them
     // (ARTIFACTS-24, 25): it read something untrusted, before any of them is in the room.
+    // An unproxied one's (LANE-3a) makes the conversation's work LANE-3a's for good, kept first.
     let open = session.control.artifact().map(|open| {
-        if (shared.artifacts.get(&open.id))
-            .is_none_or(|a| crate::artifacts::seed::carried(&a, open.version).taints())
-        {
+        let carried = (shared.artifacts.get(&open.id))
+            .map(|a| crate::artifacts::seed::carried(&a, open.version));
+        if carried.as_ref().is_none_or(crate::artifacts::Marks::taints) {
             session.taint();
         }
-        let laid = super::open_artifact::into_room(shared, &place.room, &open)
+        let kept = match carried {
+            Some(marks) if marks.unproxied => {
+                super::open_artifact::note_unproxied(shared, &control.conversation)
+            }
+            _ => Ok(()),
+        };
+        let laid = kept
+            .and_then(|()| super::open_artifact::into_room(shared, &place.room, &open))
             .inspect_err(|why| {
                 tracing::warn!(
                     "conversation {}: artifact {} isn't in its room: {why}",

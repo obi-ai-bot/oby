@@ -755,6 +755,10 @@ pub struct NewJob {
     /// The artifacts it starts with (ARTIFACTS-19, 20): obid sets them, the API never does.
     #[serde(skip)]
     pub artifacts: Vec<crate::job::JobArtifact>,
+    /// Planned in a conversation that had an unproxied version laid in its room
+    /// ([`Job::ran_unproxied`], ARTIFACTS-24). Kept in a Start or a Confirm item; never the API's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ran_unproxied: bool,
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
@@ -2355,7 +2359,7 @@ impl Jobs {
                 .as_ref()
                 .is_some_and(|of| of.foreign_by_api && of.someone_elses_but_api().is_none());
         job.reached = of.as_ref().and_then(Job::reached_for_follow_up);
-        job.ran_unproxied = of.as_ref().is_some_and(|of| of.ran_unproxied);
+        job.ran_unproxied = new.ran_unproxied || of.as_ref().is_some_and(|of| of.ran_unproxied);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
         job.named = match &of {
