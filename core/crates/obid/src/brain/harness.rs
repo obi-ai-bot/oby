@@ -2134,10 +2134,15 @@ async fn attempts(
     let heard = session.control.asked_mentioned();
     let goes_to = super::briefing::default_account_line(shared, &control.conversation);
     // The artifact open where the owner said the words (ARTIFACTS-12): what they're about, its
-    // files in the room (ARTIFACTS-21). An imported one's are text from outside: the turn read it.
+    // files in the room (ARTIFACTS-21). Text someone else's made reaches the turn with them
+    // (ARTIFACTS-24): it read something untrusted.
     let open = session.control.artifact().map(|open| {
-        if (shared.artifacts.get(&open.id)).is_some_and(|a| a.origin.is_some()) {
-            session.taint();
+        if let Some(artifact) = shared.artifacts.get(&open.id) {
+            let turns = (artifact.conversation.as_deref())
+                .is_none_or(|c| shared.conversations.read_untrusted(c));
+            if !(shared.jobs.carried_marks(&artifact, open.version, turns)).is_empty() {
+                session.taint();
+            }
         }
         let laid = super::open_artifact::into_room(shared, &place.room, &open)
             .inspect_err(|why| {

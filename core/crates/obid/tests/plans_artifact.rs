@@ -258,6 +258,8 @@ fn artifacts_19_a_task_started_about_the_open_artifact_makes_its_next_version() 
         page_of(&obid, &artifact, 2),
         format!("{PAGE}<p>edit 1</p>\n")
     );
+    // Made by Oby's own turn, of a conversation that read nothing untrusted: nothing marks it.
+    assert!(job.get("untrusted").is_none(), "{job}");
 }
 
 /// ARTIFACTS-20 (and ARTIFACTS-7): the owner's words to that task start a follow-up that carries
@@ -358,4 +360,31 @@ fn artifacts_23_post_jobs_cant_seed_another_conversations_artifact() {
     );
     let kept = artifact_of(&obid, &theirs);
     assert_eq!(kept["versions"].as_array().unwrap().len(), 1, "{kept}");
+}
+
+/// ARTIFACTS-24: an artifact a marked job made (here one the API's unsigned words started)
+/// makes the turn that opens it one that read something untrusted, so the task it starts is
+/// marked untrusted; the task still versions it.
+#[test]
+fn artifacts_24_a_marked_jobs_version_taints_the_turn_that_opens_it() {
+    let folder = Folder::new("artifacts-24");
+    let obid = started_with_jobs(&folder);
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "task": "EDITARTIFACT"}}),
+        ),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let made = ended_within(&obid, made.body["id"].as_str().unwrap(), 120);
+    let artifact = made["artifacts"][0]["id"].as_str().unwrap().to_owned();
+    let job = edited_with_open(&obid, &artifact);
+    assert_eq!(job["untrusted"], json!(true), "{job}");
+    assert_eq!(
+        job["artifacts"],
+        json!([{"id": artifact, "version": 2}]),
+        "{job}"
+    );
 }
