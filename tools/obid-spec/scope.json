@@ -2178,7 +2178,11 @@
             "BROWSERAPP-17": "the Electron app's browser on another computer (browser/BrowserPane.tsx): in the real app workflows/app/browser-14-another-computer.json; no obid API of its own",
             "BROWSERAPP-18": "the Electron app's Settings › General Browser group (browser/Settings.tsx), switches signed by their labels (shared/words.ts, the preload's switch label): browserLive.test.ts, preload.test.ts; in the real app workflows/app/browser-13-settings.json; no obid API of its own",
             "BROWSERAPP-19": "the Electron app's Mac pill and frame (main/macPill.ts, its own windows) and the card in Oby (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx, ipc.test.ts; in the real app workflows/app/browser-15-the-mac.json; no obid API yet",
-            "BROWSERAPP-20": "the Electron app's first-time sheet (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx; in the real app workflows/app/browser-16-first-time-mac.json; no obid API yet"
+            "BROWSERAPP-20": "the Electron app's first-time sheet (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx; in the real app workflows/app/browser-16-first-time-mac.json; no obid API yet",
+            "BROWSERAPP-22": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-23": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-24": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-25": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2"
           }
         },
         "computers-app.md": {

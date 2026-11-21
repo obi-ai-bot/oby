@@ -1,11 +1,13 @@
 import { app, shell, type BrowserWindow } from 'electron';
 import { existsSync } from 'node:fs';
 import { downloadsFile } from './reveal';
-import { send } from './obid';
+import { HOME, send } from './obid';
 import { ipc, type Trusted } from './ipc';
-import { flag, string } from '../shared/decode';
+import { flag, safeInteger, string } from '../shared/decode';
 import { fillSecret } from './device';
-import { BROWSER_EVENTS, browserTabPath, sseReader } from '../shared/obid-wire';
+import { BROWSER_EVENTS, BROWSER_RELAY, browserTabPath, sseReader, type BrowserTab } from '../shared/obid-wire';
+import { relayCommand, relayHost, type RelayEvent, type TabKey } from './browserRelay';
+import { hosting } from './browserGuest';
 
 // The browser, through main (docs/contracts/browser-app.md, BROWSERAPP-8 and 10). Main holds obid's
 // token, so it follows obid's browser for the window: GET /v1/browser/events, and each tab's stream
@@ -14,6 +16,41 @@ import { BROWSER_EVENTS, browserTabPath, sseReader } from '../shared/obid-wire';
 // channel as any call does (obid.ts, device.ts). The owner's mouse and keys on a tab they hold go
 // signed (`…/input`), each only right after a real input of that kind main saw itself
 // (browserInput.ts): a script in the page can't drive a held tab alone.
+
+// The relay (docs/plans/browser-t3.md): obid's agents drive the page in the window's own <webview>,
+// main running their CDP on its debugger (browserRelay.ts, browserGuest.ts). obid's commands come on
+// the events stream main follows for the window; the webviews' events go back on POST /v1/browser/relay,
+// in order, on the same token. With the window closed nothing follows the stream: obid's agents are
+// told `no_window`, never given another browser.
+
+// the partition obid named for each agent tab, from its `tab` events: the only one its webview may use
+const partitions = new Map<string, string>();
+const tabKey = (k: TabKey) => `${k.threadId}\0${k.tabId}`;
+function heard(name: string, data: string) {
+  if (name === 'tab') {
+    try {
+      const { tab } = JSON.parse(data) as { tab: BrowserTab };
+      if (tab.owner.kind === 'agent' && tab.partition) partitions.set(tabKey({ threadId: tab.owner.job, tabId: tab.id }), tab.partition);
+    } catch { /* not a tab: the page reads it as it does */ }
+  }
+  if (name === 'tabClosed') {
+    try { const { tabId } = JSON.parse(data) as { tabId: string }; for (const k of partitions.keys()) if (k.endsWith(`\0${tabId}`)) partitions.delete(k); } catch { /* the same */ }
+  }
+}
+async function post(events: RelayEvent[]): Promise<boolean> {
+  const r = await send('POST', BROWSER_RELAY, { events });
+  if (!(r instanceof Response)) return false;
+  await r.body?.cancel();
+  // an obid without the relay (404) takes none of them, ever: nothing to send again
+  return r.ok || r.status === 404;
+}
+let relay: ReturnType<typeof relayHost> | null = null;
+let webviews: ReturnType<typeof hosting> | null = null;
+
+/** the window's webviews, once it exists: hardened, checked against obid's partitions, relayed */
+export function hostBrowser(win: BrowserWindow) {
+  webviews = hosting(win, relay!, (k) => partitions.get(tabKey(k)));
+}
 
 // --- following obid's browser for the window
 
@@ -54,14 +91,28 @@ function follow(path: string, on: (name: string, data: string) => void, opened: 
 export function browsing(trusted: Trusted, page: Page) {
   const channels = ipc(trusted);
   const to = (channel: string, message: unknown) => { const w = page(); if (w && !w.isDestroyed()) w.webContents.send(channel, message); };
+  // the agent's pointer is drawn by the page over its webview (T3: AgentBrowserCursor), nothing more
+  // obid's home is read only when obid names a download folder
+  relay = relayHost(post, { get home() { return HOME; }, pointer: (c) => to('browser-pointer', { threadId: c.threadId, tabId: c.tabId, phase: c.phase, x: c.x, y: c.y }) });
   let events: (() => void) | null = null;
   const streams = new Map<string, () => void>();
   // the browser's events from now on, once per window; `open` each time the stream (re)connects, so
   // the page reads the lists again for what it missed
   channels.handle('browser-follow', [], () => {
-    events ??= follow(BROWSER_EVENTS, (name, data) => to('browser-event', { name, data }), () => to('browser-event', { name: 'open', data: '' }));
+    events ??= follow(BROWSER_EVENTS, (name, data) => {
+      // obid's relay commands are main's alone: the page never sees the CDP its agents send
+      const command = relayCommand(name, data);
+      if (command) { relay?.command(command); return; }
+      heard(name, data);
+      to('browser-event', { name, data });
+    }, () => { relay?.reconnected(); to('browser-event', { name: 'open', data: '' }); });
     return true;
   }, null);
+  // a webview the page mounted for obid's tab: main checks it and relays it (browserGuest.ts); null once it's relayed
+  channels.handle('browser-register', [string, string, safeInteger], (_e, threadId, tabId, webContentsId) =>
+    webviews ? webviews.register({ threadId, tabId }, webContentsId) : 'The window isn’t up yet.', 'Not this app’s page.');
+  // whether a tab's webview is on screen (T3's `shown`)
+  channels.handle('browser-shown', [string, string, flag], (_e, threadId, tabId, shown) => { webviews?.shown({ threadId, tabId }, shown); return true; }, null);
   // a tab's frames, while the page draws it
   channels.handle('browser-watch', [string], (_e, tab) => {
     if (!streams.has(tab)) streams.set(tab, follow(browserTabPath(tab, 'stream'), (name, data) => { if (name === 'frame') to('browser-frame', { tab, data }); }, () => {}));

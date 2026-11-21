@@ -82,6 +82,10 @@ declare global {
         watch(tab: string, fn: (data: string) => void): () => void;
         // a password or code into the page's field, filled by main on the owner's click (BROWSERAPP-12): null once filled
         fill(tab: string, field: string, value: string, ask?: string): Promise<string | null>;
+        // a <webview> mounted for obid's tab, relayed by main once checked (docs/plans/browser-t3.md): null once relayed
+        register(threadId: string, tabId: string, webContentsId: number): Promise<string | null>;
+        shown(threadId: string, tabId: string, shown: boolean): void;
+        pointer(fn: (p: { threadId: string; tabId: string; phase: 'move' | 'click'; x: number; y: number }) => void): () => void;
         // Show in Finder for a download in Downloads, by its name (BROWSERAPP-16)
         reveal(name: string): Promise<boolean>;
       };

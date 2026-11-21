@@ -1,0 +1,227 @@
+import { isAbsolute, relative, resolve } from 'node:path';
+
+// The relay between obid's agents and the page in the window (docs/plans/browser-t3.md, as T3 Code
+// does it: packages/contracts/src/desktopBrowser.ts). obid sends page-level CDP for a tab on its
+// events stream (`cdp`, `release`, `pointer`, `turn`); main runs each command on that tab's
+// `<webview>` debugger and sends the replies and the page's events back, in order, with what
+// happened to the tab (`attached`, `detached`, `loadFailed`, `shown`), on POST /v1/browser/relay.
+// No Electron here: main/browserGuest.ts hands each webview in as a Guest, so this is all tested
+// with a fake one (browserRelay.test.ts).
+
+export type TabKey = { threadId: string; tabId: string };
+export type RelayEvent = TabKey & (
+  | { type: 'attached' }
+  | { type: 'detached' }
+  | { type: 'cdp'; message: string }
+  | { type: 'loadFailed'; url: string; code: number; description: string }
+  | { type: 'shown'; shown: boolean });
+export type RelayCommand =
+  | (TabKey & { type: 'cdp'; message: string })
+  | (TabKey & { type: 'release' })
+  | (TabKey & { type: 'pointer'; phase: 'move' | 'click'; x: number; y: number })
+  | { type: 'turn'; threadId: string; active: boolean };
+
+// One webview, as the relay uses it: its debugger, and the few things CDP can't do on a guest.
+export interface Guest {
+  /** debugger.sendCommand: the result, or a thrown error with CDP's words */
+  send(method: string, params: Record<string, unknown> | undefined): Promise<unknown>;
+  reload(): void;
+  stop(): void;
+  /** whether a frame of the guest has focus: if not, keys and text go in as the guest's own input */
+  focused(): boolean;
+  insertText(text: string): Promise<void>;
+  key(params: Record<string, unknown>): void;
+  /** where its downloads go, as obid named it (or nowhere, null) */
+  downloadsTo(folder: string | null): void;
+}
+
+// Page-level CDP only (T3 fakes a browser for Playwright; obid speaks to the page itself): any other
+// domain, or a command for a session, never reaches the debugger.
+export const DOMAINS = new Set(['Page', 'Runtime', 'DOM', 'DOMSnapshot', 'Accessibility', 'Input', 'Network', 'Emulation', 'Log']);
+/** a message bigger than this ends the tab's relay, as T3's does (CdpRelay.ts, 64 MB) */
+export const MAX_MESSAGE = 64 * 1024 * 1024;
+/** how long main waits before sending a relay again after obid didn't take it */
+export const AGAIN_MS = 1_000;
+/** the most events kept while obid doesn't answer; the oldest go first */
+export const KEPT = 10_000;
+
+const key = (k: TabKey) => `${k.threadId}\0${k.tabId}`;
+type Reply = { id: number; result?: unknown; error?: { code: number; message: string } };
+
+/** whether `path` is a folder inside obid's own downloads folder (`<home>/browser/downloads/`) */
+export function insideDownloads(home: string, path: unknown): path is string {
+  if (typeof path !== 'string' || !isAbsolute(path)) return false;
+  const rel = relative(resolve(home, 'browser', 'downloads'), resolve(path));
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; broken: boolean };
+
+export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, options: { home: string; pointer?: (c: Extract<RelayCommand, { type: 'pointer' }>) => void; wait?: (ms: number) => Promise<void> }) {
+  const tabs = new Map<string, Tab>();
+  // what was said of a tab before it attached (a first load's failure, whether it shows): sent on attach
+  const early = new Map<string, { failed: RelayEvent | null; shown: boolean | null }>();
+  const turns = new Set<string>();
+  let outbox: RelayEvent[] = [];
+  let sending = false;
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+
+  // one request in flight, in order; what obid didn't take is sent again
+  async function flush() {
+    if (sending) return;
+    sending = true;
+    try {
+      while (outbox.length) {
+        const batch = outbox;
+        outbox = [];
+        if (!(await post(batch))) {
+          outbox = [...batch, ...outbox].slice(-KEPT);
+          await wait(AGAIN_MS);
+        }
+      }
+    } finally {
+      sending = false;
+    }
+  }
+  const emit = (e: RelayEvent) => { outbox.push(e); if (outbox.length > KEPT) outbox = outbox.slice(-KEPT); void flush(); };
+  const cdp = (t: Tab, message: unknown) => {
+    const text = JSON.stringify(message);
+    if (text.length > MAX_MESSAGE) {
+      // too big to carry: the tab's relay ends, as T3's does, until it's attached again
+      t.broken = true;
+      if (t.attached) { t.attached = false; emit({ ...t.k, type: 'detached' }); }
+      return;
+    }
+    emit({ ...t.k, type: 'cdp', message: text });
+  };
+  const reply = (t: Tab, r: Reply) => cdp(t, r);
+  const refuse = (t: Tab, id: number, message: string) => reply(t, { id, error: { code: -32601, message } });
+
+  // one command of obid's on its tab, as T3's relay and GuestInput.ts run it
+  async function run(t: Tab, text: string) {
+    let m: { id?: unknown; method?: unknown; params?: unknown; sessionId?: unknown };
+    try { m = JSON.parse(text); } catch { return; }
+    if (typeof m.id !== 'number' || typeof m.method !== 'string') return;
+    const { id, method } = m as { id: number; method: string };
+    const params = m.params && typeof m.params === 'object' ? m.params as Record<string, unknown> : undefined;
+    if (m.sessionId !== undefined) return refuse(t, id, 'Oby relays the page itself, never a session of it.');
+    const domain = method.split('.')[0];
+    if (!DOMAINS.has(domain)) return refuse(t, id, `Oby relays page-level CDP only: ${domain} isn't one of its domains.`);
+    try {
+      let result: unknown = {};
+      if (method === 'Page.reload') t.guest.reload();
+      else if (method === 'Page.stopLoading') t.guest.stop();
+      else if (method === 'Page.setDownloadBehavior') {
+        // downloads go where obid says, inside its own folder, and nowhere else
+        if (params?.behavior === 'allow' && insideDownloads(options.home, params.downloadPath)) t.guest.downloadsTo(resolve(params.downloadPath as string));
+        else if (params?.behavior === 'deny') t.guest.downloadsTo(null);
+        else return refuse(t, id, 'Downloads go only into a folder inside obid’s own browser/downloads.');
+      } else if (method === 'Input.insertText' && !t.guest.focused()) await t.guest.insertText(String(params?.text ?? ''));
+      else if (method === 'Input.dispatchKeyEvent' && !t.guest.focused()) t.guest.key(params ?? {});
+      else if (method === 'Input.dispatchMouseEvent') {
+        // one press at a time on a guest, in the order obid sent them
+        const done = t.mouse.catch(() => undefined).then(() => t.guest.send(method, params));
+        t.mouse = done;
+        result = await done;
+      } else result = await t.guest.send(method, params);
+      reply(t, { id, result: result ?? {} });
+    } catch (err) {
+      reply(t, { id, error: { code: -32000, message: err instanceof Error ? err.message : String(err) } });
+    }
+  }
+
+  return {
+    /** a webview whose debugger is attached and whose first page settled: obid may drive it */
+    attach(k: TabKey, guest: Guest) {
+      const before = early.get(key(k));
+      early.delete(key(k));
+      const t: Tab = { k, guest, attached: true, shown: before?.shown ?? null, failed: before?.failed ?? null, mouse: Promise.resolve(), broken: false };
+      tabs.set(key(k), t);
+      emit({ ...k, type: 'attached' });
+      if (t.shown !== null) emit({ ...k, type: 'shown', shown: t.shown });
+      if (t.failed) emit(t.failed);
+      t.failed = null;
+      if (turns.has(k.threadId)) void guest.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
+    },
+    /** the webview went: closed, crashed, swapped, or DevTools took its debugger */
+    detach(k: TabKey) {
+      const t = tabs.get(key(k));
+      if (!t) return;
+      tabs.delete(key(k));
+      // whether it shows outlives a detach (DevTools, a crash): it's said again when it attaches again
+      early.set(key(k), { failed: null, shown: t.shown });
+      if (t.attached) emit({ ...k, type: 'detached' });
+    },
+    /** a CDP event of the page's: to obid as it came */
+    event(k: TabKey, method: string, params: unknown) {
+      const t = tabs.get(key(k));
+      if (t?.attached && !t.broken) cdp(t, { method, params });
+    },
+    /** the main frame didn't load; kept until the tab is attached, as T3 replays it */
+    loadFailed(k: TabKey, url: string, code: number, description: string) {
+      const e: RelayEvent = { ...k, type: 'loadFailed', url, code, description };
+      const t = tabs.get(key(k));
+      if (t?.attached) emit(e);
+      else early.set(key(k), { shown: early.get(key(k))?.shown ?? null, failed: e });
+    },
+    /** whether the webview is on screen in the window */
+    shown(k: TabKey, shown: boolean) {
+      const t = tabs.get(key(k));
+      if (!t) { early.set(key(k), { failed: early.get(key(k))?.failed ?? null, shown }); return; }
+      if (t.shown === shown) return;
+      t.shown = shown;
+      if (t.attached) emit({ ...k, type: 'shown', shown });
+    },
+    /** one of obid's commands from its events stream */
+    command(c: RelayCommand) {
+      if (c.type === 'turn') {
+        if (c.active) turns.add(c.threadId); else turns.delete(c.threadId);
+        for (const t of tabs.values()) if (t.k.threadId === c.threadId && t.attached) void t.guest.send('Emulation.setFocusEmulationEnabled', { enabled: c.active }).catch(() => undefined);
+        return;
+      }
+      const t = tabs.get(key(c));
+      if (c.type === 'pointer') { if (t?.attached) options.pointer?.(c); return; }
+      // release drops only obid's use of the tab: its debugger stays, and the next command uses it again
+      if (c.type === 'release') { if (t) t.mouse = Promise.resolve(); return; }
+      if (!t?.attached || t.broken) {
+        let id: unknown;
+        try { id = JSON.parse(c.message).id; } catch { return; }
+        if (typeof id === 'number') emit({ threadId: c.threadId, tabId: c.tabId, type: 'cdp', message: JSON.stringify({ id, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }) });
+        return;
+      }
+      void run(t, c.message);
+    },
+    /** obid's events stream (re)connected: every live tab is announced again (T3's announceAll) */
+    reconnected() {
+      for (const t of tabs.values()) {
+        if (!t.attached) continue;
+        emit({ ...t.k, type: 'attached' });
+        if (t.shown !== null) emit({ ...t.k, type: 'shown', shown: t.shown });
+      }
+    },
+    /** the webview is gone for good: nothing of it is kept */
+    forget(k: TabKey) { early.delete(key(k)); },
+    /** for tests and the window's close: what's attached */
+    attached: () => [...tabs.values()].filter((t) => t.attached).map((t) => t.k),
+    /** the events not yet taken by obid */
+    pending: () => outbox.length + (sending ? 1 : 0),
+  };
+}
+
+export type RelayHost = ReturnType<typeof relayHost>;
+
+/** obid's relay command from its events stream (`cdp`, `release`, `pointer`, `turn`), or null for another shape */
+export function relayCommand(name: string, data: string): RelayCommand | null {
+  if (!['cdp', 'release', 'pointer', 'turn'].includes(name)) return null;
+  let e: Record<string, unknown>;
+  try { e = JSON.parse(data); } catch { return null; }
+  const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 256;
+  if (!str(e.threadId)) return null;
+  if (name === 'turn') return typeof e.active === 'boolean' ? { type: 'turn', threadId: e.threadId, active: e.active } : null;
+  if (!str(e.tabId)) return null;
+  const k = { threadId: e.threadId, tabId: e.tabId };
+  if (name === 'release') return { ...k, type: 'release' };
+  if (name === 'cdp') return typeof e.message === 'string' ? { ...k, type: 'cdp', message: e.message } : null;
+  const n = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  return (e.phase === 'move' || e.phase === 'click') && n(e.x) && n(e.y) ? { ...k, type: 'pointer', phase: e.phase, x: e.x, y: e.y } : null;
+}
