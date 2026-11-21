@@ -183,7 +183,7 @@ once a webview is live; obid's use Blok workflows (`tools/obid-spec`, on Azure).
 - **Files:** `apps/electron/src/renderer/src/browser/Webviews.tsx` (new), `browser/Slot.tsx` (new),
   `browser/Panel.tsx`, `browser/BrowserPane.tsx`, `browser/live.ts`, `browser/store.tsx`,
   `browser/view.ts`, `browser/browser.css`, `renderer/src/Home.tsx` (the host's mount), their tests.
-- **Proof:** vitest; then the live app workflows (`browser-101`, `browser-102`) rewritten so a
+- **Proof:** vitest; then a new live app workflow (`browser-104`; `browser-102`, the streamed picture's Take control, retired with it) so a
   stand-in agent opens a page through obid (O1) and the real app draws it in a real webview.
 
 ### W3 (window). Delete the window's Chrome-era pieces
