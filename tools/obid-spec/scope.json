@@ -2183,7 +2183,8 @@
             "BROWSERAPP-22": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
             "BROWSERAPP-23": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
             "BROWSERAPP-24": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
-            "BROWSERAPP-25": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2"
+            "BROWSERAPP-25": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-26": "the Electron page's webviews (browser/Webviews.tsx: one per agent tab with a partition, on the panel's slot; docs/plans/browser-t3.md W2): browserWebviews.test.tsx; in the real app, driven by an agent through obid's relay, workflows/app/browser-104-live-webview.json"
           }
         },
         "computers-app.md": {

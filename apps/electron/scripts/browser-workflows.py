@@ -670,6 +670,46 @@ def live_102():
     )
 
 
+def live_104():
+    tab = "${state.open.structured.result.tab}"
+    workflow(
+        "browser-104-live-webview.json",
+        "App live: an agent opens a page and it is a real webview in Oby's window, driven through obid's relay (board 2, live)",
+        "The browser as T3 Code has it (docs/plans/browser-t3.md, W2): a stand-in Codex job calls oby_browser_open on a "
+        "scratch obid that has no Chrome of its own. obid names the tab's partition, the real app mounts a <webview> at its "
+        "address in that partition, main attaches its debugger and relays it (BROWSERAPP-22 to 26). The page shows in the "
+        "panel's slot; the agent's snapshot, its typing into the page's Name box and its evaluate of that box's value all "
+        "run on the window's own webview, through POST /v1/browser/relay and the events stream.",
+        [
+            *browser_obid(),
+            step("site", "browser-site"),
+            step("job", "browser-job", obid=OBID),
+            # obid publishes the tab with its partition and waits for the window's `attached`
+            step("open", "browser-mcp", "BROWSERAPP-26", obid=OBID, token="${state.job.token}", tool="oby_browser_open", args={"url": "${state.site.url}/"},
+                 within=60, expect={"paths": {"isError": False, "structured.ok": True}}),
+            step("partition", "call", "BROWSERAPP-26", obid=OBID, method="GET", path="/v1/browser",
+                 expect={"status": 200, "paths": {"tabs.0.id": tab, "tabs.0.partition": "persist:oby-agent-codex"}}),
+            step("webview", "app.read", "BROWSERAPP-26", app=APP, target={"css": "[data-browser=webview] webview"}, attributes=["partition"],
+                 within=15, expect={"paths": {"count": 1, "attributes.partition": "persist:oby-agent-codex"}}),
+            step("globe", "app.read", "BROWSERAPP-8", app=APP, target={"css": "[data-browser=globe]"}, within=30, expect={"paths": {"count": 1}}),
+            click("show", {"css": "[data-browser=globe]"}),
+            # the page itself sits where the panel draws it
+            step("in-the-panel", "app.measure", "BROWSERAPP-26", app=APP, target={"css": "[data-browser=webview]"}, against={"slot": {"css": "aside.br [data-browser=slot]"}},
+                 within=10, expect={"paths": {"slot.overlap": True}}),
+            step("snap", "browser-mcp", "BROWSERAPP-22", obid=OBID, token="${state.job.token}", tool="oby_browser_snapshot", args={},
+                 expect={"paths": {"isError": False}}),
+            step("types", "browser-mcp", "BROWSERAPP-23", obid=OBID, token="${state.job.token}", tool="oby_browser_act",
+                 args={"action": "type", "text": "agent"}, refFor={"role": "textbox", "name": "Name"}, snapshot="${state.snap}",
+                 expect={"paths": {"isError": False}}),
+            step("typed", "browser-mcp", "BROWSERAPP-23", obid=OBID, token="${state.job.token}", tool="oby_browser_evaluate",
+                 args={"expression": "document.querySelector('input').value"},
+                 expect={"paths": {"isError": False, "structured.result.outside.data": "agent"}}),
+            step("end", "browser-job", obid=OBID, job="${state.job.job}", end=True),
+            close(),
+        ],
+    )
+
+
 
 # What a board draws that the app doesn't, piece by piece, and why (docs/contracts/browser-app.md, "Not matched
 # within 4px"): left out of that board's compare, never of its other checks.
@@ -716,3 +756,4 @@ if __name__ == "__main__":
     board_17()
     live_101()
     live_102()
+    live_104()

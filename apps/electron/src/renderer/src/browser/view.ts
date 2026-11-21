@@ -17,6 +17,10 @@ export type Tab = {
   owner: Owner;
   /** on obid: the agent's job the tab is for */
   job?: string;
+  /** on obid: the page's full address, as obid gave it, for its webview to open */
+  src?: string;
+  /** on obid: the session obid named for the tab's page (docs/plans/browser-t3.md); none from an obid before the relay */
+  partition?: string;
   title: string;
   /** host, then path: drawn as <b>host</b>path */
   url: string;

@@ -93,6 +93,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         id: t.id,
         owner: t.owner.kind === 'agent' ? { kind: 'agent', agent: agentOf(t.owner.agent) } : { kind: 'you' },
         job: t.owner.kind === 'agent' ? t.owner.job : undefined,
+        src: t.url,
+        partition: t.partition,
         title: t.title || shown(t.url),
         url: shown(t.url),
         secure: t.url.startsWith('https:'),
