@@ -239,8 +239,8 @@ mod tests {
     }
 
     /// ARTIFACTS-25: a stored version's file is read without following a link: one that is a
-    /// hard link to a file outside its folder, or a symbolic link, is refused, and nothing of
-    /// the outside file is laid out.
+    /// hard link to a file outside its folder, a symbolic link, or in an artifact folder that is
+    /// a link out of the store, is refused, and nothing of the outside file is laid out.
     #[test]
     fn artifacts_25_a_linked_file_in_a_stored_version_is_refused() {
         let t = Temp::new("seed-25");
@@ -250,14 +250,21 @@ mod tests {
         for (id, link) in [
             ("1b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d", "hard"),
             ("2b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d", "soft"),
+            ("3b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d", "parent"),
         ] {
-            let folder = t.0.join("home/artifacts").join(id);
+            let mut folder = t.0.join("home/artifacts").join(id);
+            if link == "parent" {
+                // The artifact's own folder a link to one outside the store, its files plain.
+                let away = t.0.join("away");
+                std::os::unix::fs::symlink(&away, &folder).unwrap();
+                folder = away;
+            }
             std::fs::create_dir_all(folder.join("1")).unwrap();
             let page = folder.join("1/index.html");
-            if link == "hard" {
-                std::fs::hard_link(&outside, &page).unwrap();
-            } else {
-                std::os::unix::fs::symlink(&outside, &page).unwrap();
+            match link {
+                "hard" => std::fs::hard_link(&outside, &page).unwrap(),
+                "soft" => std::os::unix::fs::symlink(&outside, &page).unwrap(),
+                _ => std::fs::write(&page, "OUTSIDE-TEXT").unwrap(),
             }
             let artifact = serde_json::json!({
                 "id": id, "title": "Page", "kind": "html", "conversation": "c1", "job": null,

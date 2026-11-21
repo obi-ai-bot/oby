@@ -578,4 +578,24 @@ mod tests {
         assert!(!worktree.join(".obi/artifacts").join(&id[..8]).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// ARTIFACTS-24 (LANE-3a): a version a job published after a run with no egress proxy of
+    /// obid's keeps that, and a clean job it is laid into gets none of the declared secrets for
+    /// its check, as the publishing job's own check doesn't; neither is marked someone else's.
+    #[tokio::test]
+    async fn artifacts_24_an_unproxied_jobs_version_withholds_secrets_from_the_job_it_reaches() {
+        let root = std::env::temp_dir().join(format!("obid-seed-24-proxy-{}", std::process::id()));
+        let (jobs, store) = seeding(&root);
+        put(&jobs, "own", Some("c1"), |job| job.ran_unproxied = true);
+        let made = super::super::publishing::shaped_by(&jobs.get("own").unwrap());
+        let (id, _) = page(&store, &root, "1", (Some("c1"), Some("own"), None), made).await;
+        // A Cursor job runs in Oby's box, behind its proxy: only what reaches it says otherwise.
+        put(&jobs, "next", Some("c1"), |job| job.agent = "cursor".into());
+        assert!(!jobs.ran_unproxied("next"));
+        let next = seeded(&jobs, "next", &id, 1);
+        assert!(jobs.ran_unproxied("next"), "{next:?}");
+        assert!(next.foreign.is_none() && next.reached.is_none(), "{next:?}");
+        assert_eq!(next.untrusted_why(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

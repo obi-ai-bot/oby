@@ -1,4 +1,4 @@
-//! docs/contracts/artifacts.md, ARTIFACTS-1 to 8 and 16 to 18: each scenario a test named after it, on the
+//! docs/contracts/artifacts.md, ARTIFACTS-1 to 8, 16 to 18 and 19's design: each scenario a test named after it, on the
 //! store itself. The same scenarios run against a running obid in the Blok suite
 //! (tools/obid-spec/workflows/routes/artifacts/).
 
@@ -235,6 +235,38 @@ async fn artifacts_3_an_upload_is_served_at_its_alias_inside_its_version() {
     assert_eq!(store.publish(again).await.unwrap().1, 2);
     assert!(store.file(&id, "2", "_blob/logo").is_none());
     assert!(store.file(&id, "1", "_blob/logo").is_some());
+}
+
+/// ARTIFACTS-19: a design laid out for a job (crate::artifacts::seed) has its uploads back at
+/// `_blob/<id>`, as Claude Design named them, so after an agent changes one board the next
+/// version still serves every upload at its alias, the unchanged board's references included.
+#[tokio::test]
+async fn artifacts_19_an_edited_seeded_design_keeps_its_uploads() {
+    let t = Temp::new("a19-design");
+    design(&t, "design");
+    let (store, _) = t.store();
+    let room = t.room();
+    let (id, _) = store.publish(what(&room, "design")).await.unwrap();
+    let work = t.0.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    store.lay_out(&id, 1, &work, "seeded").unwrap();
+    std::fs::write(
+        work.join("seeded/Card.dc.html"),
+        board("Card", "<p>Card, blue</p>"),
+    )
+    .unwrap();
+    let edited = Publish {
+        artifact: Some(&id),
+        ..what(&work, "seeded")
+    };
+    assert_eq!(store.publish(edited).await.unwrap(), (id.clone(), 2));
+    assert_eq!(store.file(&id, "2", "_blob/logo").unwrap().1, PNG);
+    assert_eq!(
+        store.file(&id, "2", &format!("_blob/{LONG_ID}")).unwrap().1,
+        PNG
+    );
+    let kept = store.get(&id).unwrap();
+    assert_eq!(kept.versions[1].blobs, kept.versions[0].blobs);
 }
 
 /// ARTIFACTS-4: the fonts, video and AVIF a design needs are served as what they are.
