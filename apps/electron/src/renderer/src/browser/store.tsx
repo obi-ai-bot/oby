@@ -55,7 +55,7 @@ const EMPTY: BrowserState = { tabs: [], active: null, asks: [], downloads: [], s
 // outside a BrowserProvider (a screen drawn on its own, in a test): no browser offered
 const OFF: Browser = {
   offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined,
-  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE },
+  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE, nav: NONE },
 };
 const Ctx = createContext<Browser>(OFF);
 export const useBrowser = () => useContext(Ctx);
@@ -89,7 +89,7 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       // the tab shown stays the one you chose while it's there
       state: (next) => setS((o) => ({ ...next, active: o.active && next.tabs.some((t) => t.id === o.active) ? o.active : next.active })),
       problem: (why) => { if (why) console.warn(`The browser: ${why}`); },
-    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask) });
+    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask), navState: (fn) => browser.navState(fn) });
     conn.current = c;
     return () => { c.close(); conn.current = null; };
   }, [onLive]);
@@ -109,6 +109,13 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
         // desktop control's state and Stop come with its own contract (agent-desktop): nothing on obid yet
         stopMac: NONE, answerMac: NONE,
         select: async (t) => setS((o) => ({ ...o, active: t })),
+        // Back, Forward, Reload, Stop loading: main moves the tab's own page, unsigned (BROWSERAPP-30 to 35)
+        nav: async (t, op) => {
+          const job = latest.current.tabs.find((x) => x.id === t)?.job;
+          if (!job) return;
+          const why = await window.app?.browser?.nav(job, t, op);
+          if (why) console.warn(`The browser: ${why}`);
+        },
       };
     }
     const tab = (id: string, f: (t: Tab) => Tab) => setS((o) => ({ ...o, tabs: o.tabs.map((t) => (t.id === id ? f(t) : t)) }));
@@ -127,6 +134,7 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       answerMac: async () => setS((o) => ({ ...o, macAsk: null })),
       setSettings: async (x) => setS((o) => ({ ...o, settings: { ...o.settings, ...x } })),
       select: async (id) => setS((o) => ({ ...o, active: id })),
+      nav: NONE,
     };
   }, [onLive]);
 

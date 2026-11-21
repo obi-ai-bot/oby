@@ -3,11 +3,11 @@ import { existsSync } from 'node:fs';
 import { downloadsFile } from './reveal';
 import { HOME, send } from './obid';
 import { ipc, type Trusted } from './ipc';
-import { flag, safeInteger, string } from '../shared/decode';
+import { flag, oneOf, safeInteger, string } from '../shared/decode';
 import { fillSecret } from './device';
 import { BROWSER_EVENTS, BROWSER_RELAY, sseReader } from '../shared/obid-wire';
 import { namedPartitions, relayCommand, relayHost, type RelayEvent } from './browserRelay';
-import { hosting } from './browserGuest';
+import { hosting, type NavState } from './browserGuest';
 
 // The browser, through main (docs/contracts/browser-app.md, BROWSERAPP-8). Main holds obid's token,
 // so it follows obid's browser for the window, GET /v1/browser/events, passing each message on as it
@@ -36,10 +36,12 @@ async function post(events: RelayEvent[]): Promise<boolean> {
 }
 let relay: ReturnType<typeof relayHost> | null = null;
 let webviews: ReturnType<typeof hosting> | null = null;
+// a tab's page state, to the window's page (browser-nav-state): set by browsing, as relay is
+let navState: ((s: NavState) => void) | null = null;
 
 /** the window's webviews, once it exists: hardened, checked against obid's partitions, relayed */
 export function hostBrowser(win: BrowserWindow) {
-  webviews = hosting(win, relay!, (k) => partitions.of(k));
+  webviews = hosting(win, relay!, (k) => partitions.of(k), (s) => navState?.(s));
 }
 
 // --- following obid's browser for the window
@@ -84,6 +86,8 @@ export function browsing(trusted: Trusted, page: Page) {
   // the agent's pointer is drawn by the page over its webview (T3: AgentBrowserCursor), nothing more
   // obid's home is read only when obid names a download folder
   relay = relayHost(post, { get home() { return HOME; }, pointer: (c) => to('browser-pointer', { threadId: c.threadId, tabId: c.tabId, phase: c.phase, x: c.x, y: c.y }) });
+  // whether a tab's own page has one behind, one ahead, and is loading, from its webview (T3: Manager.ts:1214-1257)
+  navState = (s) => to('browser-nav-state', s);
   let events: (() => void) | null = null;
   let commands: (() => void) | null = null;
   // the browser's events from now on, once per window; `open` each time the stream (re)connects, so
@@ -100,6 +104,10 @@ export function browsing(trusted: Trusted, page: Page) {
     webviews ? webviews.register({ threadId, tabId }, webContentsId) : 'The window isn’t up yet.', 'Not this app’s page.');
   // whether a tab's webview is on screen (T3's `shown`)
   channels.handle('browser-shown', [string, string, flag], (_e, threadId, tabId, shown) => { webviews?.shown({ threadId, tabId }, shown); return true; }, null);
+  // the owner's Back, Forward, Reload or Stop loading on a tab's own page: main moves its webview,
+  // unsigned and with no obid call (browserGuest.ts, BROWSERAPP-30 to 35); null once done, else why not
+  channels.handle('browser-nav', [string, string, oneOf('back', 'forward', 'reload', 'stop')], (_e, threadId, tabId, op) =>
+    webviews ? webviews.nav({ threadId, tabId }, op) : 'The window isn’t up yet.', 'Not this app’s page.');
   // a password or code into the page's field, on the owner's press of Fill in (device.ts, BROWSERAPP-12)
   channels.handle('browser-fill', [string, string, string, string, flag], (_e, tab, field, value, ask, clicked) =>
     fillSecret(tab, field, value, ask || undefined, clicked), 'Not this app’s page.');

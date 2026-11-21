@@ -89,6 +89,9 @@ declare global {
         register(threadId: string, tabId: string, webContentsId: number): Promise<string | null>;
         shown(threadId: string, tabId: string, shown: boolean): void;
         pointer(fn: (p: { threadId: string; tabId: string; phase: 'move' | 'click'; x: number; y: number }) => void): () => void;
+        // the owner's Back, Forward, Reload or Stop loading on a tab's own page, by main (BROWSERAPP-30 to 35): null once done
+        nav(threadId: string, tabId: string, op: 'back' | 'forward' | 'reload' | 'stop'): Promise<string | null>;
+        navState(fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => void): () => void;
         // Show in Finder for a download in Downloads, by its name (BROWSERAPP-16)
         reveal(name: string): Promise<boolean>;
       };

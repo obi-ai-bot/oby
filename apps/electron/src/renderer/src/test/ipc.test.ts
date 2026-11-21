@@ -157,6 +157,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'browser-follow': { args: [], refusal: null },
   'browser-register': { args: ['j1', 't1', 5], refusal: 'Not this app’s page.' },
   'browser-shown': { args: ['j1', 't1', true], refusal: null },
+  'browser-nav': { args: ['j1', 't1', 'back'], refusal: 'Not this app’s page.' },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
   'artifact-preview': { args: [null], refusal: null },
@@ -222,6 +223,16 @@ describe('IPC-1', () => {
     the.windows[0].fullScreen = false;
     expect(await call('full-screen', own())).toBe(false);
     expect(await call('window-chrome', own())).toEqual(CHROME);
+  });
+});
+
+describe('BROWSERAPP-35: the owner\'s Back, Forward, Reload and Stop loading reach no obid route', () => {
+  it('browserapp_35: from the window\'s own page, browser-nav takes only its four acts, and none calls obid', async () => {
+    const before = the.calls.length;
+    expect(await call('browser-nav', own(), 'j1', 't1', 'hardReload')).toBe('Not this app’s page.');
+    // no webview of this window's is that tab: nothing moves, and main says why
+    for (const op of ['back', 'forward', 'reload', 'stop']) expect(await call('browser-nav', own(), 'j1', 't1', op)).toBe('This tab has no page in this window.');
+    expect(the.calls.length).toBe(before);
   });
 });
 

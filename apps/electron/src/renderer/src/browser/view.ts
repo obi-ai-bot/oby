@@ -22,7 +22,7 @@ export type Tab = {
   /** on obid: the session obid named for the tab's page (docs/plans/browser-t3.md); none from an obid before the relay */
   partition?: string;
   title: string;
-  /** host, then path: drawn as <b>host</b>path */
+  /** host, then path: drawn as <b>host</b>path; on obid, the tab's own webview's once main says it */
   url: string;
   state: BrowserTabState;
   /** who holds the tab now: its agent, you (Take control), or nobody (idle) */
@@ -40,7 +40,21 @@ export type Tab = {
   hold?: number;
   /** the agent ran a script in the page, and has done nothing since (11); how long it took, when known */
   ran?: { ms?: number };
+  /** on obid: main's, from the tab's own webview: a page behind this one */
+  canGoBack?: boolean;
+  /** on obid: main's, from the tab's own webview: a page ahead of this one */
+  canGoForward?: boolean;
+  /** on obid: main's, from the tab's own webview: its page is loading */
+  pageLoading?: boolean;
+  /** on obid: main's, from the tab's own webview: the address its last load failed at (obid's `url` is its last good one) */
+  failedAt?: string;
 };
+
+/** The states a page didn't simply load in: board 10's box over the panel's middle, the page under it. */
+export const STOPPED: BrowserTabState[] = ['failed', 'timedOut', 'certificate', 'crashed'];
+
+/** The owner's Back, Forward, Reload and Stop loading on a tab's own page. */
+export type NavOp = 'back' | 'forward' | 'reload' | 'stop';
 
 /**
  * An agent's ask (7–9). `reason`: the agent's words, whose first sentence heads its card; `choices`
@@ -91,4 +105,6 @@ export interface BrowserApi {
   stopMac(): Promise<void>;
   /** the first-time sheet answered: Continue, or Not now (16) */
   answerMac(go: boolean): Promise<void>;
+  /** Back, Forward, Reload or Stop loading on the tab's own page: on obid main moves it, with no obid call */
+  nav(tab: string, op: NavOp): Promise<void>;
 }

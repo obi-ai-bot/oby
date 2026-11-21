@@ -47,6 +47,7 @@ function mockObid(lists: { tabs: BrowserTab[]; seq?: number; status?: number }) 
     }),
     follow: vi.fn((fn: (m: { name: string; data: string }) => void) => { push = fn; return () => { push = null; }; }),
     fill: vi.fn(async (_tab: string, _field: string, _value: string, _ask?: string): Promise<string | null> => null),
+    navState: vi.fn(() => () => {}),
   };
   return { api, calls, event: (e: object) => push?.({ name: (e as { type: string }).type, data: JSON.stringify(e) }), following: () => !!push };
 }
@@ -82,7 +83,7 @@ describe('BROWSERAPP-8: on obid, the panel follows obid\'s browser through main'
     const o = mockObid({ tabs: [tab('t1'), tab('t2')], seq: 1 });
     // an api that still offers the old picture stream's follower: the window never asks for it
     const watch = vi.fn(() => () => {});
-    const api = { call: o.api.call, follow: o.api.follow, fill: o.api.fill, watch };
+    const api = { call: o.api.call, follow: o.api.follow, fill: o.api.fill, navState: o.api.navState, watch };
     connectLive(sinks, api);
     await settle(); await settle();
     expect(state?.tabs.map((t) => t.id)).toEqual(['t1', 't2']);

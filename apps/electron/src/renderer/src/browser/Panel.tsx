@@ -9,7 +9,8 @@ import {
 import { Logo, Sheen, Status, agentName } from './pieces';
 import { useBrowser } from './store';
 import { Slot } from './Webviews';
-import type { Tab } from './view';
+import { STOPPED, type NavOp, type Tab } from './view';
+import { shown } from './live';
 
 export const YouMark = ({ label }: { label?: string }) => <span className="you-mark" aria-label={label} aria-hidden={label ? undefined : true}>Y</span>;
 
@@ -82,13 +83,16 @@ export function Nav({ tab, set = 'full', back = true, warn, children }: { tab?: 
       {tab?.computer && <span className="br-where"><Server size={10} strokeWidth={1.6} />on <b>{tab.computer.name}</b></span>}
     </>
   );
+  const { api } = useBrowser();
   const off = set === 'off';
+  // on obid, main moves the tab's own page and says what's behind and ahead (BROWSERAPP-30 to 32)
+  const nav = (op: NavOp) => () => { if (tab) void api.nav(tab.id, op); };
   return (
     <div className="br-nav" style={set === 'loading' ? { position: 'relative' } : undefined}>
-      <button className="icon-button is-28" aria-label="Back" disabled={!back || off}><ArrowLeft size={16} strokeWidth={1.6} /></button>
-      {set === 'loading' && <button className="icon-button is-28" aria-label="Stop loading"><X size={14} strokeWidth={1.6} /></button>}
-      {(set === 'full' || set === 'three' || off) && <button className="icon-button is-28" aria-label="Forward" disabled><ArrowRight size={16} strokeWidth={1.6} /></button>}
-      {set !== 'loading' && <button className="icon-button is-28" aria-label="Reload" disabled={off}><RotateCw size={15} strokeWidth={1.6} /></button>}
+      <button className="icon-button is-28" aria-label="Back" disabled={!back || off || tab?.canGoBack === false} onClick={nav('back')}><ArrowLeft size={16} strokeWidth={1.6} /></button>
+      {set === 'loading' && <button className="icon-button is-28" aria-label="Stop loading" onClick={nav('stop')}><X size={14} strokeWidth={1.6} /></button>}
+      {(set === 'full' || set === 'three' || off) && <button className="icon-button is-28" aria-label="Forward" disabled={off || tab?.canGoForward !== true} onClick={nav('forward')}><ArrowRight size={16} strokeWidth={1.6} /></button>}
+      {set !== 'loading' && <button className="icon-button is-28" aria-label="Reload" disabled={off} onClick={nav('reload')}><RotateCw size={15} strokeWidth={1.6} /></button>}
       {tab ? <div className={`br-address${warn ? ' is-warn' : ''}`}>{address}</div> : <label className="br-address">{address}</label>}
       {set === 'full' && <button className="icon-button is-28" aria-label="Page options"><Ellipsis size={16} strokeWidth={1.6} /></button>}
       {children}
@@ -133,21 +137,25 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
 /** A page that didn't simply load (board 10's words), in the panel's middle; its way out. */
 export function PageState({ tab }: { tab: Tab }) {
   const { api, mode } = useBrowser();
-  const host = tab.url.split('/')[0];
+  // the address that didn't load, as main heard it (obid's own is its last good page's), not the
+  // address field's, which follows the tab's own page
+  const host = shown(tab.failedAt ?? tab.src ?? tab.url).split('/')[0];
   const who = tab.owner.kind === 'agent' ? agentName(tab.owner.agent) : '';
-  // On obid the ways out (Try again, Reload, Go back, Go on anyway, a dialog's Leave and Stay) wait for
-  // routes obid doesn't have for the owner yet: there, the state's words show alone, and the agent,
-  // told every time, acts (BROWSERAPP-14). On the demo data they show as the board does.
+  // Try again, the crashed page's Reload and the certificate page's Go back show in both modes: on
+  // obid main moves the tab's own page (BROWSERAPP-14, 34), Go back disabled with nothing behind. Go on
+  // anyway waits for a certificate decision, and a dialog's Leave and Stay for answering the page's
+  // own dialog: on obid they don't show, and the agent, told every time, acts. On the demo data every
+  // way out shows as the board does.
   const ways = mode !== 'obid';
   const box = (icon: ReactNode, title: string, text: string, way: ReactNode) => (
-    <div className="br-state" data-browser={`page-${tab.state}`}>{icon}<span className="br-state-title">{title}</span><span className="br-state-text">{text}</span>{ways && <div className="tc-options">{way}</div>}</div>
+    <div className="br-state" data-browser={`page-${tab.state}`}>{icon}<span className="br-state-title">{title}</span><span className="br-state-text">{text}</span><div className="tc-options">{way}</div></div>
   );
-  const again = <button className="tc-option is-sm">Try again</button>;
+  const again = <button className="tc-option is-sm" onClick={() => api.nav(tab.id, 'reload')}>Try again</button>;
   switch (tab.state) {
     case 'failed': return box(<WifiOff size={22} strokeWidth={1.6} />, 'This page didn’t load', `${host} refused to connect. Is the app running?`, again);
     case 'timedOut': return box(<ClockAlert size={22} strokeWidth={1.6} />, 'The page took too long', `Nothing came back from ${host} in 30 seconds.`, again);
-    case 'certificate': return box(<ShieldAlert size={22} strokeWidth={1.6} />, 'This connection isn’t private', `The certificate for ${host} isn’t trusted. ${who} stopped here and won’t go on by itself.`, <><button className="tc-option is-sm is-primary">Go back</button><button className="tc-option is-sm is-quiet" style={{ color: 'var(--danger)' }}>Go on anyway</button></>);
-    case 'crashed': return box(<Bug size={22} strokeWidth={1.6} />, 'This page stopped working', `Its tab crashed, out of memory. ${who} was told and can open it again.`, <button className="tc-option is-sm">Reload</button>);
+    case 'certificate': return box(<ShieldAlert size={22} strokeWidth={1.6} />, 'This connection isn’t private', `The certificate for ${host} isn’t trusted. ${who} stopped here and won’t go on by itself.`, <><button className="tc-option is-sm is-primary" disabled={tab.canGoBack === false} onClick={() => api.nav(tab.id, 'back')}>Go back</button>{ways && <button className="tc-option is-sm is-quiet" style={{ color: 'var(--danger)' }}>Go on anyway</button>}</>);
+    case 'crashed': return box(<Bug size={22} strokeWidth={1.6} />, 'This page stopped working', `Its tab crashed, out of memory. ${who} was told and can open it again.`, <button className="tc-option is-sm" onClick={() => api.nav(tab.id, 'reload')}>Reload</button>);
     case 'dialog': {
       const held = tab.holder === 'you';
       return (
@@ -165,8 +173,6 @@ export function PageState({ tab }: { tab: Tab }) {
     default: return null;
   }
 }
-
-const STOPPED = ['failed', 'timedOut', 'certificate', 'crashed'];
 
 /** The page: the demo's site, or on obid the tab's own webview (its slot: Webviews.tsx), and the page's own states. */
 export function View({ tab, label, page, children, className = '', style }: { tab: Tab; label: string; page: ReactNode; children?: ReactNode; className?: string; style?: CSSProperties }) {

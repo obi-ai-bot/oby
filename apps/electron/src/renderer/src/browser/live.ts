@@ -8,7 +8,7 @@ import {
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
-import type { AgentId, BrowserState, Download, Tab } from './view';
+import { STOPPED, type AgentId, type BrowserState, type Download, type Tab } from './view';
 
 export type Live = {
   take(tab: string): Promise<void>;
@@ -37,6 +37,8 @@ type Calls = {
   follow: (fn: (m: { name: string; data: string }) => void) => () => void;
   /** main fills the field on the owner's click (main/browser.ts): null once filled, else why not */
   fill: (tab: string, field: string, value: string, ask?: string) => Promise<string | null>;
+  /** each tab's own page state from main (main/browserGuest.ts): a function that stops listening */
+  navState: (fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => void) => () => void;
 };
 
 const AGENTS: AgentId[] = ['codex', 'claude', 'cursor'];
@@ -68,6 +70,9 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   // (LAB-UI-LIVE-6, docs/api/browser.md `seq`)
   let tabsSeq = 0;
   let downloadsSeq = 0;
+  // main's last word on each tab's own page, by job and tab: its address (obid's stays at its own
+  // last command's), whether it has a page behind, one ahead, is loading, and where its last load failed
+  const pages = new Map<string, { url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }>();
 
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
     const a = await calls.call(method, path, body);
@@ -84,6 +89,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     const jobAgent = new Map(tabs.flatMap((t) => (t.owner.kind === 'agent' ? [[t.owner.job, agentOf(t.owner.agent)] as const] : [])));
     const mine: Tab[] = tabs.map((t) => {
       const d = doing.get(t.id);
+      const p = t.owner.kind === 'agent' ? pages.get(`${t.owner.job}\n${t.id}`) : undefined;
+      const at = p?.url || t.url;
       return {
         id: t.id,
         owner: t.owner.kind === 'agent' ? { kind: 'agent', agent: agentOf(t.owner.agent) } : { kind: 'you' },
@@ -91,9 +98,12 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         src: t.url,
         partition: t.partition,
         title: t.title || shown(t.url),
-        url: shown(t.url),
-        secure: t.url.startsWith('https:'),
-        state: t.state,
+        url: shown(at),
+        secure: at.startsWith('https:'),
+        // obid's stopped state stays until its agent's next command: once main says the tab's own
+        // page loaded since, the page shows again, as T3's own webview's load does (BROWSERAPP-34)
+        state: p && !p.loading && p.failed === null && STOPPED.includes(t.state) ? 'ready' : t.state,
+        failedAt: p?.failed ?? undefined,
         holder: t.heldBy ? 'you' : t.owner.kind === 'agent' ? 'agent' : null,
         hold: t.holdGeneration,
         dialog: t.dialog,
@@ -101,6 +111,9 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         action: t.heldBy ? undefined : d?.text,
         pointer: t.heldBy ? undefined : d?.pointer ? { ...d.pointer, ring: true } : undefined,
         ran: ran.has(t.id) && !d ? {} : undefined,
+        canGoBack: p?.canGoBack ?? false,
+        canGoForward: p?.canGoForward ?? false,
+        pageLoading: p?.loading ?? false,
       };
     });
     if (!active || !mine.some((t) => t.id === active)) active = mine[0]?.id ?? null;
@@ -116,6 +129,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     return { tabs: mine, active, asks, downloads: dl, settings };
   };
   const publish = () => { if (!closed) sinks.state(view()); };
+  const unNav = calls.navState((s) => { pages.set(`${s.threadId}\n${s.tabId}`, { url: s.url, canGoBack: s.canGoBack, canGoForward: s.canGoForward, loading: s.loading, failed: s.failed }); publish(); });
 
   let following: (() => void) | null = null;
   const refresh = async () => {
@@ -199,6 +213,6 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
       try { settings = (await call<BrowserSettings>('PUT', BROWSER_SETTINGS, x)) ?? settings; sinks.problem(null); publish(); } catch (e) { sinks.problem((e as Error).message); }
       await refresh();
     },
-    close: () => { closed = true; following?.(); },
+    close: () => { closed = true; following?.(); unNav(); },
   };
 }
