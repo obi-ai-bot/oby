@@ -33,7 +33,7 @@
           "job": {
             "repo": "obi-e2e/fixture-app",
             "kind": "build",
-            "task": "LIMITED ONCE: 1",
+            "task": "LIMITED ONCE: 5",
             "rounds": 3
           }
         },
