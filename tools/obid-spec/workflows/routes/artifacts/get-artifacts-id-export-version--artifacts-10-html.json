@@ -1,0 +1,163 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}/export/{version}?as=html: one standalone file that reaches nothing outside itself",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-10 (lab: LAB-ARTIFACTS-1, workflows/lab/artifacts/design.json's HTML export). The lab's Claude Design project, imported signed, exports as one HTML file holding every file of the version (each a data: URL in its manifest, every board among them) and naming nothing past itself; the lab's page, imported from a zip, exports with its style sheet, script and picture inlined as data: URLs, nothing outside.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}/export/{version}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "name": "claude-design",
+        "zip": true,
+        "expect": {
+          "paths": {
+            "zip": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "imp",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.fx.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "10-design-html-holds-every-file",
+      "use": "runtime.rust:artifacts-export",
+      "inputs": {
+        "obid": "${state.o}",
+        "id": "${state.imp.body.id}",
+        "version": 1,
+        "as": "html",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "text/html; charset=utf-8",
+            "disposition": "attachment; filename=\"Lab-design-v1.html\"",
+            "outside": {
+              "$len": 0
+            },
+            "files": {
+              "$len": 18
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-10"
+        ]
+      }
+    },
+    {
+      "id": "10-every-board-is-in-it",
+      "use": "runtime.rust:artifacts-export",
+      "inputs": {
+        "obid": "${state.o}",
+        "id": "${state.imp.body.id}",
+        "version": 1,
+        "as": "html",
+        "expect": {
+          "paths": {
+            "files": {
+              "$contains": "Main.dc.html"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-10"
+        ]
+      }
+    },
+    {
+      "id": "pgfx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "name": "page",
+        "zip": true
+      }
+    },
+    {
+      "id": "pg",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.pgfx.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.kind": "html",
+            "body.origin": {
+              "kind": "import",
+              "from": "zip"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "10-page-html-reaches-nothing-outside",
+      "use": "runtime.rust:artifacts-export",
+      "inputs": {
+        "obid": "${state.o}",
+        "id": "${state.pg.body.id}",
+        "version": 1,
+        "as": "html",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "outside": {
+              "$len": 0
+            },
+            "inlined": 3
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-10"
+        ]
+      }
+    }
+  ]
+}

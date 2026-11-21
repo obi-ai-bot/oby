@@ -91,6 +91,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/routines/*/run"),
     ("GET", "/v1/artifacts"),
     ("GET", "/v1/artifacts/*"),
+    // A version's files, and its export (`/v1/artifacts/{id}/export/{version}`, ARTIFACTS-9): the
+    // phone may save one. Importing stays on the Mac.
     ("GET", "/v1/artifacts/*/*/**"),
     ("POST", "/v1/conversation/stop"),
     ("POST", "/v1/plans"),
@@ -1486,6 +1488,13 @@ mod tests {
         }
         // `**` is the rest of the path, at the end of a pattern only.
         assert!(!allows(&Method::GET, "/v1/jobs/abc/def/wait"));
+    }
+
+    /// ARTIFACTS-9: the phone may export a version; it never imports (that is the Mac's, signed).
+    #[test]
+    fn artifacts_9_the_phone_exports_and_never_imports() {
+        assert!(allows(&Method::GET, "/v1/artifacts/abc/export/1"));
+        assert!(!allows(&Method::POST, "/v1/artifacts/import"));
     }
 
     #[test]

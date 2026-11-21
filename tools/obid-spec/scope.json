@@ -1904,7 +1904,8 @@
         },
         "signed-words.md": {
           "obid": [
-            "WORDS-5"
+            "WORDS-5",
+            "WORDS-21"
           ],
           "elsewhere": {
             "WORDS-1": "the Electron main's signing.",
@@ -2260,6 +2261,9 @@
             "ARTIFACTS-6",
             "ARTIFACTS-7",
             "ARTIFACTS-8",
+            "ARTIFACTS-9",
+            "ARTIFACTS-10",
+            "ARTIFACTS-11",
             "ARTIFACTS-12",
             "ARTIFACTS-16",
             "ARTIFACTS-17",

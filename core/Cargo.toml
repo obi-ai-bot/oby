@@ -52,6 +52,10 @@ rustix = { version = "1.1.5", features = ["process", "net"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form"] }
 # The publish gate's secret scan: the built-in rules (Engine/Publish.swift's).
 regex = "1.13.1"
+# Oby Artifacts' export and import (crates/obid/src/artifacts/export.rs): Claude Design's project
+# zip, out and in, deflate only (`deflate` brings zopfli for its best compression, which obid
+# doesn't ask for).
+zip = { version = "2.6.1", default-features = false, features = ["deflate"] }
 # Streamed answers: the event stream and `GET /v1/jobs/{id}/wait`.
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }

@@ -1,0 +1,210 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}/export/{version}: an import's zip export is the import, entry for entry, and the same bytes again",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-9 (lab: LAB-ARTIFACTS-1, workflows/lab/artifacts/design.json's round trip and export). The lab's Claude Design project zip, imported signed, exports as a zip holding exactly its entries, each byte for byte (every upload back at project/_blob/<id>, the token-like one too), named after its title; the export imported and exported again gives the same zip bytes. No such version or artifact is 404, an export other than zip or html 400, and a version's file named `export` is still served as a file.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}/export/{version}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "name": "claude-design",
+        "zip": true,
+        "expect": {
+          "paths": {
+            "zip": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "9-export-equals-the-import",
+      "use": "runtime.rust:artifacts-roundtrip",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "zip": "${state.fx.zip}",
+        "expect": {
+          "paths": {
+            "same": true,
+            "onlyInSource": {
+              "$len": 0
+            },
+            "onlyInExport": {
+              "$len": 0
+            },
+            "changed": {
+              "$len": 0
+            },
+            "stable": true,
+            "imported.kind": "design"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-9"
+        ]
+      }
+    },
+    {
+      "id": "imp",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.fx.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "9-export-zip",
+      "use": "runtime.rust:artifacts-export",
+      "inputs": {
+        "obid": "${state.o}",
+        "id": "${state.imp.body.id}",
+        "version": 1,
+        "as": "zip",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "type": "application/zip",
+            "disposition": "attachment; filename=\"Lab-design-v1.zip\"",
+            "entries": {
+              "$contains": {
+                "name": "project/_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-9"
+        ]
+      }
+    },
+    {
+      "id": "9-no-such-version-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.imp.body.id}/export/2?as=zip",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-9"
+        ]
+      }
+    },
+    {
+      "id": "9-no-such-artifact-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/00000000-0000-4000-8000-000000000000/export/1?as=zip",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-9"
+        ]
+      }
+    },
+    {
+      "id": "9-zip-or-html-only-400",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.imp.body.id}/export/1?as=pdf",
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-9"
+        ]
+      }
+    },
+    {
+      "id": "zip-export-file",
+      "use": "runtime.rust:artifacts-zip",
+      "inputs": {
+        "kind": "export-file"
+      }
+    },
+    {
+      "id": "pg",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.zip-export-file.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.kind": "html"
+          }
+        }
+      }
+    },
+    {
+      "id": "9-a-file-named-export-is-still-served",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pg.body.id}/1/export",
+        "expect": {
+          "status": 200,
+          "text": "plain"
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-9"
+        ]
+      }
+    }
+  ]
+}

@@ -126,6 +126,7 @@ impl Artifacts {
         let made = Made {
             by: Some("owner"),
             blobs: (!base.blobs.is_empty()).then(|| base.blobs.clone()),
+            ..Made::default()
         };
         self.finish(
             &what,
