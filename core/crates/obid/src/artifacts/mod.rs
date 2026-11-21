@@ -38,6 +38,7 @@ use crate::store::{make_private_dir, write_private};
 
 mod blobs;
 mod design;
+pub mod edit;
 mod limits;
 
 pub use limits::{MAX_BYTES, MAX_ENTRIES, MAX_FILES, MAX_JOB_BYTES};
@@ -125,6 +126,9 @@ pub struct Version {
     /// The job that published it, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
+    /// `owner` when the owner's own edit made it (ARTIFACTS-16, [`edit`]); none for an agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 impl Artifact {
@@ -151,6 +155,14 @@ pub struct Publish<'a> {
     /// files as that version make no new one, whatever version came after it, so a job publishing
     /// its `.obi/artifacts/` again never lays its files over its conversation's (ARTIFACTS-7).
     pub kept: Option<u32>,
+}
+
+/// Who made a version, past what [`Publish`] says: the owner's edit, and the uploads its files
+/// already hold (a design's, kept under `assets/` by the version it was made from).
+#[derive(Default)]
+struct Made {
+    by: Option<&'static str>,
+    blobs: Option<BTreeMap<String, String>>,
 }
 
 /// Every artifact obid keeps.
@@ -236,7 +248,9 @@ impl Artifacts {
                 .await
                 .map_err(|e| format!("Not published: the copy stopped ({e})."))?
         };
-        let result = self.finish(&what, &title, before, &staging, copied).await;
+        let result = self
+            .finish(&what, &title, before, &staging, copied, Made::default())
+            .await;
         let _ = std::fs::remove_dir_all(&staging);
         result
     }
@@ -248,6 +262,7 @@ impl Artifacts {
         before: Option<Artifact>,
         staging: &Path,
         copied: Result<Copied, String>,
+        made: Made,
     ) -> Result<(String, u32), String> {
         let mut copied = copied.map_err(|why| format!("Not published: {why}"))?;
         let kind = check_kind(
@@ -256,7 +271,9 @@ impl Artifacts {
             what.kind.or(before.as_ref().map(|a| a.kind)),
         )
         .map_err(|why| format!("Not published: {why}"))?;
-        let blobs = if kind == Kind::Design {
+        let blobs = if let Some(kept) = made.blobs {
+            kept
+        } else if kind == Kind::Design {
             blobs::ingest(staging, &mut copied.files)
                 .map_err(|why| format!("Not published: {why}"))?
         } else {
@@ -353,6 +370,7 @@ impl Artifacts {
             bytes: copied.bytes,
             blobs,
             job: what.job.map(str::to_owned),
+            by: made.by.map(str::to_owned),
         });
         self.save(&artifact)
             .map_err(|e| format!("Not published: obid couldn't keep it ({e})."))?;

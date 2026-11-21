@@ -1425,7 +1425,7 @@
           "obid": [
             "COMPUTERS-14",
             "COMPUTERS-16",
-            "COMPUTERS-19..24"
+            "COMPUTERS-17..25"
           ],
           "elsewhere": {
             "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
@@ -2257,7 +2257,10 @@
             "ARTIFACTS-6",
             "ARTIFACTS-7",
             "ARTIFACTS-8",
-            "ARTIFACTS-12"
+            "ARTIFACTS-12",
+            "ARTIFACTS-16",
+            "ARTIFACTS-17",
+            "ARTIFACTS-18"
           ],
           "elsewhere": {}
         }

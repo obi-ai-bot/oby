@@ -1,7 +1,8 @@
 //! The window's requests to another computer (docs/contracts/remote.md, COMPUTERS-21 and 22): a
 //! request on this Mac's loopback API, with obid's own token, that names a computer this Mac keeps
 //! in `Oby-Computer` goes to that computer's gateway instead, over the best of its routes that
-//! answers, each pinned (crate::remote::pinned), with that computer's device token. Only what the
+//! answers (crate::remote::reach: a direct one pinned, an SSH one through its tunnel), with that
+//! computer's device token. Only what the
 //! window sends is carried: its body, its content type, its signed words, its request key and the
 //! event stream's resume point. Nothing else of this Mac's goes with it, its profile neither: a
 //! profile is this Mac's, so the other computer answers for its own default.
@@ -14,7 +15,6 @@
 //! their supervisors what each try came to.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -24,15 +24,10 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use super::computers::HEADER;
-use super::route::Via;
 use crate::api::Shared;
 
 /// The longest body the window sends another computer: the gateway's own limit.
 const BODY: usize = 16 * 1024 * 1024;
-
-/// How long a route has to answer before the next is tried. A stream (`/v1/events`) runs as long as
-/// it's followed.
-const CONNECT: Duration = Duration::from_secs(5);
 
 /// The headers the window's request carries to the other computer, besides its token.
 const CARRIED: &[&str] = &[
@@ -153,21 +148,16 @@ async fn forward(shared: &Arc<Shared>, id: &str, target: &str, request: Request)
         }
     }
     for route in routes {
-        let Via::Https { host, port, pin } = &route.via else {
-            continue;
-        };
-        let client = match super::pinned::streaming_client(*pin, CONNECT, !stream) {
-            Ok(client) => client,
+        let way = match super::reach::way(shared, id, &route, !stream).await {
+            Ok(way) => way,
             Err(why) => {
                 observe(shared, id, &route.id, Err(why));
                 continue;
             }
         };
-        let mut upstream = client
-            .request(
-                parts.method.clone(),
-                format!("https://{host}:{port}{target}"),
-            )
+        let mut upstream = way
+            .client
+            .request(parts.method.clone(), format!("{}{target}", way.base))
             .bearer_auth(&token)
             .body(body.clone());
         for name in CARRIED {

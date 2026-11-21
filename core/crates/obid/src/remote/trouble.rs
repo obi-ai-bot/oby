@@ -13,6 +13,8 @@ pub enum SshTrouble {
     HostKeyChanged,
     /// No key of theirs (file or agent) is accepted; Oby never asks for a password.
     NoKey,
+    /// Nothing takes SSH there: on a Mac, Remote Login is off. Turning it on is the owner's.
+    NoSshServer,
     Unreachable,
     ForwardFailed,
     Other {
@@ -38,6 +40,8 @@ pub fn trouble(stderr: &str) -> SshTrouble {
         || s.contains("address already in use")
     {
         SshTrouble::ForwardFailed
+    } else if s.contains("connect to host") && s.contains("connection refused") {
+        SshTrouble::NoSshServer
     } else if s.contains("connection refused")
         || s.contains("timed out")
         || s.contains("no route to host")
@@ -71,6 +75,9 @@ impl SshTrouble {
             SshTrouble::NoKey => format!(
                 "{destination} accepts none of your SSH keys (Oby uses your keys and agent, never a password)."
             ),
+            SshTrouble::NoSshServer => format!(
+                "Nothing answers SSH on {destination}. If it's a Mac, turn on Remote Login there: System Settings › General › Sharing › Remote Login. Oby never changes it for you."
+            ),
             SshTrouble::Unreachable => format!("{destination} didn't answer over SSH."),
             SshTrouble::ForwardFailed => "ssh couldn't hold the tunnel's port on this Mac.".into(),
             SshTrouble::Other { said } => format!("ssh to {destination}: {said}"),
@@ -97,7 +104,7 @@ mod tests {
             SshTrouble::NoKey
         );
         assert_eq!(
-            trouble("ssh: connect to host box port 22: Connection refused"),
+            trouble("ssh: connect to host box port 22: Connection timed out"),
             SshTrouble::Unreachable
         );
         assert_eq!(
@@ -115,5 +122,27 @@ mod tests {
             panic!("other")
         };
         assert!(!said.contains('\u{1b}'));
+    }
+
+    /// COMPUTERS-17: nothing taking SSH there (on a Mac, Remote Login off) says how to turn it on,
+    /// and that Oby never changes it.
+    #[test]
+    fn computers_17_no_ssh_server_says_how_to_turn_on_remote_login() {
+        let refused = trouble("ssh: connect to host box port 22: Connection refused");
+        assert_eq!(refused, SshTrouble::NoSshServer);
+        let said = refused.say("box");
+        assert!(
+            said.contains("Remote Login") && said.contains("never changes"),
+            "{said}"
+        );
+        assert_eq!(
+            serde_json::to_value(&refused).unwrap(),
+            serde_json::json!({"trouble": "noSshServer"})
+        );
+        // A forward refused there is obid not answering, not a missing SSH server.
+        assert_ne!(
+            trouble("channel 2: open failed: connect failed: Connection refused"),
+            SshTrouble::NoSshServer
+        );
     }
 }

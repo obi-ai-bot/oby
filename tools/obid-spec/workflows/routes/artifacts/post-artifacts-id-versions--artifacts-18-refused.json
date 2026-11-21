@@ -1,0 +1,162 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/artifacts/{id}/versions: an edit holding a secret keeps nothing and never says it",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-18 (the port plan's L3a). The owner's edit goes through a publish's secret scan: a made-up GitHub token in the page is 422, the answer never holds it, and the artifact keeps its one version. (A file over its limit is the store's own test, artifacts_18_…: a 16 MB body isn't a workflow's.)",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/artifacts/{id}/versions"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dev",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ARTIFACTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "conversation": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "job-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "done",
+                "failed"
+              ]
+            }
+          },
+          "paths": {
+            "artifacts": {
+              "$len": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "title": "page",
+            "kind": "html"
+          },
+          "paths": {
+            "versions": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "token-tail",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "18-a-secret",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}/versions",
+        "body": {
+          "base": 1,
+          "files": {
+            "index.html": "<h1>ghp_${state.token-tail.seed}</h1>"
+          }
+        },
+        "device": "${state.dev}",
+        "as": "device",
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "Not saved:"
+            }
+          },
+          "text": {
+            "$not": {
+              "$contains": "${state.token-tail.seed}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-18"
+        ]
+      }
+    },
+    {
+      "id": "18-nothing-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "versions": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-18"
+        ]
+      }
+    }
+  ]
+}
