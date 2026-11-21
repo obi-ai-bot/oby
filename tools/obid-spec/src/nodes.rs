@@ -443,6 +443,8 @@ pub fn judges(name: &str) -> &'static [&'static str] {
         "call" | "call-wait" | "sphere-admin" | "sphere-owner" => ANSWER,
         "home-file" | "conversations.person-file" => &["exists", "mode", "json", "text"],
         "conversations.list-dir" => VALUE,
+        // coverage_accounts_openai: an answer checked with expect::check_status and expect::check
+        "accounts.visit" | "accounts.tokens" | "accounts.openai-saw" => ANSWER,
         "check" | "events-wait" => VALUE,
         "app.launch" => &[],
         n if n.starts_with("app.")
