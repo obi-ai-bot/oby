@@ -565,11 +565,25 @@ export function TaskHead({ task }: { task: Task }) {
       {/* stopped: why, in obid's words, on one line */}
       {task.status === 'done' && ENDED[j.status] && j.reason && <span className="msg-task-meta">{j.reason.split('\n')[0]}</span>}
       {task.status === 'done' && !task.unknown && resultLine(task)}
+      {/* its pull request, open: the stage it's at, in obid's words as they are (merging.md); merged, that (#2785) */}
+      {task.status === 'done' && !task.unknown && prStage(j) && <span className="msg-task-meta">{prStage(j)}</span>}
       {j.stages.length > 0 && task.status !== 'done' && <Stages task={task} />}
     </span>
     {/* stopped or failed isn't the check a finished one gets (Sangam's board "Stuck and failed") */}
     <TaskMark task={task} />
   </>;
+}
+
+// A done task's pull request while it's open: the stage it's at (Publish, Review or Merged), its line
+// being obid's own words ("Oby is reviewing", "Pull request open · waiting for your review on GitHub");
+// merged, the Merged stage's ("Merged into dev"). Nothing without a pull request. Where it sits on the
+// card is Sangam's to change.
+function prStage(j: Task['job']): string | undefined {
+  if (!j.published) return undefined;
+  const open = j.stages.find((st) => (st.id === 'publish' || st.id === 'review' || st.id === 'merged') && st.state === 'current');
+  if (open) return open.detail || open.title;
+  const merged = j.stages.find((st) => st.id === 'merged' && st.state === 'done');
+  return merged ? merged.detail || merged.title : undefined;
 }
 
 // Its stages as a bar of six (screen 03): those done filled, the one it's on pulsing, or orange while
