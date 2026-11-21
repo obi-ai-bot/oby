@@ -494,4 +494,90 @@ mod tests {
         assert!(foreign(&seeded(&jobs, "e", &turn, 1)));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// A version kept by hand, as an older obid kept it (no record of what shaped it), made by
+    /// `job`: `files` with their text, a `link` among them pointing out of its folder.
+    fn stored(root: &Path, id: &str, job: &str, files: &[(&str, &str)], link: Option<&str>) {
+        let folder = root.join("home/artifacts").join(id);
+        std::fs::create_dir_all(folder.join("1")).unwrap();
+        let mut names: Vec<&str> = files.iter().map(|(name, _)| *name).collect();
+        for (name, text) in files {
+            std::fs::write(folder.join("1").join(name), text).unwrap();
+        }
+        if let Some(link) = link {
+            std::os::unix::fs::symlink("/etc/hosts", folder.join("1").join(link)).unwrap();
+            names.push(link);
+        }
+        let artifact = serde_json::json!({
+            "id": id, "title": "Page", "kind": "html", "conversation": "c1", "job": null,
+            "created": "2026-11-21T00:00:00Z",
+            "versions": [{"version": 1, "created": "2026-11-21T00:00:00Z", "files": names, "bytes": 1, "job": job}]
+        });
+        std::fs::write(folder.join("artifact.json"), artifact.to_string()).unwrap();
+    }
+
+    /// ARTIFACTS-24: a job obid stopped after its artifact's files were copied and before it was
+    /// marked (a crash) finds them there on its next run, and is marked then: the files' marks
+    /// never depend on who copied them.
+    #[tokio::test]
+    async fn artifacts_24_a_job_stopped_between_copy_and_mark_is_marked_on_retry() {
+        let root = std::env::temp_dir().join(format!("obid-seed-24-crash-{}", std::process::id()));
+        let (jobs, _store) = seeding(&root);
+        let id = "3b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d";
+        stored(
+            &root,
+            id,
+            "gone",
+            &[("index.html", "<h1>Theirs</h1>")],
+            None,
+        );
+        put(&jobs, "n", Some("c1"), |job| {
+            job.artifacts = vec![JobArtifact {
+                id: id.into(),
+                version: 1,
+                entry: id[..8].into(),
+            }]
+        });
+        let worktree = jobs.worktree_path("n");
+        let copied = worktree.join(".obi/artifacts").join(&id[..8]);
+        std::fs::create_dir_all(&copied).unwrap();
+        std::fs::write(copied.join("index.html"), "<h1>Theirs</h1>").unwrap();
+        jobs.seed_artifacts("n", &worktree);
+        let job = jobs.get("n").unwrap();
+        assert!(job.foreign.is_some(), "{job:?}");
+        assert_eq!(job.artifacts.len(), 1, "{job:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ARTIFACTS-24: a copy that fails partway (here a file of the version is a link) leaves the
+    /// job marked, takes away what it copied, and drops the artifact from the job.
+    #[tokio::test]
+    async fn artifacts_24_a_copy_that_fails_partway_leaves_the_job_marked() {
+        let root =
+            std::env::temp_dir().join(format!("obid-seed-24-partway-{}", std::process::id()));
+        let (jobs, _store) = seeding(&root);
+        let id = "4b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d";
+        stored(
+            &root,
+            id,
+            "gone",
+            &[("index.html", "<h1>Theirs</h1>")],
+            Some("style.css"),
+        );
+        put(&jobs, "n", Some("c1"), |job| {
+            job.artifacts = vec![JobArtifact {
+                id: id.into(),
+                version: 1,
+                entry: id[..8].into(),
+            }]
+        });
+        let worktree = jobs.worktree_path("n");
+        std::fs::create_dir_all(&worktree).unwrap();
+        jobs.seed_artifacts("n", &worktree);
+        let job = jobs.get("n").unwrap();
+        assert!(job.foreign.is_some(), "{job:?}");
+        assert!(job.artifacts.is_empty(), "{job:?}");
+        assert!(!worktree.join(".obi/artifacts").join(&id[..8]).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

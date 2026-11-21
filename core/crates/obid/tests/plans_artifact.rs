@@ -308,6 +308,8 @@ fn artifacts_21_obys_own_turn_finds_the_open_version_in_its_room() {
     assert_eq!(open.status, 200, "{}", open.text);
     let prompt = last_prompt(&obid, &c1);
     assert!(prompt.contains(&format!("artifacts/{entry}")), "{prompt}");
+    // The path, never the files' text.
+    assert!(!prompt.contains("<li>greet</li>"), "{prompt}");
     let page = obid.home.join(format!(
         "conversations/{c1}/room/artifacts/{entry}/index.html"
     ));
@@ -387,4 +389,75 @@ fn artifacts_24_a_marked_jobs_version_taints_the_turn_that_opens_it() {
         json!([{"id": artifact, "version": 2}]),
         "{job}"
     );
+}
+
+/// The page `first` made in a new conversation (`signed` as the owner's app signs its words),
+/// that conversation deleted, then the page opened again with the owner's signed words that start
+/// a task editing it (tests/agents/fake-claude, EDITARTIFACT): the task, ended, and its kept file.
+fn reopened_after_delete(obid: &Obid, first: &str, signed: bool) -> (Value, Value) {
+    let body = json!({"said": first, "new": true});
+    let made = if signed {
+        call_typed(obid, "POST", "/v1/plans", &body)
+    } else {
+        plan(obid, body)
+    };
+    assert_eq!(made.status, 200, "{}", made.text);
+    let c1 = made.body["conversation"].as_str().unwrap().to_owned();
+    let artifact = made.body["artifacts"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no artifact: {}", made.text))
+        .to_owned();
+    let gone = call(obid, "DELETE", &format!("/v1/conversations/{c1}"), None);
+    assert!(gone.status < 300, "{}", gone.text);
+    let started = call_typed(
+        obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"EDITARTIFACT\", \"kind\": \"research\"}",
+               "artifact": {"id": artifact}}),
+    );
+    assert_eq!(started.status, 200, "{}", started.text);
+    assert_ne!(started.body["conversation"], json!(c1), "{}", started.text);
+    let id = started.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no job: {}", started.text))
+        .to_owned();
+    let job = ended_within(obid, &id, 120);
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    (job, kept)
+}
+
+/// ARTIFACTS-24, 25: a version Oby's turn made in a conversation that heard something off obid's
+/// allowlist (here words no app of the owner's signed) keeps that mark once its conversation is
+/// deleted: the task the owner's signed words start with it open, in a clean conversation, is
+/// someone else's, and its turn read something untrusted.
+#[test]
+fn artifacts_25_a_foreign_turns_version_marks_the_task_after_its_conversation_is_deleted() {
+    let folder = Folder::new("artifacts-25-foreign");
+    let obid = started_with_jobs(&folder);
+    let (job, kept) = reopened_after_delete(
+        &obid,
+        "MAKEPAGE OBY oby_artifact {\"title\": \"Functions\", \"path\": \"page\"}",
+        false,
+    );
+    assert!(kept["foreign"].is_string(), "{kept}");
+    assert_eq!(job["untrusted"], json!(true), "{job}");
+}
+
+/// ARTIFACTS-25: a version Oby's turn made after reading something untrusted (the web), in the
+/// owner's own signed conversation, keeps that mark once its conversation is deleted and the
+/// artifact is opened elsewhere.
+#[test]
+fn artifacts_25_a_tainted_turns_version_keeps_its_mark_after_its_conversation_is_deleted() {
+    let folder = Folder::new("artifacts-25-tainted");
+    let obid = started_with_jobs(&folder);
+    let (job, kept) = reopened_after_delete(
+        &obid,
+        "WEB MAKEPAGE OBY oby_artifact {\"title\": \"Functions\", \"path\": \"page\"}",
+        true,
+    );
+    assert!(kept["foreign"].is_string(), "{kept}");
+    assert_eq!(job["untrusted"], json!(true), "{job}");
 }

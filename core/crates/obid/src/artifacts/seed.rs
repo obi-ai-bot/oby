@@ -138,6 +138,7 @@ mod tests {
             "CLAUDE.md",
             "sub/agents.md",
             "AGENTS.override.md",
+            "docs/claude.local.md",
             ".claude/settings.json",
         ];
         let folder = t.0.join("home/artifacts").join(id);
@@ -168,6 +169,44 @@ mod tests {
         assert!(!into.join("CLAUDE.md").exists());
         for refused in ["", ".claude", "a/b", "a:b"] {
             assert!(store.lay_out(id, 1, &into, refused).is_err(), "{refused}");
+        }
+    }
+
+    /// ARTIFACTS-25: a stored version's file is read without following a link: one that is a
+    /// hard link to a file outside its folder, or a symbolic link, is refused, and nothing of
+    /// the outside file is laid out.
+    #[test]
+    fn artifacts_25_a_linked_file_in_a_stored_version_is_refused() {
+        let t = Temp::new("seed-25");
+        let (store, _events) = t.store();
+        let outside = t.0.join("outside.html");
+        std::fs::write(&outside, "OUTSIDE-TEXT").unwrap();
+        for (id, link) in [
+            ("1b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d", "hard"),
+            ("2b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d", "soft"),
+        ] {
+            let folder = t.0.join("home/artifacts").join(id);
+            std::fs::create_dir_all(folder.join("1")).unwrap();
+            let page = folder.join("1/index.html");
+            if link == "hard" {
+                std::fs::hard_link(&outside, &page).unwrap();
+            } else {
+                std::os::unix::fs::symlink(&outside, &page).unwrap();
+            }
+            let artifact = serde_json::json!({
+                "id": id, "title": "Page", "kind": "html", "conversation": "c1", "job": null,
+                "created": "2026-11-21T00:00:00Z",
+                "versions": [{"version": 1, "created": "2026-11-21T00:00:00Z", "files": ["index.html"], "bytes": 12}]
+            });
+            std::fs::write(folder.join("artifact.json"), artifact.to_string()).unwrap();
+            let into = t.room().join(link);
+            std::fs::create_dir_all(&into).unwrap();
+            assert!(store.lay_out(id, 1, &into, "page").is_err(), "{link}");
+            let page = into.join("page/index.html");
+            assert!(
+                !std::fs::read_to_string(&page).is_ok_and(|t| t.contains("OUTSIDE")),
+                "{link}"
+            );
         }
     }
 
