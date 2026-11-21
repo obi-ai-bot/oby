@@ -187,6 +187,8 @@
 /* Its 8px from the bar's end, past the bar's gutter, as board 1 measures it */
 .tip-under{position:absolute;top:44px;right:calc(8px - var(--gutter));padding:4px 8px;border:1px solid var(--surface-edge);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;white-space:nowrap}
 .tip-under kbd{margin-left:8px;color:var(--muted);font:inherit}
+/* The bar's end (its fade-in a stacking context the tip can't leave) over the chat, as board 1 paints the tip */
+.bar-end:has(.tip-under){position:relative;z-index:3}
 
 /* Together */
 .docs{position:absolute;inset:0;display:flex;font:14px/1.5 -apple-system,system-ui,Inter,sans-serif;color:#1a1b1f;background:#fff}
