@@ -27,8 +27,8 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | `.github/**`, `scripts/oby-check*`, `core/Cargo.toml`, `core/Cargo.lock`, `rust-toolchain*` | all of Rust, the Electron app |
 | `core/crates/obid/src/browser/**` | all of Rust, the Electron app (its relay test reads the CDP methods obid's browser sends) |
 | `core/**`, `e2e/**`, `docs/api/**`, `Makefile` | all of Rust |
-| `apps/electron/**` | the Electron app, the guards |
-| `apps/shared/**`, `docs/runner-api.md`, `docs/contracts/**` | the guards |
+| `apps/electron/**`, `design/oby/**` (the app bundles it) | the Electron app, the guards |
+| `apps/shared/**`, `docs/runner-api.md`, `docs/contracts/**`, `README.md`, `docs/ARCHITECTURE.md` (obid's secret scan reads both in a guard) | the guards |
 | `docs/**`, `factory/**`, `tools/**`, `cloud/**`, `.claude/**`, `design/**`, `character/**`, `apps/ios/**`, `apps/watch/**`, `apps/Oby.xcodeproj/**`, `mcp/**`, `*.md` | nothing: `changes` and `Check` only |
 | any other path | everything |
 | a diff that can't be read | everything |
@@ -46,7 +46,7 @@ A job is skipped with `if:`, never with a workflow-level `paths:`, so `Check` re
 
 **Caches.** Only a run on `dev` saves the Rust cache (`Swatinem/rust-cache`'s `save-if`), one per kind of `rust` run (`full`, `guards`); a pull request and the merge queue restore `dev`'s, never another pull request's. `rust-test` compiles nothing and has none. The npm cache from `actions/setup-node` has no save switch and is left as it is.
 
-**What GitHub doesn't run.** The end-to-end suite (`make e2e`), the control plane's tests, `tools/oby-check-blok`'s tests, obid-spec, the Brain's tests and Kani's harnesses run on the Mac or by hand ("What the Mac runs", docs/proofs.md), not on GitHub. There is no nightly or on-demand run on GitHub.
+**What GitHub doesn't run.** The end-to-end suite (`make e2e`), `tools/oby-check-blok`'s tests, obid-spec's coverage gate and the Brain's tests run on the Mac ("What the Mac runs"), not on GitHub. Three things now run only by hand, and nothing runs them by itself: Kani's harnesses (`scripts/kani-prove.sh`, docs/proofs.md: the deciders for an Accept, the runner's token and the force-push default among them; their example tests still run in `rust-test`), obid-spec's workflows on a change to obid (`scripts/preflight.sh` runs only the workflows a change touches), and the control plane's tests (`pnpm test` in `cloud/control-plane`). There is no nightly or on-demand run on GitHub.
 
 ## The CLI canary
 

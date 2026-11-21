@@ -60,14 +60,15 @@ jobs:
 
       # rust: `full` (lint, limits and every test), `guards` (the guards alone) or `none`.
       # A pull request's diff is from its merge base, the queue's and dev's from the commit before.
-      # A path no row names, or a diff that can't be read, reaches everything.
+      # A path no row names, or a diff that can't be read, reaches everything. A moved file counts
+      # under both its old path and its new one.
       - name: What the change reaches
         id: lanes
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then range="$BASE...$HEAD"; else range="$BASE..$HEAD"; fi
           rust=none electron=false
           guards() { [ "$rust" = full ] || rust=guards; }
-          if ! files=$(git diff --name-only "$range"); then
+          if [ -z "$BASE" ] || ! files=$(git diff --name-only --no-renames "$range"); then
             echo "The diff $range can't be read: everything runs."
             rust=full electron=true files=""
           fi
@@ -78,8 +79,10 @@ jobs:
               # The app's relay test reads the CDP methods obid's browser sends.
               core/crates/obid/src/browser/*) rust=full electron=true ;;
               core/*|e2e/*|docs/api/*|Makefile) rust=full ;;
-              apps/electron/*) electron=true; guards ;;
-              apps/shared/*|docs/runner-api.md|docs/contracts/*) guards ;;
+              # The app bundles design/oby (apps/electron/vite.config.ts).
+              apps/electron/*|design/oby/*) electron=true; guards ;;
+              # README.md and docs/ARCHITECTURE.md: obid's secret scan reads them in a guard.
+              apps/shared/*|docs/runner-api.md|docs/contracts/*|README.md|docs/ARCHITECTURE.md) guards ;;
               docs/*|factory/*|tools/*|cloud/*|.claude/*|design/*|character/*|apps/ios/*|apps/watch/*|apps/Oby.xcodeproj/*|mcp/*|*.md) ;;
               *) rust=full electron=true ;;
             esac
@@ -89,9 +92,10 @@ jobs:
 
       - uses: ./.github/actions/setup
 
-      # The commits this run brings, with .gitleaks.toml and .gitleaksignore, as the Mac's check
-      # scans a change's. Older history isn't rescanned: it was scanned on its own pull requests.
-      # With no earlier commit to start from, the head commit alone.
+      # The commits this run brings, with the change's own .gitleaks.toml and .gitleaksignore (both
+      # are security paths: a change to either needs its two reviews). Older history isn't
+      # rescanned: it was scanned on its own pull requests. With no earlier commit to start from,
+      # the head commit alone. -m: what a merge commit itself adds is scanned too.
       - name: gitleaks over the new commits
         run: |
           if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
@@ -101,7 +105,7 @@ jobs:
             range="-1 $HEAD"
           fi
           echo "Scanning $range"
-          gitleaks git . "--log-opts=$range" --config .gitleaks.toml --no-banner --redact
+          gitleaks git . "--log-opts=-m $range" --config .gitleaks.toml --no-banner --redact
 
   rust:
     name: rust
