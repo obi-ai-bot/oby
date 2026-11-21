@@ -1,0 +1,302 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}/{version}/{*path}: a board drawn on its version's origin can't fetch, load from outside or open a window",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-15 (lab: LAB-ARTVIEW-10's policy half, workflows/lab/artifactview/sandbox.json, pointed at obid; the app's navigation rule is the port plan's P7). The lab's Claude Design project publishes from a conversation's room and is drawn on its version's own origin, every file obid's as obid serves it. Under obid's board policy the board can't fetch a server outside, nor load a picture from it (nothing reaches that server), and can't open a window, while Oby's runtime still draws it. In the canvas host obid builds, each board draws in a sandboxed frame of its own (the board policy lets its own version's host frame it), and the host can't reach into it.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}/{version}/{*path}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "design-fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "design",
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "design",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Lab design\", \"path\": \"design\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "view",
+      "use": "runtime.rust:lab.artifactview.up",
+      "inputs": {
+        "obid": "${state.o}",
+        "expect": {
+          "paths": {
+            "port": {
+              "$type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "out",
+      "use": "runtime.rust:lab.artifactview.outside",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "hits": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "main",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Main.dc.html",
+        "width": 800,
+        "height": 600,
+        "name": "main",
+        "within": {
+          "width": 800,
+          "height": 600
+        },
+        "expect": {
+          "paths": {
+            "ready": true
+          }
+        }
+      }
+    },
+    {
+      "id": "15-drawn-while-held-in",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "!!(window.__OBY_DC && window.__OBY_DC.ready === true && window.__OBY_DC.errors.length === 0)",
+        "expect": {
+          "paths": {
+            "value": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "15-fetch-refused",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "fetch('${state.out.url}/ping').then(() => 'reached', () => 'refused')",
+        "expect": {
+          "paths": {
+            "value": "refused"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "15-picture-from-outside-refused",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "new Promise(r => { const i = new Image(); i.onload = () => r('loaded'); i.onerror = () => r('refused'); i.src = '${state.out.url}/pic.png'; })",
+        "expect": {
+          "paths": {
+            "value": "refused"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "15-the-policy-refuses-the-fetch",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "new Promise(r => { document.addEventListener('securitypolicyviolation', e => r(e.effectiveDirective), {once: true}); fetch('${state.out.url}/csp').catch(() => null); setTimeout(() => r('none'), 1500); })",
+        "expect": {
+          "paths": {
+            "value": "connect-src"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "15-the-policy-refuses-the-picture",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "new Promise(r => { document.addEventListener('securitypolicyviolation', e => r(e.effectiveDirective), {once: true}); (new Image()).src = '${state.out.url}/csp.png'; setTimeout(() => r('none'), 1500); })",
+        "expect": {
+          "paths": {
+            "value": "img-src"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "15-nothing-reached-outside",
+      "use": "runtime.rust:lab.artifactview.outside",
+      "inputs": {
+        "outside": "${state.out}",
+        "expect": {
+          "paths": {
+            "hits": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "15-no-window",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "String(window.open('https://example.com/window'))",
+        "expect": {
+          "paths": {
+            "value": "null"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "host",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.body.artifacts.0.id}",
+        "version": 1,
+        "path": "__canvas.html?view=canvas",
+        "width": 1280,
+        "height": 800,
+        "name": "host",
+        "expect": {
+          "paths": {
+            "ready": true
+          }
+        }
+      }
+    },
+    {
+      "id": "15-host-cant-reach-a-board",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "host",
+        "expression": "Array.from(document.querySelectorAll('iframe')).every(f => { try { return f.contentDocument === null; } catch (e) { return true; } })",
+        "expect": {
+          "paths": {
+            "value": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    },
+    {
+      "id": "15-the-hosts-boards-drawn-in-their-frames",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "host",
+        "expression": "Object.keys(window.__OBY_CANVAS.frames).length > 0 && Object.values(window.__OBY_CANVAS.frames).every(f => f.ready)",
+        "expect": {
+          "paths": {
+            "value": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-15"
+        ]
+      }
+    }
+  ]
+}

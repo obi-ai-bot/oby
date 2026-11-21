@@ -1,0 +1,816 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}/{version}/{*path}: a design is drawn by Oby's runtime served beside it, every board within its size",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-13 and 14 (lab: LAB-ARTVIEW-8, workflows/lab/artifactview/render.json, pointed at obid). The lab's own Claude Design project and the Oby Artifacts canvas (its twelve boards, people's names replaced) publish from a conversation's room; each version is an origin of its own (<id>-v<n>.localhost, as the app's oby-artifact://<id>-v<n>/ will be) whose every file is obid's own GET /v1/artifacts/<id>/<n>/<path>, its type and policy as obid sends them. In the lab's pinned chrome-headless-shell, Oby's runtime, which obid serves beside each design (support.js, __dc/boards.js, __dc/logic/), draws every board within its size and with no error: holes filled, dc-import, sc-for, sc-if, a link to another board played in place, #id scrolling, each board's data-props defaults its props. The canvas host obid builds for the version shows every board of a page in its own sandboxed frame, each drawn, and switches pages.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}/{version}/{*path}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "design-fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "design",
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "design",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Lab design\", \"path\": \"design\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "canvas-fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "canvas",
+        "name": "canvas"
+      }
+    },
+    {
+      "id": "canvas",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Oby Artifacts\", \"path\": \"canvas\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "view",
+      "use": "runtime.rust:lab.artifactview.up",
+      "inputs": {
+        "obid": "${state.o}",
+        "expect": {
+          "paths": {
+            "port": {
+              "$type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "13-support-js-served-beside-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.design.body.artifacts.0.id}/1/support.js",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "oby-dc 1"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-main-drawn",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Main.dc.html",
+        "width": 800,
+        "height": 600,
+        "name": "main",
+        "within": {
+          "width": 800,
+          "height": 600
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true,
+            "title": "Main"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-holes-filled",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "document.querySelector('[data-oby-dc-root] h1').textContent",
+        "expect": {
+          "paths": {
+            "value": "Lab design"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-dc-import-and-sc-for",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "document.querySelectorAll('[data-oby-dc-root] .card p').length",
+        "expect": {
+          "paths": {
+            "value": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-template-hidden",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "document.querySelectorAll('x-dc').length",
+        "expect": {
+          "paths": {
+            "value": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-hash-link-scrolls-in-place",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "(() => { document.querySelector('a[href=\"#end\"]').click(); return location.pathname + location.hash; })()",
+        "expect": {
+          "paths": {
+            "value": "/Main.dc.html"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-board-link-plays-in-place",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "main",
+        "expression": "(() => { document.querySelector('a[href=\"Media.dc.html\"]').click(); return new Promise(r => setTimeout(() => r({playing: window.__OBY_DC.playing, at: location.pathname, video: !!document.querySelector('[data-oby-dc-root] video')}), 400)); })()",
+        "expect": {
+          "paths": {
+            "value": {
+              "playing": "Media.dc.html",
+              "at": "/Main.dc.html",
+              "video": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-card-drawn",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Card.dc.html",
+        "width": 400,
+        "height": 300,
+        "name": "card",
+        "within": {
+          "width": 400,
+          "height": 300
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-media-drawn",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Media.dc.html",
+        "width": 800,
+        "height": 600,
+        "name": "media",
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-sc-if-false-draws-nothing",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "media",
+        "expression": "document.querySelectorAll('[data-oby-dc-root] p').length",
+        "expect": {
+          "paths": {
+            "value": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "14-canvas-host",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.design.body.artifacts.0.id}",
+        "version": 1,
+        "path": "__canvas.html?view=canvas",
+        "width": 1280,
+        "height": 800,
+        "name": "host",
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-14"
+        ]
+      }
+    },
+    {
+      "id": "14-canvas-host-frames",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "host",
+        "expression": "Object.keys(window.__OBY_CANVAS.frames).sort().join(',') + ' ' + Object.values(window.__OBY_CANVAS.frames).every(f => f.ready)",
+        "expect": {
+          "paths": {
+            "value": "Card.dc.html,Main.dc.html true"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-14"
+        ]
+      }
+    },
+    {
+      "id": "14-canvas-host-pages",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "host",
+        "expression": "(() => { document.querySelector('[data-page=\"notes_2\"]').click(); return new Promise(r => setTimeout(() => r(Object.keys(window.__OBY_CANVAS.frames).join(',')), 300)); })()",
+        "expect": {
+          "paths": {
+            "value": "Media.dc.html"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-14"
+        ]
+      }
+    },
+    {
+      "id": "14-canvas-host-frames-sandboxed",
+      "use": "runtime.rust:lab.artifactview.eval",
+      "inputs": {
+        "name": "host",
+        "expression": "Array.from(document.querySelectorAll('iframe')).map(f => f.getAttribute('sandbox')).join(',')",
+        "expect": {
+          "paths": {
+            "value": "allow-scripts"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-14"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-main",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Main.dc.html",
+        "width": 1440,
+        "height": 900,
+        "name": "real-Main.dc.html",
+        "within": {
+          "width": 1440,
+          "height": 900
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-conversation",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Conversation.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-Conversation.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-viewer",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Viewer.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-Viewer.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-sharemenu",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "ShareMenu.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-ShareMenu.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-claudebridge",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "ClaudeBridge.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-ClaudeBridge.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-benhome",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "BenHome.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-BenHome.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-choice",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Choice.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-Choice.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-publiclink",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "PublicLink.dc.html",
+        "width": 1280,
+        "height": 900,
+        "name": "real-PublicLink.dc.html",
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-research",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Research.dc.html",
+        "width": 1440,
+        "height": 2200,
+        "name": "real-Research.dc.html",
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-compatibility",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Compatibility.dc.html",
+        "width": 1440,
+        "height": 3200,
+        "name": "real-Compatibility.dc.html",
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-prototype",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Prototype.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-Prototype.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-canvas-sphere",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "Sphere.dc.html",
+        "width": 1280,
+        "height": 800,
+        "name": "real-Sphere.dc.html",
+        "within": {
+          "width": 1280,
+          "height": 800
+        },
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            },
+            "fits": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "13-each-board-its-own-tweaks",
+      "use": "runtime.rust:lab.artifactview.compare",
+      "inputs": {
+        "a": "${state.13-canvas-prototype.picture}",
+        "b": "${state.13-canvas-viewer.picture}",
+        "most": 0.02,
+        "expect": {
+          "paths": {
+            "within": false,
+            "width": 1280
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-13"
+        ]
+      }
+    },
+    {
+      "id": "14-canvas-whole",
+      "use": "runtime.rust:lab.artifactview.render",
+      "inputs": {
+        "id": "${state.canvas.body.artifacts.0.id}",
+        "version": 1,
+        "path": "__canvas.html?view=canvas",
+        "width": 1440,
+        "height": 900,
+        "name": "real-host",
+        "timeoutMs": 60000,
+        "expect": {
+          "paths": {
+            "ready": true,
+            "errors": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-14"
+        ]
+      }
+    }
+  ]
+}
