@@ -500,10 +500,13 @@ describe('TERMINAL-8: a real shell', () => {
       const job = Number(/JOB=(\d+)/.exec(text())![1]);
       const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
       process.kill(shellPid, 'SIGSTOP');
+      // what the shell itself does with SIGHUP as the close finds it (#2806): caught (its handler, which
+      // hangs up its jobs first) or the default, which ends it outright
+      const shellSaid = signalsOf(shellPid);
       t.close(term);
       process.kill(shellPid, 'SIGCONT');
       await until(() => !alive(shellPid));
-      await until(() => !alive(job), 2000).catch(() => { left.push(`job [${row(job)}] ${signalsOf(job)}; ${did.join('; ')}`); });
+      await until(() => !alive(job), 2000).catch(() => { left.push(`job [${row(job)}] ${signalsOf(job)}; the shell at the close: ${shellSaid}; ${did.join('; ')}`); });
       try { process.kill(job, 'SIGKILL'); } catch { /* gone */ }
       t.killLeft();
     }
