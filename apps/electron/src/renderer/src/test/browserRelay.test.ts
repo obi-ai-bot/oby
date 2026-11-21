@@ -1,5 +1,7 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { DOMAINS, KEPT, MAX_MESSAGE, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
+import { KEPT, METHODS, MAX_MESSAGE, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
 import { sseReader } from '../../../shared/obid-wire';
 
 vi.mock('electron', () => ({ session: { fromPartition: () => ({}) }, webContents: { fromId: () => null } }));
@@ -129,10 +131,9 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     for (let i = 0; i < 6; i++) await settle();
     expect(g.sent).toEqual([]);
     expect(replies(o.all()).map((r) => [r.id, r.error?.code])).toEqual([[1, -32601], [2, -32601], [3, -32601], [4, -32601], [5, -32601]]);
-    expect([...DOMAINS].sort()).toEqual(['Accessibility', 'DOM', 'DOMSnapshot', 'Emulation', 'Input', 'Log', 'Network', 'Page', 'Runtime']);
   });
 
-  it('browserapp_23: reload and stop are the guest\'s own; keys and text into a guest with no focused frame go in as its input; presses run one at a time', async () => {
+  it('browserapp_23: reload is the guest\'s own and stopLoading is refused; keys and text into a guest with no focused frame go in as its input; presses run one at a time', async () => {
     const o = fakeObid();
     const host = relayHost(o.post, { home: HOME });
     let release: () => void = () => {};
@@ -157,8 +158,10 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     release();
     for (let i = 0; i < 6; i++) await settle();
     expect(order).toEqual(['start mousePressed', 'end mousePressed', 'start mouseReleased', 'end mouseReleased']);
-    expect([g.reloads, g.stops, g.typed, g.keys]).toEqual([1, 1, ['hello'], [{ type: 'keyDown', key: 'Enter' }]]);
+    expect([g.reloads, g.stops, g.typed, g.keys]).toEqual([1, 0, ['hello'], [{ type: 'keyDown', key: 'Enter' }]]);
     expect(replies(o.all()).map((r) => r.id).sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    // obid never sends Page.stopLoading: it's refused (BROWSERAPP-27)
+    expect(replies(o.all()).find((r) => r.id === 2)?.error?.code).toBe(-32601);
   });
 
   it('browserapp_23: a command for a tab not attached is answered with an error; a message over 64 MB ends the tab\'s relay', async () => {
@@ -173,6 +176,70 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     for (let i = 0; i < 6; i++) await settle();
     expect(o.all().map((e) => e.type).slice(-2)).toEqual(['attached', 'detached']);
     expect(KEPT).toBeGreaterThan(1000);
+  });
+});
+
+describe('BROWSERAPP-27: main runs only the CDP methods obid sends', () => {
+  for (const method of ['Network.getAllCookies', 'DOMSnapshot.captureSnapshot', 'Page.addScriptToEvaluateOnNewDocument', 'Runtime.addBinding']) {
+    it(`browserapp_27: ${method} is refused and never reaches the guest`, async () => {
+      const o = fakeObid();
+      const host = relayHost(o.post, { home: HOME });
+      const g = fakeGuest();
+      host.attach(K, g);
+      host.command(cdp(1, method, {}));
+      for (let i = 0; i < 6; i++) await settle();
+      expect(replies(o.all()).map((r) => [r.id, r.error?.code])).toEqual([[1, -32601]]);
+      expect([g.sent, g.reloads, g.stops, g.typed, g.keys, g.folder]).toEqual([[], 0, 0, [], [], undefined]);
+    });
+  }
+});
+
+describe('BROWSERAPP-28: Page.navigate goes only to a page of the web', () => {
+  for (const [name, params] of [
+    ['file:///etc/hosts', { url: 'file:///etc/hosts' }],
+    ['chrome://settings', { url: 'chrome://settings' }],
+    ['devtools://devtools/bundled/inspector.html', { url: 'devtools://devtools/bundled/inspector.html' }],
+    ['the app\'s own page', { url: 'file:///Applications/Oby.app/Contents/Resources/app.asar/out/renderer/index.html' }],
+    ['no url', {}],
+  ] as const) {
+    it(`browserapp_28: Page.navigate to ${name} is refused and never reaches the guest`, async () => {
+      const o = fakeObid();
+      const host = relayHost(o.post, { home: HOME });
+      const g = fakeGuest();
+      host.attach(K, g);
+      host.command(cdp(1, 'Page.navigate', params));
+      for (let i = 0; i < 6; i++) await settle();
+      expect(replies(o.all()).map((r) => [r.id, r.error?.code])).toEqual([[1, -32601]]);
+      expect(g.sent).toEqual([]);
+    });
+  }
+
+  it('browserapp_28: Page.navigate to https://example.com/ reaches the guest and is answered', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    host.command(cdp(1, 'Page.navigate', { url: 'https://example.com/' }));
+    for (let i = 0; i < 6; i++) await settle();
+    expect(g.sent).toEqual([{ method: 'Page.navigate', params: { url: 'https://example.com/' } }]);
+    expect(replies(o.all())).toEqual([{ id: 1, result: { from: 'Page.navigate' } }]);
+  });
+});
+
+describe('BROWSERAPP-29: the methods main runs are the ones obid sends', () => {
+  it('browserapp_29: METHODS is every CDP method obid\'s browser sends, plus main\'s own focus emulation, and nothing else', () => {
+    const root = resolve(__dirname, '../../../../../..');
+    const files = (dir: string): string[] => readdirSync(dir).flatMap((n) => statSync(join(dir, n)).isDirectory() ? files(join(dir, n)) : n.endsWith('.rs') ? [join(dir, n)] : []);
+    const sent = new Set<string>(), events = new Set<string>();
+    for (const f of files(join(root, 'core/crates/obid/src/browser'))) {
+      const text = readFileSync(f, 'utf8');
+      const at = text.search(/^\s*#\[cfg\(test\)\]/m);
+      // a literal right after `==` is an event obid listens for; any other is a method it sends
+      for (const m of (at < 0 ? text : text.slice(0, at)).matchAll(/(==\s*)?"([A-Z][A-Za-z]*\.[a-z][A-Za-z]*)"/g)) (m[1] ? events : sent).add(m[2]);
+    }
+    expect([...events].sort()).toEqual(['Page.frameNavigated', 'Page.javascriptDialogOpening', 'Page.loadEventFired', 'Page.navigatedWithinDocument']);
+    expect(sent.has('Page.navigate')).toBe(true);
+    expect([...METHODS].sort()).toEqual([...sent, 'Emulation.setFocusEmulationEnabled'].sort());
   });
 });
 

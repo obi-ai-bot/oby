@@ -2,14 +2,14 @@ import { basename, join } from 'node:path';
 import { session, webContents, type BrowserWindow, type Session, type WebContents } from 'electron';
 import { partitionOk, type Guest, type RelayHost, type TabKey } from './browserRelay';
 export { PARTITION, partitionOk } from './browserRelay';
+import { pageOk } from './pageRule';
+export { pageOk } from './pageRule';
 
 // Each agent tab's `<webview>` in the window, as T3 Code hosts them (apps/desktop/src/window/
 // DesktopWindow.ts, preview/Manager.ts; docs/plans/browser-t3.md): hardened when it attaches, in
 // the partition obid named for its tab and no other, its debugger attached ("1.3") and handed to
 // the relay once its first page settled, and given back when DevTools takes it.
 
-/** a page's address the window loads: the web, or a blank page */
-export const pageOk = (url: unknown) => typeof url === 'string' && /^(https?:\/\/|about:blank$)/.test(url);
 /** how long the first page may take to settle before the tab is announced anyway (T3: 5 s) */
 export const SETTLE_MS = 5_000;
 /** the permissions a page gets (T3's list, less geolocation and the loopback network): no others */
