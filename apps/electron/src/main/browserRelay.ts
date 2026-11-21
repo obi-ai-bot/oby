@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve } from 'node:path';
-import { pageOk } from './pageRule';
+import { appPage, pageOk } from './pageRule';
 
 // The relay between obid's agents and the page in the window (docs/plans/browser-t3.md, as T3 Code
 // does it: packages/contracts/src/desktopBrowser.ts). obid sends page-level CDP for a tab on its
@@ -154,7 +154,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     const params = m.params && typeof m.params === 'object' ? m.params as Record<string, unknown> : undefined;
     if (m.sessionId !== undefined) return refuse(t, id, 'Oby relays the page itself, never a session of it.');
     if (!METHODS.has(method)) return refuse(t, id, `Oby relays only the CDP methods obid sends: ${method} isn't one of them.`);
-    if (method === 'Page.navigate' && !pageOk(params?.url)) return refuse(t, id, 'Oby loads only web pages: Page.navigate needs an http(s) address or about:blank.');
+    if (method === 'Page.navigate' && (!pageOk(params?.url) || appPage(params?.url))) return refuse(t, id, 'Oby loads only web pages, never its own: Page.navigate needs an http(s) address or about:blank.');
     try {
       let result: unknown = {};
       if (method === 'Page.reload') t.guest.reload();

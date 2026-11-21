@@ -214,6 +214,23 @@ describe('BROWSERAPP-28: Page.navigate goes only to a page of the web', () => {
     });
   }
 
+  it('browserapp_28: in a development run, Page.navigate to the app\'s own dev server is refused, on any loopback name for it; another local server isn\'t', async () => {
+    vi.stubEnv('ELECTRON_RENDERER_URL', 'http://localhost:5175/');
+    try {
+      const o = fakeObid();
+      const host = relayHost(o.post, { home: HOME });
+      const g = fakeGuest();
+      host.attach(K, g);
+      const urls = ['http://localhost:5175/', 'http://localhost:5175/#/settings', 'http://LOCALHOST:5175/index.html', 'http://127.0.0.1:5175/', 'http://[::1]:5175/', 'http://localhost:3000/'];
+      urls.forEach((url, i) => host.command(cdp(i + 1, 'Page.navigate', { url })));
+      for (let i = 0; i < 12; i++) await settle();
+      expect(replies(o.all()).map((r) => [r.id, r.error?.code])).toEqual([[1, -32601], [2, -32601], [3, -32601], [4, -32601], [5, -32601], [6, undefined]]);
+      expect(g.sent).toEqual([{ method: 'Page.navigate', params: { url: 'http://localhost:3000/' } }]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('browserapp_28: Page.navigate to https://example.com/ reaches the guest and is answered', async () => {
     const o = fakeObid();
     const host = relayHost(o.post, { home: HOME });
@@ -226,20 +243,85 @@ describe('BROWSERAPP-28: Page.navigate goes only to a page of the web', () => {
   });
 });
 
+// What obid's browser sends over CDP, read from its Rust sources: every "Domain.method" literal outside
+// its test items; one right after `==` is an event it listens for, any other a method it sends. A CDP
+// call (`send`/`cdp` on a tab) whose method isn't a literal can't be read, and is listed as such.
+// ponytail: a scanner of Rust's strings, chars and comments only, not a parser; enough for obid's style
+function withoutTests(text: string) {
+  // where the token at `i` ends, when it's a string, raw string, char or comment
+  const skip = (i: number): number => {
+    const raw = /^b?r(#*)"/.exec(text.slice(i, i + 260));
+    if (raw && (i === 0 || !/\w/.test(text[i - 1]))) { const end = text.indexOf(`"${raw[1]}`, i + raw[0].length); return end < 0 ? text.length : end + 1 + raw[1].length; }
+    if (text[i] === '"') { let j = i + 1; while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1; return j + 1; }
+    const ch = /^'(\\.[^']*|[^\\'])'/.exec(text.slice(i, i + 12));
+    if (ch) return i + ch[0].length;
+    if (text.startsWith('//', i)) { const end = text.indexOf('\n', i); return end < 0 ? text.length : end; }
+    if (text.startsWith('/*', i)) { const end = text.indexOf('*/', i + 2); return end < 0 ? text.length : end + 2; }
+    return i;
+  };
+  let out = '', from = 0;
+  for (const m of text.matchAll(/#\[cfg\(test\)\]/g)) {
+    if (m.index! < from) continue;
+    // the item the attribute is on: up to its `;`, or its `{` and the `}` that closes it
+    let i = m.index! + m[0].length, depth = 0;
+    while (i < text.length) {
+      const j = skip(i);
+      if (j !== i) { i = j; continue; }
+      const c = text[i++];
+      if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) break;
+      else if (c === ';' && depth === 0) break;
+    }
+    out += text.slice(from, m.index);
+    from = i;
+  }
+  return out + text.slice(from);
+}
+function obidSends(files: { name: string; text: string }[]) {
+  const sent = new Set<string>(), events = new Set<string>(), unread: string[] = [];
+  for (const { name, text } of files) {
+    const code = withoutTests(text);
+    for (const m of code.matchAll(/(==\s*)?"([A-Z][A-Za-z]*\.[a-z][A-Za-z]*)"/g)) (m[1] ? events : sent).add(m[2]);
+    // a CDP call on a tab: its method must be a literal, but in Page::send, which forwards its own
+    for (const m of code.matchAll(/\.(?:send|cdp)\(\s*&?\w+\s*,\s*([^,]+?)\s*,/g)) {
+      if (!/^"[^"]*"$/.test(m[1]) && !(name === join('window', 'page.rs') && m[0] === '.cdp(tab, method,')) unread.push(`${name}: ${m[0]}`);
+    }
+  }
+  return { sent, events, unread };
+}
+const browserSources = () => {
+  const root = resolve(__dirname, '../../../../../..');
+  const dir = join(root, 'core/crates/obid/src/browser');
+  const files = (at: string): string[] => readdirSync(join(dir, at)).flatMap((n) => statSync(join(dir, at, n)).isDirectory() ? files(join(at, n)) : n.endsWith('.rs') ? [join(at, n)] : []);
+  return files('').map((name) => ({ name, text: readFileSync(join(dir, name), 'utf8') }));
+};
+
 describe('BROWSERAPP-29: the methods main runs are the ones obid sends', () => {
   it('browserapp_29: METHODS is every CDP method obid\'s browser sends, plus main\'s own focus emulation, and nothing else', () => {
-    const root = resolve(__dirname, '../../../../../..');
-    const files = (dir: string): string[] => readdirSync(dir).flatMap((n) => statSync(join(dir, n)).isDirectory() ? files(join(dir, n)) : n.endsWith('.rs') ? [join(dir, n)] : []);
-    const sent = new Set<string>(), events = new Set<string>();
-    for (const f of files(join(root, 'core/crates/obid/src/browser'))) {
-      const text = readFileSync(f, 'utf8');
-      const at = text.search(/^\s*#\[cfg\(test\)\]/m);
-      // a literal right after `==` is an event obid listens for; any other is a method it sends
-      for (const m of (at < 0 ? text : text.slice(0, at)).matchAll(/(==\s*)?"([A-Z][A-Za-z]*\.[a-z][A-Za-z]*)"/g)) (m[1] ? events : sent).add(m[2]);
-    }
+    const { sent, events, unread } = obidSends(browserSources());
+    expect(unread).toEqual([]);
     expect([...events].sort()).toEqual(['Page.frameNavigated', 'Page.javascriptDialogOpening', 'Page.loadEventFired', 'Page.navigatedWithinDocument']);
     expect(sent.has('Page.navigate')).toBe(true);
     expect([...METHODS].sort()).toEqual([...sent, 'Emulation.setFocusEmulationEnabled'].sort());
+  });
+
+  it('browserapp_29: a method sent by production code after a test module is read; only the test items themselves are left out', () => {
+    const sources = browserSources();
+    const relay = sources.find((f) => f.name === 'relay.rs')!;
+    expect(relay.text).toMatch(/^#\[cfg\(test\)\]/m);
+    const later = { ...relay, text: `${relay.text}\nimpl WindowDriver {\n    async fn later(&self, tab: &str, until: Until) {\n        let _ = self.send(tab, "Network.getCookies", json!({}), until).await;\n    }\n}\n` };
+    const { sent } = obidSends(sources.map((f) => (f === relay ? later : f)));
+    expect(sent.has('Network.getCookies')).toBe(true);
+    // the test module's own literals stay out (relay.rs's tests send DOM.focus only in test code)
+    expect(obidSends([relay]).sent.has('DOM.focus')).toBe(false);
+  });
+
+  it('browserapp_29: a CDP call whose method is built at run time is listed as unread, so the drift test fails', () => {
+    const sources = browserSources();
+    const page = sources.find((f) => f.name === join('window', 'page.rs'))!;
+    const built = { ...page, text: `${page.text}\nimpl WindowDriver {\n    async fn built(&self, tab: &str, m: &str, until: Until) {\n        let _ = self.send(\n            tab,\n            &format!("Network.{m}"),\n            json!({}),\n            until,\n        ).await;\n    }\n}\n` };
+    const { unread } = obidSends(sources.map((f) => (f === page ? built : f)));
+    expect(unread).toEqual([expect.stringContaining('format!')]);
   });
 });
 
