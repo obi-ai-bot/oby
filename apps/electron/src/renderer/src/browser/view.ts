@@ -91,6 +91,4 @@ export interface BrowserApi {
   stopMac(): Promise<void>;
   /** the first-time sheet answered: Continue, or Not now (16) */
   answerMac(go: boolean): Promise<void>;
-  /** on obid: your mouse and keys on the page while you hold it */
-  input?(tab: string, e: import('../../../shared/obid-wire').BrowserInput): Promise<void>;
 }

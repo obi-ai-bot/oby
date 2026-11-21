@@ -35,13 +35,6 @@ export const BACKGROUND_YES = 'Yes, it can';
 export const VAULT_ADD = 'Add Secret';
 export const VAULT_REMOVE = 'Remove Secret';
 
-// The owner's hold on a browser tab (docs/contracts/browser-app.md, BROWSERAPP-9): Take control and
-// Give back, each signed by its own button's label, an empty body. A take is also the page dialog's
-// Take control to answer, and a choice's I'll choose in the page.
-export const TAKE_CONTROL = 'Take control';
-export const TAKE_LABELS = [TAKE_CONTROL, 'Take control to answer', 'I’ll choose in the page'];
-export const GIVE_BACK = 'Give back';
-const BROWSER_TAB = /^\/v1\/browser\/tabs\/[^/]+\/(take|giveBack)$/;
 // An agent's ask answered (BROWSERAPP-13): a choice by its own button's label, `{choice}`; none by
 // Skip (or the CAPTCHA card's Skip this page), `{}`. A password or code never goes here: Fill in
 // (FILL_IN) has main put it in the page itself (main/device.ts, fillSecret), never as words.
@@ -95,9 +88,6 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   if (method === 'DELETE' && COMPUTER.test(path.split('?')[0]) && path.split('?')[0] !== '/v1/computers/current') return body === undefined ? [REMOVE_COMPUTER] : null;
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
-  // a browser tab's take or give back: an empty body, nothing else
-  const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
-  if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;
   if (method === 'PUT' && p === '/v1/browser/settings') {
     const keys = Object.keys(body);
     const key = keys[0] as keyof typeof BROWSER_SWITCHES;
@@ -175,10 +165,9 @@ export function owners(method: string, path: string, body: unknown, held: string
     if (answers && i === 0 && earlier.some((e) => norm(e) === n)) continue;
     const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
     const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
-    const take = w === TAKE_CONTROL && /\/take$/.test(path.split('?')[0]);
     const skip = w === SKIP && BROWSER_ANSWER.test(path.split('?')[0]);
     const code = i === 0 && method === 'POST' && path.split('?')[0] === COMPUTER_ADD;
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h))) || (code && digitsOf(h) === n)));
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h))) || (code && digitsOf(h) === n)));
     if (at < 0) return null;
     used.push(at);
   }
