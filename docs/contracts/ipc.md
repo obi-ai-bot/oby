@@ -86,6 +86,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `browser.ts` | `browser-unwatch` | `handle` | `string` | `null` |
 | `browser.ts` | `browser-fill` | `handle` | `string` (tab), `string` (field), `string` (the value), `string` (the ask, or empty), `flag` (Fill in pressed) | `'Not this app’s page.'` (with no click main saw: `Filling in takes your own click.`, [browser-app.md](browser-app.md) BROWSERAPP-12) |
 | `browser.ts` | `browser-reveal` | `handle` | `string` (a download's name: only its last part, in the owner's Downloads; never `.` or `..`) | `false` ([browser-app.md](browser-app.md), BROWSERAPP-16) |
+| `artifactPreview.ts` | `artifact-preview` | `handle` | `previewAsk` (`previewRules.ts`): `{ id, version, bounds }`, a lower-case UUID, a version from 1 and a box of four numbers from 0 to 100,000, or `null` (hide it) | `null` ([artifacts-app.md](artifacts-app.md), ARTIFACTSAPP-1, 3) |
 | `macPill.ts` | `mac-pill` | `handle` | an agent's use of the Mac, `{ agent, action }` (two strings), or `null` | `null` ([browser-app.md](browser-app.md), BROWSERAPP-19) |
 | `macPill.ts` | `mac-pill-stop` | `on` | none; only from the pill's own window, never the main window's page | nothing |
 | `macPill.ts` | `mac-pill-now` | `handle` | none; only from the pill's own window: who has the Mac now | `null` |

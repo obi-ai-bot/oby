@@ -21,6 +21,13 @@
       }
     },
     {
+      "id": "o-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
       "id": "site",
       "use": "runtime.rust:browser-site",
       "inputs": {}
@@ -248,13 +255,9 @@
               }
             },
             "of.browser": {
-              "$len": 2
+              "$len": 1
             },
             "of.browser.0.browser": {
-              "job": "${state.j1.job}",
-              "state": "starting"
-            },
-            "of.browser.1.browser": {
               "job": "${state.j1.job}",
               "state": "ready"
             },

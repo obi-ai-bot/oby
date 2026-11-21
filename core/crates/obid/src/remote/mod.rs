@@ -26,17 +26,23 @@
 //! `obid pair-computer`, as the person's own presence on that machine. It never writes
 //! `~/.ssh`, the person's ssh configuration or `known_hosts`, and installs nothing over SSH.
 
+pub mod adding;
 pub mod addresses;
 pub mod certificate;
 pub mod code;
+pub mod computers;
 pub mod direct;
+pub mod forward;
 pub mod invite;
 pub mod link;
 pub mod pair;
 pub mod pin;
 pub mod pinned;
+pub mod reach;
 pub mod route;
 pub mod ssh;
 pub mod supervisor;
 pub mod trouble;
 pub mod tunnel;
+pub mod tunnels;
+pub mod window;

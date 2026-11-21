@@ -50,6 +50,8 @@ mod outside;
 mod owner;
 mod place;
 mod point;
+mod relay_command;
+mod relay_event;
 mod reload_body;
 mod save_copy_answer;
 mod secret_answer;
@@ -85,6 +87,8 @@ pub use outside::Outside;
 pub use owner::Owner;
 pub use place::Place;
 pub use point::Point;
+pub use relay_command::{PointerPhase, RelayCommand};
+pub use relay_event::{RelayEvent, RelayEvents};
 pub use reload_body::ReloadBody;
 pub use save_copy_answer::SaveCopyAnswer;
 pub use secret_answer::SecretAnswer;
@@ -249,6 +253,10 @@ pub const REASONS: &[&str] = &[
     "bad_request",
     "browser_starting",
     "no_dialog",
+    // The window's relay (T3 Code's design): nobody follows `GET /v1/browser/relay`.
+    "no_window",
+    // A route retired with obid's own browser: the window's browser does it now (410).
+    "retired",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────
@@ -394,6 +402,7 @@ mod tests {
                 choice: None,
             }),
             dialog: None,
+            partition: None,
         }
     }
 

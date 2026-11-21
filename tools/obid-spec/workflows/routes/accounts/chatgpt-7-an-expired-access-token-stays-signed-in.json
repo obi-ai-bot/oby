@@ -1,0 +1,251 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-7: an access token over, its refresh token good: still signed in, and the next run refreshes",
+  "version": "1.0.0",
+  "description": "signedIn depends on the refresh token, never the access token's expiry: an account whose access token ended a moment ago is still signed in, and the job that runs on it next refreshes first, once, and runs.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/status"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "short",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expiresIn": 1
+      }
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "tick",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "tock",
+      "use": "runtime.rust:next-second",
+      "inputs": {}
+    },
+    {
+      "id": "chatgpt-7-still-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-7"
+        ]
+      }
+    },
+    {
+      "id": "no-refresh-yet",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "refreshes": {
+              "$len": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "long",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expiresIn": 3600
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-7-the-next-run-runs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-7"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-7-it-refreshed-once",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "refreshes": {
+              "$len": 1
+            },
+            "refreshes.0": "${state.no-refresh-yet.lastRefresh}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-7"
+        ]
+      }
+    }
+  ]
+}

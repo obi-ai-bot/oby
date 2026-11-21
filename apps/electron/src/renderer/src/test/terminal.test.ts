@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -469,34 +469,42 @@ describe('TERMINAL-8: a real shell', () => {
     }) as Spawn; };
     const t = new Terminals(spawn, (_p, channel, _id, data) => { if (channel === 'terminal-data') out.push(data as string); else exits.push(channel); }, () => {
       const who = userInfo();
-      return { shell: bash, env: cleanEnv({ ...process.env, OBY_TERMINAL_TEST_SECRET: 'vault-secret-value' }, { home: who.homedir, user: who.username, shell: bash }, '1.2.3') };
+      // no PROMPT_COMMAND of the machine's (CI's runner sets one): bash runs it non-interactively, and
+      // a bash hung up meanwhile hangs up none of its jobs (TERMINAL-4's known limit, #2806)
+      return { shell: bash, env: { ...cleanEnv({ ...process.env, OBY_TERMINAL_TEST_SECRET: 'vault-secret-value' }, { home: who.homedir, user: who.username, shell: bash }, '1.2.3'), PROMPT_COMMAND: '' } };
     }, 300, (shell, done, now) => { at(`killing the jobs of ${shell}`); killJobs(shell, () => { at('jobs killed'); done(); }, now); });
     return { t, text: () => out.join(''), exits, did };
   };
   // a process as ps has it (pid ppid pgid stat started command), or that it's gone
   const row = (pid: number) => spawnSync('/bin/ps', ['-o', 'pid=,ppid=,pgid=,stat=,lstart=,comm=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim() || 'gone';
   const until = async (f: () => boolean, ms = 10_000) => { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 20)); } };
+  // on Linux, what a process left behind did with signals: pending (its own, its group's), blocked,
+  // ignored and caught, as /proc has them (signal n is bit n-1: SIGHUP bit 0); elsewhere nothing
+  const signalsOf = (pid: number) => { try { return readFileSync(`/proc/${pid}/status`, 'utf8').split('\n').filter((l) => /^(SigPnd|ShdPnd|SigBlk|SigIgn|SigCgt)/.test(l)).join(' ').replace(/\s+/g, ' '); } catch { return ''; } };
   // running, not gone or a zombie waiting to be reaped
   const alive = (pid: number) => { const st = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim(); return !!st && !st.startsWith('Z'); };
 
   // a shell the close finds busy (stopped here, as a loaded Mac can leave it) still hangs up its job
   // once it runs: nothing is sent behind its SIGHUP that could end it first. A SIGTERM right behind it
-  // did, in about one close in eight (bash 3.2 dying of it mid hang-up, its job left to launchd), so 24
+  // did, in about one close in eight (bash 3.2 dying of it mid hang-up, its job left to launchd), so 24.
+  // The shell is idle at its prompt when the close comes, as a person closes a tab: a bash hung up while
+  // it still runs its PROMPT_COMMAND hangs up none of its jobs, in every terminal (#2806, TERMINAL-4's
+  // known limit), so the line unsets any its rc file set and the close waits for its own prompt, IDLE>
   it('terminal_4_a_busy_shell_closed_still_hangs_up_its_job', { timeout: 120_000 }, async () => {
     const left: string[] = [];
     for (let i = 0; i < 24; i++) {
       const dir = realpathSync(mkdtempSync(join(tmpdir(), 'oby-term-busy-')));
       const { t, text, did } = real();
       const term = (t.start(null, 'task', 'j1', dir, 80, 24) as { term: string }).term;
-      t.write(term, 'sleep 300 & echo JOB=$!\r');
-      await until(() => /JOB=\d+/.test(text()));
+      t.write(term, "unset PROMPT_COMMAND; PS1='ID''LE> '; sleep 300 & echo JOB=$!\r");
+      await until(() => /JOB=\d+[\s\S]*IDLE> /.test(text()));
       const job = Number(/JOB=(\d+)/.exec(text())![1]);
       const shellPid = (t as unknown as { terms: Map<string, { pty: { pid: number } }> }).terms.get(term)!.pty.pid;
       process.kill(shellPid, 'SIGSTOP');
       t.close(term);
       process.kill(shellPid, 'SIGCONT');
       await until(() => !alive(shellPid));
-      await until(() => !alive(job), 2000).catch(() => { left.push(`job [${row(job)}]; ${did.join('; ')}`); });
+      await until(() => !alive(job), 2000).catch(() => { left.push(`job [${row(job)}] ${signalsOf(job)}; ${did.join('; ')}`); });
       try { process.kill(job, 'SIGKILL'); } catch { /* gone */ }
       t.killLeft();
     }

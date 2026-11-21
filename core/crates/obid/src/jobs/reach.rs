@@ -19,14 +19,19 @@ impl Jobs {
 
     /// obid's browser server for `job`'s agent, with its broker token (BROWSER-17), while "Agents
     /// can use the browser" is on: for the owner's own work only. Another Oby's task, or one
-    /// marked `untrusted`, gets none until its browser runs in Oby's box (BROWSER-18).
+    /// marked `untrusted`, gets none until its browser runs in Oby's box (BROWSER-18). An own run
+    /// reaches it on loopback, as Oby's other servers (LANES-26).
     pub(super) fn browser_server(&self, job: &Job) -> Option<crate::browser::AgentServer> {
         if job.obi.is_some() || job.untrusted {
             return None;
         }
         let browser = self.browser.get()?;
         browser.api(|api| api.tools_allowed()).ok()?;
-        Some(self.connections.get()?.open_browser(&job.id))
+        let server = self.connections.get()?.open_browser(&job.id);
+        let own =
+            matches!(self.job_account(job), Ok((tool, a)) if lanes::launches_own(job, tool, &a));
+        let url = Self::agent_api(server.url(), own);
+        Some(server.reached_at(url))
     }
 
     /// Job `id` ended: its broker token dies, so no server for agents answers it again, then its

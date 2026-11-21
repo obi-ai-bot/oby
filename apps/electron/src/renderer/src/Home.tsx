@@ -40,6 +40,8 @@ import { panelFit } from './panelFit';
 import { useBrowser } from './browser/store';
 import { browserFit } from './browser/fit';
 import { BrowserGlobe, BrowserPane } from './browser/BrowserPane';
+import { ArtifactPane } from './artifacts/Pane';
+import { useOpenArtifact } from './artifacts/store';
 import { MacSheet, useMacPill } from './browser/Mac';
 import { composing, registerCommands } from './shortcuts';
 import { ComputerLine, ComputerStage, useComputerStage } from './computers/ComputerHome';
@@ -317,9 +319,12 @@ export default function Home() {
   const browser = useBrowser();
   // an agent using the Mac: main's pill and frame over the screen follow it (BROWSERAPP-19)
   useMacPill();
-  const browserShown = browser.offered && browser.ui.open;
+  // an artifact opened from its card takes the browser's place beside the conversation, at the
+  // browser's width (artifacts/Pane.tsx, docs/contracts/artifacts-app.md, ARTIFACTSAPP-4)
+  const artifactOpen = !!useOpenArtifact();
+  const browserShown = artifactOpen || (browser.offered && browser.ui.open);
   const sideFit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
-  const besideBrowser = browserShown && !browser.ui.full ? browserFit(windowWidth, sideFit.docked && sidebar ? sideFit.width : 0, browser.ui.width) : null;
+  const besideBrowser = browserShown && (artifactOpen || !browser.ui.full) ? browserFit(windowWidth, sideFit.docked && sidebar ? sideFit.width : 0, browser.ui.width) : null;
   const fit = besideBrowser && !besideBrowser.sidebarDocks ? { docked: false, width: sideFit.width } : sideFit;
   const [floating, setFloating] = useState(false);
   useEffect(() => { if (fit.docked) setFloating(false); }, [fit.docked]);
@@ -429,7 +434,7 @@ export default function Home() {
   const rootTask = top?.kind === 'task' || top?.kind === 'thread' ? top.id : top?.kind === 'talk' && under?.kind === 'task' ? under.id : null;
 
   return (
-    <div className={`app${panelShown ? ' has-sidebar' : ''}${browserShown ? (browser.ui.full ? ' has-browser is-browser-full' : ' has-browser') : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
+    <div className={`app${panelShown ? ' has-sidebar' : ''}${browserShown ? (browser.ui.full && !artifactOpen ? ' has-browser is-browser-full' : ' has-browser') : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
       <Sidebar
         open={panelShown}
         atHome={!away}
@@ -655,7 +660,7 @@ export default function Home() {
           in Waiting for you; with none open, all of it on the stage, as on Home (CHATFIRST-8) */}
     </div>
       {/* the browser, beside the conversation or across the window (docs/contracts/browser-app.md) */}
-      <BrowserPane width={besideBrowser?.width ?? browser.ui.width} />
+      {artifactOpen ? <ArtifactPane width={besideBrowser?.width ?? browser.ui.width} /> : <BrowserPane width={besideBrowser?.width ?? browser.ui.width} />}
       {/* the first time an agent would use the Mac: Oby's sheet before macOS asks (BROWSERAPP-20) */}
       <MacSheet />
       {/* stays next to the traffic lights whether the side panel is open or not.

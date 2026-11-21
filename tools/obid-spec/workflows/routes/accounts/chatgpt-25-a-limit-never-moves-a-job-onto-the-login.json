@@ -1,0 +1,241 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-25: a move past a limit never puts a job on a ChatGPT login by itself, yes or no",
+  "version": "1.0.0",
+  "description": "A routine's job on Claude Code at its weekly limit, with a ChatGPT login beside it that has the owner's yes: it waits on its own account with no card, OpenAI asked nothing. Only the owner's own move puts it there.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/move"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "backgroundConsent": true
+          }
+        }
+      }
+    },
+    {
+      "id": "r",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Limited",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "research",
+          "task": "LIMITED WEEK: 86400",
+          "agent": "claude",
+          "account": "stand-in",
+          "schedule": {
+            "every": "weekdays",
+            "at": "09:00"
+          },
+          "zone": "America/Sao_Paulo",
+          "createdBy": "mac"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.r.body.id}/run",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "job.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-25-it-waits-on-its-own-account",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.ran.body.job.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "queued",
+            "resumesAt": {
+              "$exists": true
+            },
+            "account": "stand-in",
+            "accountLimit": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-25"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-25-no-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-25"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-25-openai-asked-nothing",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "posts": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-25"
+        ]
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "2",
-  "name": "obid's browser: Reload, signed, only by the device that holds the tab, answers the tab as it is after and kills the agent's refs",
+  "name": "obid's browser: Reload, signed, answers the tab as it is after and kills the agent's refs",
   "version": "1.0.0",
   "description": "BROWSER-26 (core/crates/obid/src/browser/routes.rs, way_out; driver/person_page.rs): on a tab showing the fixture's home page, POST …/reload on a tab that doesn't exist is refused (no_such_tab); once the device takes, the job's own token is refused (bad_token: the agents' tools never get the person's routes), another device is refused (not_holder), a body that isn't an object is refused (bad_request); the holder's reload answers the tab, ready, at the same address, held by its device, and a tab event says so; given back, the agent's ref from its snapshot before the reload is dead (unknown_ref: the person's reload dropped the agent's refs, where the hold alone would have made them stale_ref).",
   "trigger": {
@@ -18,6 +18,13 @@
         "owner": "alex",
         "agent": "fake-harness-jobs",
         "browser": true
+      }
+    },
+    {
+      "id": "o-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.o}"
       }
     },
     {
@@ -105,28 +112,6 @@
       }
     },
     {
-      "id": "take",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {
-            "heldBy": "${state.d1.id}"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
       "id": "reload-as-agent",
       "use": "runtime.rust:call",
       "inputs": {
@@ -141,28 +126,6 @@
         },
         "as": "token",
         "token": "${state.j1.token}"
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "reload-other-device",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
-          }
-        },
-        "as": "device",
-        "device": "${state.d2}"
       },
       "ui": {
         "proves": [
@@ -205,8 +168,7 @@
           "paths": {
             "id": "${state.open.structured.result.tab}",
             "state": "ready",
-            "url": "${state.site.url}/",
-            "heldBy": "${state.d1.id}"
+            "url": "${state.site.url}/"
           }
         },
         "as": "device",
@@ -242,20 +204,6 @@
         "proves": [
           "BROWSER-26"
         ]
-      }
-    },
-    {
-      "id": "give-back",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
-        "expect": {
-          "status": 200
-        },
-        "as": "device",
-        "device": "${state.d1}"
       }
     },
     {

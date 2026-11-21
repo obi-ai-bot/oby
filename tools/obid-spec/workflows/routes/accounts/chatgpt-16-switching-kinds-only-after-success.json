@@ -1,0 +1,429 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-16: switching kinds removes the old login only after the new one succeeded",
+  "version": "1.0.0",
+  "description": "A device-login account whose ChatGPT sign-in fails keeps its auth.json; one that takes replaces it. Back the other way, the device login takes and only then is the ChatGPT login revoked and out of the vault.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "device-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "device-signed-in",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "auth-there",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.a.body.id}/auth.json",
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "forge",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "forged": true
+      }
+    },
+    {
+      "id": "bad-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "bad-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.bad-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "bad-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.bad-consent.location}",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "bad-said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-16-a-failed-sign-in-removes-nothing",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.a.body.id}/auth.json",
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-16-still-the-device-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "login": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    },
+    {
+      "id": "unforge",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "forged": false
+      }
+    },
+    {
+      "id": "good-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "good-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.good-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "good-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.good-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "good-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-16-the-chatgpt-login-took",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "login": "chatgpt",
+                "signedIn": true
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-16-the-device-login-went",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.a.body.id}/auth.json",
+        "within": 10,
+        "expect": {
+          "exists": false
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "tokens": {
+              "$len": 4
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "device-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in",
+        "within": 10,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "chatgpt-16-the-device-login-took",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "login": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-16-its-auth-json",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "accounts/${state.a.body.id}/auth.json",
+        "expect": {
+          "exists": true
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-16-then-the-chatgpt-login-revoked",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "revoked": {
+              "$contains": "${state.t.lastRefresh}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-16-and-out-of-the-vault",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "vault/secrets.json",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "${state.t.lastRefresh}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-16"
+        ]
+      }
+    }
+  ]
+}

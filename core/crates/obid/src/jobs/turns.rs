@@ -294,6 +294,10 @@ impl Jobs {
         // Its builds take what memory leaves them next to the other jobs (crate::meter).
         extra.extend(self.build_env(&job.id, false));
         let tetrix = self.tetrix_mcp(job);
+        // Oby's browser for a Codex job of the owner's (BROWSER-17), with the job's token too.
+        let browser = (tool == Tool::Codex)
+            .then(|| self.browser_server(job))
+            .flatten();
         // On a ChatGPT login, no run holds a token: Codex goes through obid's relay, with the job's
         // broker token (crate::chatgpt_relay).
         let relay = chatgpt
@@ -450,12 +454,20 @@ impl Jobs {
                 if let Some((base, _)) = &relay {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
                 }
+                if let Some(server) = &browser {
+                    for setting in server.codex("OBY_MCP_TOKEN") {
+                        argv.splice(1..1, ["-c".into(), setting.into()]);
+                    }
+                }
                 if own {
                     let settings = self.own_codex_policy(Self::mode_of(job)).settings();
                     argv.splice(1..1, settings.into_iter().map(OsString::from));
                     // Codex may ask nobody (Bypass): Oby's own tools are approved (LANES-21).
                     if broker.is_some() {
                         argv.splice(1..1, codex::OWN_OBY_TOOLS.map(OsString::from));
+                    }
+                    if browser.is_some() {
+                        argv.splice(1..1, codex::OWN_BROWSER_TOOLS.map(OsString::from));
                     }
                 }
                 argv

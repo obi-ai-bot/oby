@@ -164,6 +164,23 @@ describe('a task at work', () => {
     expect((await views([plan], { status: 'failed' }, 'done')).card).toContain('>Failed · Claude Code');
   });
 
+  it('LIVETASK-4: done with its pull request open, the card says the stage it is at in obid\'s words; merged, it says so', async () => {
+    const stage = (review: string, merged: string, detail?: string) => [
+      { id: 'publish', title: 'Publish', state: 'done', detail: 'Secret scan clean · pushed · pull request opened' },
+      { id: 'review', title: 'Review', state: review, detail: review === 'current' ? detail : 'Approved by Oby' },
+      { id: 'merged', title: 'Merged into dev', state: merged, ...(merged === 'current' ? { detail } : {}) },
+    ] as JobView['stages'];
+    const pr = { commits: 1, published: 'https://github.com/deskree/obi/pull/9', finished: 1 };
+    const reviewing = (await views([plan], { ...pr, stages: stage('current', 'upcoming', 'Oby is reviewing') }, 'done')).card;
+    expect(reviewing).toContain('>Oby is reviewing<');
+    const open = (await views([plan], { ...pr, stages: stage('done', 'current', 'Pull request open · waiting for your review on GitHub') }, 'done')).card;
+    expect(open).toContain('>Pull request open · waiting for your review on GitHub<');
+    expect(open).not.toContain('Merged into dev');
+    expect((await views([plan], { ...pr, stages: stage('done', 'done') }, 'done')).card).toContain('>Merged into dev<');
+    // no pull request: nothing of the kind
+    expect((await views([plan], { commits: 1, finished: 1, stages: stage('done', 'current', 'Merge it on GitHub') }, 'done')).card).not.toContain('Merge it on GitHub');
+  });
+
   it('LIVETASK-31: ended, its last words show under the card (what changed, the test run, the commit), its steps folded behind Show more', async () => {
     const result = 'Changes\n- Added divide(a, b)\n\nTest run\n- 4 passed\n\nCommit abc123\n\nGOAL MET';
     const { card, log } = await views([plan, tool('Read', 'a.ts'), tool('Edited', 'math.ts'), { kind: 'said', text: result, at: '2:10 PM' }], {}, 'done');
@@ -187,6 +204,27 @@ describe('a task at work', () => {
     // its card and what it did sit together, where opening the conversation at it scrolls to
     expect(html).toMatch(/<div class="msg-task-work is-live" data-task="j1"><div class="msg-task" role="group" aria-label="Fix the login test">.*<\/div><div class="lt-log"/);
     expect(Object.keys(page.boxes)).toEqual(['Reply to Oby']);
+  });
+
+  it('LIVETASK-5: words sent once to steer it show once, as the owner\'s message; words told it from elsewhere stay in its lines', async () => {
+    stub();
+    const { default: ChatView } = await import('../ChatView');
+    const { replaceTasks } = await import('../tasks');
+    const { SESSIONS } = await import('../session');
+    const steer = 'For that task: also end the line with a period.';
+    // the agent's transcript holds the words obid told it, between its steps
+    SESSIONS.j1 = [tool('Read', 'a.ts'), { kind: 'you', text: steer, at: '1:51 PM' }, { kind: 'you', text: 'Keep the title short.', at: '1:52 PM' }, tool('Edited', 'b.ts')];
+    replaceTasks([await taskOf('j1')]);
+    page.chats = [{ id: 'c1', title: 'One fix', said: [
+      { who: 'you', text: 'fix it', ago: 5 }, { who: 'oby', text: 'On it.', ago: 4, jobs: ['j1'] },
+      { who: 'you', text: steer, ago: 2 }, { who: 'oby', text: 'I told it to end the line with a period.', ago: 1 },
+    ] } satisfies Chat];
+    const none = () => {};
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} />));
+    expect(html.split(`>${steer}<`).length - 1).toBe(1);
+    expect(logOf(html, 'Fix the login test')).not.toContain(steer);
+    // what the thread doesn't show (told it from its card, on another device) stays among its lines
+    expect(logOf(html, 'Fix the login test')).toContain('>Keep the title short.<');
   });
 
   it('LIVETASK-6: thinking shows only what its tool gave', async () => {

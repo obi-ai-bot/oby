@@ -101,6 +101,10 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('cursor', listener);
     return () => { ipcRenderer.off('cursor', listener); };
   },
+  // an artifact's version shown by Sandpack over the page's box for it, in main's view of its own
+  // (main/artifactPreview.ts, ARTIFACTSAPP-1); null hides it. Only the id, the version and the box go
+  artifactPreview: (ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number } } | null) =>
+    ipcRenderer.invoke('artifact-preview', ask) as Promise<{ shown: true } | { error: string } | null>,
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
   // a render error the page's root boundary caught (RenderError.tsx): kept by main, which reloads once
