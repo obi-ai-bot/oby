@@ -75,7 +75,9 @@ applies to obid gets workflows here, driving the real obid with its stand-in age
 - Workflows live in `workflows/t3/<topic>/` (the area `t3-<topic>`), with a manual trigger and the
   `t3` tag, never `launch`.
 - `obid-spec run --tag t3` (or `--only t3-<topic>`) runs them; any other run leaves them out, and
-  `coverage` doesn't count them.
+  `coverage` doesn't count them. CI asks for them wherever it runs every workflow (the merge queue,
+  nightly, on demand, a `full-suite` pull request): a second `obid-spec run --tag t3` step, so an
+  `expectedRed` whose bug is fixed fails there, never sits unnoticed (docs/contracts/ci.md, CI-67).
 - `t3/conversations/`: one turn's events in order and once, Stop with words waiting, a provider's
   errors, an agent that dies mid-turn, restarts with words waiting, the event stream reconnected
   mid-turn, a conversation deleted while it runs, the same words sent twice, two conversations

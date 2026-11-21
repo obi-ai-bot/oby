@@ -778,6 +778,16 @@ jobs:
           [ "$OBID_SPEC_SET" = all ] || only=(--tag "$OBID_SPEC_SET")
           tools/obid-spec/target/debug/obid-spec run --jobs "$JOBS" "${only[@]}" --obid "$PWD/core/target/debug/obid"
 
+      # T3 Code's bugs, proven against obid (workflows/t3/): obid-spec leaves them out of every run
+      # that doesn't ask for them, so wherever the set is `all` they run here too, and a stale
+      # expectedRed (an expected red that passes) fails the job (CI-67).
+      - name: obid-spec run --tag t3
+        if: env.OBID_SPEC_SET == 'all'
+        env:
+          TMPDIR: ${{ runner.temp }}
+          JOBS: ${{ runner.environment == 'github-hosted' && 4 || 12 }}
+        run: tools/obid-spec/target/debug/obid-spec run --jobs "$JOBS" --tag t3 --obid "$PWD/core/target/debug/obid"
+
       # A failed workflow's scratch homes and logs (stand-in agents and test values only), 7 days.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
