@@ -99,11 +99,10 @@ profile with the user's tabs (`BrowserSession.ts:558-574`); Oby's are stricter, 
 
 ## The window's guards, beyond T3
 
-- **A CDP method allowlist in main.** obid speaks page-level CDP only, so main needs no fake browser:
-  it forwards only the methods obid sends (`METHODS` in `main/browserRelay.ts`, kept in step with
-  obid's sources by BROWSERAPP-29), and answers any other method or any `sessionId` with a CDP error.
-  `Page.navigate` goes on only to an address `pageOk` takes (`main/pageRule.ts`: `http(s)` or
-  `about:blank`) that isn't the app's own page (`appPage`: its `file:` page, or its dev server's origin). T3 allowlists only its fake browser level (`CdpRelay.ts:70-75`).
+- **A CDP domain allowlist in main.** obid speaks page-level CDP only, so main needs no fake browser:
+  it forwards `Page`, `Runtime`, `DOM`, `DOMSnapshot`, `Accessibility`, `Input`, `Network`,
+  `Emulation` and `Log`, and answers any other domain (`Browser`, `Target`, `SystemInfo`, `Storage`,
+  ...) or any `sessionId` with a CDP error. T3 allowlists only its fake browser level (`CdpRelay.ts:70-75`).
 - **Webview hardening as T3's** (`DesktopWindow.ts:620-645`): `will-attach-webview` forces
   `sandbox`, no Node in any frame, no preload of the page's, and the partition check above. Oby's own
   window keeps `sandbox`, `contextIsolation` and no Node, and gains `webviewTag: true`.
