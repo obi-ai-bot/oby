@@ -2,8 +2,9 @@
 //! every agent tab is a `<webview>` in Oby's window, and obid neither downloads, pins, installs nor
 //! runs a Chrome or agent-browser. The owner's word: "NO FALLBACK REMOVE CHROME ENTIRELY". A
 //! headless Chrome may run only in obid-spec's stand-in for the window, which is test tooling.
-//! This reads obid's sources and fails if the old driver or installer, or any pin, download host or
-//! launch flag of theirs, comes back.
+//! This reads obid's sources, and the app's (`apps/electron/src`, `apps/shared`: what Oby ships,
+//! not the developer scripts beside it), and fails if the old driver or installer, or any pin,
+//! download host or launch flag of theirs, comes back.
 
 use std::path::{Path, PathBuf};
 
@@ -21,8 +22,17 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if path
+                .file_name()
+                .is_some_and(|n| n == "node_modules" || n == "dist" || n == "out")
+            {
+                continue;
+            }
             sources(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs" || e == "toml") {
+        } else if path.extension().is_some_and(|e| {
+            ["rs", "toml", "ts", "tsx", "js", "mjs", "json"]
+                .contains(&e.to_str().unwrap_or_default())
+        }) {
             out.push(path);
         }
     }
