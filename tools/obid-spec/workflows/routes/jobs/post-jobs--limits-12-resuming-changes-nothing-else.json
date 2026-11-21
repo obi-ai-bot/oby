@@ -93,7 +93,8 @@
       "ui": {
         "proves": [
           "LIMITS-12"
-        ]
+        ],
+        "flaky": "#2804: the stand-in's one-second reset can read as already gone, so the job waits an hour instead of seconds"
       }
     },
     {
@@ -115,7 +116,8 @@
       "ui": {
         "proves": [
           "LIMITS-12"
-        ]
+        ],
+        "flaky": "#2804: the stand-in's one-second reset can read as already gone, so the job waits an hour instead of seconds (fails when limits-12-resumed-the-same-round does: it never resumed)"
       }
     },
     {
@@ -147,7 +149,8 @@
       "ui": {
         "proves": [
           "LIMITS-12"
-        ]
+        ],
+        "flaky": "#2804: the stand-in's one-second reset can read as already gone, so the job waits an hour instead of seconds (fails when limits-12-resumed-the-same-round does: it never resumed)"
       }
     }
   ]
