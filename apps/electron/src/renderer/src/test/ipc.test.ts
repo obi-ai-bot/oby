@@ -66,6 +66,8 @@ vi.mock('electron', async () => {
     safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) },
     clipboard: { readText: () => '' },
+    // the artifact preview's view and its partition (artifactPreview.ts): made only when an artifact first shows
+    WebContentsView: class {}, session: { fromPartition: () => ({}) },
     shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
@@ -157,6 +159,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'browser-unwatch': { args: ['t1'], refusal: null },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
+  'artifact-preview': { args: [null], refusal: null },
   'mac-pill': { args: [null], refusal: null },
   'mac-pill-stop': { args: [], refusal: undefined },
   'mac-pill-now': { args: [], refusal: null },

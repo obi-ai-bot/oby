@@ -22,6 +22,7 @@ import { SCRATCH } from '../shared/build';
 import { ownFolder } from './appFolder';
 import { browsing } from './browser';
 import { macPill } from './macPill';
+import { previewing } from './artifactPreview';
 import { sawInput } from './browserInput';
 import { terminals } from './terminal';
 import { sawKey, sawMouse } from './terminalInput';
@@ -101,6 +102,8 @@ terminals(trusted);
 helping(trusted);
 // obid's browser, followed for the window (browser.ts, BROWSERAPP-8)
 const stopBrowsing = browsing(trusted, () => win);
+// an artifact's preview, drawn by Sandpack in a view of its own (artifactPreview.ts, ARTIFACTSAPP-1)
+const stopPreview = previewing(trusted, () => win);
 // an agent using the Mac: Oby's pill and frame over the screen (macPill.ts, BROWSERAPP-19)
 const stopPill = macPill(trusted, () => win, join(__dirname, '../preload/index.cjs'), process.env.ELECTRON_RENDERER_URL);
 const channels = ipc(trusted);
@@ -194,7 +197,7 @@ function createWindow() {
   win.on('restore', () => track(true));
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
-  win.on('closed', () => { track(false); win = null; windowLeft(); stopBrowsing(); stopPill(); });
+  win.on('closed', () => { track(false); stopPreview(); win = null; windowLeft(); stopBrowsing(); stopPill(); });
   // Oby's alerts (notify.ts): none for what the window shows while it's in front
   win.on('focus', windowSeen);
   for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);

@@ -180,6 +180,12 @@ export function generateBrain(config: BrainConfig): BrainData {
   const routeKey = (method: string, path: string) => `${method} ${normPath(path)}`;
   const rustKeys = new Set(rust.routes.map(r => routeKey(r.method, r.path)));
   const idOfKey = new Map(rust.routes.map(r => [routeKey(r.method, r.path), `${r.method} ${r.path}`]));
+  // a call's key, as a route's: one whose last part is a placeholder (`${path}`) also reaches the
+  // route that ends in a wildcard there (`{*path}`, normalized `**`), as obid routes it
+  const callKey = (method: string, path: string) => {
+    const key = routeKey(method, path);
+    return rustKeys.has(key) || !key.endsWith('/{}') ? key : key.replace(/\/\{\}$/, '/**');
+  };
 
   // ---- docs: every `METHOD /path` the API docs mention, and the routes they list as gone
   const docFiles = apiDocFiles(root, config.obid.apiDocs).map(file => ({ file, text: readFileSync(join(root, file), 'utf8') }));
@@ -191,19 +197,19 @@ export function generateBrain(config: BrainConfig): BrainData {
     callersOf.get(key)!.push({ via, source: { file, line } });
   };
   for (const a of design.api) {
-    const key = routeKey(a.method, a.path);
+    const key = callKey(a.method, a.path);
     if (rustKeys.has(key)) { a.route = idOfKey.get(key)!; addCaller(key, `api.${a.name}`, a.source.file, a.source.line); }
     else checks.push({ kind: 'call-without-route', message: `api.${a.name} calls ${a.method} ${a.path}, which obid doesn't route`, source: a.source, ref: a.name });
   }
   for (const c of design.mainCalls) {
-    const key = routeKey(c.method, c.path);
+    const key = callKey(c.method, c.path);
     if (rustKeys.has(key)) addCaller(key, c.file.split('/').pop()!, c.file, c.line);
     else checks.push({ kind: 'call-without-route', message: `${c.file.split('/').pop()} calls ${c.method} ${c.path}, which obid doesn't route`, source: { file: c.file, line: c.line } });
   }
   for (const dir of config.swiftClient) for (const full of swiftFiles(join(root, dir))) {
     const file = relative(root, full).split(sep).join('/');
     for (const c of swiftCalls(readFileSync(full, 'utf8'))) {
-      const key = routeKey(c.method, c.path);
+      const key = callKey(c.method, c.path);
       if (rustKeys.has(key)) addCaller(key, file.split('/').pop()!, file, c.line);
       else checks.push({ kind: 'call-without-route', message: `${file.split('/').pop()} calls ${c.method} ${c.path}, which obid doesn't route`, source: { file, line: c.line }, ref: key });
     }

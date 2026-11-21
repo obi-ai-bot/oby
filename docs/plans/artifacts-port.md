@@ -125,52 +125,56 @@ workflows run on the Mac, alone; everything else runs on Azure. Each obid PR's B
 route workflow, red before green. Sangam's artifact screens (the Oby Artifacts canvas, boards 1a to
 1c) are what the app draws; the words come from his boards, never from a contract.
 
-#### L1. Sandpack, local: the relay and Preview of one version
+#### L1. Sandpack, local: the relay, the card, and Preview beside the conversation
 
 - **Lane:** dispatcher (the app shows what was made). **Depends:** P1 (merged).
+- **Built** (2026-11-21): the card and the pane came into L1 from L2, so a real artifact shows in
+  the real window now. The preview is in a view of main's own, not the page's frame.
 - **What:**
-  - `@codesandbox/sandpack-react` 2.20.0, pinned exactly.
-  - `@codesandbox/nodebox` replaced by `apps/electron/stubs/nodebox/`.
-  - The relay, vendored with its CSP, and main's relay server (`*-preview.localhost`, loopback
-    only).
-  - A `Preview` component that gives a version's files (fetched from
-    `GET /v1/artifacts/{id}/{v}/{*path}`) to `SandpackProvider` with the `static` template, and our
-    `bundlerURL`.
-  - A `page` (HTML), `markdown` (drawn by `marked`, already in the app, as LibreChat does), `image`
-    and `canvas` show; a `design` shows its files until P4.
+  - `@codesandbox/sandpack-client` 2.19.8, pinned exactly: its static client's chunk alone is built
+    in, never the hosted `runtime` bundler or the Nodebox `node` client. `sandpack-react` comes
+    with Code (L2).
+  - `@codesandbox/nodebox` replaced by `apps/electron/stubs/nodebox/`, a dependency the override
+    points at.
+  - The relay, vendored, and main's relay server (`*-preview.localhost`, 127.0.0.1 only), its worker
+    sending other origins to the network and putting the preview's CSP on every answer.
+  - The preview in a `WebContentsView` of its own partition (`oby-artifact-preview`), sandboxed,
+    with no preload; its session lets go only its host page and the relay. It is laid over the pane's
+    box, and main reads the version's files from obid.
+  - The card under the task that made it (board 1b's words), and the pane in the browser's place.
+  - A `page` (HTML), `markdown` (drawn by `marked`, as LibreChat does), `image` and `canvas` show;
+    a `design` shows its files until P4.
 - **Scenarios:**
   - ARTIFACTSAPP-1: a page artifact's version draws in Sandpack's preview, and every request the
     preview makes is to loopback.
   - ARTIFACTSAPP-2: the built app holds no Nodebox code and no hosted bundler or CDN address.
-  - ARTIFACTSAPP-3: the preview frame can't reach outside, open a window, or navigate the app.
-    Its CSP and main's navigation rule both apply.
-- **Files:** `apps/electron/package.json`, `package-lock.json`, `stubs/nodebox/`,
-  `resources/sandpack-relay/`, `src/main/sandpackRelay.ts` (new), `src/main/index.ts` (start it),
-  `src/renderer/src/artifacts/Preview.tsx` (new), `scripts/` (the bundle check),
-  `docs/contracts/artifacts-app.md` (new).
+  - ARTIFACTSAPP-3: the preview can't reach off its origin, and is sandboxed in its own partition
+    with no preload, no Node and no bridge.
+  - ARTIFACTSAPP-4: the card under its task opens the pane on the latest version.
+- **Files:** `apps/electron/package.json`, `package-lock.json`, `electron.vite.config.ts`,
+  `vite.config.ts`, `stubs/nodebox/`, `resources/sandpack-relay/`, `scripts/local-only.mjs`,
+  `scripts/test-artifacts.mjs`, `src/main/{artifactPreview,previewRules,sandpackRelay}.ts`,
+  `src/main/index.ts`, `src/preload/index.ts`, `src/renderer/preview.html`,
+  `src/renderer/src/artifacts/`, `ChatView.tsx`, `Home.tsx`, `obid.ts`;
+  `docs/contracts/{artifacts-app,ipc}.md`.
 
-#### L2. The artifact panel: the card, Code and Preview, following the agent
+#### L2. The panel's Code, following the agent
 
-- **Lane:** dispatcher. **Depends:** L1, P3 (#2799).
+- **Lane:** dispatcher. **Depends:** L1, P3 (merged).
 - **What:**
-  - **The card.** Each artifact of the open conversation shows as a card in it
-    (`GET /v1/artifacts?conversation=`, board 1a), and a click opens the panel.
-  - **The panel.** It is the side panel's artifact view (boards 1b and 1c), with Code and Preview
-    tabs. Code is `SandpackCodeEditor`, read-only here, with a tab per file.
+  - **Code.** Code and Preview tabs in the pane. Code is `SandpackCodeEditor` (`sandpack-react`
+    2.20.0, CodeMirror 6), read-only here, with a tab per file.
   - **Following the agent.** An `artifact` event for the open conversation opens or moves the
-    panel to the new version. LibreChat's panel follows the latest the same way.
-  - **Asking for a change.** Words said while the panel is open carry `artifact: {id, version}`,
+    pane to the new version. LibreChat's panel follows the latest the same way.
+  - **Asking for a change.** Words said while the pane is open carry `artifact: {id, version}`,
     P3's key, so the agent changes this artifact.
 - **Scenarios:**
-  - ARTIFACTSAPP-4: an artifact made in a conversation shows as its card, and the card opens the
-    panel on Preview.
   - ARTIFACTSAPP-5: Code shows each of the version's files.
-  - ARTIFACTSAPP-6: a new version from the agent moves the open panel to it.
-  - ARTIFACTSAPP-7: words said with the panel open reach the artifact's conversation with its
+  - ARTIFACTSAPP-6: a new version from the agent moves the open pane to it.
+  - ARTIFACTSAPP-7: words said with the pane open reach the artifact's conversation with its
     `artifact`.
-- **Files:** `src/renderer/src/artifacts/` (`Card.tsx`, `Panel.tsx`, `Code.tsx`, `store.ts`), the
-  side panel's host (`browser/Panel.tsx`, one view more), `Composer.tsx`'s send (the key),
-  `shared/words.ts`.
+- **Files:** `src/renderer/src/artifacts/` (`Code.tsx`, `Pane.tsx`, `store.ts`), `Composer.tsx`'s
+  send (the key), `shared/words.ts`.
 
 #### L3a. obid: the owner's edit is a new version
 
@@ -555,9 +559,9 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 |---|---|---|---|
 | P1 Store v2 | none | | merged (#2776) |
 | P2 Export and import | P1 | L1, L2, L3a | built, opens next |
-| P3 The turn's artifact | P1 | L1, L3a | in review (#2799) |
-| **L1** Sandpack, local | P1 | P2, P3, L3a | next |
-| **L2** The panel | L1, P3 | L3a | |
+| P3 The turn’s artifact | P1 | L1, L3a | merged (#2799) |
+| **L1** Sandpack, local, the card and Preview | P1 | P2, L3a | in review |
+| **L2** Code, following the agent | L1, P3 | L3a | |
 | **L3a** The owner's edit (obid) | P1 | L1, L2 | next |
 | **L3b** Edit, save, versions (app) | L2, L3a | L5 | |
 | **L4** Export and import (app) | L2, P2 | L5 | |
