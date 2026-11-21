@@ -7068,8 +7068,9 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     let all = json!(["user", "project", "local"]);
     assert_eq!(
         loaded(&obid, id),
+        // The owner's and the repository's servers, then Oby's browser (BROWSER-17).
         json!({"sources": all, "found": all, "skills": ["owners-skill"],
-               "mcpServers": ["owners-github", "repos-server"], "sandbox": false})
+               "mcpServers": ["owners-github", "repos-server", "browser"], "sandbox": false})
     );
 
     let (obid, job) = marked_untrusted(&folder.0, &config, obid, id, "REPORT");
