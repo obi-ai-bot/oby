@@ -9,7 +9,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const DESIGN = resolve(HERE, '../../../tools/obid-spec/lab-ui/browser/design');
+// OBY_BOARDS_DIR: another design folder (boards/, oby.css, blobs/), a copy to see a check fail (boards.mjs)
+export const DESIGN = process.env.OBY_BOARDS_DIR ? resolve(process.env.OBY_BOARDS_DIR) : resolve(HERE, '../../../tools/obid-spec/lab-ui/browser/design');
 
 // A board's states, for the one board with logic (Hold: Give back and Take control on the canvas)
 const STATES = {
@@ -82,7 +83,7 @@ export const pieces = (p) => p.evaluate((sels) => {
 const round = (n) => Math.round(n * 10) / 10;
 const at = (b) => ({ x: round(b.x), y: round(b.y), w: round(b.width), h: round(b.height) });
 
-/** The app's pieces against the board's: every held piece within `tolerance` px and the same words. */
+/** The app's pieces against the board's: every held piece within `tolerance` px and the same words, and at least one compared. */
 export function judge(board, mine, theirs, { tolerance = 4, skip = [] } = {}) {
   const skipped = new Set(skip);
   const off = [], today = [], words = [], counts = [];
@@ -102,5 +103,5 @@ export function judge(board, mine, theirs, { tolerance = 4, skip = [] } = {}) {
       if (mb.text !== tb.text) words.push({ piece: entry.piece, app: mb.text.slice(0, 160), board: tb.text.slice(0, 160) });
     });
   }
-  return { board, tolerance, compared, worst: round(worst), within: off.length === 0 && counts.length === 0, off: off.slice(0, 40), offCount: off.length, sameWords: words.length === 0, words: words.slice(0, 40), counts, ignored: [...skipped], today: today.slice(0, 40), todayCount: today.length };
+  return { board, tolerance, compared, worst: round(worst), within: compared > 0 && off.length === 0 && counts.length === 0, nothingCompared: compared === 0, off: off.slice(0, 40), offCount: off.length, sameWords: words.length === 0, words: words.slice(0, 40), counts, ignored: [...skipped], today: today.slice(0, 40), todayCount: today.length };
 }
