@@ -2537,14 +2537,19 @@ fn write_files(dir: &Path, files: &Files) -> Result<()> {
     Ok(())
 }
 
-fn fixture(run: &Run, input: &Value) -> Result<Value> {
+/// A fixture in the scratch folder, or, with `into`, in that folder (obid's own nodes write one
+/// into a conversation's room, src/artifacts.rs).
+pub(crate) fn fixture(run: &Run, input: &Value) -> Result<Value> {
     let name = input["name"].as_str().context("name")?;
     let n = {
         let mut n = FIXTURES.lock().unwrap();
         *n += 1;
         *n
     };
-    let dir = run.scratch.join("fixtures").join(format!("{name}-{n}"));
+    let dir = match input["into"].as_str() {
+        Some(into) => PathBuf::from(into),
+        None => run.scratch.join("fixtures").join(format!("{name}-{n}")),
+    };
     std::fs::create_dir_all(&dir)?;
     let frame = |file: &str, x: u32| json!({"title": file, "file": file, "x": x, "y": 0, "w": 390, "h": 844});
     let page = |title: &str| {

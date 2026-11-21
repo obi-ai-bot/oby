@@ -1,0 +1,544 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}: both canvas shapes publish; a spoiled design is refused saying which",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-2 (lab: LAB-ARTIFACTS-2, workflows/lab/artifacts/shapes.json). obid's list of frames and Swift's {\"frames\": [...]} both publish as canvas. The lab's Claude Design project spoiled one way at a time (a board missing, a bad page id, a stray order or launch, a missing design system, v 2, no <x-dc>, two logic scripts, notes over 1 MB, a link inside) is refused, each saying what is wrong, and nothing of it is kept.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "obid-shape",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "obid",
+        "name": "canvas-obid"
+      }
+    },
+    {
+      "id": "obid-pub",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Phone and tablet\", \"path\": \"obid\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "2-obids-list-is-a-canvas",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.obid-pub.body.artifacts.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "kind": "canvas"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "swift-shape",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "swift",
+        "name": "canvas-swift"
+      }
+    },
+    {
+      "id": "swift-pub",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Phone and tablet\", \"path\": \"swift\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "2-swifts-frames-are-a-canvas",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.swift-pub.body.artifacts.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "kind": "canvas"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-missing-board",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-missing-board",
+        "name": "claude-design",
+        "break": "missing-board"
+      }
+    },
+    {
+      "id": "2-missing-board-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-missing-board\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: canvas.json's board \"Gone.dc.html\" isn't a file of the design."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-bad-page",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-bad-page",
+        "name": "claude-design",
+        "break": "bad-page"
+      }
+    },
+    {
+      "id": "2-bad-page-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-bad-page\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: canvas.json's page id \"not a page id\" isn't 1 to 40 letters, digits, _ or -."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-bad-order",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-bad-order",
+        "name": "claude-design",
+        "break": "bad-order"
+      }
+    },
+    {
+      "id": "2-bad-order-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-bad-order\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: canvas.json's order names \"Elsewhere.dc.html\", which isn't one of its boards."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-bad-launch",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-bad-launch",
+        "name": "claude-design",
+        "break": "bad-launch"
+      }
+    },
+    {
+      "id": "2-bad-launch-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-bad-launch\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: canvas.json's launch names \"Elsewhere.dc.html\", which isn't one of its pages or boards."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-no-ds",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-no-ds",
+        "name": "claude-design",
+        "break": "no-ds"
+      }
+    },
+    {
+      "id": "2-no-ds-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-no-ds\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: canvas.json's design system \"absent\" has no ds/absent/ folder."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-v2",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-v2",
+        "name": "claude-design",
+        "break": "v2"
+      }
+    },
+    {
+      "id": "2-v2-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-v2\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: canvas.json's v is 3 in Claude Design's format, and here it is 2."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-no-xdc",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-no-xdc",
+        "name": "claude-design",
+        "break": "no-xdc"
+      }
+    },
+    {
+      "id": "2-no-xdc-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-no-xdc\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: Card.dc.html has no <x-dc>."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-two-scripts",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-two-scripts",
+        "name": "claude-design",
+        "break": "two-scripts"
+      }
+    },
+    {
+      "id": "2-two-scripts-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-two-scripts\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: Card.dc.html has 2 <script type=\"text/x-dc\" data-dc-script> blocks, and a board has one."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-big-notes",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-big-notes",
+        "name": "claude-design",
+        "break": "big-notes"
+      }
+    },
+    {
+      "id": "2-big-notes-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-big-notes\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: canvas.json's notes are over 1 MB."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "fx-link",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "spoiled-link",
+        "name": "claude-design",
+        "break": "link"
+      }
+    },
+    {
+      "id": "2-link-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"spoiled-link\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: spoiled-link/linked.css is a link: obid publishes only plain files and folders."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    },
+    {
+      "id": "2-only-the-two-canvases-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts?conversation=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-2"
+        ]
+      }
+    }
+  ]
+}

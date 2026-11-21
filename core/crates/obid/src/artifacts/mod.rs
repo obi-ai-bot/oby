@@ -1,6 +1,6 @@
 //! Artifacts (docs/conversation-harness.md, section 4; docs/runner-api.md, "obid only:
-//! artifacts"): what an agent makes to be looked at, a page, a document, an image, a PDF or a
-//! canvas of pages, kept with every version in `home/artifacts/<id>/<version>/` and described by
+//! artifacts"; docs/contracts/artifacts.md): what an agent makes to be looked at, a page, a
+//! document, an image, a PDF, a canvas of pages or a Claude Design design, kept with every version in `home/artifacts/<id>/<version>/` and described by
 //! `home/artifacts/<id>/artifact.json`.
 //!
 //! [`Artifacts::publish`] is the one way in, for a job's `.obi/artifacts/` when it ends
@@ -9,12 +9,13 @@
 //! (`O_NOFOLLOW`, each one inside the folder already opened), so a link anywhere, on the way or
 //! inside, is refused, as is anything that isn't a plain file or folder, a file with another
 //! (hard) link to it, and anything on another disk; hidden names (`.git`, `.DS_Store`) are left
-//! out but counted; a version holds at most [`MAX_FILES`] entries and [`MAX_BYTES`], an artifact
-//! [`MAX_VERSIONS`] versions. Then every file, read as text whatever its bytes, and every name
+//! out but counted; a version holds at most Claude's limits (`limits`), an artifact
+//! [`MAX_VERSIONS`] versions; a design's uploads are kept under `assets/` (`blobs`). Then every file, read as text whatever its bytes, and every name
 //! (the path, the title, each file's) go through the publish gate's secret scan (crate::scan):
 //! any finding, or a scan that can't run, and nothing is kept. A refusal that would repeat a name
 //! that looks like a secret says [`NAME_REFUSED`] instead.
 
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
@@ -35,18 +36,18 @@ use crate::api::{ApiError, Shared};
 use crate::events::Events;
 use crate::store::{make_private_dir, write_private};
 
-/// The most one version holds, in bytes.
-pub const MAX_BYTES: u64 = 50 * 1024 * 1024;
-/// The most files and folders one version holds.
-pub const MAX_FILES: usize = 2000;
+mod blobs;
+mod design;
+mod limits;
+
+pub use limits::{MAX_BYTES, MAX_ENTRIES, MAX_FILES, MAX_JOB_BYTES};
+
 /// How deep folders in one version go.
 const MAX_DEPTH: usize = 32;
 /// The most versions one artifact keeps: past it, a new one is refused.
 pub const MAX_VERSIONS: u32 = 50;
 /// The most entries of a job's `.obi/artifacts/` published at its end: the rest are refused.
 pub const MAX_JOB_ENTRIES: usize = 20;
-/// The most bytes one job's artifacts hold, every version of each counted.
-pub const MAX_JOB_BYTES: u64 = 500 * 1024 * 1024;
 /// How a refusal for a job's artifacts holding too much begins.
 pub const JOB_FULL: &str = "Not published: this job's artifacts hold";
 /// How the same refusal begins for a conversation's own artifacts (no job), which have the same cap.
@@ -74,8 +75,11 @@ pub enum Kind {
     Image,
     Pdf,
     /// A folder with a `canvas.json`: a list of frames `{title, file, x, y, w, h}`, each an HTML
-    /// file of the folder.
+    /// file of the folder, or Swift's `{"frames": […]}`.
     Canvas,
+    /// A folder with Claude Design's `canvas.json` (an object with `boards`) and its `.dc.html`
+    /// boards, kept byte for byte.
+    Design,
 }
 
 impl Kind {
@@ -90,6 +94,7 @@ impl Kind {
             Kind::Image => "image",
             Kind::Pdf => "pdf",
             Kind::Canvas => "canvas",
+            Kind::Design => "design",
         }
     }
 }
@@ -114,6 +119,12 @@ pub struct Version {
     /// Its files, paths relative to the version's folder, sorted.
     pub files: Vec<String>,
     pub bytes: u64,
+    /// A design's uploads: Claude's `_blob/<id>` and the file of `files` it is kept as.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blobs: BTreeMap<String, String>,
+    /// The job that published it, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
 }
 
 impl Artifact {
@@ -133,8 +144,13 @@ pub struct Publish<'a> {
     pub kind: Option<Kind>,
     pub conversation: Option<&'a str>,
     pub job: Option<&'a str>,
-    /// A new version of this artifact, which must be of the same conversation and job.
+    /// A new version of this artifact: one of this conversation's (made by any of its jobs), or
+    /// one the same job made.
     pub artifact: Option<&'a str>,
+    /// The version of `artifact` this same publisher last made (a job's, as it keeps it): the same
+    /// files as that version make no new one, whatever version came after it, so a job publishing
+    /// its `.obi/artifacts/` again never lays its files over its conversation's (ARTIFACTS-7).
+    pub kept: Option<u32>,
 }
 
 /// Every artifact obid keeps.
@@ -194,11 +210,9 @@ impl Artifacts {
                 let artifact = self
                     .get(id)
                     .ok_or(format!("Not published: there's no artifact {}.", shown(id)))?;
-                if artifact.conversation.as_deref() != what.conversation
-                    || artifact.job.as_deref() != what.job
-                {
+                if !may_version(&artifact, &what) {
                     return Err(format!(
-                        "Not published: artifact {id} was made somewhere else, so only there can it get a new version."
+                        "Not published: artifact {id} belongs to another conversation, so only there can it get a new version."
                     ));
                 }
                 // Before anything is copied or scanned.
@@ -235,19 +249,27 @@ impl Artifacts {
         staging: &Path,
         copied: Result<Copied, String>,
     ) -> Result<(String, u32), String> {
-        let copied = copied.map_err(|why| format!("Not published: {why}"))?;
-        // The names it would show (the path, the title, every file's) are scanned like its files.
-        let names: Vec<String> = [what.path.to_owned(), title.to_owned()]
-            .into_iter()
-            .chain(copied.files.iter().cloned())
-            .collect();
-        self.scan_names(&names).await?;
+        let mut copied = copied.map_err(|why| format!("Not published: {why}"))?;
         let kind = check_kind(
             &copied,
             staging,
             what.kind.or(before.as_ref().map(|a| a.kind)),
         )
         .map_err(|why| format!("Not published: {why}"))?;
+        let blobs = if kind == Kind::Design {
+            blobs::ingest(staging, &mut copied.files)
+                .map_err(|why| format!("Not published: {why}"))?
+        } else {
+            BTreeMap::new()
+        };
+        // The names it would show (the path, the title, every file's as kept, each upload's id)
+        // are scanned like its files; an upload's id may be token-like, its kept name never is.
+        let names: Vec<String> = [what.path.to_owned(), title.to_owned()]
+            .into_iter()
+            .chain(copied.files.iter().cloned())
+            .collect();
+        let ids: Vec<String> = blobs.keys().cloned().collect();
+        self.scan_names(&names, &ids).await?;
         if let Some(before) = &before {
             if before.kind != kind {
                 return Err(format!(
@@ -260,6 +282,18 @@ impl Artifacts {
             let latest = self.version_path(&before.id, before.latest());
             if same_files(&latest, staging, &copied.files, before.versions.last()) {
                 return Ok((before.id.clone(), before.latest()));
+            }
+            if let Some(kept) = what
+                .kept
+                .and_then(|k| before.versions.iter().find(|v| v.version == k))
+                && same_files(
+                    &self.version_path(&before.id, kept.version),
+                    staging,
+                    &copied.files,
+                    Some(kept),
+                )
+            {
+                return Ok((before.id.clone(), kept.version));
             }
         }
         self.scan(staging, &copied.files).await?;
@@ -317,6 +351,8 @@ impl Artifacts {
             created: now,
             files: copied.files,
             bytes: copied.bytes,
+            blobs,
+            job: what.job.map(str::to_owned),
         });
         self.save(&artifact)
             .map_err(|e| format!("Not published: obid couldn't keep it ({e})."))?;
@@ -363,15 +399,16 @@ impl Artifacts {
         ))
     }
 
-    /// The built-in rules, the secrets obid holds and gitleaks on `names`, each as a line of its
-    /// own: [`NAME_REFUSED`] when one looks like a secret.
-    async fn scan_names(&self, names: &[String]) -> Result<(), String> {
+    /// The built-in rules, the secrets obid holds and gitleaks on `names` and `ids`, each as a line
+    /// of its own: [`NAME_REFUSED`] when one looks like a secret. A name that only looks like a
+    /// token ([`long_run`]) is refused too; an upload's id (`ids`) may, as no file is kept by it.
+    async fn scan_names(&self, names: &[String], ids: &[String]) -> Result<(), String> {
         crate::vault::check()
             .map_err(|why| format!("Not published: the secret scan couldn't run ({why})."))?;
         // gitleaks wants a key to end where a word does: `<key>.md` and `<key>/index.html` hide
         // it. So each part between `/`s, and each piece between `.`s, is a line too.
         let mut parts: Vec<String> = Vec::new();
-        for name in names {
+        for name in names.iter().chain(ids) {
             parts.push(name.clone());
             for part in name.split('/') {
                 parts.push(part.to_owned());
@@ -402,7 +439,7 @@ impl Artifacts {
     /// `line` as obid may say it, or [`NAME_REFUSED`] when it holds what looks like a secret (a
     /// name a refusal repeats); when the scan can't run, it isn't said either.
     pub async fn speakable(&self, line: String) -> String {
-        match self.scan_names(std::slice::from_ref(&line)).await {
+        match self.scan_names(std::slice::from_ref(&line), &[]).await {
             Ok(()) => line,
             Err(why) if why == NAME_REFUSED => why,
             Err(_) => {
@@ -444,7 +481,8 @@ impl Artifacts {
         all
     }
 
-    /// Renames it: the artifact, or none when there's no such one.
+    /// Renames it, and says so (`artifact` with `renamed`, so every open view retitles it): the
+    /// artifact, or none when there's no such one.
     pub fn rename(&self, id: &str, title: &str) -> std::io::Result<Option<Artifact>> {
         let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let Some(mut artifact) = self.get(id) else {
@@ -452,6 +490,11 @@ impl Artifacts {
         };
         artifact.title = title.to_owned();
         self.save(&artifact)?;
+        self.events.send(
+            "artifact",
+            json!({"id": artifact.id, "renamed": true, "title": artifact.title,
+                   "kind": artifact.kind, "conversation": artifact.conversation, "job": artifact.job}),
+        );
         Ok(Some(artifact))
     }
 
@@ -467,16 +510,15 @@ impl Artifacts {
         Ok(true)
     }
 
-    /// The file `path` of version `version` of `id`, read: its path and bytes.
+    /// The file `path` of version `version` of `id`, read: its path and bytes. A design's
+    /// `_blob/<id>` is the upload that version keeps for it.
     fn file(&self, id: &str, version: &str, path: &str) -> Option<(PathBuf, Vec<u8>)> {
         let version: u32 = version.parse().ok()?;
         let artifact = self.get(id)?;
         let kept = artifact.versions.iter().find(|v| v.version == version)?;
         // Only what the version lists: nothing else that may be in its folder, and never `..`.
-        if !kept.files.iter().any(|f| f == path) {
-            return None;
-        }
-        let file = inside(&self.version_path(id, version), path)?;
+        let path = blobs::resolve(kept, path)?;
+        let file = inside(&self.version_path(id, version), &path)?;
         let bytes = std::fs::read(&file).ok()?;
         Some((file, bytes))
     }
@@ -501,6 +543,17 @@ fn long_run(name: &str) -> bool {
             // A bundler's content hash (`main.<32 hex>.js`) is lower-case hex alone.
             && !text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     })
+}
+
+/// Whether `what` may give `artifact` a new version: from the conversation it belongs to (any of
+/// its jobs: a follow-up is a new job of the same conversation, TASKCONV-3), or from the job that
+/// made it.
+fn may_version(artifact: &Artifact, what: &Publish<'_>) -> bool {
+    let maker = artifact.conversation.as_deref() == what.conversation
+        && artifact.job.as_deref() == what.job;
+    let same_conversation =
+        artifact.conversation.is_some() && artifact.conversation.as_deref() == what.conversation;
+    maker || same_conversation
 }
 
 /// Why an artifact at [`MAX_VERSIONS`] gets no more.
@@ -541,14 +594,24 @@ struct Copied {
 /// The kind the copy is, when it is `wanted` too (or nothing was wanted).
 fn check_kind(copied: &Copied, staging: &Path, wanted: Option<Kind>) -> Result<Kind, String> {
     let has = |name: &str| copied.files.iter().any(|f| f == name);
+    let mut canvas = None;
     let kind = if copied.folder {
         if has("canvas.json") {
-            Kind::Canvas
+            let text = std::fs::read(staging.join("canvas.json")).map_err(read_error)?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&text).map_err(|_| "canvas.json isn't JSON.".to_owned())?;
+            let kind = if design::is_design(&value) {
+                Kind::Design
+            } else {
+                Kind::Canvas
+            };
+            canvas = Some(value);
+            kind
         } else if has("index.html") {
             Kind::Html
         } else {
             return Err(
-                "a folder is an html artifact with an index.html, or a canvas with a canvas.json."
+                "a folder is an html artifact with an index.html, or a canvas or a design with a canvas.json."
                     .into(),
             );
         }
@@ -573,8 +636,10 @@ fn check_kind(copied: &Copied, staging: &Path, wanted: Option<Kind>) -> Result<K
             kind.as_str()
         ));
     }
-    if kind == Kind::Canvas {
-        check_canvas(copied, staging)?;
+    match (kind, canvas) {
+        (Kind::Canvas, Some(canvas)) => design::check_canvas(&canvas, &copied.files)?,
+        (Kind::Design, Some(canvas)) => design::check_design(&canvas, &copied.files, staging)?,
+        _ => {}
     }
     Ok(kind)
 }
@@ -585,40 +650,6 @@ fn extension(name: &str) -> String {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase()
-}
-
-/// Every field must be there to pass; only `file` is read.
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct Frame {
-    title: String,
-    file: String,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-}
-
-/// A canvas's `canvas.json` is a list of frames, each an HTML file of its own.
-fn check_canvas(copied: &Copied, staging: &Path) -> Result<(), String> {
-    let text = std::fs::read(staging.join("canvas.json")).map_err(read_error)?;
-    let frames: Vec<Frame> = serde_json::from_slice(&text).map_err(|_| {
-        "canvas.json is a list of frames, each {\"title\", \"file\", \"x\", \"y\", \"w\", \"h\"}."
-            .to_owned()
-    })?;
-    if frames.is_empty() {
-        return Err("canvas.json has no frame.".into());
-    }
-    match frames
-        .iter()
-        .find(|f| extension(&f.file) != "html" || !copied.files.contains(&f.file))
-    {
-        Some(frame) => Err(format!(
-            "canvas.json's frame {:?} isn't an HTML file of the canvas.",
-            frame.file
-        )),
-        None => Ok(()),
-    }
 }
 
 /// Whether the files in `staging` are those of `latest` (`kept`), byte for byte.
@@ -680,10 +711,13 @@ fn copy(root: &Path, path: &str, to: &Path) -> Result<Copied, String> {
         } else {
             last
         };
-        copy_file(entry, &to.join(name), &mut copied)?;
+        copy_file(entry, &to.join(name), name, &mut copied)?;
         copied.files.push(name.to_owned());
     } else {
         return Err(format!("{shown} isn't a file or a folder."));
+    }
+    if let Some(why) = limits::too_many(copied.files.len()) {
+        return Err(why);
     }
     copied.files.sort();
     Ok(copied)
@@ -759,7 +793,7 @@ fn open_in(at: &impl std::os::fd::AsFd, name: &str, shown: &str) -> Result<Owned
 }
 
 /// The folder `dir` (`shown`) into `to`/`prefix`, each entry opened inside it: at most
-/// [`MAX_FILES`] entries, [`MAX_DEPTH`] deep.
+/// [`MAX_ENTRIES`] names read, [`MAX_DEPTH`] deep.
 fn copy_folder(
     dir: OwnedFd,
     shown: &str,
@@ -780,8 +814,10 @@ fn copy_folder(
         }
         // Every name counts, hidden ones too, before any is kept or sorted.
         copied.entries += 1;
-        if copied.entries > MAX_FILES {
-            return Err(format!("it has more than {MAX_FILES} files."));
+        if copied.entries > MAX_ENTRIES {
+            return Err(format!(
+                "it holds more than {MAX_ENTRIES} names, hidden ones too, so obid stopped reading it."
+            ));
         }
         names.push(name);
     }
@@ -807,7 +843,7 @@ fn copy_folder(
             make_private_dir(&to.join(&inside)).map_err(read_error)?;
             copy_folder(entry, &path, to, &format!("{inside}/"), depth + 1, copied)?;
         } else if meta.is_file() {
-            copy_file(entry, &to.join(&inside), copied)?;
+            copy_file(entry, &to.join(&inside), &inside, copied)?;
             copied.files.push(inside);
         } else {
             return Err(format!("{path} isn't a file or a folder."));
@@ -816,8 +852,13 @@ fn copy_folder(
     Ok(())
 }
 
-/// The open file `from` to the new file `to` (0600), counted against [`MAX_BYTES`].
-fn copy_file(from: OwnedFd, to: &Path, copied: &mut Copied) -> Result<(), String> {
+/// The open file `from` (`name` in the version) to the new file `to` (0600), at most its kind's
+/// limit and what is left of [`MAX_BYTES`].
+fn copy_file(from: OwnedFd, to: &Path, name: &str, copied: &mut Copied) -> Result<(), String> {
+    let (most, _) = limits::most_for(name);
+    if let Some(why) = limits::file_too_big(name, metadata(&from)?.len()) {
+        return Err(why);
+    }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     {
@@ -828,7 +869,8 @@ fn copy_file(from: OwnedFd, to: &Path, copied: &mut Copied) -> Result<(), String
         .open(to)
         .map_err(|e| format!("obid couldn't make its copy ({e})."))?;
     let left = MAX_BYTES - copied.bytes;
-    let mut from = std::fs::File::from(from).take(left + 1);
+    let mut from = std::fs::File::from(from).take(left.min(most) + 1);
+    let mut this = 0u64;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
         let n = match from.read(&mut buffer) {
@@ -838,8 +880,13 @@ fn copy_file(from: OwnedFd, to: &Path, copied: &mut Copied) -> Result<(), String
             Err(e) => return Err(read_error(e)),
         };
         copied.bytes += n as u64;
+        this += n as u64;
+        // It grew while obid copied it.
+        if let Some(why) = limits::file_too_big(name, this) {
+            return Err(why);
+        }
         if copied.bytes > MAX_BYTES {
-            return Err(format!("it is more than {} MB.", MAX_BYTES / 1024 / 1024));
+            return Err(limits::version_too_big());
         }
         out.write_all(&buffer[..n])
             .map_err(|e| format!("obid couldn't make its copy ({e})."))?;
@@ -954,7 +1001,7 @@ pub async fn remove(
 
 /// What a job's `.obi/artifacts/` holds: one artifact per entry, hidden names left out, sorted.
 /// Nothing when `.obi` or `.obi/artifacts` isn't a real folder.
-/// `Err` when it holds more than [`MAX_FILES`] names, hidden ones too: then none is published,
+/// `Err` when it holds more than [`MAX_ENTRIES`] names, hidden ones too: then none is published,
 /// so "the first by name" is always of them all. The read stops there.
 pub fn job_entries(worktree: &Path) -> Result<Vec<String>, String> {
     let mut folder = worktree.to_path_buf();
@@ -969,9 +1016,9 @@ pub fn job_entries(worktree: &Path) -> Result<Vec<String>, String> {
     };
     let mut names = Vec::new();
     for (read, entry) in entries.enumerate() {
-        if read >= MAX_FILES {
+        if read >= MAX_ENTRIES {
             return Err(format!(
-                "Not published: .obi/artifacts holds more than {MAX_FILES} names, so none of it is."
+                "Not published: .obi/artifacts holds more than {MAX_ENTRIES} names, so none of it is."
             ));
         }
         if let Ok(name) = entry.map(|e| e.file_name())
@@ -1027,6 +1074,11 @@ fn type_of(path: &Path) -> &'static str {
         "ico" => "image/x-icon",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "avif" => "image/avif",
         "txt" => "text/plain; charset=utf-8",
         "md" | "markdown" => "text/markdown; charset=utf-8",
         "csv" => "text/csv; charset=utf-8",
@@ -1036,28 +1088,31 @@ fn type_of(path: &Path) -> &'static str {
 }
 
 #[cfg(test)]
+mod scenarios;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    struct Temp(PathBuf);
+    pub(super) struct Temp(pub(super) PathBuf);
 
     impl Temp {
-        fn new(name: &str) -> Temp {
+        pub(super) fn new(name: &str) -> Temp {
             let path =
                 std::env::temp_dir().join(format!("obid-artifacts-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(path.join("room")).unwrap();
             Temp(path.canonicalize().unwrap())
         }
-        fn room(&self) -> PathBuf {
+        pub(super) fn room(&self) -> PathBuf {
             self.0.join("room")
         }
-        fn write(&self, path: &str, bytes: impl AsRef<[u8]>) {
+        pub(super) fn write(&self, path: &str, bytes: impl AsRef<[u8]>) {
             let path = self.room().join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, bytes).unwrap();
         }
-        fn store(
+        pub(super) fn store(
             &self,
         ) -> (
             Arc<Artifacts>,
@@ -1075,7 +1130,7 @@ mod tests {
         }
     }
 
-    fn what<'a>(root: &'a Path, path: &'a str) -> Publish<'a> {
+    pub(super) fn what<'a>(root: &'a Path, path: &'a str) -> Publish<'a> {
         Publish {
             root,
             path,
@@ -1084,6 +1139,7 @@ mod tests {
             conversation: Some("c1"),
             job: None,
             artifact: None,
+            kept: None,
         }
     }
 
@@ -1267,28 +1323,6 @@ mod tests {
         assert!(store.list(None, None).is_empty());
     }
 
-    /// At most MAX_FILES entries and MAX_BYTES a version.
-    #[tokio::test]
-    async fn a_version_has_a_size() {
-        let t = Temp::new("caps");
-        t.write("big/index.html", "x");
-        std::fs::File::create(t.room().join("big/video.bin"))
-            .unwrap()
-            .set_len(MAX_BYTES)
-            .unwrap();
-        for i in 0..MAX_FILES {
-            t.write(&format!("many/{i}.txt"), "");
-        }
-        t.write("many/index.html", "x");
-        let (store, _) = t.store();
-        let room = t.room();
-        let why = store.publish(what(&room, "big")).await.unwrap_err();
-        assert!(why.contains("more than 50 MB"), "{why}");
-        let why = store.publish(what(&room, "many")).await.unwrap_err();
-        assert!(why.contains("more than 2000 files"), "{why}");
-        assert!(store.list(None, None).is_empty());
-    }
-
     /// A secret the scan's rules find, or one obid holds (even in a file that isn't text), and
     /// nothing is kept.
     #[tokio::test]
@@ -1410,13 +1444,13 @@ mod tests {
         assert_eq!(store.get(&id).unwrap().versions.len() as u32, MAX_VERSIONS);
     }
 
-    /// Hidden names count toward MAX_FILES too, before anything is sorted (F3); a file with
+    /// Hidden names count toward MAX_ENTRIES too, before anything is sorted (F3); a file with
     /// another link to it (a hard link, which may be to a file outside) is refused (F5).
     #[tokio::test]
     async fn hidden_names_count_and_hard_links_are_refused() {
         let t = Temp::new("hidden-hard");
         t.write("hidden/index.html", "x");
-        for i in 0..MAX_FILES {
+        for i in 0..MAX_ENTRIES {
             t.write(&format!("hidden/.{i}"), "");
         }
         std::fs::create_dir_all(t.0.join("outside")).unwrap();
@@ -1431,7 +1465,7 @@ mod tests {
         let (store, _) = t.store();
         let room = t.room();
         let why = store.publish(what(&room, "hidden")).await.unwrap_err();
-        assert!(why.contains("more than 2000 files"), "{why}");
+        assert!(why.contains("more than 2000 names"), "{why}");
         for path in ["hard", "hard.md"] {
             let why = store.publish(what(&room, path)).await.unwrap_err();
             assert!(why.contains("has another link"), "{path}: {why}");
@@ -1673,14 +1707,14 @@ mod tests {
         assert_eq!(job_entries(&worktree), Ok(vec![]));
     }
 
-    /// "The first 20 by name" holds: past MAX_FILES names (hidden ones too) none is published,
+    /// "The first 20 by name" holds: past MAX_ENTRIES names (hidden ones too) none is published,
     /// rather than the first 20 of those read (#648's re-review, N6).
     #[test]
     fn too_many_entries_publish_none() {
         let t = Temp::new("entries-cap");
         let folder = t.0.join("worktree/.obi/artifacts");
         std::fs::create_dir_all(&folder).unwrap();
-        for i in 0..MAX_FILES {
+        for i in 0..MAX_ENTRIES {
             std::fs::write(folder.join(format!(".{i}")), "").unwrap();
         }
         std::fs::write(folder.join("a.md"), "x").unwrap();
