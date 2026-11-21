@@ -119,29 +119,33 @@ describe('ARTIFACTSAPP-8', () => {
       expect(previewAsk({ id, version: 1, bounds, edits }), JSON.stringify(edits).slice(0, 40)).toBeUndefined();
     }
   });
-});
 
-describe('ARTIFACTSAPP-8, the edits laid over', () => {
   it('artifactsapp_8_an_edit_named_like_an_inherited_key_changes_nothing', () => {
     const files = Object.assign(noFiles(), { 'index.html': { text: '<h1>One</h1>' }, 'style.css': { text: 'h1 {}' } });
-    const proto = Object.getPrototypeOf(files);
     overlay(files, JSON.parse('{"__proto__": "<h1>x</h1>", "constructor": "x", "toString": "x", "hasOwnProperty": "x", "new.html": "x", "style.css": "h1 { color: red }"}'));
     expect(Object.keys(files).sort()).toEqual(['index.html', 'style.css']);
     expect(files['style.css']).toEqual({ text: 'h1 { color: red }' });
     expect(files['index.html']).toEqual({ text: '<h1>One</h1>' });
-    expect(Object.getPrototypeOf(files)).toBe(proto);
-    expect(proto).toBeNull();
-    // a real file of that name is one like any other: laid over, and shown
+    expect(Object.getPrototypeOf(files)).toBeNull();
+    // a real file of that name, set as readVersion sets it, is one like any other: laid over
     const named = Object.assign(noFiles(), { 'index.html': { text: 'x' } });
     named['__proto__'] = { text: 'kept' };
     overlay(named, JSON.parse('{"__proto__": "edited"}'));
     expect(Object.keys(named).sort()).toEqual(['__proto__', 'index.html']);
     expect(named['__proto__']).toEqual({ text: 'edited' });
-    // and reaches the host page as a key, never as the object's prototype
-    let got: Record<string, unknown> | undefined;
-    new Function('window', shownAs({ files: named }))({ obyShow: (v: { files: Record<string, unknown> }) => { got = v.files; } });
-    expect(Object.keys(got!).sort()).toEqual(['__proto__', 'index.html']);
-    expect(Object.getPrototypeOf(got)).toBe(Object.prototype);
+  });
+
+  it('artifactsapp_8_a_file_named_proto_is_a_file', () => {
+    const files = noFiles();
+    files['index.html'] = { text: '<h1>One</h1>' };
+    files['__proto__'] = { text: 'a file' };
+    // the exact script main hands executeJavaScript, run as the page would
+    let received: { files: Record<string, unknown> } | undefined;
+    new Function('window', shownAs({ files, bundler: 'http://127.0.0.1:1' }))({ obyShow: (v: { files: Record<string, unknown> }) => { received = v; } });
+    expect(Object.keys(received!.files).sort()).toEqual(['__proto__', 'index.html']);
+    expect(Object.hasOwn(received!.files, '__proto__')).toBe(true);
+    expect(received!.files['__proto__']).toEqual({ text: 'a file' });
+    expect(Object.getPrototypeOf(received!.files)).toBe(Object.prototype);
   });
 });
 
