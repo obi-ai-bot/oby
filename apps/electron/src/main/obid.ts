@@ -184,7 +184,7 @@ export async function send(method: string, path: string, body: unknown, signal?:
       method, signal, cache: 'no-store',
       headers: {
         Authorization: `Bearer ${t}`,
-        Accept: path.split('?')[0] === '/v1/events' || /^\/v1\/browser\/(events|tabs\/[^/]+\/stream)$/.test(path.split('?')[0]) || (method === 'GET' && path === '/v1/browser/relay') ? 'text/event-stream' : 'application/json',
+        Accept: path.split('?')[0] === '/v1/events' || path.split('?')[0] === '/v1/browser/events' || (method === 'GET' && path === '/v1/browser/relay') ? 'text/event-stream' : 'application/json',
         ...(body === undefined ? {} : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json' }),
         ...(words ? { 'X-Oby-Words': words } : {}),
         ...(there ? { 'Oby-Computer': there } : profile ? { 'Oby-Profile': profile } : {}),

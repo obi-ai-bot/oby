@@ -259,12 +259,6 @@ contextBridge.exposeInMainWorld('app', {
     },
     // Show in Finder for a download in Downloads, by its name (main/browser.ts): true once shown
     reveal: (name: string) => ipcRenderer.invoke('browser-reveal', name) as Promise<boolean>,
-    watch(tab: string, fn: (data: string) => void) {
-      const listener = (_: unknown, m: { tab: string; data: string }) => { if (m.tab === tab) fn(m.data); };
-      ipcRenderer.on('browser-frame', listener);
-      void ipcRenderer.invoke('browser-watch', tab);
-      return () => { ipcRenderer.off('browser-frame', listener); void ipcRenderer.invoke('browser-unwatch', tab); };
-    },
   },
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page

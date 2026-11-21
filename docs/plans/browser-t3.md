@@ -232,14 +232,17 @@ once a webview is live; obid's use Blok workflows (`tools/obid-spec`, on Azure).
 - **No holds, for any job.** Take control is clicking the page; take, give back, input, the stream,
   `human_control` and `control_changed` go in O2 and W3. The box's foreign jobs are kept apart by
   their partition and the box's edge, not by a hold. No `person` event at first, as T3.
-- **Sangam's words stay; new lines are the plainest true sentence, marked his to change.** The
-  buttons keep their labels (Take control, Give back, Go on anyway). Where a board's line stops being
-  true (board 6's "Codex waits until you give it back"; Go on anyway's "starts this task's browser
-  again"), the PR that changes the behavior writes the plainest true sentence and marks it, in the
-  code and the PR, as Sangam's to change.
+- **Sangam's words only, never ours.** The buttons keep their labels (Take control, Give back, Go
+  on anyway). Where a board's line stops being true (board 6's "Codex waits until you give it
+  back"; Go on anyway's "starts this task's browser again"), the PR that changes the behavior shows
+  the words his screen has for what's true, or none: no sentence of ours stands in for his. What his
+  screens still need is listed under Open.
 
 ## Open
 
+- **Sangam's screen for you on a page nobody holds.** On obid, Take control (or a click) puts you on
+  the tab's own page while the agent can still use it. Board 6 has words only for a held tab, so until
+  his screen has this state the strip stays as he draws a tab nobody holds (W3).
 - **A "person is driving" signal**, if agents and the owner's clicks fight: a throttled
   `person {threadId, tabId}` event, window → obid.
 
