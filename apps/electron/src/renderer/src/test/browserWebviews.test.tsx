@@ -58,6 +58,20 @@ describe('BROWSERAPP-26: each agent tab is a real webview in the window, in the 
     expect(webviews()).toEqual([w]);
   });
 
+  it('browserapp_26: a webview already attached when it mounts (its did-attach came first) is still registered, once', async () => {
+    // the live run's race: the guest attached 9 ms after the tab event, before the page's listener
+    const proto = HTMLElement.prototype as unknown as { getWebContentsId?: () => number };
+    proto.getWebContentsId = () => 7;
+    try {
+      await live([tab('t1', { partition: 'persist:oby-agent-codex' })]);
+      expect(register).toHaveBeenCalledWith('j1', 't1', 7);
+      await act(async () => { webviews()[0].dispatchEvent(new Event('did-attach')); webviews()[0].dispatchEvent(new Event('dom-ready')); });
+      expect(register).toHaveBeenCalledTimes(1);
+    } finally {
+      delete proto.getWebContentsId;
+    }
+  });
+
   it('browserapp_26: a crashed page comes back at its last address; the agent\'s pointer is drawn over it while it shows', async () => {
     await live([tab('t1', { partition: 'persist:oby-agent-codex' })]);
     await act(async () => { (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click(); });

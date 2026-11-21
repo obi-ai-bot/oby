@@ -69,12 +69,20 @@ function Hosted({ job, tab }: { job: string; tab: Tab }) {
   const [pointer, setPointer] = useState<{ x: number; y: number; at: number; click: boolean } | null>(null);
   const browser = window.app?.browser;
 
-  useEffect(() => {
+  // registered with main once per mount: the webview can attach before an effect runs (it did, 9 ms
+  // after the tab event, in the live run), so it's asked at once too, and on its first page's dom-ready
+  useLayoutEffect(() => {
     const w = ref.current;
     if (!w || !browser) return;
+    let done = false;
     const attached = () => {
-      void browser.register(job, tab.id, w.getWebContentsId()).then((why) => { if (why) console.warn(`The browser: ${why}`); });
+      if (done) return;
+      let id: number;
+      try { id = w.getWebContentsId(); } catch { return; /* not attached yet: did-attach comes */ }
+      done = true;
+      void browser.register(job, tab.id, id).then((why) => { if (why) console.warn(`The browser: ${why}`); });
     };
+    attached();
     const gone = () => {
       // remounted at its last address, a few times at most (T3: 250 ms × 2ⁿ, 3 in 30 s)
       const now = Date.now();
@@ -86,8 +94,9 @@ function Hosted({ job, tab }: { job: string; tab: Tab }) {
       setTimeout(() => setMount((m) => ({ n: m.n + 1, src })), 250 * 2 ** (crashes.current.length - 1));
     };
     w.addEventListener('did-attach', attached);
+    w.addEventListener('dom-ready', attached);
     w.addEventListener('render-process-gone', gone);
-    return () => { w.removeEventListener('did-attach', attached); w.removeEventListener('render-process-gone', gone); };
+    return () => { w.removeEventListener('did-attach', attached); w.removeEventListener('dom-ready', attached); w.removeEventListener('render-process-gone', gone); };
   }, [mount.n, job, tab.id, browser, first.src]);
 
   // on screen or not, as main and obid hear it (T3's `shown`)
