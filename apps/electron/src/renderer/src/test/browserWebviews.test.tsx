@@ -31,7 +31,7 @@ describe('BROWSERAPP-26: each agent tab is a real webview in the window, in the 
     const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
     (window as unknown as { app: unknown }).app = {
       obid: { call },
-      browser: { follow: () => () => {}, watch: () => () => {}, fill: async () => null, reveal: async () => true, register, shown, pointer: (fn: typeof pointer) => { pointer = fn; return () => { pointer = null; }; } },
+      browser: { follow: () => () => {}, fill: async () => null, reveal: async () => true, register, shown, pointer: (fn: typeof pointer) => { pointer = fn; return () => { pointer = null; }; } },
     };
     await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /><BrowserWebviews /></BrowserProvider>); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });

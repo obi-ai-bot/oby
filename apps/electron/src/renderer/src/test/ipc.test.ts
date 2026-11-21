@@ -155,8 +155,6 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
   help: { args: ['reveal-log'], refusal: 'Not this app’s page.' },
   'browser-follow': { args: [], refusal: null },
-  'browser-watch': { args: ['t1'], refusal: null },
-  'browser-unwatch': { args: ['t1'], refusal: null },
   'browser-register': { args: ['j1', 't1', 5], refusal: 'Not this app’s page.' },
   'browser-shown': { args: ['j1', 't1', true], refusal: null },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
