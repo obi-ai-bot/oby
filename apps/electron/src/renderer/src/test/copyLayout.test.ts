@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser, Locator, Page } from 'playwright-core';
-import { chrome, openMock, type Mock } from './layout/mock';
+import { CHROME_HOOK_MS, chrome, openMock, type Mock } from './layout/mock';
 import { measure, say } from './layout/measure';
 
 // CHATFIRST-37, as a person sees it: in every conversation of the mock, a message shows one Copy at a
@@ -9,7 +9,7 @@ import { measure, say } from './layout/measure';
 // narrow one. With the pointer on the message, then on each of an agent's words in it (the owner's
 // "Fix CI" case: Oby's reply, a task card whose agent's last words carry their own Copy, the next message).
 let browser: Browser | string;
-beforeAll(async () => { browser = await chrome(); });
+beforeAll(async () => { browser = await chrome(); }, CHROME_HOOK_MS);
 afterAll(async () => { if (typeof browser !== 'string') await browser.close(); });
 
 const ci = !!process.env.CI;

@@ -119,3 +119,26 @@ describe('paste (T3: pasted images and text)', () => {
     expect(b.text()).toBe('first line\n\nthird line\nfourth');
   });
 });
+
+describe('paste (T3: composerAttachmentFiles, round 2)', () => {
+  // "preserves text when the clipboard also includes generic image files": cells from Numbers or Excel,
+  // rich text from Pages or Keynote, come with a picture of themselves beside their text
+  it('t3_paste_text_that_comes_with_a_picture_of_itself_types_the_text', async () => {
+    const got: File[][] = [];
+    const b = await box({ onPasteFiles: (f) => got.push(f) });
+    const picture = new File([new Uint8Array([137, 80, 78, 71])], 'image.png', { type: 'image/png' });
+    await paste(b.input, { text: 'name\tcount\nlogin\t2', files: [picture] });
+    expect(got).toEqual([]);
+    expect(b.text()).toBe('name\tcount\nlogin\t2');
+  });
+
+  // the rule's other side: a file copied in Finder comes with its own name as the text, and is attached
+  it('t3_paste_a_file_copied_in_finder_is_attached_not_typed_as_its_name', async () => {
+    const got: File[][] = [];
+    const b = await box({ onPasteFiles: (f) => got.push(f) });
+    const photo = new File([new Uint8Array([137, 80, 78, 71])], 'login-error.png', { type: 'image/png' });
+    await paste(b.input, { text: 'login-error.png', files: [photo] });
+    expect(got).toEqual([[photo]]);
+    expect(b.text()).toBe('');
+  });
+});

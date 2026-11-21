@@ -1969,20 +1969,20 @@ async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_i
     assert_eq!(changed["changedTo"], mallory.key_id());
     // A wrong fingerprint isn't taken; the one the owner compared is, and the member is trusted again.
     let wrong = tokio::task::block_in_place(|| {
-        call(
+        call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": ernesto.owner.key.key_id()})),
+            &json!({"fingerprint": ernesto.owner.key.key_id()}),
         )
     });
     assert_eq!(wrong.status, 422);
     let accepted = tokio::task::block_in_place(|| {
-        call(
+        call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": mallory.key_id()})),
+            &json!({"fingerprint": mallory.key_id()}),
         )
     });
     assert_eq!(accepted.status, 200, "{}", accepted.text);
@@ -2304,6 +2304,63 @@ async fn sphere_9_a_signed_confirm_trusts_the_new_key() {
     assert_eq!(ask().status, 202);
 }
 
+/// SPHERE-25: trusting a member's changed key through `POST /v1/obid/sphere/pins/{owner}` takes the
+/// owner's signed words, as the `trust_key` Confirm does (SPHERE-9): with obid's token alone, or a
+/// signature for another body, it's `403`, nothing is pinned and the card stays open; signed, the
+/// new key is pinned verified and the card closes; signed with any other fingerprint, `422`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_25_trusting_a_members_key_takes_the_owners_signature() {
+    let folder = Folder::new("sphere-25");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| read_members(&obid));
+    let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
+    serve_owner_key(&sphere, &ernesto, &mallory, 2);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        assert_eq!(trust_cards(&obid, "").len(), 1);
+        let target = "/v1/obid/sphere/pins/ernesto";
+        let body = json!({"fingerprint": mallory.key_id()});
+        let left_as_it_was = |why: &str| {
+            let pin = ernestos_pin(&obid);
+            assert_eq!(pin["fingerprint"], ernesto.owner.key.key_id(), "{why}");
+            assert_eq!(pin["verified"], false, "{why}");
+            assert_eq!(pin["changedTo"], mallory.key_id(), "{why}");
+            assert_eq!(
+                trust_cards(&obid, "").len(),
+                1,
+                "{why}: the card stays open"
+            );
+        };
+
+        let token_only = call(&obid, "POST", target, Some(&body));
+        assert_eq!(token_only.status, 403, "{}", token_only.text);
+        left_as_it_was("obid's token alone");
+
+        let other = json!({"fingerprint": ernesto.owner.key.key_id()});
+        let header = words_header(&obid, "POST", target, Some(&other));
+        let elsewhere = call_with_headers(
+            &obid,
+            TOKEN,
+            "POST",
+            target,
+            Some(&body),
+            &[("X-Oby-Words", &header)],
+        );
+        assert_eq!(elsewhere.status, 403, "{}", elsewhere.text);
+        left_as_it_was("a signature for another body");
+
+        let wrong = call_typed(&obid, "POST", target, &other);
+        assert_eq!(wrong.status, 422, "{}", wrong.text);
+
+        let signed = call_typed(&obid, "POST", target, &body);
+        assert_eq!(signed.status, 200, "{}", signed.text);
+        let pin = ernestos_pin(&obid);
+        assert_eq!(pin["fingerprint"], mallory.key_id());
+        assert_eq!(pin["verified"], true);
+        assert!(trust_cards(&obid, "").is_empty());
+    });
+}
+
 /// SPHERE-10: the card closes, with no answer and an `inbox` event, when the owner accepts the key
 /// through `POST /v1/obid/sphere/pins/{owner}`, when the member leaves the Sphere, and when obid
 /// leaves it.
@@ -2341,11 +2398,11 @@ async fn sphere_10_the_card_closes_when_settled_elsewhere() {
     let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
     let id = card_for(&mallory, 2);
     let accepted = tokio::task::block_in_place(|| {
-        call(
+        call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": mallory.key_id()})),
+            &json!({"fingerprint": mallory.key_id()}),
         )
     });
     assert_eq!(accepted.status, 200, "{}", accepted.text);
@@ -4390,6 +4447,108 @@ async fn sphere_24_a_rebound_join_takes_the_membership_the_sphere_lists() {
         let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
         assert_eq!(members.status, 200, "{}", members.text);
     });
+}
+
+// ---------------------------------------------------------------------------------------------
+// A send that's safe to repeat (docs/contracts/obi-requests.md, OBIREQ-7 to 10)
+
+/// `POST /v1/obid/sphere/requests` with `body`, and `headers`.
+fn send_request(obid: &Obid, body: &Value, headers: &[(&str, &str)]) -> Answer {
+    tokio::task::block_in_place(|| {
+        call_with_headers(
+            obid,
+            TOKEN,
+            "POST",
+            "/v1/obid/sphere/requests",
+            Some(body),
+            headers,
+        )
+    })
+}
+
+/// How many review requests obid sent that the Sphere took.
+fn reviews_taken(sphere: &FakeSphere) -> usize {
+    sends_of(sphere, "obi-wellington")
+        .iter()
+        .filter(|(kind, status)| kind == "review_request" && *status < 300)
+        .count()
+}
+
+/// A review request for Ernesto's Oby, with `operation` as its `operationId`.
+fn review_for_ernesto(operation: Option<&str>) -> Value {
+    let mut ask =
+        json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
+    if let Some(id) = operation {
+        ask["operationId"] = json!(id);
+    }
+    ask
+}
+
+/// OBIREQ-7: a request sent with operationId X, sent again with X (or X as R02's
+/// `Idempotency-Key`), gets the first exchange, and the Sphere sees one envelope.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_7_a_repeat_sends_nothing() {
+    let folder = Folder::new("obireq-7");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
+    let first = send_request(&obid, &review_for_ernesto(Some("obireq-7")), &[]);
+    assert_eq!(first.status, 202, "{}", first.text);
+    let cid = first.body["correlationId"].as_str().unwrap().to_owned();
+    ernesto.receive(1, 20).await;
+    let again = send_request(&obid, &review_for_ernesto(Some("obireq-7")), &[]);
+    assert_eq!(again.status, 202, "{}", again.text);
+    assert_eq!(again.body["correlationId"], cid.as_str());
+    let by_header = send_request(
+        &obid,
+        &review_for_ernesto(None),
+        &[("Idempotency-Key", "obireq-7")],
+    );
+    assert_eq!(by_header.status, 202, "{}", by_header.text);
+    assert_eq!(by_header.body["correlationId"], cid.as_str());
+    assert_eq!(reviews_taken(&sphere), 1);
+    let list = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/exchanges"));
+    assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+/// OBIREQ-8: operationId X used for one body, then sent with another: `409`, and nothing is sent;
+/// a body and a header that name two keys is `422`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_8_one_id_two_bodies_is_409() {
+    let folder = Folder::new("obireq-8");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
+    let first = send_request(&obid, &review_for_ernesto(Some("obireq-8")), &[]);
+    assert_eq!(first.status, 202, "{}", first.text);
+    ernesto.receive(1, 20).await;
+    let mut other = review_for_ernesto(Some("obireq-8"));
+    other["body"]["goal"] = json!("Another review");
+    let conflict = send_request(&obid, &other, &[]);
+    assert_eq!(conflict.status, 409, "{}", conflict.text);
+    let two_keys = send_request(
+        &obid,
+        &review_for_ernesto(Some("obireq-8")),
+        &[("Idempotency-Key", "another")],
+    );
+    assert_eq!(two_keys.status, 422, "{}", two_keys.text);
+    assert!(two_keys.text.contains("operationId"), "{}", two_keys.text);
+    let mut not_text = review_for_ernesto(None);
+    not_text["operationId"] = json!(8);
+    assert_eq!(send_request(&obid, &not_text, &[]).status, 422);
+    assert_eq!(reviews_taken(&sphere), 1);
+}
+
+/// OBIREQ-10: a client that sends no operationId and posts twice sends two requests, as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_10_no_id_behaves_as_before() {
+    let folder = Folder::new("obireq-10");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    unsealed(&obid, "ernesto");
+    let first = send_request(&obid, &review_for_ernesto(None), &[]);
+    let second = send_request(&obid, &review_for_ernesto(None), &[]);
+    assert_eq!((first.status, second.status), (202, 202));
+    assert_ne!(first.body["correlationId"], second.body["correlationId"]);
+    ernesto.receive(2, 20).await;
+    assert_eq!(reviews_taken(&sphere), 2);
 }
 
 // ---------------------------------------------------------------------------------------------

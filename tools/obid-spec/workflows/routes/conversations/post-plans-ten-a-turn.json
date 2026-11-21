@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans: a turn offers at most ten times",
+  "version": "1.0.0",
+  "description": "A turn that isn't the owner's own word starts or offers jobs at most ten times and says what's left, so what it read can't flood the inbox with cards (TASKCONV-12).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "taskconv-12-the-eleventh-offer-is-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REPEAT 11 OBY oby_offer {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Add a greeting\", \"kind\": \"build\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$matches": "^oby: refused: Oby starts or offers jobs at most 10 times in one turn"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-12"
+        ]
+      }
+    },
+    {
+      "id": "taskconv-12-ten-cards",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "start"
+                },
+                10
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKCONV-12"
+        ]
+      }
+    }
+  ]
+}

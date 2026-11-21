@@ -1,0 +1,292 @@
+{
+  "schemaVersion": "2",
+  "name": "A follow-up adds to its task's open pull request (PUBLISHING-12, MERGING-23, 24)",
+  "version": "1.0.0",
+  "description": "Words to a done task whose pull request is open start a follow-up on its branch; its push is the publish, onto the same pull request, which its conversation hears; then the pull request's one merge card is the follow-up's.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/messages"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "t-card",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "merge",
+                "job": "${state.t.body.id}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "f",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/messages",
+        "body": {
+          "text": "SLOW: second.txt"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "followUpOf": "${state.t.body.id}",
+            "branch": "${state.t-published.body.branch}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-23"
+        ]
+      }
+    },
+    {
+      "id": "publishing-12-its-push-is-the-publish",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.f.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7",
+            "addedTo": 7,
+            "publishError": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-12"
+        ]
+      }
+    },
+    {
+      "id": "branch-now",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/${state.t-published.body.branch}"
+        ]
+      }
+    },
+    {
+      "id": "its-file",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "show",
+          "${state.branch-now.out}:second.txt"
+        ]
+      }
+    },
+    {
+      "id": "publishing-12-onto-the-same-branch",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.its-file.out}",
+        "expect": {
+          "body": {
+            "$type": "string"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-12"
+        ]
+      }
+    },
+    {
+      "id": "publishing-12-its-conversation-hears-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/conversation?id=${state.f.body.conversation}",
+        "within": 20,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "who": "oby",
+                "text": {
+                  "$contains": "is done: added to pull request #7"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-12"
+        ]
+      }
+    },
+    {
+      "id": "merging-24-the-card-is-the-follow-ups",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "merge",
+                "job": "${state.f.body.id}"
+              }
+            }
+          }
+        },
+        "within": 120
+      },
+      "ui": {
+        "proves": [
+          "MERGING-23",
+          "MERGING-24"
+        ]
+      }
+    },
+    {
+      "id": "merging-24-one-card-the-carriers",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "merge"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-24"
+        ]
+      }
+    },
+    {
+      "id": "merging-24-nothing-waits-on-the-first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "mergeNeedsYou": false,
+            "mergeError": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-24"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,306 @@
+{
+  "schemaVersion": "2",
+  "name": "A check that judged nothing is run again by itself (PUBLISHING-8, 31)",
+  "version": "1.0.0",
+  "description": "A task adding the check.sh its check runs, which the base doesn't have: nothing counts as checked and nothing is pushed; the job stays running, saying when it runs the check again, with no card; past its waits it ends done, not published, saying why, and the owner's Publish pushes it; Stop ends a wait.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_RECHECK_MS": "200"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: check.sh",
+            "check": "sh check.sh"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-31-it-waits-running-saying-so",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 60,
+        "expect": {
+          "paths": {
+            "id": "${state.t.body.id}",
+            "status": "running",
+            "step": {
+              "$matches": "^Its check judged nothing: its check runs check\\.sh as main has it, and main has no check\\.sh\\. Oby runs it again in "
+            },
+            "unjudged.tries": 1,
+            "unjudged.next": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-31"
+        ]
+      }
+    },
+    {
+      "id": "publishing-8-31-past-its-waits-done-unpublished",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "pushed": null,
+            "published": null,
+            "canPublish": true,
+            "reason": "Not published: its check runs check.sh as main has it, and main has no check.sh, so nothing counts as checked. Oby ran it again by itself for 24 hours and none of its runs judged it: Publish it from its page once you've read its change."
+          },
+          "paths": {
+            "unjudged.next": null,
+            "unjudged.tries": 10
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-8",
+          "PUBLISHING-31"
+        ]
+      }
+    },
+    {
+      "id": "nothing-pushed",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "branch",
+          "--list",
+          "${state.t.body.branch}"
+        ]
+      }
+    },
+    {
+      "id": "publishing-8-nothing-went-out",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.nothing-pushed.out}",
+        "expect": {
+          "body": ""
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-8"
+        ]
+      }
+    },
+    {
+      "id": "action",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}/publish",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "sig",
+      "use": "runtime.rust:device-sign",
+      "inputs": {
+        "device": "${state.device}",
+        "lines": [
+          "oby-publish",
+          "${state.t.body.id}",
+          "${state.action.body.action}"
+        ]
+      }
+    },
+    {
+      "id": "published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.t.body.id}/publish",
+        "body": {
+          "device": "${state.sig.approval.device}",
+          "action": "${state.action.body.action}",
+          "signedAt": "${state.sig.approval.signedAt}",
+          "signature": "${state.sig.approval.signature}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "pushed",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/${state.t.body.branch}"
+        ]
+      }
+    },
+    {
+      "id": "publishing-8-the-owners-publish-pushes-it",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.pushed.out}",
+        "expect": {
+          "body": {
+            "$matches": "^[0-9a-f]{40}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-8"
+        ]
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "s",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_RECHECK_MS": "600000"
+        }
+      }
+    },
+    {
+      "id": "u",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: check.sh",
+            "check": "sh check.sh"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "u-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.u.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          },
+          "paths": {
+            "unjudged.tries": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-31-stop-ends-the-wait",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.s}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.u.body.id}/stop",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "stopped"
+          },
+          "paths": {
+            "unjudged": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-31"
+        ]
+      }
+    }
+  ]
+}

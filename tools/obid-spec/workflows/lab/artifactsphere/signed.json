@@ -1,0 +1,335 @@
+{
+  "schemaVersion": "2",
+  "name": "Lab artifact sphere: every owner act on a share is refused unsigned",
+  "version": "1.0.0",
+  "description": "LAB-ARTSPHERE-19, the sharing part (src/lab/artifactsphere.rs: oby_route). Sharing, revoking, making and taking back a public link and deleting, on the owner's Oby, and answering and sending a version back, on the recipient's, each need the device's signed words over the exact body: unsigned, each is refused 401, and nothing reached the Sphere. Reading the shares needs obid's token.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "lab"
+  ],
+  "steps": [
+    {
+      "id": "up",
+      "use": "runtime.rust:lab.artifacts.up",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "sphere",
+      "use": "runtime.rust:lab.artifactsphere.up",
+      "inputs": {
+        "artifacts": "${state.up}",
+        "expect": {
+          "paths": {
+            "sphere.url": {
+              "$contains": "http://127.0.0.1:"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "da",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ana"
+      }
+    },
+    {
+      "id": "db",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "ben"
+      }
+    },
+    {
+      "id": "dc",
+      "use": "runtime.rust:lab.artifactsphere.device",
+      "inputs": {
+        "oby": "cleo"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:lab.artifacts.fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:lab.artifacts.publish",
+      "inputs": {
+        "path": "${state.fx.path}",
+        "title": "Lab page",
+        "conversation": "c1",
+        "job": "j1",
+        "expect": {
+          "paths": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "shared",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "device",
+        "body": {
+          "to": [
+            "ben"
+          ],
+          "access": "edit"
+        },
+        "expect": {
+          "paths": {
+            "status": 200
+          }
+        }
+      }
+    },
+    {
+      "id": "bens",
+      "use": "runtime.rust:lab.artifactsphere.sync",
+      "inputs": {
+        "oby": "ben",
+        "expect": {
+          "paths": {
+            "kept": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "19-share-unsigned",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "unsigned",
+        "body": {
+          "to": [
+            "cleo"
+          ],
+          "access": "view"
+        },
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-revoke-unsigned",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}/shares/ben",
+        "device": "${state.da}",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-public-unsigned",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.page.id}/public",
+        "device": "${state.da}",
+        "as": "unsigned",
+        "body": {
+          "acknowledged": "anyone-with-the-link"
+        },
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-unpublic-unsigned",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}/public",
+        "device": "${state.da}",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-delete-unsigned",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "DELETE",
+        "path": "/v1/artifacts/${state.page.id}",
+        "device": "${state.da}",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-answer-unsigned",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ben.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.bens.kept.0.artifact}/answers",
+        "device": "${state.db}",
+        "as": "unsigned",
+        "body": {
+          "text": "Hm."
+        },
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-send-back-unsigned",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ben.api}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.bens.kept.0.artifact}/sendBack",
+        "device": "${state.db}",
+        "as": "unsigned",
+        "body": {
+          "version": 1
+        },
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "unsigned"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-reading-needs-the-token",
+      "use": "runtime.rust:lab.artifactsphere.call",
+      "inputs": {
+        "api": "${state.sphere.ana.api}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.page.id}/shares",
+        "device": "${state.da}",
+        "as": "none",
+        "expect": {
+          "paths": {
+            "status": 401,
+            "body.reason": "no_token"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    },
+    {
+      "id": "19-nothing-happened",
+      "use": "runtime.rust:lab.artifactsphere.sphere",
+      "inputs": {
+        "expect": {
+          "paths": {
+            "blobs": {
+              "$len": 1
+            },
+            "public": {
+              "$len": 0
+            },
+            "sent": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LAB-ARTSPHERE-19"
+        ]
+      }
+    }
+  ]
+}

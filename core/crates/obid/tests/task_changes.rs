@@ -206,8 +206,47 @@ fn changes_1_2_a_two_round_task_lists_its_rounds_and_each_rounds_diff() {
     assert_eq!(first["rounds"].as_array().unwrap().len(), 1, "{first}");
 }
 
+/// CHANGES-15: a file whose name isn't ASCII (`café.txt`) is named in the diff's header as the
+/// file list names it, not in git's octal escapes, so a click on it in the list reaches its diff.
+#[test]
+fn changes_15_a_name_outside_ascii_is_named_in_the_diff_as_in_the_list() {
+    let task = two_rounds("changes-15");
+    let worktree = task.obid.home.join("worktrees").join(&task.next);
+    std::fs::write(worktree.join("café.txt"), "bonjour\n").unwrap();
+    git(&worktree, &["add", "café.txt"]);
+    git(
+        &worktree,
+        &[
+            "-c",
+            "user.name=Author",
+            "-c",
+            "user.email=author@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "Add café",
+        ],
+    );
+    let head = git(&worktree, &["rev-parse", "HEAD"]);
+    let all = within(60, "obid reads the commit", || {
+        let all = changes(&task.obid, &task.next, "");
+        (all["head"] == head.as_str()).then_some(all)
+    });
+    assert!(paths(&all).contains(&"café.txt".to_owned()), "{all}");
+    let diff = all["diff"].as_str().unwrap();
+    assert!(
+        diff.contains("diff --git a/café.txt b/café.txt"),
+        "the header names it as the list does: {diff}"
+    );
+    assert!(!diff.contains("\\303"), "{diff}");
+}
+
 /// CHANGES-3: `whitespace=ignore` leaves out a change in whitespace alone: a re-indented file isn't
-/// listed and has no hunk, the task's other files are; anything else is `422`.
+/// listed and has no hunk, the task's other files are, a file whose mode alone changed and an
+/// empty new file among them, on any git (2.43 lists the re-indented one under `-w`, 2.54 and later
+/// don't); anything else is `422`.
 #[test]
 fn changes_3_ignoring_whitespace_leaves_out_a_reindented_file() {
     let task = two_rounds("changes-3");
@@ -215,7 +254,18 @@ fn changes_3_ignoring_whitespace_leaves_out_a_reindented_file() {
     let greet = std::fs::read_to_string(worktree.join("src/greet.js")).unwrap();
     let indented: String = greet.lines().map(|l| format!("    {l}\n")).collect();
     std::fs::write(worktree.join("src/greet.js"), indented).unwrap();
-    git(&worktree, &["add", "src/greet.js"]);
+    // Its mode alone changes (counted 0 0, as a re-indented file is on an older git), and a new
+    // file with nothing in it (0 0 too): both are changes whitespace doesn't make.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let readme = worktree.join("README.md");
+        std::fs::set_permissions(&readme, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(worktree.join("empty.txt"), "").unwrap();
+    git(
+        &worktree,
+        &["add", "src/greet.js", "README.md", "empty.txt"],
+    );
     git(
         &worktree,
         &[
@@ -258,7 +308,11 @@ fn changes_3_ignoring_whitespace_leaves_out_a_reindented_file() {
     });
     assert_ne!(count(&all), (0, 0), "{all}");
     let ignored = changes(&task.obid, &task.next, "?whitespace=ignore");
-    assert_eq!(paths(&ignored), ["hello.txt", "second.txt"], "{ignored}");
+    assert_eq!(
+        paths(&ignored),
+        ["README.md", "empty.txt", "hello.txt", "second.txt"],
+        "{ignored}"
+    );
     assert_eq!(hunks(&ignored), hunks(&all) - 1, "{ignored}");
     assert!(
         !ignored["diff"].as_str().unwrap().contains("greet.js"),

@@ -1344,6 +1344,23 @@ fn recovery_3_five_tries_then_it_stalls() {
     );
 }
 
+/// RECOVERY-3: a job that wrote in its worktree in its first runs, then sat whole windows with no
+/// word, no write and no CPU, as a writer a slow disk holds does, keeps RECOVERY-3's 5 tries: an
+/// idle verdict after a run that wrote isn't RECOVERY-12's 2 (#2761). An idle job's (RECOVERY-12)
+/// and a spinning one's (RECOVERY-16) are still 2.
+#[test]
+fn recovery_3_a_writer_a_slow_disk_held_keeps_its_five_tries() {
+    let (_folder, obid) = obid_with("recovery-3-held", json!({"stallAfter": 1}), &[]);
+    let id = post_job(&obid, "WRITES THEN QUIET: 2 KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["stalled"]["why"], "quiet", "{job}");
+    let told = prompts(&job);
+    // Its first turn, 5 continued, and the handoff note's: not 2 more after its first idle run.
+    assert_eq!(told.len(), 7, "{told:?}");
+    assert!(told[6].contains("handoff note"), "{told:?}");
+}
+
 /// RECOVERY-12: an agent busy without a word or a change in its worktree (a command building
 /// outside it) uses CPU, which counts as progress: it runs past 2 quiet windows and ends done in its
 /// one turn.

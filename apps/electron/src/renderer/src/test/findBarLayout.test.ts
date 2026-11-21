@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser, Page } from 'playwright-core';
-import { chrome, openMock, type Mock } from './layout/mock';
+import { CHROME_HOOK_MS, chrome, openMock, type Mock } from './layout/mock';
 import { measure, say } from './layout/measure';
 
 // ⌘F's find bar as a person sees it (docs/contracts/shortcuts.md, SHORTCUTS-3): in every conversation of
@@ -8,7 +8,7 @@ import { measure, say } from './layout/measure';
 // your own on the right most of all) and never on the match it went to; nor on any control. At a normal
 // window and a narrow one.
 let browser: Browser | string;
-beforeAll(async () => { browser = await chrome(); });
+beforeAll(async () => { browser = await chrome(); }, CHROME_HOOK_MS);
 afterAll(async () => { if (typeof browser !== 'string') await browser.close(); });
 
 const ci = !!process.env.CI;

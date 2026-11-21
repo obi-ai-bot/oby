@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Shared with you · Oby</title>
+<!--
+  The page a public link opens (Apache-2.0), served by the owner's Obysphere at /a/<linkId>. The
+  Sphere holds only ciphertext and this page; the key is in the link's # part, which a browser never
+  sends. The page reads it, fetches the ciphertext, decrypts it here (age, ../vendor/age.bundle.js)
+  and shows the files from memory in a sandboxed frame. An outside viewer only looks: the one thing
+  offered is the invite to get Oby. Its words are proposals; Sangam owns them and the animation.
+-->
+<style>
+html,body{margin:0;height:100%;background:#0b0b0b;color:#ececec;font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
+header{display:flex;align-items:center;gap:10px;padding:12px 20px;border-bottom:1px solid rgba(255,255,255,.06);color:#a3a3a8;font-size:13px;flex-wrap:wrap}
+header b{color:#ececec;font-weight:600}
+#status{margin:48px auto;max-width:560px;text-align:center;color:#a3a3a8;font-size:15px}
+#view{position:absolute;inset:46px 0 0 0}
+#view iframe{width:100%;height:100%;border:0;background:#fff}
+#view pre{margin:0;padding:32px;white-space:pre-wrap;color:#ececec}
+#view ol{max-width:640px;margin:32px auto;color:#ececec}
+.invite{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);width:calc(100% - 32px);max-width:560px;display:flex;align-items:center;gap:14px;padding:12px 16px 12px 12px;border-radius:20px;background:#181817;border:1px solid rgba(255,255,255,.08);box-shadow:0 10px 28px rgba(0,0,0,.45);box-sizing:border-box;flex-wrap:wrap}
+.invite p{margin:0}
+.invite .words{flex:1;min-width:200px;display:flex;flex-direction:column;gap:2px}
+.invite .who{font-weight:500}
+.invite .why{color:#a3a3a8;font-size:13px}
+.invite a{text-decoration:none;padding:8px 14px;border-radius:999px;font-size:13px;font-weight:500}
+.invite .get{background:#ececec;color:#111}
+.invite .have{background:rgba(255,255,255,.08);color:rgba(255,255,255,.8)}
+.oby{width:40px;height:40px;flex:none;animation:hop 2.4s ease-in-out infinite}
+.oby .eye{animation:blink 4s steps(1) infinite;transform-origin:center 13px}
+@keyframes hop{0%,70%,100%{transform:translateY(0)}80%{transform:translateY(-8px)}90%{transform:translateY(0)}}
+@keyframes blink{0%,94%,100%{transform:scaleY(1)}96%{transform:scaleY(.1)}}
+@media (prefers-reduced-motion: reduce){.oby,.oby .eye{animation:none}}
+</style>
+<script src="/a/vendor/age.bundle.js"></script>
+<script src="/a/viewer.js" defer></script>
+</head>
+<body data-link="{{LINK}}" data-owner="{{OWNER}}">
+<header><b>Oby Artifacts</b><span>Shared by {{OWNER}} · read only</span></header>
+<p id="status" role="status">Opening what {{OWNER}} shared…</p>
+<div id="view"></div>
+<div class="invite" data-oby-invite>
+  <svg class="oby" viewBox="0 0 24 24" aria-hidden="true"><g fill="#f1f1ee" stroke="#f1f1ee" stroke-width="1.2" stroke-linejoin="round"><path d="M5 6.6 L7.9 3.6 L8.9 6.6 Z"/><path d="M19 6.6 L16.1 3.6 L15.1 6.6 Z"/></g><rect x="1.5" y="6" width="21" height="16.5" rx="5" fill="#f1f1ee"/><g class="eye"><rect x="6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e"/><rect x="14.6" y="10.6" width="2.8" height="5" rx="1.4" fill="#0d0d0e"/></g></svg>
+  <div class="words"><p class="who">{{OWNER}}’s Oby shared this with you</p><p class="why">Have an idea? Your Oby can tell theirs.</p></div>
+  <a class="get" href="https://github.com/obi-ai-bot/oby">Get Oby for Mac</a>
+  <a class="have" href="oby://open?artifact={{LINK}}">I have Oby: open it there</a>
+</div>
+</body>
+</html>

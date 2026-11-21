@@ -1,0 +1,190 @@
+{
+  "schemaVersion": "2",
+  "name": "KEYCHAIN-1 and 2: the vault is obid's file, never the Keychain",
+  "version": "1.0.0",
+  "description": "A configuration whose vault says `keychain` is read as the file: obid starts, and its log says once to set it to the file. A saved Tetrix connection whose login isn't in the file is no longer connected and says so (`Oby's Tetrix login isn't in its vault any more: connect Tetrix again.`), found gone once: after a restart Settings still says it, until Tetrix is connected again, and obid doesn't find it gone again. (Naming the Swift runner's items left in the Keychain is macOS-only.)",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/tetrix"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "vault": {
+            "store": "keychain"
+          }
+        },
+        "files": {
+          "tetrix.json": "{\"url\": \"https://tetrix.example/mcp\", \"connectedAt\": \"2026-10-30T10:00:00Z\"}"
+        }
+      }
+    },
+    {
+      "id": "keychain-1-a-vault-the-configuration-keeps-in-the-keychain-still-starts",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "runner.engine": "obid"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-1"
+        ]
+      }
+    },
+    {
+      "id": "log",
+      "use": "runtime.rust:accounts.log",
+      "inputs": {
+        "obid": "${state.o}",
+        "has": "the configuration's vault says"
+      }
+    },
+    {
+      "id": "keychain-1-its-log-says-to-change-it-to-the-file",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.log.with}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 1
+            },
+            "0": {
+              "$contains": "obid keeps the vault in its file now and never reads the Keychain, so set it to {\"store\": \"file\"} or leave it out"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-1"
+        ]
+      }
+    },
+    {
+      "id": "keychain-2-a-tetrix-login-not-in-the-file-is-no-longer-connected",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/tetrix",
+        "expect": {
+          "status": 200,
+          "body": {
+            "connected": false,
+            "error": "Oby's Tetrix login isn't in its vault any more: connect Tetrix again."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-2"
+        ]
+      }
+    },
+    {
+      "id": "keychain-2-what-it-saved-is-no-longer-connected",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "tetrix.json",
+        "expect": {
+          "json": {
+            "url": "https://tetrix.example/mcp",
+            "connectedAt": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-2"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "again",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-claude",
+        "config": {
+          "vault": {
+            "store": "keychain"
+          }
+        }
+      }
+    },
+    {
+      "id": "keychain-2-settings-keeps-saying-it-until-tetrix-is-connected-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.again}",
+        "method": "GET",
+        "path": "/v1/tetrix",
+        "expect": {
+          "status": 200,
+          "body": {
+            "connected": false,
+            "error": "Oby's Tetrix login isn't in its vault any more: connect Tetrix again."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-2"
+        ]
+      }
+    },
+    {
+      "id": "log-again",
+      "use": "runtime.rust:accounts.log",
+      "inputs": {
+        "obid": "${state.again}",
+        "has": "Tetrix's login isn't in the vault"
+      }
+    },
+    {
+      "id": "keychain-2-found-gone-once-across-two-starts",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.log-again.with}",
+        "expect": {
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "KEYCHAIN-2"
+        ]
+      }
+    }
+  ]
+}

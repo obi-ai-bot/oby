@@ -1,4 +1,5 @@
 import { app, clipboard, type WebContents } from 'electron';
+import { execFile, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
@@ -7,7 +8,7 @@ import { HOME, obid, type Trusted } from './obid';
 import { obidState, onLive } from './live';
 import { takeInput } from './words';
 import { mayWrite } from './terminalInput';
-import { foldersOf, worktreeOf } from './worktree';
+import { worktreeOf } from './worktree';
 import { ipc } from './ipc';
 import { oneOf, safeInteger, string, type Decoder } from '../shared/decode';
 
@@ -35,8 +36,31 @@ export type Spawn = (file: string, args: string[], options: { name: string; cols
 
 // at most this many shells at once, all places together
 export const MAX_TERMINALS = 8;
-// how long a closed shell has to end after SIGHUP and SIGTERM before SIGKILL
+// how long a closed shell has to end after its SIGHUP before SIGKILL
 export const KILL_GRACE_MS = 1000;
+// The process groups a shell started, as ps lists them now (macOS and Linux): each of its jobs runs
+// in a group of its own, which the shell's SIGKILL doesn't reach, so those left would run on with no
+// terminal (a job's `sleep 300`, a dev server). Its children, theirs, and so on; never the shell's own
+// group or Oby's, whose groups no shell's descendant can join (another session's)
+export function jobGroups(shell: number, table: string): number[] {
+  const rows = table.split('\n').map((l) => l.trim().split(/\s+/).map(Number)).filter((r) => r.length === 3 && r.every(Number.isInteger));
+  const tree = new Set([shell]);
+  for (let grew = true; grew;) { grew = false; for (const [pid, ppid] of rows) if (tree.has(ppid) && !tree.has(pid)) { tree.add(pid); grew = true; } }
+  return [...new Set(rows.filter(([pid]) => pid !== shell && tree.has(pid)).map(([, , pgid]) => pgid))].filter((g) => g > 1 && g !== shell && g !== process.pid);
+}
+// SIGKILLs the process groups a shell still there started, then `done` ends the shell (TERMINAL-4).
+// ps is read off main's thread, the window going on meanwhile; only as Oby quits (now) it's waited
+// for, since nothing after the app ends would run what it answers
+const PS = ['-A', '-o', 'pid=,ppid=,pgid='];
+export function killJobs(shell: number, done: () => void, now = false) {
+  const kill = (table: string | undefined) => {
+    for (const g of jobGroups(shell, table ?? '')) { try { process.kill(-g, 'SIGKILL'); } catch { /* gone */ } }
+    done();
+  };
+  if (now) kill(spawnSync('ps', PS, { encoding: 'utf8', timeout: 2000 }).stdout);
+  else execFile('ps', PS, { encoding: 'utf8', timeout: 2000 }, (_e, out) => kill(out));
+}
+
 // output that arrives within this long goes to the page in one message
 const BATCH_MS = 4;
 // a size xterm.js can have: columns and rows
@@ -74,7 +98,11 @@ export function cleanEnv(base: NodeJS.ProcessEnv, who: { home: string; user: str
 // home (worktree.ts) and only while obid has the job; a conversation's first folder, as obid lists
 // it (its project's while it's in one). Null: none on this Mac.
 export async function cwdOf(place: Place, id: string, ask = obid): Promise<string | null> {
-  if (place === 'conversation') return foldersOf('conversation', id)[0] ?? null;
+  // obid's first folder as it lists it, there or not: one gone since says so (start), never the next
+  if (place === 'conversation') {
+    const first = obidState().conversations.find((c) => c.id === id)?.folders?.[0];
+    return typeof first === 'string' && isAbsolute(first) ? first : null;
+  }
   const dir = worktreeOf(HOME, id);
   if (!dir) return null;
   return (await ask('GET', `/v1/jobs/${encodeURIComponent(id)}`)).status === 200 ? dir : null;
@@ -90,7 +118,8 @@ export class Terminals {
   // shells closed and not yet gone: SIGKILLed when Oby quits (TERMINAL-4)
   private dying = new Set<Pty>();
   constructor(private spawn: () => Spawn, private send: (page: WebContents | null, channel: string, ...args: unknown[]) => void,
-    private env: () => { env: Record<string, string>; shell: string }, private graceMs = KILL_GRACE_MS) {}
+    private env: () => { env: Record<string, string>; shell: string }, private graceMs = KILL_GRACE_MS,
+    private jobs: (shell: number, done: () => void, now: boolean) => void = killJobs) {}
 
   get open() { return [...this.terms.values()].filter((t) => !t.exited).length; }
   // the places that have a shell, for removal (TERMINAL-4)
@@ -119,7 +148,8 @@ export class Terminals {
       t.exited = true;
       this.dying.delete(pty);
       this.flush(t);
-      this.send(t.page, 'terminal-exit', id, exitCode, signal ?? null);
+      // nothing comes after a close (TERMINAL-4), its exit neither
+      if (!t.closing) this.send(t.page, 'terminal-exit', id, exitCode, signal ?? null);
       this.terms.delete(id);
     });
     return { term: id, cwd, name: basename(cwd) };
@@ -152,8 +182,11 @@ export class Terminals {
     return true;
   }
 
-  // Ends a shell and what it runs: SIGHUP, which an interactive shell passes to its jobs (it ignores
-  // SIGTERM), then SIGTERM, then SIGKILL if it's still there after the grace
+  // Ends a shell and what it runs: SIGHUP, which an interactive shell passes to its jobs, as
+  // Terminal.app sends; then SIGKILL if it's still there after the grace, with the jobs it never passed
+  // its SIGHUP to (a shell that ignores it, or a Mac too busy to run it in time). Never a SIGTERM right
+  // behind the SIGHUP: an interactive shell ignores it, except while it hangs up, when it can end the
+  // shell before its jobs got the SIGHUP, leaving them to run on (seen in bash 3.2)
   close(id: string) {
     const t = this.terms.get(id);
     if (!t) return false;
@@ -162,8 +195,8 @@ export class Terminals {
     t.closing = true;
     if (t.exited) return true;
     this.dying.add(t.pty);
-    for (const sig of ['SIGHUP', 'SIGTERM']) { if (t.exited) break; try { t.pty.kill(sig); } catch { /* gone already */ } }
-    const timer = setTimeout(() => { if (this.dying.delete(t.pty)) { try { t.pty.kill('SIGKILL'); } catch { /* gone */ } } }, this.graceMs);
+    try { t.pty.kill('SIGHUP'); } catch { /* gone already */ }
+    const timer = setTimeout(() => { if (this.dying.delete(t.pty)) this.kill(t.pty, false); }, this.graceMs);
     timer.unref?.();
     return true;
   }
@@ -173,8 +206,11 @@ export class Terminals {
   // Oby quits: every shell closed, then those still there killed outright, before the app ends
   closeAll() { for (const id of [...this.terms.keys()]) this.close(id); }
   killLeft() {
-    for (const pty of this.dying) { try { pty.kill('SIGKILL'); } catch { /* gone */ } }
+    for (const pty of this.dying) this.kill(pty, true);
     this.dying.clear();
+  }
+  private kill(pty: Pty, now: boolean) {
+    this.jobs(pty.pid, () => { try { pty.kill('SIGKILL'); } catch { /* gone */ } }, now);
   }
 }
 

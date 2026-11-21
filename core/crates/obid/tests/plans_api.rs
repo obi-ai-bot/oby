@@ -816,6 +816,36 @@ fn stop_reaches_only_its_own_conversation() {
     assert_eq!(b["text"], "waited", "{b}");
 }
 
+/// COMPOSER-4: a Bypass chip on unsigned words (a script's, oby-mcp's) where Bypass is the owner's
+/// default is that default: the task starts at once in Bypass and nothing waits for a Confirm, as
+/// the same words with no chip do (#2543). With Ask the default, the chip still doesn't widen it.
+#[test]
+fn composer_4_a_bypass_chip_where_bypass_is_the_default_asks_nothing() {
+    let folder = Folder::new("composer-4-default-bypass");
+    let obid = started_harness_jobs(&folder);
+    let dispatch = r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","title":"Greeting fix","task":"Fix the greeting"}"#;
+    let ask = |mode: &str| {
+        // The owner's own setting, signed as Settings signs it (Bypass widens trust).
+        let setting = json!({"mode": mode});
+        let set = call_signed(&obid, "PUT", "/v1/settings/permissions", Some(&setting));
+        assert_eq!(set.status, 200, "{}", set.text);
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": dispatch, "new": true, "defaults": {"mode": "bypass"}})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer.body
+    };
+    let started = ask("bypass");
+    assert_eq!(started["jobs"][0]["mode"], "bypass", "{started}");
+    assert_eq!(items_of(&obid, "confirm"), Vec::<serde_json::Value>::new());
+    let started = ask("ask");
+    assert_eq!(started["jobs"][0]["mode"], "ask", "{started}");
+    assert_eq!(items_of(&obid, "confirm"), Vec::<serde_json::Value>::new());
+}
+
 /// A brain dispatch can't start a job in Bypass mode: it waits as a confirm item whose title,
 /// made by obid from the job, says so; the owner's Confirm starts it (review on #551, N1).
 #[test]
@@ -3437,6 +3467,50 @@ fn delivery_4_a_failed_turn_says_why_with_no_secret() {
     assert!(!error.contains("it broke"), "{error}");
     assert!(!error.contains("I couldn't answer"), "{error}");
     assert!(error.contains("[redacted:"), "{error}");
+}
+
+/// DELIVERY-12: obid killed mid-turn (a crash, SIGKILL) leaves the conversation's agent running,
+/// its group recorded in obid's home as a job's agent's is; the next start ends it, so no agent
+/// carries on with a turn the conversation says was cut (#2739).
+#[test]
+fn delivery_12_a_restart_ends_the_conversation_agent_a_killed_obid_left_running() {
+    let folder = Folder::new("delivery-12");
+    let mut obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plan_cut_short(&obid, json!({"said": "LINGER 60000", "conversation": id}));
+    reads(&obid, &id, "LINGER 60000", "running");
+    let records = obid.home.join("jobs/groups");
+    let pgid = within(30, "the conversation agent's group is recorded", || {
+        std::fs::read_dir(&records)
+            .ok()?
+            .flatten()
+            .filter_map(|e| {
+                serde_json::from_slice::<serde_json::Value>(&std::fs::read(e.path()).ok()?).ok()
+            })
+            .find(|r| r["job"] == format!("conversation {id}"))
+            .and_then(|r| r["pgid"].as_u64())
+    });
+    // `kill -0 -<pgid>`: whether anything of that group still runs.
+    let alive = |pgid: u64| {
+        std::process::Command::new("kill")
+            .args(["-0", "--", &format!("-{pgid}")])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    obid.child.kill().unwrap();
+    let _ = obid.child.wait();
+    assert!(alive(pgid), "the agent outlived obid, as the bug needs");
+    drop(obid);
+    let config =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    let _obid = start(&folder.0, &config, None);
+    within(30, "the next start ends what the killed obid left", || {
+        (!alive(pgid)).then_some(())
+    });
 }
 
 /// Sends `body` to `POST /v1/plans` on a thread of its own and never reads its answer: a request

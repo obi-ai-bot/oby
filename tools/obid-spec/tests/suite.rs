@@ -283,6 +283,47 @@ fn obidspec_6_a_vacuous_assertion_or_one_that_asserts_nothing_fails_its_step() {
 }
 
 #[test]
+fn obidspec_6_an_expect_key_its_node_doesnt_judge_fails_the_run() {
+    // `{"count": 0}` where `{"paths": {"count": 0}}` was meant: once read past in silence, so the
+    // step passed asserting nothing; now it fails the run, naming the key and the step
+    let bare = check("bare", json!({"count": 1}), json!({"count": 0}), json!({}));
+    let (code, out) = run_checks(&[("bare", json!([bare]))]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("bare › bare") && out.contains("`count`") && out.contains("doesn't judge"),
+        "{out}"
+    );
+    // and the same expectation meant as it reads: a path, judged and red
+    let meant = check(
+        "meant",
+        json!({"count": 1}),
+        json!({"paths": {"count": 0}}),
+        json!({}),
+    );
+    let (code, out) = run_checks(&[("meant", json!([meant]))]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("count: 1 expected 0"), "{out}");
+}
+
+#[test]
+fn obidspec_6_every_shipped_expect_is_one_its_node_judges() {
+    let all = workflow::load_all(&suite().join("workflows"), &node_names()).unwrap();
+    let mut wrong = vec![];
+    for w in &all {
+        for s in &w.steps {
+            if let Some(want) = s.inputs.get("expect") {
+                if let Err(why) =
+                    obid_spec::expect::judged_by(&s.node, want, obid_spec::nodes::judges(&s.node))
+                {
+                    wrong.push(format!("{} › {}: {why}", w.file.display(), s.id));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
 fn obidspec_7_an_expected_red_step_fails_quietly_until_it_passes() {
     let red = check(
         "r",

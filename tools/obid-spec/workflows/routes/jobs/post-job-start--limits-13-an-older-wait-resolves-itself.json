@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "2",
+  "name": "A wait an older release left resolves itself (LIMITS-13)",
+  "version": "1.0.0",
+  "description": "A job an older obid left interrupted with a resume time becomes a wait when obid starts: queued with its resume time, no account-limit decision and nothing asked.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs/{id}/start"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        },
+        "files": {
+          "jobs/aaaa0013.json": {
+            "id": "aaaa0013",
+            "request": "Look around",
+            "agent": "claude",
+            "account": "stand-in",
+            "repo": "obi-e2e/fixture-app",
+            "branch": "oby/investigate-aaaa0013",
+            "base": "main",
+            "pr": null,
+            "kind": "investigate",
+            "task": "Look around",
+            "title": null,
+            "status": "interrupted",
+            "step": "",
+            "summary": "",
+            "session": "00000000-0000-4000-8000-000000000001",
+            "created": 1794999600,
+            "started": 1794999700,
+            "finished": 1794999800,
+            "commits": null,
+            "published": null,
+            "pushed": null,
+            "publishError": null,
+            "outgoing": [],
+            "pullRequest": null,
+            "pullRequestError": null,
+            "reviewError": null,
+            "summaries": null,
+            "issue": null,
+            "rounds": null,
+            "round": 1,
+            "check": "node --test",
+            "model": null,
+            "effort": null,
+            "notes": null,
+            "files": null,
+            "limit": null,
+            "mode": "bypass",
+            "waiting": null,
+            "phase": "work",
+            "recovery": {
+              "errors": 0,
+              "stalls": 0,
+              "tries": 0,
+              "restarts": 0,
+              "limitResumes": 0,
+              "renewed": 0
+            },
+            "dismissed": null,
+            "obi": null,
+            "unattended": true,
+            "unsigned": true,
+            "reason": "Claude Code hit its usage limit.",
+            "nextStep": null,
+            "resumesAt": 2000000000
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-13-it-waits-by-itself",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/aaaa0013",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued",
+            "accountLimit": null
+          },
+          "paths": {
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-13"
+        ]
+      }
+    },
+    {
+      "id": "limits-13-no-decision",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/limit-decisions",
+        "expect": {
+          "status": 200,
+          "body": []
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-13"
+        ]
+      }
+    },
+    {
+      "id": "stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/aaaa0013/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

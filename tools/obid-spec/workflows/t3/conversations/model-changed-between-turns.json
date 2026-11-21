@@ -1,0 +1,99 @@
+{
+  "schemaVersion": "2",
+  "name": "T3 conversations: the account's model changed between two turns",
+  "version": "1.0.0",
+  "description": "T3 Code's ClaudeAdapterV2 're-sends the model on the turn after a live selection change fails', 4168c14c7d, 669aa32e0d: the owner changes the conversation's account's model between two turns of one conversation, while its Claude Code waits from the first. The next turn runs on the new model (CONVERSATION-AGENT-21: a turn uses its account's model), in the same session (CONVERSATION-AGENT-46).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY Ready.",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": "Ready."
+          }
+        }
+      }
+    },
+    {
+      "id": "model-changed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/stand-in",
+        "body": {
+          "model": "claude-haiku-5-5"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "next-turn",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "REMEMBER",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "reply",
+            "text": {
+              "$matches": "^resume=[0-9a-f-]{36}$"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-21-the-next-turn-runs-on-the-new-model",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.said.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "exists": true,
+          "text": {
+            "$matches": "(?s)^[^\\n]*\\n.*claude-haiku-5-5"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-21"
+        ]
+      }
+    }
+  ]
+}

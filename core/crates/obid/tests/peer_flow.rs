@@ -285,11 +285,11 @@ async fn peer_1_thread_lists_every_exchange_with_that_member() {
     assert_eq!(bad.status, 422);
     // Compared with them: the thread says so, and so does each of their posts.
     let compared = tokio::task::block_in_place(|| {
-        let accepted = call(
+        let accepted = call_typed(
             &obid,
             "POST",
             "/v1/obid/sphere/pins/ernesto",
-            Some(&json!({"fingerprint": ernesto.owner.key.key_id()})),
+            &json!({"fingerprint": ernesto.owner.key.key_id()}),
         );
         assert_eq!(accepted.status, 200, "{}", accepted.text);
         thread_of(&obid, "ernesto")
@@ -1154,4 +1154,70 @@ async fn peer_45_a_waiting_question_goes_only_while_it_still_holds() {
         "obid's words: {post}"
     );
     assert_eq!(recorded(&sphere, &id), 0, "the Sphere kept nothing");
+}
+
+/// OBIREQ-9 (docs/contracts/obi-requests.md): the owner's signed question with an `operationId`
+/// went, and the same signed request comes again, byte for byte, as a retry over a relay that lost
+/// the answer: obid answers the first question's post, reads no used signature, and Dana's Oby
+/// gets the question once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obireq_9_a_signed_retry_gets_the_first_exchange() {
+    let folder = Folder::new("obireq-9");
+    let (sphere, obid, _) = started(&folder).await;
+    let seal = obi_protocol::seal::SealKey::from_private(obi_protocol::keys::sha256("dana"));
+    let dana = TestObi::join_as(
+        &sphere,
+        "obi-dana",
+        "dana",
+        &["question"],
+        Some(seal.unwrap()),
+        "0.2.0",
+        "Dana's Oby",
+    )
+    .await;
+    let path = "/v1/obid/sphere/peers/dana/ask";
+    let body = json!({"text": "What's the progress?", "operationId": "obireq-9"});
+    let (first, again) = tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let signed = words_header(&obid, "POST", path, Some(&body));
+        let send = || {
+            call_with_headers(
+                &obid,
+                TOKEN,
+                "POST",
+                path,
+                Some(&body),
+                &[("X-Oby-Words", &signed)],
+            )
+        };
+        (send(), send())
+    });
+    assert_eq!(first.status, 202, "{}", first.text);
+    assert_eq!(again.status, 202, "not a used signature: {}", again.text);
+    assert_eq!(again.body["exchange"]["id"], first.body["exchange"]["id"]);
+    assert_eq!(again.body["by"], "owner");
+    let got = dana.receive(1, 20).await;
+    assert_eq!(got[0]["type"], "question");
+    let questions = |sphere: &FakeSphere| {
+        sphere
+            .lock()
+            .sends
+            .iter()
+            .filter(|(from, text, _)| from == "obi-wellington" && text.contains("\"question\""))
+            .count()
+    };
+    assert_eq!(questions(&sphere), 1, "one question went");
+    // Without the key, the same words are a new question, and an unsigned one still goes nowhere.
+    let (unsigned, new) = tokio::task::block_in_place(|| {
+        let plain = json!({"text": "What's the progress?"});
+        (
+            call(&obid, "POST", path, Some(&plain)),
+            call_typed(&obid, "POST", path, &plain),
+        )
+    });
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    assert_eq!(new.status, 202, "{}", new.text);
+    assert_ne!(new.body["exchange"]["id"], first.body["exchange"]["id"]);
+    dana.receive(1, 20).await;
+    assert_eq!(questions(&sphere), 2);
 }

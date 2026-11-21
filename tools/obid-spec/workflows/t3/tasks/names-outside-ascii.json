@@ -1,0 +1,233 @@
+{
+  "schemaVersion": "2",
+  "name": "T3: a changed file named outside ASCII",
+  "version": "1.0.0",
+  "description": "T3 Code's diffRendering tests ('reads the octal a host with core.quotePath on writes for a name outside ASCII', 'reads both sides of a rename under the names they really have'): a task's commit adds café.txt and 日本.md. Its changes list each under its own name, the diff's header names it the same way, so the window's file list reaches its diff (CHANGES-4, CHANGES-5), and ?path= finds it by its exact name (TASKS-24).",
+  "tags": [
+    "t3"
+  ],
+  "trigger": {
+    "manual": {}
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "SLEEP"
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "s-running",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "s-worktree",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.s.body.id}/.git",
+        "within": 30,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "cafe",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.s.body.id}/café.txt",
+        "text": "bonjour\n"
+      }
+    },
+    {
+      "id": "japanese",
+      "use": "runtime.rust:t3.fs",
+      "inputs": {
+        "obid": "${state.o}",
+        "op": "write",
+        "path": "worktrees/${state.s.body.id}/日本.md",
+        "text": "# 日本\n"
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.s.body.id}",
+        "args": [
+          "add",
+          "--all"
+        ]
+      }
+    },
+    {
+      "id": "committed",
+      "use": "runtime.rust:t3.git",
+      "inputs": {
+        "obid": "${state.o}",
+        "dir": "worktrees/${state.s.body.id}",
+        "args": [
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-q",
+          "-m",
+          "Names outside ASCII"
+        ]
+      }
+    },
+    {
+      "id": "listed-under-their-names",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "files": {
+              "$any": {
+                "path": "café.txt",
+                "status": "added"
+              }
+            },
+            "files.1": {
+              "$exists": true
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-23"
+        ]
+      }
+    },
+    {
+      "id": "changes-5-the-diffs-header-names-it-as-the-list-does",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "diff": {
+              "$contains": "diff --git a/café.txt b/café.txt"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-5"
+        ]
+      }
+    },
+    {
+      "id": "changes-5-the-other-one-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "diff": {
+              "$contains": "diff --git a/日本.md b/日本.md"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHANGES-5"
+        ]
+      }
+    },
+    {
+      "id": "tasks-24-found-by-its-exact-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}/changes?path=caf%C3%A9.txt",
+        "expect": {
+          "status": 200,
+          "body": {
+            "files": [
+              {
+                "path": "café.txt",
+                "additions": 1
+              }
+            ]
+          },
+          "paths": {
+            "diff": {
+              "$contains": "+bonjour"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "TASKS-24"
+        ]
+      }
+    },
+    {
+      "id": "stop-all",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/stop-all",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

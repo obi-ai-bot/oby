@@ -777,19 +777,9 @@
         "expect": {
           "status": 200,
           "body": {
-            "capabilities": [
-              "ask-mentions-v1",
-              "composer-v1",
-              "conversation-marks-v1",
-              "events-replay-v1",
-              "folders-v1",
-              "profile-projects-v1",
-              "profile-scope-v1",
-              "project-jobs-v1",
-              "projects-v1",
-              "revisions-v1",
-              "skills-v1"
-            ]
+            "capabilities": {
+              "$sorted": true
+            }
           }
         }
       }

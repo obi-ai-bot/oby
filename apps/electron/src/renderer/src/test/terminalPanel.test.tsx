@@ -252,3 +252,48 @@ describe('TERMINAL-12: one panel at the right at a time', () => {
     expect(panel()?.querySelector('.terminal-place')?.textContent).toBe('Add hello · j1');
   });
 });
+
+// T3 Code's terminal drawer tests, held to Oby's own contract (docs/contracts/terminal.md)
+describe('T3: the terminal panel', () => {
+  // terminalSession.test "delivers all output when several events arrive before a renderer reads"
+  it('t3_terminal_output_that_comes_before_its_tab_listens_shows_once', async () => {
+    hold = true;
+    const store = await mount();
+    await act(async () => store.openTerminal('task', 'j1', 'Add hello'));
+    main.data!('t1', '$ ');
+    main.data!('t1', 'ready');
+    await act(async () => pending.shift()!({} as Opened));
+    await flush();
+    expect(Screen.all[0].shown).toEqual(['$ ready']);
+    main.data!('t1', '!');
+    expect(Screen.all[0].shown).toEqual(['$ ready', '!']);
+  });
+
+  // ThreadTerminalDrawer.browser "drops input until the shell runs instead of failing a write for every key"
+  it('t3_terminal_keys_typed_while_its_shell_opens_go_nowhere', async () => {
+    hold = true;
+    const store = await mount();
+    await act(async () => store.openTerminal('task', 'j1', 'Add hello'));
+    Screen.all[0].typed!('l');
+    await act(async () => pending.shift()!({} as Opened));
+    await flush();
+    expect(main.write).not.toHaveBeenCalled();
+    Screen.all[0].typed!('s');
+    expect(main.write).toHaveBeenCalledExactlyOnceWith('t1', 's');
+  });
+
+  // Manager.test "resumed attaches after close never respawn until the terminal is reopened" (T3 f3e5a165e0);
+  // TERMINAL-1: a shell starts only on the owner's click, "never because the page asked alone". The panel
+  // goes from the page and comes back (another profile opened, main.tsx), its shells ended with it.
+  it('t3_terminal_the_panel_drawn_again_asks_for_no_shell_without_a_click', async () => {
+    const store = await mount();
+    const { default: TerminalPanel } = await import('../terminal/TerminalPanel');
+    await act(async () => store.openTerminal('task', 'j1', 'Add hello'));
+    await flush();
+    await act(async () => root.render(<></>));
+    expect(main.close).toHaveBeenCalledExactlyOnceWith('t1');
+    await act(async () => root.render(<TerminalPanel />));
+    await flush();
+    expect(main.open).toHaveBeenCalledTimes(1);
+  });
+});

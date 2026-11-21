@@ -1,0 +1,152 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/status: each account's model list, read from its CLI",
+  "version": "1.0.0",
+  "description": "obid reads a signed-in Codex account's own model list from its CLI (codex debug models, visible ones only) when the usage is read, adds it on the account in status, and PATCH accepts what that list offers and refuses what it doesn't (CONVERSATION-AGENT-22).",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/status"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "agents": {
+            "codex": {
+              "bin": "${run.root}/core/crates/obid/tests/agents/fake-codex-harness",
+              "accounts": [
+                {
+                  "id": "codex",
+                  "name": "Codex",
+                  "configDir": "${run.scratch}/o/home/accounts/codex"
+                }
+              ]
+            }
+          },
+          "conversation": {
+            "agent": "claude"
+          }
+        },
+        "files": {
+          "accounts/codex/auth.json": {
+            "OPENAI_API_KEY": "fake-codex"
+          }
+        },
+        "env": {
+          "OBID_USAGE_READS": "on",
+          "OBID_USAGE_EVERY_SECONDS": "0"
+        }
+      }
+    },
+    {
+      "id": "conversation-agent-22-the-clis-list-on-the-account",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "codex",
+                "modelsRead": true,
+                "models": {
+                  "$any": {
+                    "id": "gpt-6-luna"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-22"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-22-never-a-hidden-one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "codex",
+                "models": {
+                  "$none": {
+                    "id": "gpt-hidden"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-22"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-22-patch-takes-one-from-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/codex",
+        "body": {
+          "model": "gpt-6-luna"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "model": "gpt-6-luna"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-22"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-22-and-refuses-one-not-on-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/accounts/codex",
+        "body": {
+          "model": "not-on-list"
+        },
+        "expect": {
+          "status": 422
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-22"
+        ]
+      }
+    }
+  ]
+}

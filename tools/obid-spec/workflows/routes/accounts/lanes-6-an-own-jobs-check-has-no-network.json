@@ -1,0 +1,165 @@
+{
+  "schemaVersion": "2",
+  "name": "LANES-6: an own job's agent has no proxy, and its check no network",
+  "version": "1.0.0",
+  "description": "An own Claude Code job's agent runs with no egress proxy of obid's, while its check runs in Oby's box with no network: a check that connects to obid's own port on 127.0.0.1 is refused there (the box's own loopback has nothing listening) and fails the round.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "probe-0",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "person",
+        "path": "seed-tree/probe.js",
+        "content": "require('net').connect(${state.o.port}, '127.0.0.1')\n  .on('connect', () => { console.log('PROBE reached'); process.exit(0); })\n  .on('error', (e) => { console.log('PROBE refused ' + e.code); process.exit(1); });\n"
+      }
+    },
+    {
+      "id": "probe-read",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "--work-tree=${state.o.person}/seed-tree",
+          "read-tree",
+          "main"
+        ]
+      }
+    },
+    {
+      "id": "probe-add",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "--work-tree=${state.o.person}/seed-tree",
+          "add",
+          "-f",
+          "probe.js"
+        ]
+      }
+    },
+    {
+      "id": "probe-commit",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "-c",
+          "user.name=teammate",
+          "-c",
+          "user.email=teammate@example.invalid",
+          "--work-tree=${state.o.person}/seed-tree",
+          "commit",
+          "-q",
+          "-m",
+          "A check that reaches obid's own port"
+        ]
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "REPORT",
+            "check": "node probe.js",
+            "rounds": 1
+          }
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "own-ended",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.own.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "checks": {
+              "$any": {
+                "steps": {
+                  "$any": {
+                    "passed": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "lanes-6-an-own-jobs-agent-gets-no-egress-proxy-of-obids",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.own.body.id}/.obi/report.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "env.HTTPS_PROXY": null,
+              "env.HTTP_PROXY": null,
+              "env.ALL_PROXY": null,
+              "argv": {
+                "$contains": "--settings"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-6"
+        ]
+      }
+    },
+    {
+      "id": "lanes-6-its-check-runs-in-obids-box-with-no-network",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "logs/${state.own.body.id}/check.log",
+        "expect": {
+          "text": {
+            "$matches": "(?m)^PROBE refused ECONNREFUSED$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LANES-6"
+        ]
+      }
+    }
+  ]
+}

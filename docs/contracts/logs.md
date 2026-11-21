@@ -5,7 +5,7 @@ The business behavior contract for what obid's log writer takes out of each line
 ## Feature and status
 
 - **Outcome:** A secret obid holds never reaches obid's log through its log subscriber, whoever wrote the line. Until now a line was safe only when whoever wrote it remembered to redact it.
-- **Status:** **Implemented** (LOGS-1, LOGS-2), roadmap task R02-14.
+- **Status:** **Implemented** (every scenario unless it says it's proposed), roadmap task R02-14.
 - **Scope:** obid's `tracing` log on stderr (on a Mac, the launch agent sends it to `~/Library/Logs/obid.log`, docs/install.md). Lines obid writes with `eprintln!` outside tracing don't pass through the writer: the panic hook redacts its own line with `try_redact` (#911), and `fatal`, the usage text and the log rotation message don't redact. This contract doesn't promise every line on stderr.
 - **Out of scope:** per-call redaction of `/v1` answers, events and pushes (unchanged); the secret scan's built-in rules applied to log lines (#1032).
 

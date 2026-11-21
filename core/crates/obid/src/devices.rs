@@ -124,6 +124,50 @@ impl Devices {
             .any(|d| d.id == id && d.paired.as_deref() == Some(pairing))
     }
 
+    /// Whether `id` is a registered key bound to no pairing that's `alive` (COMPUTERS-15): one whose
+    /// pairing expired or ended can be another's.
+    pub fn bindable(&self, id: &str, alive: impl Fn(&str) -> bool) -> bool {
+        self.saved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .devices
+            .iter()
+            .any(|d| d.id == id && !d.paired.as_deref().is_some_and(&alive))
+    }
+
+    /// Binds the key `id`, registered at another computer by `obid pair-computer` with the owner's
+    /// presence there, to the computer pairing `pairing` the invitation it named made
+    /// (crate::gateway, COMPUTERS-15): then only its words count through that pairing's token.
+    /// The pairing may have no key yet, and the key no pairing that's `alive`.
+    pub fn bind_named(
+        &self,
+        id: &str,
+        pairing: &str,
+        alive: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
+        let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        if saved
+            .devices
+            .iter()
+            .any(|d| d.paired.as_deref() == Some(pairing))
+        {
+            return Err("This pairing already has its key.".into());
+        }
+        let device = saved
+            .devices
+            .iter_mut()
+            .find(|d| d.id == id && !d.paired.as_deref().is_some_and(&alive))
+            .ok_or("That key isn't registered, or is another pairing's.")?;
+        let before = device.paired.replace(pairing.to_owned());
+        if let Err(e) = self.keep(&saved) {
+            if let Some(device) = saved.devices.iter_mut().find(|d| d.id == id) {
+                device.paired = before;
+            }
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+
     /// An older endorsed phone key has no pairing recorded. A fresh challenge lets its holder
     /// prove possession of that already trusted private key without changing registration.
     pub fn pairing_challenge(&self, id: &str, pairing: &str, now: i64) -> Result<String, String> {
@@ -537,6 +581,34 @@ mod tests {
         assert_eq!(
             again.register("Mac", &key(3), None, Origin::Api, SystemTime::now()),
             Ok(id)
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn computers_15_a_named_key_is_its_pairings_own_and_no_others_while_it_lasts() {
+        let home = folder("bind-named");
+        std::fs::write(home.join("pairing"), key(4)).unwrap();
+        let devices = Devices::open(&home);
+        let id = devices
+            .register("Mac", &key(4), None, Origin::Api, SystemTime::now())
+            .unwrap();
+        let alive = |_: &str| true;
+        assert!(devices.bindable(&id, alive));
+        assert!(!devices.bindable("unknown", alive));
+        devices.bind_named(&id, "computer-1", alive).unwrap();
+        assert!(devices.belongs_to_pairing(&id, "computer-1"));
+        assert!(!devices.bindable(&id, alive));
+        assert!(devices.bind_named(&id, "computer-2", alive).is_err());
+        // Its pairing over, another may take it; a pairing takes one key.
+        let ended = |p: &str| p != "computer-1";
+        assert!(devices.bindable(&id, ended));
+        devices.bind_named(&id, "computer-2", ended).unwrap();
+        assert!(devices.belongs_to_pairing(&id, "computer-2"));
+        assert!(!devices.belongs_to_pairing(&id, "computer-1"));
+        assert!(
+            Devices::open(&home).belongs_to_pairing(&id, "computer-2"),
+            "kept"
         );
         let _ = std::fs::remove_dir_all(&home);
     }

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from 'playwright-core';
-import { chrome, openMock, type Mock } from './layout/mock';
+import { CHROME_HOOK_MS, chrome, openMock, type Mock } from './layout/mock';
 import { measure, say } from './layout/measure';
 
 // Oby's first conversation, setting up (onboarding.ts, SetupCard.tsx), as a person sees it, and where a
@@ -9,7 +9,7 @@ import { measure, say } from './layout/measure';
 // its picks (the first task's, the Obysphere's) leaves no empty card behind its words, so they end their
 // message: their Copy under them, no blank row of its own under them, and no gap before the next message.
 let browser: Browser | string;
-beforeAll(async () => { browser = await chrome(); });
+beforeAll(async () => { browser = await chrome(); }, CHROME_HOOK_MS);
 afterAll(async () => { if (typeof browser !== 'string') await browser.close(); });
 
 const ci = !!process.env.CI;

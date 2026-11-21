@@ -1,0 +1,189 @@
+{
+  "schemaVersion": "2",
+  "name": "DELETE /v1/conversations/{id}: the conversation's files go with it",
+  "version": "1.0.0",
+  "description": "A deleted conversation takes its files with it: the upload's folder is gone; one a task at work still holds stays, for that task (ATTACH-11).",
+  "trigger": {
+    "http": {
+      "method": "DELETE",
+      "path": "/v1/conversations/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "notes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=notes.txt",
+        "raw": "the owner's own",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY ok",
+          "new": true,
+          "attachments": [
+            "${state.notes.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "ok"
+          }
+        }
+      }
+    },
+    {
+      "id": "deleted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.said.body.conversation}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "attach-11-the-upload-went-with-it",
+      "use": "runtime.rust:conversations.list-dir",
+      "ui": {
+        "proves": [
+          "ATTACH-11"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "attachments/app",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "held",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/attachments?name=shot.png",
+        "raw": "held pixels",
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "working",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"STALLS-ALWAYS look\", \"kind\": \"investigate\"}",
+          "new": true,
+          "attachments": [
+            "${state.held.body.path}"
+          ]
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "jobs": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "at-work",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.working.body.jobs.0.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running"
+          }
+        }
+      }
+    },
+    {
+      "id": "deleted-too",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/conversations/${state.working.body.conversation}",
+        "expect": {
+          "status": 204
+        }
+      }
+    },
+    {
+      "id": "attach-11-one-a-task-holds-stays",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "DELETE",
+        "path": "/v1/attachments?path=${state.held.body.path}",
+        "expect": {
+          "status": 409
+        }
+      },
+      "ui": {
+        "proves": [
+          "ATTACH-11"
+        ]
+      }
+    },
+    {
+      "id": "attach-11-its-folder-still-there",
+      "use": "runtime.rust:conversations.list-dir",
+      "ui": {
+        "proves": [
+          "ATTACH-11"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "attachments/app",
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      }
+    }
+  ]
+}
