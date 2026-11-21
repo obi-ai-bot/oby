@@ -67,8 +67,14 @@
         "obid": "${state.o}",
         "method": "GET",
         "path": "/v1/jobs/${state.s.body.id}",
+        "within": 30,
         "expect": {
-          "status": 200
+          "status": 200,
+          "paths": {
+            "session": {
+              "$type": "string"
+            }
+          }
         }
       }
     },
@@ -139,8 +145,7 @@
       "ui": {
         "proves": [
           "RECOVERY-2"
-        ],
-        "flaky": "#2821: after obid is killed, the restarted run's prompt sometimes lacks \"Your run was cut\""
+        ]
       }
     },
     {
