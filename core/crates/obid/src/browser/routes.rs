@@ -200,7 +200,7 @@ async fn save_copy(
     };
     let to = shared.browser.downloads_to().to_path_buf();
     let _ = crate::store::make_private_dir(&to);
-    match shared.browser.driver().save_copy(&d.job, &d.name, &to) {
+    match shared.browser.window().save_copy(&d.job, &d.name, &to) {
         Ok(copy) => ok(&c::SaveCopyAnswer {
             id,
             saved_as: copy
@@ -444,7 +444,7 @@ fn room_of(shared: &Shared, job: &str) -> PathBuf {
         .get(job)
         .and_then(|j| j.worktree)
         .map(PathBuf::from)
-        .unwrap_or_else(|| super::driver::Session::job_dir(&shared.config.home, job).join("room"))
+        .unwrap_or_else(|| shared.browser.window().room(job))
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {

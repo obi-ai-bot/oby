@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde_json::Value;
 
-use super::{Job, Lease, Refused, Start, Take, browser_off, tab_rec::TabRec};
+use super::{Job, Lease, Refused, Take, browser_off, tab_rec::TabRec};
 use crate::browser::contract as c;
 
 /// The browser's API: who may call, tabs and their holds, asks, downloads, settings and events.
@@ -77,6 +77,11 @@ impl Api {
                 partition: partition.into(),
             },
         );
+    }
+
+    /// Every job the API knows.
+    pub fn job_ids(&self) -> Vec<String> {
+        self.jobs.keys().cloned().collect()
     }
 
     pub fn job(&self, id: &str) -> Option<&Job> {
@@ -442,19 +447,6 @@ impl Api {
         j.browser_reason = reason;
         if let Some(browser) = self.job_browser(job) {
             self.push(c::EventBody::Browser { browser });
-        }
-    }
-
-    /// Who starts a job's browser: the first caller, while the others wait for it.
-    pub fn claim_start(&mut self, job: &str) -> Start {
-        match self.jobs.get(job).map(|j| j.browser) {
-            None => Start::NoJob,
-            Some(c::BrowserState::Ready) => Start::Up,
-            Some(c::BrowserState::Starting) => Start::Wait,
-            Some(c::BrowserState::NotStarted | c::BrowserState::Failed) => {
-                self.set_browser(job, c::BrowserState::Starting, None);
-                Start::Mine
-            }
         }
     }
 

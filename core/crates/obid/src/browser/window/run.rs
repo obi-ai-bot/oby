@@ -19,8 +19,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
+use super::Call;
 use super::WindowDriver;
-use crate::browser::driver::Call;
 use crate::browser::engine::{Refusal, Ticket, tool, works_the_page};
 
 /// How long obid's own reads around a command may take.
