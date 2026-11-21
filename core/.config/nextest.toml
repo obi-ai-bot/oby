@@ -2,8 +2,8 @@
 # The default profile is nextest's own defaults; CI runs with `--profile ci`.
 
 # GitHub's ci.yml: each shard of the suite runs every test to the end, retries a failed test once
-# (a pass on the retry shows as `flakyFailure` in the JUnit report, and Check lists it as flaky),
-# and stops a test that runs past 5 minutes, so a hung test fails instead of holding its shard.
+# (a pass on the retry shows as `flakyFailure` in the JUnit report), and stops a test that runs
+# past 5 minutes, so a hung test fails instead of holding its shard.
 [profile.ci]
 retries = 1
 fail-fast = false
