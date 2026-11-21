@@ -1,0 +1,10 @@
+az-run: on obybuild
+6ae8b8c2fcada1f6
+54f7066cdda90156
+        FAIL [   6.148s] (254/347) obid::conversation_harness a_new_conversation_finds_its_claude_code_started
+     Summary [ 235.097s] 347 tests run: 346 passed (1 slow), 1 failed, 2732 skipped
+        FAIL [   6.148s] (254/347) obid::conversation_harness a_new_conversation_finds_its_claude_code_started
+error: test run failed
+68 workflows: 68 passed, 0 failed, 0 skipped, in 42 s
+Read from remote host 20.230.52.62: Can't assign requested address
+client_loop: send disconnect: Broken pipe
