@@ -1,7 +1,7 @@
-//! A file an agent downloaded, still in its profile (BROWSER-13): its name (the page's words) and
+//! A file an agent downloaded, still in its folder (BROWSER-13): its name (the page's words) and
 //! size. It owns no state and writes nothing.
 
-/// A file an agent downloaded, still in its profile.
+/// A file an agent downloaded, still in its folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadFile {
     pub name: String,

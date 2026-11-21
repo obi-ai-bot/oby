@@ -1,40 +1,30 @@
-//! Oby's browser: agents drive a browser of their own, the person watches it and takes a tab
-//! over, and what a page says reaches the agent as quoted outside data. Its contract is
-//! [docs/contracts/browser.md](../../../../../docs/contracts/browser.md) (BROWSER-1 to 25).
+//! Oby's browser, T3 Code's design ([docs/plans/browser-t3.md](../../../../../docs/plans/browser-t3.md)):
+//! every agent tab is a `<webview>` in Oby's window, the person uses it as any page, and obid
+//! drives it for the agent over the window's relay in page-level CDP. What a page says reaches the
+//! agent as quoted outside data. obid downloads, installs and runs no browser of its own, and with
+//! no window an agent's page tool is refused `no_window`: there is no fallback. Its contract is
+//! [docs/contracts/browser.md](../../../../../docs/contracts/browser.md).
 //!
-//! This module is the browser, ported from the lab (`tools/obid-spec/src/lab/`,
-//! `browser.rs`, `browser_contract.rs` and `browserapi.rs`) where it was
-//! built and proven:
+//! - [`engine`]: the tool surface, tab ownership per job, refs that die on navigation or a new
+//!   snapshot, per-command deadlines never replayed after a timeout, page data marked as outside
+//!   data, and the download rule. Pure: no IO and no clock of its own.
+//! - [`contract`]: the wire types, routes and reasons the browser's screens, the window and the
+//!   agents' tools talk to, add-only like the rest of obid's API.
+//! - [`api`]: the browser's API over the engine: asks, downloads, settings and the event log.
+//! - [`relay`]: the window's relay, obid's half: its commands, its events, and the CDP calls
+//!   waiting for their answers.
+//! - [`window`]: the window's browser: the engine's commands said in CDP over the relay, a page's
+//!   accessibility snapshot, an agent's downloads in the job's own folder.
 //!
-//! - [`engine`]: the tool surface, tab ownership per conversation and take control, refs that die
-//!   on navigation, a new snapshot or a handover, per-command deadlines never replayed after a
-//!   timeout, page data marked as outside data, the download rule and the latest-frame slot.
-//! - [`contract`]: the wire types, routes and reasons the browser's screens and the agents' tools
-//!   talk to, add-only like the rest of obid's API.
-//! - [`api`]: the browser's API over the engine: holds with their generation, asks, downloads,
-//!   settings and the event log, and bringing a job's browser up within its own allowance.
-//! - [`install`]: agent-browser and chrome-headless-shell downloaded on first use into obid's home,
-//!   each checked against its pinned SHA-256 before anything of it is unpacked (BROWSER-23).
-//! - [`driver`]: one agent-browser daemon and its Chrome per job, at most four live, run per the
-//!   core's tickets under their deadlines, stopped at the job's end and reaped at obid's start
-//!   (BROWSER-24, 25), its downloads and its live stream.
-//!
-//! The core ([`engine`], [`contract`], [`api`]) is pure: no IO, no files, no processes, no clock of
-//! its own (the caller passes the time, and [`api::browser_up`] waits on tokio's clock only). It
-//! keeps every rule on; the lab's switches that turn one off for a red proof stay in the lab.
-//! [`install`] and [`driver`] are where files and processes are. [`Service`] serves them: the API
-//! core, the driver and the events stream, created at obid's start, told when a job ends; its
-//! [`routes`] are the contract's paths under `/v1/browser` and the agents' MCP server
-//! (`POST /v1/browser/mcp`), and its tools run the agents' calls over the driver.
+//! [`Service`] serves them, created at obid's start and told when a job ends; its [`routes`] are
+//! the contract's paths under `/v1/browser` and the agents' MCP server (`POST /v1/browser/mcp`).
 //! [`AgentServer`] is that server as each agent's configuration names it, with its permission
-//! rules (BROWSER-17): Cursor's jobs are given it; Claude Code's and Codex's come next.
+//! rules (BROWSER-17).
 
 pub mod agent_server;
 pub mod api;
 pub mod contract;
-pub mod driver;
 pub mod engine;
-pub mod install;
 pub mod relay;
 pub mod routes;
 pub mod send_buffer;
@@ -43,4 +33,4 @@ mod tools;
 pub mod window;
 
 pub use agent_server::AgentServer;
-pub use service::{SWEEP_EVERY, Service};
+pub use service::Service;

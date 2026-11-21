@@ -243,9 +243,6 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
             "lab": crate::lab::cleanup().await,
             "browser": crate::browser::cleanup().await,
             "testWindow": crate::browser_window::cleanup(),
-            // Once every obid stopped: an engine one of them downloaded and checked, kept for the
-            // next workflows (obid-start's `browser`).
-            "browserCache": obid::keep_browser_engine(),
         })),
         // `within`: asked again until it holds, for a file obid writes a moment later.
         "home-file" => {

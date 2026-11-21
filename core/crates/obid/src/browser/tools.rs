@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use super::Service;
 use super::api::{Refused, mcp_refusal, mcp_result};
 use super::contract as c;
-use super::driver::Session;
 use super::engine::{self, Actor, DownloadFate, Kind, download_rule};
 
 /// How long after an act (or the person's click) a download is looked for.
@@ -81,7 +80,7 @@ impl Service {
     }
 
     fn core_status(&self, actor: &Actor) -> Value {
-        self.driver()
+        self.window()
             .core()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -102,7 +101,7 @@ impl Service {
         };
         let reason = args["reason"].as_str().unwrap_or("").to_string();
         let said = self
-            .driver()
+            .window()
             .core()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -343,7 +342,7 @@ impl Service {
                         .unwrap_or_default()
                 });
                 let new: Vec<_> = me
-                    .driver()
+                    .window()
                     .downloads(&job)
                     .into_iter()
                     .filter(|f| !seen.contains(&f.name))
@@ -360,14 +359,13 @@ impl Service {
                     if place == c::Place::Delivered {
                         let to = me.downloads_to().to_path_buf();
                         let _ = crate::store::make_private_dir(&to);
-                        match me.driver().save_copy(&job, &file.name, &to) {
+                        match me.window().save_copy(&job, &file.name, &to) {
                             Ok(copy) => {
                                 if let Some(n) = copy.file_name() {
                                     name = n.to_string_lossy().into_owned();
                                 }
-                                let home = me.driver().home().to_path_buf();
                                 let _ = std::fs::remove_file(
-                                    Session::downloads_of(&home, &job).join(&file.name),
+                                    me.window().downloads_folder(&job).join(&file.name),
                                 );
                             }
                             Err(e) => {

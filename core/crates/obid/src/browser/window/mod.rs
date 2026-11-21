@@ -10,9 +10,15 @@
 //! a screenshot into the agent's room when asked; the window saves downloads under
 //! `<home>/browser/downloads/<job>/`, which obid names.
 
+mod call;
+mod download_file;
+mod downloads;
 pub mod page;
 pub mod run;
 pub mod snapshot;
+
+pub use call::Call;
+pub use download_file::DownloadFile;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -86,9 +92,19 @@ impl WindowDriver {
         &self.relay
     }
 
-    /// Where the window saves a job's downloads (it takes no other folder).
-    pub fn downloads(&self, job: &str) -> PathBuf {
-        crate::browser::driver::Session::downloads_of(&self.home, job)
+    /// Where the window saves a job's downloads: `<home>/browser/downloads/<job>/`, the only
+    /// folder it takes.
+    pub fn downloads_folder(&self, job: &str) -> PathBuf {
+        self.home.join("browser").join("downloads").join(job)
+    }
+
+    /// The agent's own folder when its job has no worktree: `<home>/browser/jobs/<job>/room`.
+    pub fn room(&self, job: &str) -> PathBuf {
+        self.home
+            .join("browser")
+            .join("jobs")
+            .join(job)
+            .join("room")
     }
 
     /// A job ended: its tabs are released (the window drops their webviews) and forgotten.
