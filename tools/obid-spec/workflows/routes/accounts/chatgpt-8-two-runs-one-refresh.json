@@ -259,7 +259,8 @@
       "ui": {
         "proves": [
           "CHATGPT-8"
-        ]
+        ],
+        "flaky": "#2823: the workflow can read the run's env-seen.json before the stand-in has written it whole, so its token names nothing"
       }
     },
     {
@@ -304,7 +305,8 @@
       "ui": {
         "proves": [
           "CHATGPT-8"
-        ]
+        ],
+        "flaky": "#2823: the workflow can read the run's env-seen.json before the stand-in has written it whole, so its token names nothing (fails when chatgpt-8-one-run-goes-on does: it counts the call that step sends)"
       }
     }
   ]
