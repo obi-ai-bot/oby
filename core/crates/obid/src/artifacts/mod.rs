@@ -137,6 +137,29 @@ pub struct Version {
     /// `owner` when the owner's own edit made it (ARTIFACTS-16, [`edit`]); none for an agent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// What could have shaped its text from outside, fixed as it was made (ARTIFACTS-25): none
+    /// for a version kept before obid recorded it, which counts as someone else's
+    /// ([`seed::carried`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marks: Option<Marks>,
+}
+
+/// The marks a version's maker had as it made it (ARTIFACTS-24, 25), as `crate::jobs::Jobs::mark`
+/// takes them: `foreign`, someone else's text (an untrusted or foreign job, Oby's turn after it
+/// read something untrusted or off obid's allowlist, an import); `reached`, a job that reached
+/// past the package registries. Both none: the owner's own work.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Marks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reached: Option<String>,
+}
+
+impl Marks {
+    pub fn is_empty(&self) -> bool {
+        self.foreign.is_none() && self.reached.is_none()
+    }
 }
 
 impl Artifact {
@@ -163,6 +186,8 @@ pub struct Publish<'a> {
     /// files as that version make no new one, whatever version came after it, so a job publishing
     /// its `.obi/artifacts/` again never lays its files over its conversation's (ARTIFACTS-7).
     pub kept: Option<u32>,
+    /// What its maker carries (ARTIFACTS-25), kept on the version it makes.
+    pub marks: Marks,
 }
 
 /// Who made a version, past what [`Publish`] says: the owner's edit, the uploads its files
@@ -395,6 +420,7 @@ impl Artifacts {
             blobs,
             job: what.job.map(str::to_owned),
             by: made.by.map(str::to_owned),
+            marks: Some(what.marks.clone()),
         });
         self.save(&artifact)
             .map_err(|e| format!("Not published: obid couldn't keep it ({e})."))?;
@@ -1204,6 +1230,7 @@ mod tests {
             job: None,
             artifact: None,
             kept: None,
+            marks: Marks::default(),
         }
     }
 

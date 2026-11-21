@@ -37,6 +37,7 @@ impl Jobs {
                     job: Some(id),
                     artifact: before.map(|i| listed[i].id.as_str()),
                     kept: before.map(|i| listed[i].version),
+                    marks: shaped_by(&job),
                 })
                 .await;
             match (published, before) {
@@ -548,5 +549,16 @@ impl crate::publish::Hooks for PublishHooks {
         }
         self.jobs
             .update(&self.id, |job| job.outgoing.push(outgoing));
+    }
+}
+
+/// What a version `job` publishes keeps of it (ARTIFACTS-25): its someone-else's mark, its
+/// owner's words unsigned or a memory from others included ([`Job::untrusted_why`]), and its
+/// reach past the registries, as they are when it publishes.
+pub(super) fn shaped_by(job: &Job) -> crate::artifacts::Marks {
+    let why = |why: String| format!("an artifact's files a job made: {why}");
+    crate::artifacts::Marks {
+        foreign: job.untrusted_why().map(why),
+        reached: job.reached.clone().map(why),
     }
 }

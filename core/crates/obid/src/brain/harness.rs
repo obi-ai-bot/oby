@@ -2135,14 +2135,12 @@ async fn attempts(
     let goes_to = super::briefing::default_account_line(shared, &control.conversation);
     // The artifact open where the owner said the words (ARTIFACTS-12): what they're about, its
     // files in the room (ARTIFACTS-21). Text someone else's made reaches the turn with them
-    // (ARTIFACTS-24): it read something untrusted.
+    // (ARTIFACTS-24, 25): it read something untrusted, before any of them is in the room.
     let open = session.control.artifact().map(|open| {
-        if let Some(artifact) = shared.artifacts.get(&open.id) {
-            let turns = (artifact.conversation.as_deref())
-                .is_none_or(|c| shared.conversations.read_untrusted(c));
-            if !(shared.jobs.carried_marks(&artifact, open.version, turns)).is_empty() {
-                session.taint();
-            }
+        if (shared.artifacts.get(&open.id))
+            .is_none_or(|a| !crate::artifacts::seed::carried(&a, open.version).is_empty())
+        {
+            session.taint();
         }
         let laid = super::open_artifact::into_room(shared, &place.room, &open)
             .inspect_err(|why| {

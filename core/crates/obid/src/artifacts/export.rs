@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::blobs::BLOB_PREFIX;
-use super::{Artifacts, Kind, POLICY, Publish, clean_title, limits};
+use super::{Artifacts, Kind, Marks, POLICY, Publish, clean_title, limits};
 use crate::api::{ApiError, Shared};
 use crate::store::{make_private_dir, write_private};
 
@@ -34,6 +34,9 @@ pub type Files = BTreeMap<String, Vec<u8>>;
 const PROJECT: &str = "project/";
 /// The title an import gets when its `canvas.json` names none.
 const IMPORTED: &str = "Imported";
+
+/// The mark an import's version keeps (ARTIFACTS-25): its files came from outside.
+const FROM_OUTSIDE: &str = "an imported artifact's files, which may hold anyone's words";
 
 /// How an artifact came to be when no agent made it (add-only, left out for an agent's).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -474,6 +477,10 @@ impl Artifacts {
                         job: None,
                         artifact: None,
                         kept: None,
+                        marks: Marks {
+                            foreign: Some(FROM_OUTSIDE.into()),
+                            reached: None,
+                        },
                     },
                     Some(Origin::import(from)),
                 )

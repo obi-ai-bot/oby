@@ -1,18 +1,23 @@
 //! An artifact's version laid out as files to change (docs/contracts/artifacts.md, ARTIFACTS-19
 //! to 23): in a job's worktree at `.obi/artifacts/<entry>` and in a conversation's room at
 //! `artifacts/<entry>`, so what an agent changes there publishes as the artifact's next version.
-//! Only the files the version lists, read through the store's own checks, each folder and file
-//! made new without following a link, and never a file an agent loads as its own instructions or
-//! settings ([`steers`]). It writes nothing but under the folder it is given.
+//! Only the files the version lists, each read inside the version's folder without following a
+//! link (a hard link, a file on another disk and anything not a plain file refused), each folder
+//! and file made new without following a link, and never a file an agent loads as its own
+//! instructions or settings ([`steers`]). What the laid text carries is the versions' own record
+//! ([`carried`], ARTIFACTS-24, 25), never worked out from state that changes after they were
+//! made. It writes nothing but under the folder it is given.
 
+use std::io::Read;
 use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, open, openat};
 use nix::sys::stat::{Mode, mkdirat};
 
-use super::{Artifact, Artifacts, Kind, extension};
+use super::{Artifact, Artifacts, Kind, Marks, extension, is_dir, metadata, open_in, plain};
 
 /// The entry `version` of `artifact` is laid out under, from obid's own data only: a folder named
 /// by the first 8 characters of its id, or, for a one-file kind, that name with its file's
@@ -46,6 +51,31 @@ pub fn steers(path: &str) -> bool {
         || NAMES.iter().any(|n| name.eq_ignore_ascii_case(n))
 }
 
+/// The mark of a version kept before obid recorded what shaped it: it can't tell whose its text is.
+const UNRECORDED: &str =
+    "an artifact's files from a version obid kept before it recorded who shaped them";
+
+/// What `artifact`'s text up to version `upto` carries to the job or turn it is laid into
+/// (ARTIFACTS-24, 25): every such version's own record, kept as it was made (the first reason of
+/// each kind), as an edit keeps what it doesn't change. A version with none is someone else's,
+/// but the owner's own edit's.
+pub fn carried(artifact: &Artifact, upto: u32) -> Marks {
+    let mut carried = Marks::default();
+    for version in artifact.versions.iter().filter(|v| v.version <= upto) {
+        let marks = match (&version.marks, version.by.as_deref()) {
+            (Some(marks), _) => marks.clone(),
+            (None, Some("owner")) => Marks::default(),
+            (None, _) => Marks {
+                foreign: Some(UNRECORDED.into()),
+                reached: None,
+            },
+        };
+        carried.foreign = carried.foreign.or(marks.foreign);
+        carried.reached = carried.reached.or(marks.reached);
+    }
+    carried
+}
+
 impl Artifacts {
     /// Writes version `version` of `id` into `into` as `entry`: `into/<entry>/…` for a folder
     /// kind, `into/<entry>` for a one-file one. `into/<entry>` must not be there yet; `entry` is
@@ -61,12 +91,14 @@ impl Artifacts {
         let kept = (artifact.versions.iter())
             .find(|v| v.version == version)
             .ok_or_else(|| format!("artifact {id} has no version {version}."))?;
-        let shown = version.to_string();
-        let read = |file: &str| {
-            self.file(id, &shown, file)
-                .map(|(_, bytes)| bytes)
-                .ok_or_else(|| format!("{file} of version {version} can't be read."))
-        };
+        let kept_in = open(
+            &self.version_path(id, version),
+            OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| format!("version {version} can't be opened ({e})."))?;
+        let dev = metadata(&kept_in)?.dev();
+        let read = |file: &str| read_kept(&kept_in, dev, file);
         let into = open(
             into,
             OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_RDONLY | OFlag::O_CLOEXEC,
@@ -95,6 +127,40 @@ impl Artifacts {
         }
         Ok(())
     }
+}
+
+/// The file `file` (a path the version lists) of the version's folder `at` on disk `dev`, read
+/// without following a link: every part opened inside the one before, a plain name each, a
+/// folder on the way and a plain file at the end, on the same disk, with no other link to it.
+fn read_kept(at: &OwnedFd, dev: u64, file: &str) -> Result<Vec<u8>, String> {
+    let parts: Vec<&str> = file.split('/').collect();
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || p.starts_with('.') || p.contains(['\\', ':', '\0']))
+    {
+        return Err(format!("{file:?} isn't a plain path."));
+    }
+    let (last, way) = parts.split_last().expect("split gives a part");
+    let mut folder: Option<OwnedFd> = None;
+    for part in way {
+        let next = open_in(folder.as_ref().unwrap_or(at), part, file)?;
+        if !is_dir(&next)? {
+            return Err(format!("{file}: {part} isn't a folder."));
+        }
+        plain(&metadata(&next)?, file, dev)?;
+        folder = Some(next);
+    }
+    let opened = open_in(folder.as_ref().unwrap_or(at), last, file)?;
+    let meta = metadata(&opened)?;
+    if !meta.is_file() {
+        return Err(format!("{file} isn't a file."));
+    }
+    plain(&meta, file, dev)?;
+    let mut bytes = Vec::new();
+    std::fs::File::from(opened)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{file} can't be read ({e})."))?;
+    Ok(bytes)
 }
 
 /// The folder `name` in `at`, never through a link.

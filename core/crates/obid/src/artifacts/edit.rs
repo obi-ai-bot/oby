@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Artifacts, Kind, Made, Publish, copy, limits};
+use super::{Artifacts, Kind, Made, Marks, Publish, copy, limits};
 use crate::api::{ApiError, Shared};
 
 /// Why an edit made nothing.
@@ -122,6 +122,8 @@ impl Artifacts {
             job: None,
             artifact: Some(id),
             kept: None,
+            // The owner's own edit: nothing from outside shapes it.
+            marks: Marks::default(),
         };
         let made = Made {
             by: Some("owner"),

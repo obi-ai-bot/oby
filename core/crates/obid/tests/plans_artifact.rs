@@ -179,11 +179,14 @@ fn started_with_jobs(folder: &Folder) -> Obid {
     start(&folder.0, &config, Some(harness.parent().unwrap()))
 }
 
-/// A page Oby's own turn made in a new conversation: the conversation and the artifact.
+/// A page Oby's own turn made in a new conversation, on words the owner's app signed: the
+/// conversation and the artifact.
 fn made_page(obid: &Obid) -> (String, String) {
-    let made = plan(
+    let made = call_typed(
         obid,
-        json!({"said": "MAKEPAGE OBY oby_artifact {\"title\": \"Functions\", \"path\": \"page\"}", "new": true}),
+        "POST",
+        "/v1/plans",
+        &json!({"said": "MAKEPAGE OBY oby_artifact {\"title\": \"Functions\", \"path\": \"page\"}", "new": true}),
     );
     assert_eq!(made.status, 200, "{}", made.text);
     (
@@ -258,7 +261,7 @@ fn artifacts_19_a_task_started_about_the_open_artifact_makes_its_next_version() 
         page_of(&obid, &artifact, 2),
         format!("{PAGE}<p>edit 1</p>\n")
     );
-    // Made by Oby's own turn, of a conversation that read nothing untrusted: nothing marks it.
+    // Made by Oby's own turn on the owner's signed words: nothing marks the task's turn.
     assert!(job.get("untrusted").is_none(), "{job}");
 }
 
