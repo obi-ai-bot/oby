@@ -300,6 +300,11 @@ fn computers_14_to_16_a_computers_token_its_own_key_and_removing_it() {
             "{text}"
         );
     }
+    // A route on a computer's own list: its token reaches it, a phone's doesn't.
+    let (status, text) = through(&obid, Some(&token), "GET", "/v1/skills", None);
+    assert_eq!(status, 200, "a computer's: {text}");
+    let (status, text) = through(&obid, Some(&phone_token), "GET", "/v1/skills", None);
+    assert_eq!(status, 404, "not a phone's: {text}");
     let vault = call(&obid, "GET", "/v1/obid/vault", None);
     assert!(
         !vault.text.contains("GITHUB_TOKEN"),
@@ -704,4 +709,320 @@ async fn computers_13_a_computer_is_added_with_a_code_its_certificate_pinned() {
     .await
     .unwrap();
     assert_eq!(plain.device, None, "no presence, no key");
+}
+
+/// COMPUTERS-19 to 24, on two real obids, one as the Mac and one as Studio, its direct address on
+/// this machine's loopback: Studio's owner makes a code there; the Mac adds Studio with it as its
+/// owner's signed act, keeps it with its token out of every answer, and the window's requests that
+/// name it go there: its status, the owner's words signed by the Mac's key, a route only a
+/// computer reaches, its event stream; nothing off a computer's list; then removed, from the Mac.
+#[test]
+fn computers_19_to_24_the_mac_adds_studio_with_a_code_and_the_window_works_there() {
+    let studio_folder = Folder::new("remote-window-studio");
+    let studio = start(&studio_folder.0, &with_direct(&studio_folder), None);
+    direct_of(&studio);
+    let mac_folder = Folder::new("remote-window-mac");
+    let mac = started(&mac_folder);
+
+    let (code, out, err) = invite_computer(&studio);
+    assert_eq!(code, 0, "{out}{err}");
+    let invited: Value = serde_json::from_str(out.trim()).unwrap();
+    let link = invited["link"].as_str().unwrap().to_owned();
+
+    // COMPUTERS-20: obid reads the link, so the window never does.
+    let read = call(
+        &mac,
+        "POST",
+        "/v1/computers/link",
+        Some(&json!({"link": link})),
+    );
+    assert_eq!(read.status, 200, "{}", read.text);
+    assert_eq!(read.body["fingerprint"], invited["fingerprint"]);
+    assert_eq!(read.body["routes"][0]["kind"], "loopback", "{}", read.text);
+    let bad = call(
+        &mac,
+        "POST",
+        "/v1/computers/link",
+        Some(&json!({"link": "nope"})),
+    );
+    assert_eq!(bad.status, 422, "{}", bad.text);
+    assert_eq!(bad.body["reason"], "not_a_link");
+
+    // COMPUTERS-19: adding is the owner's act; a wrong code adds nothing.
+    let add = json!({"link": link, "code": invited["code"]});
+    let unsigned = call(&mac, "POST", "/v1/computers", Some(&add));
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    let wrong = json!({"link": link, "code": "000000"});
+    let refused = call_signed(&mac, "POST", "/v1/computers", Some(&wrong));
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert_eq!(refused.body["reason"], "wrong_code");
+    let added = call_signed(&mac, "POST", "/v1/computers", Some(&add));
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(added.body["state"], "connected", "{}", added.text);
+    let listed = call(&mac, "GET", "/v1/computers", None);
+    assert_eq!(listed.body["current"], "this");
+    assert_eq!(listed.body["computers"][0]["id"], id.as_str());
+    let kept = std::fs::read_to_string(mac.home.join("computers.json")).unwrap();
+    let pairings = call(&studio, "GET", "/v1/pairing/devices", None);
+    assert_eq!(pairings.body[0]["computer"], true, "{}", pairings.text);
+    for text in [&kept, &listed.text, &added.text] {
+        assert!(!text.contains("token"), "no token: {text}");
+    }
+
+    // COMPUTERS-21: which computer the window is on, kept; an unknown one is refused.
+    let current = call(
+        &mac,
+        "PUT",
+        "/v1/computers/current",
+        Some(&json!({"id": id})),
+    );
+    assert_eq!(current.status, 200, "{}", current.text);
+    assert_eq!(current.body["current"], id.as_str());
+    let none = call(
+        &mac,
+        "PUT",
+        "/v1/computers/current",
+        Some(&json!({"id": "nope"})),
+    );
+    assert_eq!(none.status, 404, "{}", none.text);
+
+    // COMPUTERS-22: a request naming Studio is Studio's; one naming none stays the Mac's.
+    let on = [("Oby-Computer", id.as_str())];
+    let there = call_with_headers(&mac, TOKEN, "GET", "/v1/status", None, &on);
+    assert_eq!(there.status, 200, "{}", there.text);
+    assert!(
+        there.body["gateway"]["direct"].is_array(),
+        "Studio's: {}",
+        there.text
+    );
+    let here = call(&mac, "GET", "/v1/status", None);
+    assert!(
+        here.body["gateway"]["direct"].is_null(),
+        "the Mac's own: {}",
+        here.text
+    );
+    let unknown = call_with_headers(
+        &mac,
+        TOKEN,
+        "GET",
+        "/v1/status",
+        None,
+        &[("Oby-Computer", "nope")],
+    );
+    assert_eq!(unknown.status, 404, "{}", unknown.text);
+    assert_eq!(unknown.body["reason"], "no_such_computer");
+    // The owner's words, signed by the Mac's key, count there; Studio's mode changes, the Mac's
+    // doesn't.
+    let wider = json!({"mode": "bypass"});
+    let path = "/v1/settings/permissions";
+    let words = words_header(&mac, "PUT", path, Some(&wider));
+    let set = call_with_headers(
+        &mac,
+        TOKEN,
+        "PUT",
+        path,
+        Some(&wider),
+        &[("Oby-Computer", id.as_str()), ("X-Oby-Words", &words)],
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(call(&studio, "GET", path, None).body["mode"], "bypass");
+    assert_ne!(call(&mac, "GET", path, None).body["mode"], "bypass");
+    // A route only a computer reaches answers; one off its list is Studio's gateway's 404.
+    let skills = call_with_headers(&mac, TOKEN, "GET", "/v1/skills", None, &on);
+    assert_eq!(skills.status, 200, "{}", skills.text);
+    // Refused on the Mac itself, never sent: Studio's gateway would have said so in its own words.
+    for (method, target) in [
+        ("GET", "/v1/obid/vault"),
+        ("PUT", "/v1/obid/vault/X"),
+        ("GET", "/v1/%70airing/devices"),
+    ] {
+        let refused = call_with_headers(
+            &mac,
+            TOKEN,
+            method,
+            target,
+            Some(&json!({"value": "s3cretvalue1"})),
+            &on,
+        );
+        assert_eq!(refused.status, 404, "{target}: {}", refused.text);
+        assert_eq!(
+            refused.body["reason"], "not_for_a_computer",
+            "{target}: {}",
+            refused.text
+        );
+    }
+    // Only the window's own token names a computer: an agent's, or one through the gateway, is
+    // refused and never sent.
+    let agent = call_with_headers(
+        &mac,
+        "an-agents-broker-token",
+        "POST",
+        "/v1/agent/mcp/job-1",
+        Some(&json!({})),
+        &on,
+    );
+    assert_eq!(agent.status, 400, "{}", agent.text);
+    assert_eq!(agent.body["reason"], "not_the_window");
+    let (status, text) = through_with(&mac, Some("a-device-token"), "GET", "/v1/status", None, &on);
+    assert_eq!(status, 400, "through the gateway: {text}");
+    // Studio's event stream, followed through the Mac.
+    // Closed once its answer ends, so the end of the stream is seen.
+    let followed = [("Oby-Computer", id.as_str()), ("Connection", "close")];
+    let events = follow_events_as(&mac, &followed);
+    let studio_set = call(
+        &studio,
+        "PUT",
+        "/v1/computers/current",
+        Some(&json!({"id": "this"})),
+    );
+    assert_eq!(studio_set.status, 200, "{}", studio_set.text);
+    let seen = events_named(&events, "computers", 15, |got| !got.is_empty());
+    assert_eq!(
+        seen[0]["computers"],
+        json!([]),
+        "Studio's list, not the Mac's: {:?}",
+        seen
+    );
+    // Never the Mac's own events: a change here doesn't reach it.
+    let here = call(
+        &mac,
+        "PATCH",
+        &format!("/v1/computers/{id}"),
+        Some(&json!({"name": "Studio"})),
+    );
+    assert_eq!(here.status, 200, "{}", here.text);
+    let mixed = events.recv_timeout(Duration::from_secs(2));
+    assert!(
+        !matches!(&mixed, Ok((name, data)) if name == "computers" && data["computers"] != json!([])),
+        "the Mac's event in Studio's stream: {mixed:?}"
+    );
+    // The window back on This Mac: Studio's stream ends.
+    let back = call(
+        &mac,
+        "PUT",
+        "/v1/computers/current",
+        Some(&json!({"id": "this"})),
+    );
+    assert_eq!(back.status, 200, "{}", back.text);
+    within(10, "Studio's stream to end", || {
+        match events.recv_timeout(Duration::from_millis(200)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Some(()),
+            _ => None,
+        }
+    });
+
+    // COMPUTERS-23: renamed on the Mac only.
+    let renamed = call(
+        &mac,
+        "PATCH",
+        &format!("/v1/computers/{id}"),
+        Some(&json!({"name": "Studio Mac"})),
+    );
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    assert_eq!(renamed.body["name"], "Studio Mac");
+
+    // COMPUTERS-24: removing is the owner's act; it ends the pairing there and forgets it here.
+    let target = format!("/v1/computers/{id}");
+    let unsigned = call(&mac, "DELETE", &target, None);
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    // The window on Studio again, following its events: removing it ends that stream too.
+    let again = call(
+        &mac,
+        "PUT",
+        "/v1/computers/current",
+        Some(&json!({"id": id})),
+    );
+    assert_eq!(again.status, 200, "{}", again.text);
+    let following = follow_events_as(&mac, &followed);
+    let removed = call_signed(&mac, "DELETE", &target, None);
+    assert_eq!(removed.status, 200, "{}", removed.text);
+    assert_eq!(removed.body["there"], true, "{}", removed.text);
+    within(
+        10,
+        "Studio's stream to end once it's removed",
+        || match following.recv_timeout(Duration::from_millis(200)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Some(()),
+            _ => None,
+        },
+    );
+    assert_eq!(
+        call(&mac, "GET", "/v1/computers", None).body,
+        json!({"current": "this", "computers": []})
+    );
+    assert_eq!(
+        call(&studio, "GET", "/v1/pairing/devices", None).body,
+        json!([])
+    );
+    let gone = call_with_headers(&mac, TOKEN, "GET", "/v1/status", None, &on);
+    assert_eq!(gone.status, 404, "{}", gone.text);
+}
+
+/// COMPUTERS-19 and 22: the computer's device token is in no answer, no event, no line of the
+/// Mac's log and no error, a forward that fails included; only in the Mac's vault.
+#[test]
+fn computers_22_its_token_is_in_no_answer_event_log_or_error() {
+    let studio_folder = Folder::new("remote-token-studio");
+    let mut studio = start(&studio_folder.0, &with_direct(&studio_folder), None);
+    direct_of(&studio);
+    let mac_folder = Folder::new("remote-token-mac");
+    let mac = started(&mac_folder);
+    let events = follow_events(&mac);
+    let (code, out, err) = invite_computer(&studio);
+    assert_eq!(code, 0, "{out}{err}");
+    let invited: Value = serde_json::from_str(out.trim()).unwrap();
+    let add = json!({"link": invited["link"], "code": invited["code"]});
+    let mut answers = Vec::new();
+    let added = call_signed(&mac, "POST", "/v1/computers", Some(&add));
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    answers.push(added.text.clone());
+    let on = [("Oby-Computer", id.as_str())];
+    for (method, target) in [("GET", "/v1/computers"), ("POST", "/v1/computers/link")] {
+        answers.push(
+            call(
+                &mac,
+                method,
+                target,
+                Some(&json!({"link": invited["link"]})),
+            )
+            .text,
+        );
+    }
+    answers.push(call_with_headers(&mac, TOKEN, "GET", "/v1/status", None, &on).text);
+    answers.push(call(&mac, "POST", &format!("/v1/computers/{id}/retry"), None).text);
+    // A forward that fails: Studio stopped, the error names every route tried.
+    studio.stop();
+    let failed = call_with_headers(&mac, TOKEN, "GET", "/v1/status", None, &on);
+    assert_eq!(failed.status, 502, "{}", failed.text);
+    assert_eq!(failed.body["reason"], "unreachable");
+    answers.push(failed.text.clone());
+    answers.push(call(&mac, "POST", &format!("/v1/computers/{id}/retry"), None).text);
+    // The token, from the Mac's vault, where alone it is.
+    let vault: Value =
+        serde_json::from_slice(&std::fs::read(mac.home.join("vault/secrets.json")).unwrap())
+            .unwrap();
+    let token = vault["secrets"][format!("oby.computer.{id}")]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(token.len() >= 32, "a device token");
+    let mut seen = Vec::new();
+    while let Ok((name, data)) = events.recv_timeout(Duration::from_millis(500)) {
+        seen.push(format!("{name} {data}"));
+    }
+    assert!(
+        seen.iter().any(|e| e.starts_with("computer.route")),
+        "{seen:?}"
+    );
+    let log = std::fs::read_to_string(&mac.stderr).unwrap_or_default();
+    let kept = std::fs::read_to_string(mac.home.join("computers.json")).unwrap();
+    for (what, text) in [
+        ("answers", answers.join("\n")),
+        ("events", seen.join("\n")),
+        ("the log", log),
+        ("computers.json", kept),
+    ] {
+        assert!(!text.contains(&token), "the token in {what}");
+    }
 }

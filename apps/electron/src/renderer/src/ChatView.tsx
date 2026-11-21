@@ -36,6 +36,8 @@ import { openConversation, realId, takesWorkspace, talkReady, useLimitAsks, useL
 import { api, ApiError, type FinishAction, type WorkspaceAnswer } from './obid';
 import { FINISH_WORDS } from '../../shared/finish';
 import { onObid } from './lean';
+import { ArtifactCard } from './artifacts/Card';
+import { closeArtifact, useConversationArtifacts } from './artifacts/store';
 import { box as draftBox } from './drafts';
 import { useHelpers } from './helpers';
 import FindBar from './FindBar';
@@ -142,6 +144,12 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // Oby's words coming in, in that run: its face talks (a speech balloon)
   const talking = head >= 0 ? (thread.slice(head).find((m) => (m as Message).streaming) as Message | undefined) : undefined;
 
+  // the conversation's artifacts, each under the task that made it, the conversation's own last
+  // (docs/contracts/artifacts-app.md, ARTIFACTSAPP-4); read again as its tasks end and turns come.
+  // Leaving the conversation closes the one open beside it
+  const artifacts = useConversationArtifacts(kind === 'oby' && ofObid(id) ? realId(id) : null, `${thread.length}:${tasks.map((t) => `${t.id}${t.status}`).join()}`);
+  const ownArtifacts = artifacts.filter((a) => !a.job || !thread.some((m) => 'jobs' in m && m.jobs?.includes(a.job!)));
+  useEffect(() => () => closeArtifact(), [id]);
   // opened, it's seen; it opens at the latest message, and anything new scrolls into view
   useEffect(() => { if (kind === 'task') markSeen(id); if (kind === 'peer') markRead(id); if (kind === 'oby' && ofObid(id)) void openConversation(id); }, [id, kind]);
   // in sight, a conversation is seen: obid's unread goes, and a turn that comes while it shows is
@@ -162,12 +170,22 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // (the last, as its words come in, then the card or task it ends with)
   }, [thread.length, typing, step, limits.length, (thread.at(-1) as Message | undefined)?.text?.length, (thread.at(-1) as Message | undefined)?.streaming, (thread.at(-1) as Message | undefined)?.jobs?.length]);
 
-  // a live card growing at the end of the thread stays in view, while you're there
+  // a live card growing at the end of the thread stays in view, while you're there; and so does the
+  // end, or the card just opened at, when the thread's own room shrinks: the drawer over the box takes
+  // its own row under it and grows (a question with described options, a third of the window), so
+  // what was at its foot went out under the drawer (#2786)
+  const aimed = useRef<string | null>(null);
   useEffect(() => {
     const l = list.current, column = l?.firstElementChild;
     if (!l || !column) return;
-    const ro = new ResizeObserver(() => { if (atEnd.current) l.scrollTop = l.scrollHeight; });
+    const ro = new ResizeObserver(() => {
+      const card = aimed.current && l.querySelector<HTMLElement>(`[data-task="${CSS.escape(aimed.current)}"]`);
+      if (card) card.scrollIntoView({ block: 'center' });
+      else if (atEnd.current) l.scrollTop = l.scrollHeight;
+    });
     ro.observe(column);
+    // its border box: the find bar's room at its top is padding, and moves nothing (SHORTCUTS-3)
+    ro.observe(l, { box: 'border-box' });
     return () => ro.disconnect();
   }, [list]);
 
@@ -180,6 +198,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     if (!el) return;
     flashed.current = flash.n;
     atEnd.current = false;
+    aimed.current = flash.task;
     el.scrollIntoView({ block: 'center' });
     setLit(flash.task);
     setOpenings((n) => n + 1);
@@ -187,7 +206,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   });
   useEffect(() => {
     if (!lit) return;
-    const t = setTimeout(() => setLit(null), 1600);
+    // (lit, it's kept in view as the thread's room changes; then it's the owner's to scroll)
+    const t = setTimeout(() => { setLit(null); aimed.current = null; }, 1600);
     return () => clearTimeout(t);
   }, [lit, flash?.n]);
 
@@ -297,14 +317,11 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   // what this message started
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
-                    return t && (
-                      <TaskEntry
-                        key={jid}
-                        task={t}
-                        lit={lit === jid}
-                        onMenu={(at) => setMenu({ id: jid, at })}
-                      />
-                    );
+                    if (!t) return null;
+                    const entry = <TaskEntry key={jid} task={t} lit={lit === jid} onMenu={(at) => setMenu({ id: jid, at })} />;
+                    // what the task made, under its card (ARTIFACTSAPP-4)
+                    const made = artifacts.filter((a) => a.job === jid);
+                    return made.length ? <div key={jid} className="art-cards">{entry}{made.map((a) => <ArtifactCard key={a.id} artifact={a} agent={t.job.agent} />)}</div> : entry;
                   }),
                 ].filter(Boolean);
                 const end = parts.pop();
@@ -324,7 +341,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} color={helper?.color} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
-                      <div className={`msg-end${end?.type === TaskEntry || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || (m as Message).confirm ? ' is-wide' : ''}`}>
+                      <div className={`msg-end${end?.type === TaskEntry || (end as ReactElement<{ className?: string }> | undefined)?.props?.className === 'art-cards' || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || (m as Message).confirm ? ' is-wide' : ''}`}>
                         {tail}
                         {after ? <div className="msg-foot"><time className="msg-time">{clock(m.ago)}</time>{after}</div> : <time className="msg-time">{clock(m.ago)}</time>}
                       </div>
@@ -346,6 +363,13 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   </div>
                 );
               })()]}
+
+              {/* the conversation's own artifacts (oby_artifact), and any whose task isn't shown here */}
+              {ownArtifacts.length > 0 && (
+                <div role="listitem" className="msg is-oby is-cont">
+                  <div className="msg-end is-wide">{ownArtifacts.map((a) => <ArtifactCard key={a.id} artifact={a} />)}</div>
+                </div>
+              )}
 
               {/* a task's agent at work: its live line, last */}
               {task && j && task.status === 'running' && !typing && (

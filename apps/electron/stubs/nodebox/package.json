@@ -1,0 +1,9 @@
+{
+  "name": "@codesandbox/nodebox",
+  "version": "0.0.0-oby-stub",
+  "description": "Oby's empty stand-in for Nodebox, which Oby never ships (apps/electron/stubs/nodebox/README.md).",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "module": "index.mjs",
+  "exports": { ".": { "import": "./index.mjs", "require": "./index.js" } }
+}

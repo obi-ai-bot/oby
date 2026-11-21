@@ -18,11 +18,14 @@
     "test:sphere": "jiti scripts/test-sphere.mjs",
     "test:sphere-join": "jiti scripts/test-sphere-join.mjs",
     "test:core": "node scripts/test-core.mjs",
+    "test:artifacts": "node scripts/test-artifacts.mjs",
     "test:chat-first": "node scripts/test-chat-first.mjs",
     "test:live-task": "node scripts/test-live-task.mjs",
     "drive": "node scripts/human-drive.mjs"
   },
   "dependencies": {
+    "@codesandbox/nodebox": "file:./stubs/nodebox",
+    "@codesandbox/sandpack-client": "2.19.8",
     "@lexical/react": "0.52.0",
     "@lexical/text": "0.52.0",
     "@phosphor-icons/react": "^2.1.10",
@@ -60,6 +63,7 @@
   "overrides": {
     "app-builder-lib": {
       "minimatch@^10.2.5": "^11.0.1"
-    }
+    },
+    "@codesandbox/nodebox": "$@codesandbox/nodebox"
   }
 }

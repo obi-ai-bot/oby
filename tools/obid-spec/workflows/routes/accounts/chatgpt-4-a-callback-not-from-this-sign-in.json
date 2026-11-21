@@ -1,0 +1,227 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-4: a callback with another Host or state is refused and the sign-in goes on, once",
+  "version": "1.0.0",
+  "description": "A visit to obid's callback naming another Host (a rebound page), another attempt's state, or no query at all is refused with no tokens and doesn't end the sign-in; the real one then signs in, and a second callback isn't taken.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-another-host-400",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "host": "evil.example",
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-another-state-400",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "replace": [
+          "state=",
+          "state=x"
+        ],
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-no-query-400",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "dropQuery": true,
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-the-sign-in-goes-on",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": true,
+                "label": {
+                  "$exists": false
+                },
+                "signedIn": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-no-token-for-them",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "tokens": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-the-real-one-200",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                },
+                "signedIn": true,
+                "login": "chatgpt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-no-second-callback",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "paths": {
+            "status": {
+              "$ne": 200
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    }
+  ]
+}

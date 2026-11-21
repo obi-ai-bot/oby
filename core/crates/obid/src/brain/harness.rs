@@ -2125,7 +2125,14 @@ async fn attempts(
     });
     let heard = session.control.asked_mentioned();
     let goes_to = super::briefing::default_account_line(shared, &control.conversation);
+    // The artifact open where the owner said the words (ARTIFACTS-12): what they're about.
+    let open = (session.control.artifact())
+        .map(|open| super::open_artifact::told_line(&open, &session.nonce));
     let with = |prompt: String| {
+        let prompt = match &open {
+            Some(open) => format!("{open}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = match &heard {
             Some(heard) => format!("{heard}\n\n{prompt}"),
             None => prompt,
