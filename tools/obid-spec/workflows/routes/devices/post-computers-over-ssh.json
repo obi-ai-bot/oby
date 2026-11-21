@@ -1,0 +1,535 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/computers (over SSH)",
+  "version": "1.0.0",
+  "description": "Two obids, the Mac and Studio, the person's ssh a stand-in (core/crates/obid/tests/fakes/ssh): the Mac adds Studio over SSH only as its owner's signed act, a host that could be an option refused before ssh runs; each step is told as computer.adding; the invitation is redeemed through the tunnel, and the window's signed words go to Studio through it (COMPUTERS-25); obid answers through it (COMPUTERS-18); a host key never accepted, no SSH server (Remote Login off, COMPUTERS-17) and no Oby there each say what to do and keep nothing.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/computers"
+    }
+  },
+  "steps": [
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "mac",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "mac",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        },
+        "ssh": {
+          "studio": {
+            "pairs": "${state.studio}"
+          },
+          "unknown-host": {
+            "says": "Host key verification failed.",
+            "exit": 255
+          },
+          "no-ssh": {
+            "says": "ssh: connect to host no-ssh port 22: Connection refused",
+            "exit": 255
+          },
+          "no-obid": {
+            "says": "sh: obid: command not found",
+            "exit": 127
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "follow",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "unsigned-adds-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 403
+        },
+        "body": {
+          "ssh": "studio"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "an-option-is-no-host",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "not_a_host"
+          }
+        },
+        "body": {
+          "ssh": "-oProxyCommand=id"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "add",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 202,
+          "body": {
+            "adding": {
+              "$type": "string"
+            }
+          }
+        },
+        "body": {
+          "ssh": "studio"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "ssh-reached",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.mac}",
+        "event": "computer.adding",
+        "expect": {
+          "paths": {
+            "id": "${state.add.body.adding}",
+            "step": "ssh",
+            "state": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "paired-through-the-tunnel",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.mac}",
+        "event": "computer.adding",
+        "expect": {
+          "paths": {
+            "id": "${state.add.body.adding}",
+            "step": "pair",
+            "state": "done"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "added",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.mac}",
+        "event": "computer.adding",
+        "expect": {
+          "paths": {
+            "id": "${state.add.body.adding}",
+            "step": "routes",
+            "state": "done",
+            "computer.route.kind": "ssh",
+            "computer.state": "connected"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "studio-listed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 200,
+          "body": {
+            "computers": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "studio-lists-a-computer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "computer": true
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "mac-starts-in-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        },
+        "body": {
+          "mode": "ask"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "studio-starts-in-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        },
+        "body": {
+          "mode": "ask"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "words-go-through-the-tunnel",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200
+        },
+        "body": {
+          "mode": "bypass"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "headers": {
+          "Oby-Computer": "${state.studio-listed.body.computers.0.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "studio-is-in-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "the-mac-is-not",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "obid-answers-through-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/${state.studio-listed.body.computers.0.id}/retry",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "connected"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-18"
+        ]
+      }
+    },
+    {
+      "id": "a-host-key-never-accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 202
+        },
+        "body": {
+          "ssh": "unknown-host"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-5"
+        ]
+      }
+    },
+    {
+      "id": "is-the-persons-call",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.mac}",
+        "event": "computer.adding",
+        "expect": {
+          "paths": {
+            "id": "${state.a-host-key-never-accepted.body.adding}",
+            "step": "ssh",
+            "state": "failed",
+            "trouble.trouble": "hostKeyUnknown",
+            "trouble.say": {
+              "$contains": "ssh unknown-host"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-5"
+        ]
+      }
+    },
+    {
+      "id": "no-ssh-server",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 202
+        },
+        "body": {
+          "ssh": "no-ssh"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-17"
+        ]
+      }
+    },
+    {
+      "id": "says-turn-on-remote-login",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.mac}",
+        "event": "computer.adding",
+        "expect": {
+          "paths": {
+            "id": "${state.no-ssh-server.body.adding}",
+            "step": "ssh",
+            "state": "failed",
+            "trouble.trouble": "noSshServer",
+            "trouble.say": {
+              "$contains": "Remote Login"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-17"
+        ]
+      }
+    },
+    {
+      "id": "no-oby-there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 202
+        },
+        "body": {
+          "ssh": "no-obid"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "says-install-oby",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.mac}",
+        "event": "computer.adding",
+        "expect": {
+          "paths": {
+            "id": "${state.no-oby-there.body.adding}",
+            "step": "pair",
+            "state": "failed",
+            "trouble.trouble": "noObid"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    },
+    {
+      "id": "refusals-keep-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 200,
+          "body": {
+            "computers": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-25"
+        ]
+      }
+    }
+  ]
+}

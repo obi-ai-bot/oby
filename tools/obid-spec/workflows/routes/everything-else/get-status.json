@@ -66,6 +66,7 @@
           "status": 200,
           "body": {
             "capabilities": [
+              "artifact-turn-v1",
               "ask-mentions-v1",
               "composer-v1",
               "conversation-marks-v1",

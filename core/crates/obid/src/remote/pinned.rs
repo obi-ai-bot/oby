@@ -97,6 +97,26 @@ pub fn client(pin: Pin, limit: Duration) -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// [`client`] for the window's requests (crate::remote::forward): a route that doesn't answer in
+/// `connect` gives way to the next; a whole answer takes at most a minute, but a stream (`whole`
+/// false) runs as long as it's followed.
+pub fn streaming_client(
+    pin: Pin,
+    connect: Duration,
+    whole: bool,
+) -> Result<reqwest::Client, String> {
+    let builder = reqwest::Client::builder()
+        .use_preconfigured_tls(tls(pin)?)
+        .no_proxy()
+        .connect_timeout(connect);
+    let builder = if whole {
+        builder.timeout(Duration::from_secs(60))
+    } else {
+        builder
+    };
+    builder.build().map_err(|e| e.to_string())
+}
+
 /// What a failed request through [`client`] says, its refused certificate named when that was why.
 pub fn said(error: &reqwest::Error) -> String {
     let mut source: Option<&dyn std::error::Error> = Some(error);

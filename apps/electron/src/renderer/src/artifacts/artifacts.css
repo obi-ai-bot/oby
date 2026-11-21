@@ -1,0 +1,22 @@
+/* An artifact in a conversation, and beside it: Sangam's board 1b (the Oby Artifacts canvas,
+   tools/obid-spec/lab-ui/artifacts/design/project/artifacts.css), on the app's own tokens. */
+.art-card { width: 360px; max-width: 100%; margin-top: 10px; display: flex; flex-direction: column; text-align: left; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.04); overflow: hidden; transition: border-color var(--fade), background-color var(--fade); font: inherit; color: inherit; padding: 0; cursor: pointer; }
+.art-card:hover, .art-card.is-on { border-color: var(--line-strong); background: rgba(255, 255, 255, 0.06); }
+.art-thumb { height: 104px; display: flex; gap: 8px; padding: 12px; box-sizing: border-box; background: #111112; }
+.art-thumb-a { flex: 2; border-radius: 6px; background: #1d1d1f; border: 1px solid var(--surface-edge); }
+.art-thumb-b { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.art-thumb-b span { flex: 1; border-radius: 6px; background: #1d1d1f; border: 1px solid var(--surface-edge); }
+.art-card-row { display: flex; align-items: center; gap: 10px; padding: 11px 14px; color: var(--muted); }
+.art-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.art-card-title { font-size: var(--text-md); font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-card-meta { font-size: var(--text-sm); color: var(--muted); }
+.msg-end .art-card + .msg-time { margin-top: 6px; }
+.art-cards { display: flex; flex-direction: column; }
+
+/* the artifact beside its conversation: the browser panel's frame, its strip, and the preview */
+.art-br .art-strip { height: 40px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--divider); }
+.art-br .art-strip-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.art-br .art-strip-title b { font-size: var(--text-base); font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-br .art-strip-title span { font-size: var(--text-sm); color: var(--muted); }
+.art-br .art-view { position: relative; flex: 1; min-height: 0; background: #fff; }
+.art-br .art-view-note { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); background: var(--bg); }

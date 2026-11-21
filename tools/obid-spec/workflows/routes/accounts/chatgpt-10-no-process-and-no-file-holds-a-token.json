@@ -1,0 +1,369 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-10: while a job runs, no process and no file but the vault holds an OpenAI token",
+  "version": "1.0.0",
+  "description": "With a job on a ChatGPT login under way, no token is in any process's arguments or environment or in any file under obid's folder but its vault; Codex's commands are told not to inherit the broker token; that token reaches only this job's two relay routes, and dies with the job.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/agent/chatgpt/{run}/models"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY HOLD"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "j-env",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.j.body.id}/.obi/env-seen.json",
+        "within": 60,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY HOLD"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "other-env",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.other.body.id}/.obi/env-seen.json",
+        "within": 60,
+        "expect": {
+          "exists": true
+        }
+      }
+    },
+    {
+      "id": "chatgpt-10-no-token-in-a-process-or-a-file",
+      "use": "runtime.rust:accounts.tokens",
+      "inputs": {
+        "obid": "${state.o}",
+        "openai": "${state.openai}",
+        "look": [
+          "shell_environment_policy.exclude=[\"OBY_MCP_TOKEN\"]",
+          "model_providers.openai_chatgpt_plan.base_url"
+        ],
+        "expect": {
+          "body": {
+            "inProcesses": 0,
+            "files": [
+              "home/vault/secrets.json"
+            ],
+            "tokens": 2,
+            "found": [
+              "shell_environment_policy.exclude=[\"OBY_MCP_TOKEN\"]",
+              "model_providers.openai_chatgpt_plan.base_url"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-10"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-10-the-broker-token-reaches-its-models",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/agent/chatgpt/${state.j.body.id}/models",
+        "as": "token",
+        "token": "${state.j-env.json.OBY_MCP_TOKEN}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-10"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-10-no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/agent/chatgpt/${state.j.body.id}/models",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-10"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-10-not-another-relay-path",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/agent/chatgpt/${state.j.body.id}/files",
+        "body": {},
+        "as": "token",
+        "token": "${state.j-env.json.OBY_MCP_TOKEN}",
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-10"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-10-not-obids-api",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "as": "token",
+        "token": "${state.j-env.json.OBY_MCP_TOKEN}",
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-10"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-10-not-another-jobs-relay",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/agent/chatgpt/${state.other.body.id}/models",
+        "as": "token",
+        "token": "${state.j-env.json.OBY_MCP_TOKEN}",
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-10"
+        ]
+      }
+    },
+    {
+      "id": "go",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "worktrees/${state.j.body.id}/.obi/go",
+        "content": ""
+      }
+    },
+    {
+      "id": "j-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "done"
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-10-it-dies-with-the-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/agent/chatgpt/${state.j.body.id}/models",
+        "as": "token",
+        "token": "${state.j-env.json.OBY_MCP_TOKEN}",
+        "within": 10,
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-10"
+        ]
+      }
+    }
+  ]
+}

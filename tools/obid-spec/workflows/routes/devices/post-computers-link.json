@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/computers/link",
+  "version": "1.0.0",
+  "description": "obid reads a computer's link for the window, which never parses one: its name, its fingerprint and its routes; anything else is 422 not_a_link (COMPUTERS-20).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/computers/link"
+    }
+  },
+  "steps": [
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0",
+          "direct": [
+            "127.0.0.1:0"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mac",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "mac",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "at-studio",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.studio}",
+        "in": "home",
+        "path": "invite-computer",
+        "content": "workflow-presence-0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "computerLink": {
+              "$matches": "^oby-computer:"
+            }
+          }
+        },
+        "body": {
+          "url": "https://studio.example.invalid",
+          "name": "Studio",
+          "computer": true,
+          "presence": "workflow-presence-0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/link",
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": "Studio",
+            "fingerprint": {
+              "$matches": "^([0-9A-F]{4} ){7}[0-9A-F]{4}$"
+            },
+            "routes": [
+              {
+                "kind": "loopback"
+              }
+            ]
+          }
+        },
+        "body": {
+          "link": "${state.invite.body.computerLink}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-20"
+        ]
+      }
+    },
+    {
+      "id": "not-a-link",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/link",
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "not_a_link"
+          }
+        },
+        "body": {
+          "link": "oby-computer:nope"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-20"
+        ]
+      }
+    }
+  ]
+}

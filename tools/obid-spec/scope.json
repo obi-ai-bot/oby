@@ -1367,6 +1367,7 @@
     },
     "devices": {
       "routes": [
+        "/v1/computers",
         "/v1/devices",
         "/v1/notifications",
         "/v1/pairing"
@@ -1423,7 +1424,8 @@
         "remote.md": {
           "obid": [
             "COMPUTERS-14",
-            "COMPUTERS-16"
+            "COMPUTERS-16",
+            "COMPUTERS-17..25"
           ],
           "elsewhere": {
             "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
@@ -1436,7 +1438,6 @@
     "everything-else": {
       "routes": [
         "/v1/alerts",
-        "/v1/artifacts",
         "/v1/connectors",
         "/v1/events",
         "/v1/helpers",
@@ -2236,6 +2237,30 @@
             "BROWSER-26",
             "BROWSER-27",
             "BROWSER-28"
+          ],
+          "elsewhere": {}
+        }
+      }
+    },
+    "artifacts": {
+      "routes": [
+        "/v1/artifacts"
+      ],
+      "contracts": {
+        "artifacts.md": {
+          "obid": [
+            "ARTIFACTS-1",
+            "ARTIFACTS-2",
+            "ARTIFACTS-3",
+            "ARTIFACTS-4",
+            "ARTIFACTS-5",
+            "ARTIFACTS-6",
+            "ARTIFACTS-7",
+            "ARTIFACTS-8",
+            "ARTIFACTS-12",
+            "ARTIFACTS-16",
+            "ARTIFACTS-17",
+            "ARTIFACTS-18"
           ],
           "elsewhere": {}
         }

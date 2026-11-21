@@ -54,6 +54,8 @@ pub const NODES: &[(&str, &str)] = &[
     ("desktop.read", "Reads one menu's items by name, or one element by role and name, in a surface of the app's, through agent-desktop; with expect."),
     ("desktop.click", "Runs one of the app's menu items through agent-desktop (its window brought forward for the moment, the front given back)."),
     ("desktop.press", "Presses a key chord through macOS with agent-desktop (cmd+b), which runs the app's menu item that carries it, as a person's keys do."),
+    ("artifacts-fixture", "Writes one of the lab's artifact fixtures (lab.artifacts.fixture's `name`, `break`, `files`, `count`) into a scratch obid's conversation room, at `into` (a path inside the room) of `conversation`, for its `oby_artifact` to publish; `drop` takes files of it out again: {path, files, blobs}."),
+    ("artifacts-same", "Reads every file of the room's `from` (of `conversation`) back from a scratch obid as `artifact`'s `version` (a design's `_blob/<id>` through its alias): {same, compared, differ, types, policies}, `same` when each answered 200 with the length and text written, `types` each file's Content-Type, `policies` every Content-Security-Policy served; with expect."),
     ("browser-site", "Serves the browser API's fixture site on 127.0.0.1 (a free port) for this workflow: a sign-in form, a download, an animated counter, each at a fixed place; `/second`, and `/leave`, whose Leave asks the page's confirm: {url, port, name: {x, y}, download: {x, y}}."),
     ("browser-https-site", "Serves an HTTPS fixture on 127.0.0.1 (a free port) with a self-signed P-256 certificate for 127.0.0.1 made at run time (the lab's, src/lab/browserapi.rs): `certificate` names it (default `first`); naming another while the `site` (default `main`) is up swaps it behind the same port, the same origin with a new certificate. {url, port, site, certificate, fingerprint}."),
     ("browser-flaky-site", "A site that fails, then works, at one address (the lab's): `up: false` keeps a port nobody listens on (a navigation there is refused), `up: true` serves the fixture site on it. {url, port, up}."),
@@ -83,11 +85,14 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
         || name.starts_with("desktop.")
         || name.starts_with("lab.")
         || name.starts_with("browser-")
+        || name.starts_with("artifacts-")
     {
         let mut out = if name.starts_with("app.") {
             crate::app::act(run, name, &input).await?
         } else if name.starts_with("browser-") {
             crate::browser::run_node(name, &input).await?
+        } else if name.starts_with("artifacts-") {
+            crate::artifacts::run_node(run, name, &input).await?
         } else if name.starts_with("lab.") {
             crate::lab::run_node(run, name, &input).await?
         } else {
@@ -438,12 +443,15 @@ pub fn judges(name: &str) -> &'static [&'static str] {
         "call" | "call-wait" | "sphere-admin" | "sphere-owner" => ANSWER,
         "home-file" | "conversations.person-file" => &["exists", "mode", "json", "text"],
         "conversations.list-dir" => VALUE,
+        // coverage_accounts_openai: an answer checked with expect::check_status and expect::check
+        "accounts.visit" | "accounts.tokens" | "accounts.openai-saw" => ANSWER,
         "check" | "events-wait" => VALUE,
         "app.launch" => &[],
         n if n.starts_with("app.")
             || n.starts_with("desktop.")
             || n.starts_with("lab.")
-            || n.starts_with("browser-") =>
+            || n.starts_with("browser-")
+            || n.starts_with("artifacts-") =>
         {
             VALUE
         }

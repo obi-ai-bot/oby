@@ -164,6 +164,23 @@ describe('a task at work', () => {
     expect((await views([plan], { status: 'failed' }, 'done')).card).toContain('>Failed · Claude Code');
   });
 
+  it('LIVETASK-4: done with its pull request open, the card says the stage it is at in obid\'s words; merged, it says so', async () => {
+    const stage = (review: string, merged: string, detail?: string) => [
+      { id: 'publish', title: 'Publish', state: 'done', detail: 'Secret scan clean · pushed · pull request opened' },
+      { id: 'review', title: 'Review', state: review, detail: review === 'current' ? detail : 'Approved by Oby' },
+      { id: 'merged', title: 'Merged into dev', state: merged, ...(merged === 'current' ? { detail } : {}) },
+    ] as JobView['stages'];
+    const pr = { commits: 1, published: 'https://github.com/deskree/obi/pull/9', finished: 1 };
+    const reviewing = (await views([plan], { ...pr, stages: stage('current', 'upcoming', 'Oby is reviewing') }, 'done')).card;
+    expect(reviewing).toContain('>Oby is reviewing<');
+    const open = (await views([plan], { ...pr, stages: stage('done', 'current', 'Pull request open · waiting for your review on GitHub') }, 'done')).card;
+    expect(open).toContain('>Pull request open · waiting for your review on GitHub<');
+    expect(open).not.toContain('Merged into dev');
+    expect((await views([plan], { ...pr, stages: stage('done', 'done') }, 'done')).card).toContain('>Merged into dev<');
+    // no pull request: nothing of the kind
+    expect((await views([plan], { commits: 1, finished: 1, stages: stage('done', 'current', 'Merge it on GitHub') }, 'done')).card).not.toContain('Merge it on GitHub');
+  });
+
   it('LIVETASK-31: ended, its last words show under the card (what changed, the test run, the commit), its steps folded behind Show more', async () => {
     const result = 'Changes\n- Added divide(a, b)\n\nTest run\n- 4 passed\n\nCommit abc123\n\nGOAL MET';
     const { card, log } = await views([plan, tool('Read', 'a.ts'), tool('Edited', 'math.ts'), { kind: 'said', text: result, at: '2:10 PM' }], {}, 'done');

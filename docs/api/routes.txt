@@ -21,6 +21,7 @@ GET /v1/artifacts
 DELETE /v1/artifacts/{id}
 GET /v1/artifacts/{id}
 PATCH /v1/artifacts/{id}
+POST /v1/artifacts/{id}/versions
 GET /v1/artifacts/{id}/{version}/{*path}
 DELETE /v1/attachments
 POST /v1/attachments
@@ -42,6 +43,13 @@ POST /v1/browser/tabs/{id}/secret
 GET /v1/browser/tabs/{id}/stream
 POST /v1/browser/tabs/{id}/take
 POST /v1/clear
+GET /v1/computers
+POST /v1/computers
+PUT /v1/computers/current
+POST /v1/computers/link
+DELETE /v1/computers/{id}
+PATCH /v1/computers/{id}
+POST /v1/computers/{id}/retry
 GET /v1/connectors
 GET /v1/conversation
 POST /v1/conversation/stop

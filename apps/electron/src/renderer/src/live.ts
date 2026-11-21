@@ -347,10 +347,14 @@ export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuesti
   if (item.kind === 'failed' && !item.headline && item.text) {
     return { kind: 'failed', headline: item.text, text: '', options: item.options, recommended: item.recommended ?? undefined };
   }
+  // A permission's title is its task's too, which the drawer shows after " · " and Home's card in its
+  // head: what it asks is obid's text, the permission's own title ("Run npm test", "Edit word.md";
+  // docs/api/inbox.md), and that is its headline (LIVETASK-24, #2788)
+  const asks = item.kind === 'permission' && !item.headline && item.text ? item.text : undefined;
   return {
     // obid's own question (Oby's escalation, a stalled task): its why and what Oby recommends are
     // its text, shown under its title (TASKS-14)
-    kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline || item.kind === 'question' ? item.text : '',
+    kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? asks ?? item.title, text: item.headline || item.kind === 'question' ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
     ...(label ? { label } : {}),
     repos: repoTicks(item),

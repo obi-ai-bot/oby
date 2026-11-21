@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}/{version}/{*path}: fonts, video and AVIF are served as what they are",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-4 (lab: LAB-ARTIFACTS-4, workflows/lab/artifacts/types.json). Every file of the lab's Claude Design project read back: its fonts, video and AVIF with their own types, .jsx as application/octet-stream, and every file under obid's one policy.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}/{version}/{*path}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "design",
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "pub",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Lab design\", \"path\": \"design\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "4-each-with-its-type",
+      "use": "runtime.rust:artifacts-same",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "from": "design",
+        "artifact": "${state.pub.body.artifacts.0.id}",
+        "version": 1,
+        "expect": {
+          "body": {
+            "types": {
+              "fonts/Lab.ttf": "font/ttf",
+              "fonts/Lab.otf": "font/otf",
+              "fonts/Lab.woff2": "font/woff2",
+              "media/loop.webm": "video/webm",
+              "media/still.avif": "image/avif",
+              "_blob/clip_3": "video/mp4",
+              "_blob/font-7c1e": "font/woff2",
+              "widget.jsx": "application/octet-stream"
+            }
+          },
+          "paths": {
+            "policies": {
+              "$len": 1
+            },
+            "policies.0": {
+              "$contains": "connect-src 'none'"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-4"
+        ]
+      }
+    }
+  ]
+}

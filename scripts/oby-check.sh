@@ -60,7 +60,7 @@
 #                         this checkout's obid on stand-in agents and the pinned Sphere. In a job's
 #                         box only the suite's own steps: scratch obids and a Sphere on loopback
 #                         don't fit there. A change to obid alone doesn't plan it: GitHub's merge
-#                         queue runs the launch workflows, the nightly run all of them
+#                         queue and the nightly run all of them
 #   scripts/oby-check*    scripts/oby-check-test.sh and the limits below
 #   scripts/oby-nightly*  scripts/oby-nightly-test.sh, the nightly's own tests (docs/contracts/ci.md, CI-53 to 55)
 #   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
