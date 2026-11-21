@@ -371,6 +371,19 @@ describe('IPC-4', () => {
   });
 });
 
+describe('ARTIFACTSAPP-11', () => {
+  it('artifactsapp_11_pdf_and_png_stay_off', async () => {
+    const before = { calls: the.calls.length, dialogs: the.dialogs };
+    // send never answers here, so a kind let through would hang: bounded, it fails instead
+    const bounded = (p: unknown) => Promise.race([p, new Promise((r) => setTimeout(() => r('hung'), 300))]);
+    for (const as of ['pdf', 'png']) {
+      expect(await bounded(call('artifact-export', own(), '3f0c2a1e-1111-4222-8333-944455556666', 1, as)), as).toBeNull();
+    }
+    expect(the.calls.length).toBe(before.calls);
+    expect(the.dialogs).toBe(before.dialogs);
+  });
+});
+
 describe('ALERTS-19', () => {
   const PANE = 'x-apple.systempreferences:com.apple.Notifications-Settings.extension';
   it('alerts_19_main_opens_only_the_notifications_pane_whatever_the_page_sends', async () => {

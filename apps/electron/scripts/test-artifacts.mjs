@@ -393,9 +393,12 @@ async function main() {
   for (const [as, item] of [['zip', 'Project archive (.zip)'], ['html', 'Standalone HTML']]) {
     const to = join(s.root, `saved.${as}`);
     await app.evaluate(({ dialog }, to) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: to }); }, to);
+    if (as === 'zip') await shot(page, '6a-export-strip');
     await page.getByRole('button', { name: 'Export' }).click();
+    if (as === 'zip') { await page.getByRole('menu', { name: 'Download' }).waitFor(); await shot(page, '6b-export-menu'); }
     await page.getByRole('menuitem', { name: item }).click();
     await until(`the ${as} saved`, async () => (await page.locator('.art-saved').innerText().catch(() => '')) === `Saved to ${to}`);
+    if (as === 'zip') await shot(page, '6c-saved-to');
     assert.deepEqual([...readFileSync(to)], [...await exportOf(as)], `artifactsapp_11: the ${as} saved is obid's export, byte for byte`);
   }
   console.log('ok artifactsapp_11: Download saves the version as obid exports it, zip and HTML');
@@ -409,6 +412,7 @@ async function main() {
     for (const type of ['dragover', 'drop']) thread.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }));
   }, '<!doctype html><h1>Mine</h1>');
   await until('the import offered', async () => (await page.locator('[data-artifact-import]').innerText().catch(() => '')).includes('mine.html'));
+  await shot(page, '6d-import-bar');
   await page.getByRole('button', { name: 'Import', exact: true }).click();
   await until('the import open', async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === 'Imported', 60_000);
   assert.equal(await until('the import drawn', async () => { const v = (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value; return v === 'Mine' && v; }, 60_000), 'Mine');
