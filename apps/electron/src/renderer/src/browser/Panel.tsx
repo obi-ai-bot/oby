@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Logo, Sheen, Status, agentName } from './pieces';
 import { useBrowser } from './store';
+import { Slot } from './Webviews';
 import type { Tab } from './view';
 
 export const YouMark = ({ label }: { label?: string }) => <span className="you-mark" aria-label={label} aria-hidden={label ? undefined : true}>Y</span>;
@@ -196,7 +197,7 @@ function LiveFrame({ tab, url, size }: { tab: Tab; url: string; size: { width: n
 
 const STOPPED = ['failed', 'timedOut', 'certificate', 'crashed'];
 
-/** The page: the demo's site, or on obid the live stream's frame and the page's own states. */
+/** The page: the demo's site, or on obid the tab's own webview (its slot: Webviews.tsx), and the page's own states. */
 export function View({ tab, label, page, children, className = '', style }: { tab: Tab; label: string; page: ReactNode; children?: ReactNode; className?: string; style?: CSSProperties }) {
   const { mode, frame } = useBrowser();
   const held = tab.holder === 'you' && tab.owner.kind === 'agent';
@@ -205,6 +206,8 @@ export function View({ tab, label, page, children, className = '', style }: { ta
     <div className={`br-view${held ? ' is-held' : ''} ${className}`.trim()} role="img" aria-label={label} style={style} data-browser="view">
       {STOPPED.includes(tab.state)
         ? <div className="br-view is-blank" style={{ position: 'absolute', inset: 0 }}><PageState tab={tab} /></div>
+        : mode === 'obid' && tab.partition
+        ? (tab.state === 'dialog' ? null : <Slot tab={tab} />)
         : mode === 'obid'
         ? (live ? <LiveFrame tab={tab} url={live.url} size={live} /> : <div className="br-state"><span className="br-state-text"><Sheen>Waiting for the page</Sheen></span></div>)
         : page}

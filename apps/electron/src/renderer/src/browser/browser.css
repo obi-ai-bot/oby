@@ -261,3 +261,6 @@
 .pill-sep { width: 1px; height: 20px; background: var(--line); }
 html.is-mac-overlay, html.is-mac-overlay body, html.is-mac-overlay #root { background: transparent !important; }
 html.is-mac-overlay .control-pill { position: fixed; top: 8px; }
+
+/* The agents' pages, each a <webview> on its slot (Webviews.tsx), with the agent's pointer over it */
+.br-hosted { z-index: 1; overflow: hidden; background: var(--bg); }

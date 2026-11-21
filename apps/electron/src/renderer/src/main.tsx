@@ -13,6 +13,7 @@ import { connect, useLive } from './live';
 import { ChatGptWelcome } from './ChatGptPlan';
 import RenderError from './RenderError';
 import { BrowserProvider } from './browser/store';
+import { BrowserWebviews } from './browser/Webviews';
 import { MacOverlay } from './browser/Mac';
 import './browser/browser.css';
 
@@ -61,7 +62,7 @@ function App() {
   if (!onboarding && !ready) return <Splash />;
   if (!onboarding && welcome) return <Welcome onDone={done} />;
   // (keyed, so neither starts over as the other comes or goes)
-  return <BrowserProvider>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome />{home && <ChangesPanel />}{home && <TerminalPanel />}</BrowserProvider>;
+  return <BrowserProvider>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome />{home && <ChangesPanel />}{home && <TerminalPanel />}{home && <BrowserWebviews />}</BrowserProvider>;
 }
 
 // the Mac's pill and frame (browser/Mac.tsx): main's own windows over the screen, drawing only that
