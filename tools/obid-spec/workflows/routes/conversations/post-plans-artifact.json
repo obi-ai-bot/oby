@@ -1,0 +1,456 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/plans with artifact: the words land in the artifact's conversation; one with none gets one",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-12 (lab: LAB-ARTIFACTS-7, workflows/lab/artifacts/turn.json). An artifact made in one conversation; words said with it open while the app had another open land in its conversation, and that conversation's agent is told the artifact, its version and its title quoted; the same words without it land where the app sent them. An artifact kept with no conversation (written into obid's store as one kept from before) gets the conversation its first words start, said as artifact with joined; its next words land there, and that conversation's agent gives it version 2. An artifact or version obid hasn't is 404, artifact with new 422. On dev obid refuses the artifact key (400), so every step naming ARTIFACTS-12 is red there.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/plans"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MAKEPAGE OBY oby_artifact {\"title\": \"Fixture functions\", \"path\": \"page\"}",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "other",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY other",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "other"
+          }
+        }
+      }
+    },
+    {
+      "id": "12-lands-in-its-conversation",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY about the page",
+          "conversation": "${state.other.body.conversation}",
+          "artifact": {
+            "id": "${state.page.body.artifacts.0.id}",
+            "version": 1
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.page.body.conversation}",
+            "text": "about the page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-its-agent-is-told-the-artifact",
+      "use": "runtime.rust:home-file",
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.page.body.conversation}/config/turns.jsonl",
+        "within": 30,
+        "expect": {
+          "text": {
+            "$contains": "The owner said these words with artifact ${state.page.body.artifacts.0.id} open (version 1, a html)"
+          }
+        }
+      }
+    },
+    {
+      "id": "12-its-title-quoted",
+      "use": "runtime.rust:home-file",
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.page.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$contains": "Fixture functions\\nquoted-"
+          }
+        }
+      }
+    },
+    {
+      "id": "12-without-it-where-the-app-sent-them",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY plain",
+          "conversation": "${state.other.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.other.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-that-agent-is-told-of-none",
+      "use": "runtime.rust:home-file",
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "conversations/${state.other.body.conversation}/config/turns.jsonl",
+        "expect": {
+          "text": {
+            "$not": {
+              "$contains": "with artifact"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "kept-file",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "artifacts/5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f/1/index.html",
+        "content": "<!doctype html><title>Kept from before</title><p>kept</p>\n"
+      }
+    },
+    {
+      "id": "kept-artifact",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "artifacts/5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f/artifact.json",
+        "content": {
+          "id": "5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+          "title": "Kept from before",
+          "kind": "html",
+          "conversation": null,
+          "job": null,
+          "created": "2026-11-01T09:00:00Z",
+          "versions": [
+            {
+              "version": 1,
+              "created": "2026-11-01T09:00:00Z",
+              "files": [
+                "index.html"
+              ],
+              "bytes": 58
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "kept-has-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": null
+          }
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "12-an-artifact-with-none-gets-one",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY first",
+          "conversation": "${state.other.body.conversation}",
+          "artifact": {
+            "id": "5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": {
+              "$type": "string"
+            },
+            "text": "first"
+          },
+          "paths": {
+            "conversation": {
+              "$not": {
+                "$oneOf": [
+                  "${state.page.body.conversation}",
+                  "${state.other.body.conversation}"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-it-is-the-artifacts-now",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.12-an-artifact-with-none-gets-one.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-said-joined",
+      "use": "runtime.rust:events-wait",
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      },
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "artifact",
+        "expect": {
+          "body": {
+            "id": "5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+            "joined": true,
+            "title": "Kept from before",
+            "kind": "html",
+            "conversation": "${state.12-an-artifact-with-none-gets-one.body.conversation}",
+            "job": null
+          }
+        }
+      }
+    },
+    {
+      "id": "12-next-words-land-there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY next",
+          "conversation": "${state.other.body.conversation}",
+          "artifact": {
+            "id": "5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "conversation": "${state.12-an-artifact-with-none-gets-one.body.conversation}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-its-conversation-versions-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MAKEPAGE OBY oby_artifact {\"title\": \"Kept from before\", \"path\": \"page\", \"artifact\": \"5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f\"}",
+          "conversation": "${state.12-an-artifact-with-none-gets-one.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "artifacts": [
+              {
+                "id": "5d6e7f80-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+                "version": 2
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-no-such-artifact",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hm",
+          "artifact": {
+            "id": "00000000-0000-4000-8000-000000000000"
+          }
+        },
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": "There's no such artifact."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-no-such-version",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hm",
+          "artifact": {
+            "id": "${state.page.body.artifacts.0.id}",
+            "version": 9
+          }
+        },
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": "That artifact has no version 9."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    },
+    {
+      "id": "12-not-with-new",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "SAY hm",
+          "new": true,
+          "artifact": {
+            "id": "${state.page.body.artifacts.0.id}"
+          }
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": "Words with an artifact open go to its conversation: send artifact or new, not both."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-12"
+        ]
+      }
+    }
+  ]
+}

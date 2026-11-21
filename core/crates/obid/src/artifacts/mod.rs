@@ -498,6 +498,28 @@ impl Artifacts {
         Ok(Some(artifact))
     }
 
+    /// Gives `id` the conversation `to`, only while it still has `had` (none, or one that's gone):
+    /// words said while it was open are in `to` from now on (ARTIFACTS-12, TASKCONV-4's rule), and
+    /// any of `to`'s jobs may version it. Says so (`artifact` with `joined`). The artifact as it is
+    /// now, whether it took `to` or kept another; none when there's no such one.
+    pub fn join(&self, id: &str, had: Option<&str>, to: &str) -> std::io::Result<Option<Artifact>> {
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut artifact) = self.get(id) else {
+            return Ok(None);
+        };
+        if artifact.conversation.as_deref() != had {
+            return Ok(Some(artifact));
+        }
+        artifact.conversation = Some(to.to_owned());
+        self.save(&artifact)?;
+        self.events.send(
+            "artifact",
+            json!({"id": artifact.id, "joined": true, "title": artifact.title,
+                   "kind": artifact.kind, "conversation": artifact.conversation, "job": artifact.job}),
+        );
+        Ok(Some(artifact))
+    }
+
     /// Deletes it with every version: whether it was there.
     pub fn delete(&self, id: &str) -> std::io::Result<bool> {
         let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -911,7 +933,7 @@ pub async fn list(State(shared): State<Arc<Shared>>, Query(filter): Query<Filter
     axum::Json(json!(all)).into_response()
 }
 
-fn no_artifact() -> ApiError {
+pub(crate) fn no_artifact() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "There's no such artifact.")
 }
 

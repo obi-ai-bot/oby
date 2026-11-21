@@ -36,6 +36,9 @@ pub struct Control {
     /// The skill the owner picked in the box for these words (`POST /v1/plans`'s `skill`,
     /// SKILLS-6 to 8): only ever from that field, never from what the words say.
     skill: Mutex<Option<String>>,
+    /// The artifact open where the words were said (`POST /v1/plans`' `artifact`, ARTIFACTS-12):
+    /// the brain is told of it, every prompt of this turn.
+    artifact: Mutex<Option<super::open_artifact::OpenArtifact>>,
 }
 
 /// The members the owner's words `@`-name, by exact owner id, and the question: the words without
@@ -97,6 +100,18 @@ impl Control {
 
     pub fn skill(&self) -> Option<String> {
         self.skill.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The artifact open where the words this turn answers were said (ARTIFACTS-12).
+    pub fn set_artifact(&self, artifact: Option<super::open_artifact::OpenArtifact>) {
+        *self.artifact.lock().unwrap_or_else(|e| e.into_inner()) = artifact;
+    }
+
+    pub fn artifact(&self) -> Option<super::open_artifact::OpenArtifact> {
+        self.artifact
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn asked_mentioned(&self) -> Option<String> {
@@ -161,6 +176,9 @@ pub struct Asking {
     /// The skill the owner picked for these words (`POST /v1/plans`'s `skill`, SKILLS-6 to 8): the
     /// latest words', as the chips; a restart loses it.
     pub skill: Option<String>,
+    /// The artifact open where the words were said (`POST /v1/plans`' `artifact`, ARTIFACTS-12):
+    /// the latest words', as the chips; a restart loses it.
+    pub artifact: Option<super::open_artifact::OpenArtifact>,
     pub turns: Option<Vec<crate::conversation::Turn>>,
     pub back: Option<i64>,
     pub now: i64,
@@ -267,6 +285,7 @@ impl Turns {
             mentioned: Mutex::new(None),
             asked_mentioned: Mutex::new(None),
             skill: Mutex::new(None),
+            artifact: Mutex::new(None),
         });
         self.lock().push(control.clone());
         control
