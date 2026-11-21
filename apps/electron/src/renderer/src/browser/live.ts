@@ -38,7 +38,7 @@ type Calls = {
   /** main fills the field on the owner's click (main/browser.ts): null once filled, else why not */
   fill: (tab: string, field: string, value: string, ask?: string) => Promise<string | null>;
   /** each tab's own page state from main (main/browserGuest.ts): a function that stops listening */
-  navState: (fn: (s: { threadId: string; tabId: string; canGoBack: boolean; canGoForward: boolean; loading: boolean }) => void) => () => void;
+  navState: (fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean }) => void) => () => void;
 };
 
 const AGENTS: AgentId[] = ['codex', 'claude', 'cursor'];
@@ -70,8 +70,9 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   // (LAB-UI-LIVE-6, docs/api/browser.md `seq`)
   let tabsSeq = 0;
   let downloadsSeq = 0;
-  // main's last word on each tab's own page, by job and tab
-  const pages = new Map<string, { canGoBack: boolean; canGoForward: boolean; loading: boolean }>();
+  // main's last word on each tab's own page, by job and tab: its address (obid's stays at its own
+  // last command's), and whether it has a page behind, one ahead, and is loading
+  const pages = new Map<string, { url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean }>();
 
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
     const a = await calls.call(method, path, body);
@@ -89,6 +90,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     const mine: Tab[] = tabs.map((t) => {
       const d = doing.get(t.id);
       const p = t.owner.kind === 'agent' ? pages.get(`${t.owner.job}\n${t.id}`) : undefined;
+      const at = p?.url || t.url;
       return {
         id: t.id,
         owner: t.owner.kind === 'agent' ? { kind: 'agent', agent: agentOf(t.owner.agent) } : { kind: 'you' },
@@ -96,8 +98,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         src: t.url,
         partition: t.partition,
         title: t.title || shown(t.url),
-        url: shown(t.url),
-        secure: t.url.startsWith('https:'),
+        url: shown(at),
+        secure: at.startsWith('https:'),
         state: t.state,
         holder: t.heldBy ? 'you' : t.owner.kind === 'agent' ? 'agent' : null,
         hold: t.holdGeneration,
@@ -124,7 +126,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     return { tabs: mine, active, asks, downloads: dl, settings };
   };
   const publish = () => { if (!closed) sinks.state(view()); };
-  const unNav = calls.navState((s) => { pages.set(`${s.threadId}\n${s.tabId}`, { canGoBack: s.canGoBack, canGoForward: s.canGoForward, loading: s.loading }); publish(); });
+  const unNav = calls.navState((s) => { pages.set(`${s.threadId}\n${s.tabId}`, { url: s.url, canGoBack: s.canGoBack, canGoForward: s.canGoForward, loading: s.loading }); publish(); });
 
   let following: (() => void) | null = null;
   const refresh = async () => {

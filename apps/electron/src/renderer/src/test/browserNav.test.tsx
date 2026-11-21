@@ -36,7 +36,8 @@ function fakeGuest(embedder: object, o: { attached?: boolean; answers?: Answers 
   const sent: string[] = [];
   const wc = Object.assign(new EventEmitter(), {
     id: ids++, session: the.session, hostWebContents: embedder, getType: () => 'webview',
-    destroyed: false, back: false, forward: false, loading: false,
+    destroyed: false, back: false, forward: false, loading: false, url: 'http://127.0.0.1:5123/',
+    getURL: () => wc.url,
     isDestroyed: () => wc.destroyed, isDevToolsOpened: () => false, isLoading: () => false, isLoadingMainFrame: () => wc.loading,
     setWindowOpenHandler() {},
     navigationHistory: { canGoBack: () => wc.back, canGoForward: () => wc.forward, goBack: vi.fn(), goForward: vi.fn() },
@@ -78,7 +79,7 @@ const NO_PAGE = 'This tab has no page in this window.';
 
 // --- the page: the panel on obid, main stood in for
 
-type NavState = { threadId: string; tabId: string; canGoBack: boolean; canGoForward: boolean; loading: boolean };
+type NavState = { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean };
 const tabOf = (id: string, state: string, extra: object = {}) => ({ id, owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: id, url: 'http://localhost:3000/dashboard', state, heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null, ...extra });
 
 let root: Root, host: HTMLDivElement;
@@ -106,7 +107,7 @@ async function onObid(tabs: object[]) {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
 }
-const tell = (s: Partial<NavState>) => act(() => say!({ threadId: 'j1', tabId: 't1', canGoBack: false, canGoForward: false, loading: false, ...s }));
+const tell = (s: Partial<NavState>) => act(() => say!({ threadId: 'j1', tabId: 't1', url: 'http://localhost:3000/dashboard', canGoBack: false, canGoForward: false, loading: false, ...s }));
 const button = (label: string) => host.querySelector(`.br-nav [aria-label="${label}"]`) as HTMLButtonElement | null;
 const named = (words: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === words) as HTMLButtonElement | undefined;
 const click = (b: HTMLButtonElement | null | undefined) => act(() => b!.click());
@@ -119,6 +120,10 @@ describe('BROWSERAPP-30: Back and Forward go back and forward on the tab\'s own 
     click(button('Back'));
     click(button('Forward'));
     expect(nav.mock.calls).toEqual([['j1', 't1', 'back'], ['j1', 't1', 'forward']]);
+    // the address follows the tab's own page, as main says it, where obid's stays at its last command
+    expect(host.querySelector('.br-address')?.textContent).toBe('localhost:3000/dashboard');
+    tell({ url: 'http://localhost:3000/' });
+    expect(host.querySelector('.br-address')?.textContent).toBe('localhost:3000');
   });
 
   it('browserapp_30: main goes back or forward on that tab\'s webview only, and only when it has a page there', async () => {
@@ -166,11 +171,11 @@ describe('BROWSERAPP-31: Back is disabled on a tab\'s first page, and Forward wi
     for (const e of ['did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading', 'did-fail-load']) loose.emit(e, {});
     expect(w.report).not.toHaveBeenCalled();
     const g = w.guest('t31');
-    expect(w.report.mock.calls).toEqual([[{ threadId: 'j1', tabId: 't31', canGoBack: false, canGoForward: false, loading: false }]]);
-    g.back = true; g.loading = true;
+    expect(w.report.mock.calls).toEqual([[{ threadId: 'j1', tabId: 't31', url: 'http://127.0.0.1:5123/', canGoBack: false, canGoForward: false, loading: false }]]);
+    g.back = true; g.loading = true; g.url = 'http://127.0.0.1:5123/second';
     for (const e of ['did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading', 'did-fail-load']) g.emit(e, {});
     expect(w.report).toHaveBeenCalledTimes(6);
-    expect(w.report.mock.calls.slice(1).every(([s]) => s.canGoBack && !s.canGoForward && s.loading && s.tabId === 't31')).toBe(true);
+    expect(w.report.mock.calls.slice(1).every(([s]) => s.url === 'http://127.0.0.1:5123/second' && s.canGoBack && !s.canGoForward && s.loading && s.tabId === 't31')).toBe(true);
     g.destroyed = true;
     g.emit('did-navigate', {});
     expect(w.report).toHaveBeenCalledTimes(6);

@@ -18,8 +18,8 @@ export const PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', '
 export const BUSY_PAGE_PROBE_MS = 1_000;
 /** the owner's Back, Forward, Reload and Stop loading on a tab's own page */
 export type NavOp = 'back' | 'forward' | 'reload' | 'stop';
-/** what main tells the page of a tab's own page: is there one behind, one ahead, is it loading */
-export type NavState = { threadId: string; tabId: string; canGoBack: boolean; canGoForward: boolean; loading: boolean };
+/** what main tells the page of a tab's own page: its address, is there one behind, one ahead, is it loading */
+export type NavState = { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean };
 
 // The webview's preferences, whatever the page asked for: sandboxed, no Node anywhere, no preload,
 // its partition checked (T3: DesktopWindow.ts:620-645)
@@ -86,11 +86,12 @@ async function leaveBusyPage(wc: WebContents) {
  * `report` hears each tab's page state.
  */
 export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) => string | undefined, report: (s: NavState) => void) {
-  // a keyed tab's page state, from its own webContents (T3: Manager.ts:1214-1257)
+  // a keyed tab's page state, from its own webContents (T3: Manager.ts:1185-1192, 1214-1257): its
+  // address too, as obid's tab keeps the address of obid's own last command
   const told = (wc: WebContents) => {
     const k = keyed.get(wc.id);
     if (!k || wc.isDestroyed()) return;
-    report({ threadId: k.threadId, tabId: k.tabId, canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame() });
+    report({ threadId: k.threadId, tabId: k.tabId, url: wc.getURL(), canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame() });
   };
   win.webContents.on('will-attach-webview', (e, prefs, params) => {
     if (!harden(prefs as Record<string, unknown>, params)) e.preventDefault();

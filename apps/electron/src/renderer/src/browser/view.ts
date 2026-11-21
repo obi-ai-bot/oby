@@ -22,7 +22,7 @@ export type Tab = {
   /** on obid: the session obid named for the tab's page (docs/plans/browser-t3.md); none from an obid before the relay */
   partition?: string;
   title: string;
-  /** host, then path: drawn as <b>host</b>path */
+  /** host, then path: drawn as <b>host</b>path; on obid, the tab's own webview's once main says it */
   url: string;
   state: BrowserTabState;
   /** who holds the tab now: its agent, you (Take control), or nobody (idle) */
