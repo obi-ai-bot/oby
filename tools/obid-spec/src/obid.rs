@@ -200,6 +200,10 @@ pub struct StartInput {
     /// obid has no browser engine to put in place: its tabs are Oby's window's (the stand-in
     /// window, `browser-window`, in these workflows).
     pub browser: Option<bool>,
+    /// A gitleaks that can't run first on its `PATH` (obid's tests' `bin-broken-gitleaks`), so its
+    /// secret scan can't run: nothing with text goes out (BROWSER-22, "Non-negotiable").
+    #[serde(rename = "brokenScanner")]
+    pub broken_scanner: Option<bool>,
 }
 
 pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
@@ -311,6 +315,9 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
     }
     if let Some(hosts) = &input.ssh {
         path_first.push(stand_in_ssh(run, &folder, hosts)?);
+    }
+    if input.broken_scanner == Some(true) {
+        path_first.push(run.agents().with_file_name("bin-broken-gitleaks"));
     }
     for (base, files) in [
         (&home, &files),

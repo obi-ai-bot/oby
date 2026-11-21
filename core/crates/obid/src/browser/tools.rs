@@ -15,7 +15,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::Service;
-use super::api::{Refused, mcp_refusal, mcp_result};
+use super::api::{Refused, browser_off_for_another_oby, mcp_refusal, mcp_result};
+use super::box_edge;
 use super::contract as c;
 use super::engine::{self, Actor, DownloadFate, Kind, download_rule};
 
@@ -33,8 +34,14 @@ impl Service {
         name: &str,
         args: &Value,
     ) -> Value {
+        let foreign = self.api(|a| a.job(job).is_some_and(|j| j.origin.foreign()));
         if let Err(e) = self.api(|a| a.tools_allowed()) {
-            return mcp_refusal(&e);
+            // Another Oby's task finishes without one: its own owner can't turn it on (BROWSER-18).
+            return mcp_refusal(&if foreign {
+                browser_off_for_another_oby()
+            } else {
+                e
+            });
         }
         if !c::MCP_TOOLS.contains(&name) {
             return mcp_refusal(&Refused::new(
@@ -42,6 +49,16 @@ impl Service {
                 "unknown_tool",
                 format!("There is no browser tool named {name}."),
             ));
+        }
+        // The box's edge: another Oby's task opens web pages, never the host's own services or
+        // files (BROWSER-18).
+        if foreign && matches!(name, "oby_browser_open" | "oby_browser_navigate") {
+            let url = args["url"].as_str().unwrap_or_default();
+            if let Err(e) = box_edge::in_box(url, &self.host_ports()) {
+                let tab = args["tab"].as_str().map(str::to_string);
+                self.act_event(job, tab, name, args, c::Outcome::Refused, Some(e.reason));
+                return mcp_refusal(&e);
+            }
         }
         let actor = Actor::Agent(job.into());
         // Every tool that reaches a page needs Oby's window: its tabs are the window's webviews

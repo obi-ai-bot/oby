@@ -19,6 +19,8 @@ pub struct Job {
     /// Whether its browser is up, and why not when it failed.
     pub browser: c::BrowserState,
     pub browser_reason: Option<String>,
-    /// The webview partition its tabs open in (`crate::browser::relay::partition_of`).
+    /// The webview partition its tabs open in (`c::Origin::partition`).
     pub partition: String,
+    /// Who it works for, from obid's records when the API first heard of it (BROWSER-18).
+    pub origin: c::Origin,
 }

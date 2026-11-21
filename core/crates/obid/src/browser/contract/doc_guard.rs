@@ -80,6 +80,10 @@ fn sample_browser() -> JobBrowser {
         agent: "codex".into(),
         state: BrowserState::Failed,
         reason: Some("why".into()),
+        origin: Origin::Obi {
+            peer: "obi-b".into(),
+            peer_owner: "ben".into(),
+        },
     }
 }
 
