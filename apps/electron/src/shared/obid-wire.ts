@@ -678,7 +678,6 @@ export const BROWSER_SETTINGS = '/v1/browser/settings';
 export const BROWSER_DOWNLOADS = '/v1/browser/downloads';
 /** the window's half of the relay: its webviews' events, in order (docs/plans/browser-t3.md) */
 export const BROWSER_RELAY = '/v1/browser/relay';
-export const browserTabPath = (tab: string, verb: 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
 export const browserAskPath = (ask: string) => `/v1/browser/asks/${encodeURIComponent(ask)}/answer`;
 export const browserSaveCopyPath = (download: string) => `/v1/browser/downloads/${encodeURIComponent(download)}/saveCopy`;
 

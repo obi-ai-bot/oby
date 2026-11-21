@@ -660,6 +660,50 @@ def live_104():
     )
 
 
+def live_105():
+    tab = "${state.open.structured.result.tab}"
+    typed = "lab-pw-typed-in-oby-73"
+    workflow(
+        "browser-105-live-fill.json",
+        "App live: a password typed in Oby's card goes into the page's field through the window, never through obid (board 8, live)",
+        "Fill in on the browser as T3 Code has it (docs/plans/browser-t3.md, W4; BROWSERAPP-12): a stand-in Codex job opens the "
+        "fixture site on a scratch obid and asks the person to sign in, naming the page's password field. In the real app the "
+        "job's task shows board 7's card over its message box; Type the password opens board 8's card, the owner types into it "
+        "and presses Fill in. Main types the value into the tab's own webview through its debugger and tells obid only that the "
+        "ask is answered: the page's field holds as many characters as were typed, the ask is answered, and the value is in no "
+        "file of obid's, its log or any answer or event the workflow read.",
+        [
+            step("obid", "obid-start", agent="fake-harness-jobs", browser=True),
+            # the side panel kept open: the job's task is opened from it
+            step("app", "app.launch", obid=OBID, size={"width": 1280, "height": 800}, storage={"oby.chatPanelOpen": "1"}),
+            step("site", "browser-site"),
+            step("job", "browser-job", obid=OBID),
+            step("open", "browser-mcp", "BROWSERAPP-26", obid=OBID, token="${state.job.token}", tool="oby_browser_open", args={"url": "${state.site.url}/"},
+                 within=60, expect={"paths": {"isError": False, "structured.ok": True}}),
+            step("ask", "browser-mcp", "BROWSERAPP-11", obid=OBID, token="${state.job.token}", tool="oby_browser_ask_person",
+                 args={"tab": tab, "kind": "signIn", "reason": "Sign in to the lab", "field": "#pw"}, expect={"paths": {"isError": False}}),
+            # the job's conversation, from the side panel: its ask's card over its message box (board 7)
+            click("conversation", {"text": "SLEEP TOKEN FILE"}),
+            read("ask-card", {"css": "[data-browser=asks]"}, "BROWSERAPP-11", within=30, count=1, words={"$contains": "Sign in to the lab"}),
+            click("type-the-password", {"role": "button", "name": "Type the password"}),
+            step("type-secret", "app.type", app=APP, target={"css": "[data-browser=secret-input]"}, text=typed),
+            click("fill-in", {"role": "button", "name": "Fill in"}),
+            # in the page's own field, through the window: as many characters as were typed
+            step("in-the-page", "browser-mcp", "BROWSERAPP-12", obid=OBID, token="${state.job.token}", tool="oby_browser_evaluate",
+                 args={"tab": tab, "expression": "document.querySelector('#pw').value.length"},
+                 within=15, expect={"paths": {"isError": False, "structured.result.outside.data": len(typed)}}),
+            step("answered", "call", "BROWSERAPP-12", obid=OBID, method="GET", path="/v1/browser", within=15,
+                 expect={"status": 200, "paths": {"tabs.0.ask": None}}),
+            read("no-box-left", {"css": "[data-browser=secret-input]"}, None, count=0),
+            read("not-in-the-window", {"css": "html"}, "BROWSERAPP-12", count=1, text={"$not": {"$contains": typed}}),
+            # never through obid: not in a file of its folder, its log, or anything the workflow read from it
+            step("never-in-obid", "browser-scan", "BROWSERAPP-12", obid=OBID, secrets=[typed], expect={"paths": {"clean": True}}),
+            step("end", "browser-job", obid=OBID, job="${state.job.job}", end=True),
+            close(),
+        ],
+    )
+
+
 
 # What a board draws that the app doesn't, piece by piece, and why (docs/contracts/browser-app.md, "Not matched
 # within 4px"): left out of that board's compare, never of its other checks.
@@ -706,3 +750,4 @@ if __name__ == "__main__":
     board_17()
     live_101()
     live_104()
+    live_105()

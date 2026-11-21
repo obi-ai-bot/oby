@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DOMAINS, KEPT, MAX_MESSAGE, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
+import { DOMAINS, KEPT, MAX_MESSAGE, NOT_PASSED, NO_SCRIPT, forms, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
 import { sseReader } from '../../../shared/obid-wire';
 
 vi.mock('electron', () => ({ session: { fromPartition: () => ({}) }, webContents: { fromId: () => null } }));
@@ -15,6 +15,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 type FakeGuest = Guest & {
   sent: { method: string; params?: Record<string, unknown> }[];
   reloads: number; stops: number; typed: string[]; keys: Record<string, unknown>[]; folder: string | null | undefined; focus: boolean;
+  onPage: string[]; passwordObjects: Set<string>;
 };
 function fakeGuest(over: Partial<Guest> = {}): FakeGuest {
   const sent: { method: string; params?: Record<string, unknown> }[] = [];
@@ -26,6 +27,9 @@ function fakeGuest(over: Partial<Guest> = {}): FakeGuest {
     insertText: async (t: string) => { g.typed.push(t); },
     key: (p: Record<string, unknown>) => { g.keys.push(p); },
     downloadsTo: (f: string | null) => { g.folder = f; },
+    onPage: [], passwordObjects: new Set<string>(),
+    passwords: async () => g.onPage,
+    isPassword: async (id: string) => g.passwordObjects.has(id),
     ...over,
   };
   return g;
@@ -129,7 +133,7 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     for (let i = 0; i < 6; i++) await settle();
     expect(g.sent).toEqual([]);
     expect(replies(o.all()).map((r) => [r.id, r.error?.code])).toEqual([[1, -32601], [2, -32601], [3, -32601], [4, -32601], [5, -32601]]);
-    expect([...DOMAINS].sort()).toEqual(['Accessibility', 'DOM', 'DOMSnapshot', 'Emulation', 'Input', 'Log', 'Network', 'Page', 'Runtime']);
+    expect([...DOMAINS].sort()).toEqual(['Accessibility', 'DOM', 'Emulation', 'Input', 'Log', 'Network', 'Page', 'Runtime']);
   });
 
   it('browserapp_23: reload and stop are the guest\'s own; keys and text into a guest with no focused frame go in as its input; presses run one at a time', async () => {
@@ -224,5 +228,123 @@ describe('BROWSERAPP-25: an agent\'s downloads go only where obid says, inside i
     expect(g.folder).toBeNull();
     expect(g.sent).toEqual([]);
     expect(replies(o.all()).map((r) => [r.id, r.error ? 'refused' : 'kept'])).toEqual([[1, 'kept'], [2, 'refused'], [3, 'kept']]);
+  });
+});
+
+describe('BROWSERAPP-12: a password never reaches obid through the relay', () => {
+  const PW = 'hunter2-lab-73';
+  const settled = async () => { for (let i = 0; i < 8; i++) await settle(); };
+  const answers = (o: ReturnType<typeof fakeObid>) => replies(o.all());
+
+  it('browserapp_12_a_reply_or_event_carrying_a_filled_password_in_any_simple_form_never_leaves', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    let out: unknown = null;
+    const g = fakeGuest({ send: vi.fn(async () => out) });
+    host.attach(K, g);
+    host.filled(K, PW);
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });  // a new document: scripts run again
+    const ways = forms(PW);
+    expect(ways).toEqual(expect.arrayContaining([PW, Buffer.from(PW).toString('base64'), Buffer.from(PW).toString('hex'), encodeURIComponent(PW)]));
+    for (const [n, form] of ways.entries()) {
+      out = { result: { type: 'string', value: `got ${form} here` } };
+      host.command(cdp(10 + n, 'Runtime.evaluate', { expression: 'x' }));
+      await settled();
+    }
+    expect(answers(o).filter((r) => r.id >= 10).every((r) => r.error?.message === NOT_PASSED)).toBe(true);
+    expect(answers(o).filter((r) => r.id >= 10)).toHaveLength(ways.length);
+    host.event(K, 'Runtime.consoleAPICalled', { args: [{ value: PW }] });
+    host.event(K, 'Network.requestWillBeSent', { request: { postData: `pw=${encodeURIComponent(PW)}` } });
+    await settled();
+    expect(JSON.stringify(o.all())).not.toContain(PW);
+    expect(JSON.stringify(o.all())).not.toContain(encodeURIComponent(PW));
+  });
+
+  it('browserapp_12_after_a_fill_the_page_runs_no_script_of_obids_until_its_main_frame_leaves', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    host.filled(K, PW);
+    for (const [id, method, params] of [[1, 'Runtime.evaluate', {}], [2, 'Runtime.callFunctionOn', { objectId: 'o1' }], [3, 'Runtime.compileScript', {}], [4, 'Page.addScriptToEvaluateOnNewDocument', {}], [5, 'Page.navigate', { url: 'javascript:alert(1)' }]] as const) host.command(cdp(id, method, params));
+    // reading the page, clicking and going on still work
+    host.command(cdp(6, 'Accessibility.getFullAXTree', {}));
+    host.command(cdp(7, 'Page.navigate', { url: 'https://example.test/next' }));
+    await settled();
+    expect(answers(o).filter((r) => r.id <= 5).map((r) => r.error?.message)).toEqual(Array(5).fill(NO_SCRIPT));
+    expect(g.sent.map((c) => c.method)).toEqual(['Accessibility.getFullAXTree', 'Page.navigate']);
+    // a frame inside the page navigating isn't leaving it; the main frame is
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'child', parentId: 'f1' } });
+    host.command(cdp(8, 'Runtime.evaluate', {}));
+    await settled();
+    expect(answers(o).find((r) => r.id === 8)?.error?.message).toBe(NO_SCRIPT);
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });
+    host.command(cdp(9, 'Runtime.evaluate', {}));
+    await settled();
+    expect(answers(o).find((r) => r.id === 9)?.result).toBeDefined();
+    // a detach and a new attach don't lift it: only leaving the document does
+    host.filled(K, PW);
+    host.detach(K); host.attach(K, g);
+    host.command(cdp(11, 'Runtime.evaluate', {}));
+    await settled();
+    expect(answers(o).find((r) => r.id === 11)?.error?.message).toBe(NO_SCRIPT);
+  });
+
+  it('browserapp_12_while_fill_in_works_no_script_of_obids_runs_not_even_across_its_reload_and_its_new_document_scripts_are_handed_back', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest({ send: vi.fn(async (method: string) => (method === 'Page.addScriptToEvaluateOnNewDocument' ? { identifier: 's7' } : {})) });
+    host.attach(K, g);
+    host.command(cdp(1, 'Page.addScriptToEvaluateOnNewDocument', { source: 'hook()' }));
+    await settled();
+    expect(host.fillStarts(K)).toEqual(['s7']);
+    // the reload Fill in makes: the main frame navigates, and still no script of obid's runs
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });
+    host.command(cdp(2, 'Runtime.evaluate', {}));
+    host.command(cdp(3, 'Page.addScriptToEvaluateOnNewDocument', { source: 'hook()' }));
+    await settled();
+    expect(answers(o).filter((r) => r.id >= 2).map((r) => r.error?.message)).toEqual([NO_SCRIPT, NO_SCRIPT]);
+    host.filled(K, PW);
+    host.command(cdp(4, 'Runtime.evaluate', {}));
+    await settled();
+    expect(answers(o).find((r) => r.id === 4)?.error?.message).toBe(NO_SCRIPT);
+    // a fill that didn't happen lets obid's scripts run again
+    const K2 = { threadId: 'j1', tabId: 't2' };
+    host.attach(K2, fakeGuest());
+    expect(host.fillStarts(K2)).toEqual([]);
+    host.fillEnds(K2);
+    host.command({ ...cdp(5, 'Runtime.evaluate', {}), tabId: 't2' });
+    await settled();
+    expect(answers(o).find((r) => r.id === 5)?.result).toBeDefined();
+  });
+
+  it('browserapp_12_a_password_fields_value_is_never_read_for_obid_filled_or_not', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    let out: unknown = {};
+    const g = fakeGuest({ send: vi.fn(async (method: string) => { g.sent.push({ method }); return out; }) });
+    g.onPage = ['typed-by-the-owner-1'];
+    g.passwordObjects.add('pw-object');
+    host.attach(K, g);
+    // its properties, or a function called on it
+    host.command(cdp(1, 'Runtime.getProperties', { objectId: 'pw-object' }));
+    host.command(cdp(2, 'Runtime.callFunctionOn', { objectId: 'pw-object', functionDeclaration: 'function(){return this.value}' }));
+    await settled();
+    expect(answers(o).map((r) => [r.id, r.error?.message])).toEqual([[1, NOT_PASSED], [2, NOT_PASSED]]);
+    expect(g.sent).toEqual([]);
+    // the value the page's field holds now, in a read of the page
+    out = { result: { value: 'typed-by-the-owner-1' } };
+    host.command(cdp(3, 'Runtime.evaluate', { expression: 'document.querySelector("#pw").value' }));
+    out = { nodes: [{ value: { value: 'typed-by-the-owner-1' } }] };
+    host.command(cdp(4, 'Accessibility.getFullAXTree', {}));
+    await settled();
+    expect(answers(o).filter((r) => r.id >= 3).map((r) => r.error?.message)).toEqual([NOT_PASSED, NOT_PASSED]);
+    // DOMSnapshot, which reads every input's value, isn't relayed at all
+    host.command(cdp(5, 'DOMSnapshot.captureSnapshot', { computedStyles: [] }));
+    await settled();
+    expect(answers(o).find((r) => r.id === 5)?.error?.code).toBe(-32601);
+    // a few characters aren't looked for: they'd match almost anything
+    expect(forms('abc')).toEqual([]);
+    expect(JSON.stringify(o.all())).not.toContain('typed-by-the-owner-1');
   });
 });

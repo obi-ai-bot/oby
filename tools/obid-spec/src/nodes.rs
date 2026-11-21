@@ -73,7 +73,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("browser-watch", "Reads a tab's stream on a scratch obid for `ms` with each of `readers` ({readEveryMs, stallMs, chunk}): per reader frames read, dropped, first and last seq; with expect."),
     ("browser-read", "Reads a field of a job's tab (`selector`) through its own agent's oby_browser_evaluate (`token`), giving the tab back first when `device` holds it and taking it again after: {value}; with expect and within."),
     ("browser-secret", "Puts a fresh random secret into `field` of `tab` through `POST …/secret`, signed by `device` (`as`: device or unsigned); the value stays in this process. Then reads the field through the job's agent (`token`) by its length and a hash: {status, body, fieldHasIt, answerHasIt}; with expect."),
-    ("browser-scan", "Looks for every secret this workflow sent (as it is, base64 and hex) in every file under the scratch obid's folder (its home, its log), and in every answer and event this workflow's browser nodes read: {secrets, filesScanned, found, clean}; with expect."),
+    ("browser-scan", "Looks for every secret this workflow sent (as it is, base64 and hex) in every file under the scratch obid's folder (its home, its log), and in every answer and event this workflow's browser nodes read; `secrets` adds ones it typed elsewhere (a password typed into the app's card): {secrets, filesScanned, found, clean}; with expect."),
     ("browser-downloads", "A job's downloads as files: those in its browser profile (`<home>/browser/jobs/<job>/profile/Downloads`) and those in the person's Downloads (the scratch obid's HOME): {inProfile, delivered}; with expect and within."),
 ];
 

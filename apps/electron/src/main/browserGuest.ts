@@ -26,6 +26,30 @@ export function harden(prefs: Record<string, unknown>, params: { partition?: str
 }
 
 const keyed = new Map<number, TabKey>();
+
+/**
+ * The page's own JavaScript that puts the keyboard on the field an ask names (a CSS selector), only
+ * when it's an input or a text area: true once it has focus. The selector goes in as a string
+ * literal; the value never goes into any script (Fill in types it, Input.insertText).
+ */
+/**
+ * What Fill in does to a page before it types into it, the owner's choice (docs/plans/browser-t3.md,
+ * Open: a script the agent ran in the page before the fill). `reload`: every script obid added to
+ * run in each new document is removed and the page loads again, so no script of the agent's is in the
+ * document the password goes into (what the page held, a typed name say, is lost). `none`: the page
+ * as it is. This is the one place it's chosen.
+ */
+export const FILL_PREP: 'reload' | 'none' = 'reload';
+/** how long Fill in waits for the page to load again before it gives up */
+export const RELOAD_MS = 15_000;
+
+/** the values of the page's password fields, for main's own check of what it relays (never relayed) */
+export const PASSWORDS = '[...document.querySelectorAll(\'input[type="password" i]\')].map((e) => e.value)';
+const IS_PASSWORD = 'function () { return this instanceof HTMLInputElement && this.type.toLowerCase() === \'password\'; }';
+/** how many characters the focused field holds: Fill in reads back only that, never the value */
+export const FIELD_LENGTH = '(() => { const el = document.activeElement; return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? [...el.value].length : -1; })()';
+export const focusField = (field: string) =>
+  `(() => { const el = document.querySelector(${JSON.stringify(field)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false; el.focus(); return document.activeElement === el; })()`;
 const folders = new Map<number, string | null>();
 const ready = new WeakSet<Session>();
 
@@ -43,6 +67,16 @@ function prepare(s: Session) {
   });
 }
 
+// the page loaded again, from the start (Fill in's reload): true once it has, false past RELOAD_MS
+function reloaded(wc: WebContents): Promise<boolean> {
+  return new Promise((done) => {
+    const timer = setTimeout(() => { wc.off('did-finish-load', ok); done(false); }, RELOAD_MS);
+    const ok = () => { clearTimeout(timer); done(true); };
+    wc.once('did-finish-load', ok);
+    wc.reload();
+  });
+}
+
 function asGuest(wc: WebContents): Guest {
   return {
     send: (method, params) => wc.debugger.sendCommand(method, params),
@@ -56,6 +90,17 @@ function asGuest(wc: WebContents): Guest {
       if (keyCode) wc.sendInputEvent({ type, keyCode });
     },
     downloadsTo: (folder) => folders.set(wc.id, folder),
+    // main's own reads, through the same debugger, never relayed: what the page's password fields hold
+    passwords: async () => {
+      const r = await wc.debugger.sendCommand('Runtime.evaluate', { expression: PASSWORDS, returnByValue: true }) as { result?: { value?: unknown } };
+      return Array.isArray(r?.result?.value) ? r.result.value.filter((v): v is string => typeof v === 'string' && v.length > 0) : [];
+    },
+    isPassword: async (objectId) => {
+      try {
+        const r = await wc.debugger.sendCommand('Runtime.callFunctionOn', { objectId, functionDeclaration: IS_PASSWORD, returnByValue: true }) as { result?: { value?: unknown } };
+        return r?.result?.value === true;
+      } catch { return false; }
+    },
   };
 }
 
@@ -124,5 +169,38 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       return null;
     },
     shown: (k: TabKey, shown: boolean) => host.shown(k, shown),
+    /**
+     * Fill in (BROWSERAPP-12): the value typed into the field of the tab's own page, through its
+     * debugger, as keys typed there would; it goes to no script, no log and never to obid. Null once
+     * typed, else why not.
+     */
+    async type(tabId: string, field: string, value: string): Promise<string | null> {
+      const id = [...keyed.entries()].find(([, k]) => k.tabId === tabId)?.[0];
+      const wc = id === undefined ? undefined : webContents.fromId(id);
+      if (!wc || wc.isDestroyed() || !wc.debugger.isAttached()) return 'This page isn’t open in the window.';
+      const k = keyed.get(wc.id)!;
+      // no script of obid's runs on the page from here: not while it reloads, nor once it's filled
+      const scripts = host.fillStarts(k);
+      try {
+        if (FILL_PREP === 'reload') {
+          for (const identifier of scripts) await wc.debugger.sendCommand('Page.removeScriptToEvaluateOnNewDocument', { identifier }).catch(() => undefined);
+          if (!(await reloaded(wc))) { host.fillEnds(k); return 'The page didn’t load again in time.'; }
+        }
+        // the guest gets the keyboard first: with no focused frame, typed text lands nowhere (T3: GuestInput.ts)
+        wc.focus();
+        const focused = await wc.debugger.sendCommand('Runtime.evaluate', { expression: focusField(field), returnByValue: true }) as { result?: { value?: unknown } };
+        if (focused?.result?.value !== true) { host.fillEnds(k); return 'That field isn’t on the page.'; }
+        await wc.debugger.sendCommand('Input.insertText', { text: value });
+        // only its length is read back, never the value: typed once more as the guest's own input if CDP's didn't land
+        const length = async () => ((await wc.debugger.sendCommand('Runtime.evaluate', { expression: FIELD_LENGTH, returnByValue: true })) as { result?: { value?: unknown } })?.result?.value;
+        if (await length() === 0) wc.insertText(value);
+        // from now on nothing relayed to obid carries it, and obid runs no script on this document
+        host.filled(k, value);
+        return (await length()) === [...value].length ? null : 'The page didn’t take what you typed.';
+      } catch (err) {
+        host.fillEnds(k);
+        return `Oby couldn’t fill the page: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    },
   };
 }

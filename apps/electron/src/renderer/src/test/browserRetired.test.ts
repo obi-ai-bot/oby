@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { owners, wordsOf } from '../../../shared/words';
 
-// What went with obid's own Chrome (docs/plans/browser-t3.md, W3): the page is each tab's own
+// What went with obid's own Chrome (docs/plans/browser-t3.md, W3 and W4): the page is each tab's own
 // <webview>, so the window streams no picture of it, signs none of the owner's mouse and keys for
-// obid, and takes or gives back no tab. This fails if any of it comes back into the app's source.
+// obid, takes or gives back no tab, and sends no secret to obid to fill. This fails if any of it comes back into the app's source.
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const sources = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
@@ -20,6 +20,7 @@ const RETIRED: [string, RegExp][] = [
   ['the live frame (the streamed picture of the page)', /\bLiveFrame\b|data-browser="frame(-input)?"|\bBrowserFrame\b/],
   ['main\'s stream followers and their channels', /browser-(watch|unwatch|frame)\b|\/v1\/browser\/tabs\/[^'"`\s]*\/stream|browserTabPath\([^)]*'stream'/],
   ['the owner\'s input signed for obid (browserInput)', /\b(sawInput|mayInput|INPUT_PATH|BrowserInput)\b|browserInput|\/v1\/browser\/tabs\/[^'"`\s]*\/input|browserTabPath\([^)]*'input'/],
+  ['a secret sent to obid to fill (…/secret)', /\/v1\/browser\/tabs\/[^'"`\s]*\/secret|browserTabPath/],
   ['Take control and Give back signed for obid', /\b(TAKE_CONTROL|TAKE_LABELS|GIVE_BACK|BROWSER_TAB)\b|browserTabPath\([^)]*'(take|giveBack)'|\/v1\/browser\/tabs\/[^'"`\s]*\/(take|giveBack)/],
 ];
 

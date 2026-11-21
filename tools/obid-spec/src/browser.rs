@@ -371,7 +371,12 @@ async fn secret(input: &Value) -> Result<Value> {
 
 fn scan(input: &Value) -> Value {
     use base64::Engine as _;
-    let secrets = SECRETS.lock().unwrap().clone();
+    // the secrets this workflow sent through obid, and any it typed elsewhere (`secrets`: a password
+    // typed into the app's card, which goes into the page and never to obid)
+    let mut secrets = SECRETS.lock().unwrap().clone();
+    if let Some(given) = input["secrets"].as_array() {
+        secrets.extend(given.iter().filter_map(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from));
+    }
     let needles: Vec<Vec<u8>> = secrets
         .iter()
         .flat_map(|s| {
@@ -461,6 +466,20 @@ mod tests {
         let h = ((5381u32.wrapping_mul(33) ^ 97).wrapping_mul(33)) ^ 98;
         assert_eq!(hash("ab"), format!("2:{h}"));
         assert_eq!(token("Bearer abc\n"), "abc");
+    }
+
+    #[test]
+    fn the_scan_looks_for_the_secrets_it_is_given_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = json!({"obid": {"folder": dir.path()}, "secrets": ["typed-in-the-app-91"]});
+        std::fs::write(dir.path().join("clean.txt"), "nothing here").unwrap();
+        let clean = scan(&input);
+        assert_eq!(clean["clean"], true, "{clean}");
+        assert!(clean["secrets"].as_u64() >= Some(1), "{clean}");
+        std::fs::write(dir.path().join("log.txt"), "… typed-in-the-app-91 …").unwrap();
+        let found = scan(&input);
+        assert_eq!(found["clean"], false, "{found}");
+        assert_eq!(found["found"][0], "log.txt");
     }
 
     #[test]

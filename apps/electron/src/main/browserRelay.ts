@@ -71,11 +71,36 @@ export interface Guest {
   key(params: Record<string, unknown>): void;
   /** where its downloads go, as obid named it (or nowhere, null) */
   downloadsTo(folder: string | null): void;
+  /** the values of the page's password fields now, read by main itself and never relayed */
+  passwords(): Promise<string[]>;
+  /** whether a CDP object of the page is a password input, asked by main itself */
+  isPassword(objectId: string): Promise<boolean>;
 }
 
 // Page-level CDP only (T3 fakes a browser for Playwright; obid speaks to the page itself): any other
 // domain, or a command for a session, never reaches the debugger.
-export const DOMAINS = new Set(['Page', 'Runtime', 'DOM', 'DOMSnapshot', 'Accessibility', 'Input', 'Network', 'Emulation', 'Log']);
+export const DOMAINS = new Set(['Page', 'Runtime', 'DOM', 'Accessibility', 'Input', 'Network', 'Emulation', 'Log']);
+
+// A password never reaches an agent (docs/contracts/browser-app.md, BROWSERAPP-12): what main
+// relays to obid never carries one the owner filled, nor the value of a password field on the page,
+// as it is or simply encoded; a password input's properties aren't read for obid; and after a fill
+// the page runs no script of obid's until it leaves that document, since a script could hand on any
+// form of the value. DOMSnapshot isn't relayed at all (it reads every input's value).
+export const NOT_PASSED = 'Oby doesn’t pass a password the owner filled.';
+export const NO_SCRIPT = 'Oby runs no script on a page the owner filled a password into, until it leaves that page.';
+const SCRIPTS = new Set(['Runtime.evaluate', 'Runtime.callFunctionOn', 'Runtime.compileScript', 'Runtime.runScript', 'Page.addScriptToEvaluateOnNewDocument', 'Page.navigate']);
+const READS = new Set(['Runtime.getProperties', 'Runtime.callFunctionOn']);
+/** a password shorter than this isn't looked for: a few characters would match almost anything */
+export const SHORTEST = 4;
+/** a value as it is and in the encodings a page or a tool simply turns it into */
+export function forms(value: string): string[] {
+  if ([...value].length < SHORTEST) return [];
+  const bytes = Buffer.from(value, 'utf8');
+  const hex = bytes.toString('hex');
+  return [...new Set([value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value), escape(value), bytes.toString('base64'), bytes.toString('base64url'), hex, hex.toUpperCase()])];
+}
+/** whether a relayed message's text carries any form of these values */
+export const carries = (text: string, values: string[]) => values.some((v) => forms(v).some((f) => text.includes(f)));
 /** a message bigger than this ends the tab's relay, as T3's does (CdpRelay.ts, 64 MB) */
 export const MAX_MESSAGE = 64 * 1024 * 1024;
 /** how long main waits before sending a relay again after obid didn't take it */
@@ -100,6 +125,14 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
   // what was said of a tab before it attached (a first load's failure, whether it shows): sent on attach
   const early = new Map<string, { failed: RelayEvent | null; shown: boolean | null }>();
   const turns = new Set<string>();
+  // the passwords main filled into each tab, kept in memory for the tab's life and never logged
+  const filledIn = new Map<string, string[]>();
+  // the tabs whose document holds a password main filled: no script of obid's runs there (outlives a detach)
+  const noScript = new Set<string>();
+  // the tabs Fill in is working on now: no script of obid's runs there, across the reload it may make
+  const filling = new Set<string>();
+  // the scripts obid added to run in each tab's every new document (Page.addScriptToEvaluateOnNewDocument)
+  const added = new Map<string, string[]>();
   let outbox: RelayEvent[] = [];
   let sending = false;
   const wait = options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
@@ -161,7 +194,19 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
         const done = t.mouse.catch(() => undefined).then(() => t.guest.send(method, params));
         t.mouse = done;
         result = await done;
-      } else result = await t.guest.send(method, params);
+      } else {
+        if ((noScript.has(key(t.k)) || filling.has(key(t.k))) && SCRIPTS.has(method) && !(method === 'Page.navigate' && /^https?:/i.test(String(params?.url ?? '')))) return refuse(t, id, NO_SCRIPT);
+        if (READS.has(method) && typeof params?.objectId === 'string' && await t.guest.isPassword(params.objectId)) return refuse(t, id, NOT_PASSED);
+        result = await t.guest.send(method, params);
+        const identifier = (result as { identifier?: unknown } | undefined)?.identifier;
+        if (method === 'Page.addScriptToEvaluateOnNewDocument' && typeof identifier === 'string') added.set(key(t.k), [...(added.get(key(t.k)) ?? []), identifier]);
+      }
+      // nothing of a password leaves for obid: those main filled, and those on the page now
+      const text = JSON.stringify(result ?? {});
+      const filled = filledIn.get(key(t.k)) ?? [];
+      if (carries(text, filled) || (/^(Runtime|DOM|Accessibility)\./.test(method) && carries(text, await t.guest.passwords().catch(() => [])))) {
+        return reply(t, { id, error: { code: -32000, message: NOT_PASSED } });
+      }
       reply(t, { id, result: result ?? {} });
     } catch (err) {
       reply(t, { id, error: { code: -32000, message: err instanceof Error ? err.message : String(err) } });
@@ -193,7 +238,27 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     /** a CDP event of the page's: to obid as it came */
     event(k: TabKey, method: string, params: unknown) {
       const t = tabs.get(key(k));
-      if (t?.attached && !t.broken) cdp(t, { method, params });
+      if (!t?.attached || t.broken) return;
+      // the main frame left the document a password was filled into: obid's scripts run there again
+      if (method === 'Page.frameNavigated' && !(params as { frame?: { parentId?: string } })?.frame?.parentId) noScript.delete(key(k));
+      // an event carrying a password the owner filled never leaves for obid
+      if (carries(JSON.stringify(params ?? {}), filledIn.get(key(k)) ?? [])) return;
+      cdp(t, { method, params });
+    },
+    /** Fill in starts on this tab: no script of obid's runs there until it ends; what obid added to every new document */
+    fillStarts(k: TabKey): string[] {
+      filling.add(key(k));
+      const scripts = added.get(key(k)) ?? [];
+      added.delete(key(k));
+      return scripts;
+    },
+    /** Fill in ended without filling: obid's scripts run again as before */
+    fillEnds(k: TabKey) { filling.delete(key(k)); },
+    /** main filled a password into this tab's page (Fill in): never relayed, and no script runs there until it leaves */
+    filled(k: TabKey, value: string) {
+      filledIn.set(key(k), [...(filledIn.get(key(k)) ?? []), value]);
+      filling.delete(key(k));
+      noScript.add(key(k));
     },
     /** the main frame didn't load; kept until the tab is attached, as T3 replays it */
     loadFailed(k: TabKey, url: string, code: number, description: string) {
@@ -238,7 +303,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       }
     },
     /** the webview is gone for good: nothing of it is kept */
-    forget(k: TabKey) { early.delete(key(k)); },
+    forget(k: TabKey) { early.delete(key(k)); filledIn.delete(key(k)); noScript.delete(key(k)); filling.delete(key(k)); added.delete(key(k)); },
     /** for tests and the window's close: what's attached */
     attached: () => [...tabs.values()].filter((t) => t.attached).map((t) => t.k),
     /** the events not yet taken by obid */

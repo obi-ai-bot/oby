@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { confirming, deviceKey, fillSecret, notificationWords, ownersWords } from '../../../main/device';
+import { confirming, deviceKey, fillSecret, notificationWords, ownersWords, typeInPages } from '../../../main/device';
 import { input, picked, takeInput } from '../../../main/words';
 
 // Main's Confirm as the window reaches it (docs/contracts/peer-thread.md, PEER-17): what it signs,
@@ -313,27 +313,38 @@ describe('obid-finish', () => {
   });
 });
 
-// A password typed in Oby's card, filled by main on the owner's press of Fill in (BROWSERAPP-12)
-describe('BROWSERAPP-12: main fills the page\'s field on the owner\'s own Fill in', () => {
+// A password typed in Oby's card, typed by main into the tab's own webview on the owner's press of
+// Fill in (BROWSERAPP-12): obid hears only that the ask is answered, never the value
+describe('BROWSERAPP-12: main types the password into the tab\'s own page on the owner\'s own Fill in, never through obid', () => {
   const SECRET = 'device-test-secret-4417';
-  it('browserapp_12_fill_takes_the_owners_click_signs_each_request_and_never_logs_the_value', async () => {
+  it('browserapp_12_fill_takes_the_owners_click_types_into_the_page_and_tells_obid_only_the_ask_answered', async () => {
     const errors = vi.spyOn(console, 'error');
-    // no press of Fill in, or no input main saw: nothing reaches obid
+    const typed: [string, string, string][] = [];
+    typeInPages(async (tab, field, value) => { typed.push([tab, field, value]); return null; });
+    // no press of Fill in, or no input main saw: nothing is typed, nothing reaches obid
     let before = the.calls.length;
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', false)).toBe('Filling in takes your own click.');
     takeInput(); takeInput();
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBe('Filling in takes your own click.');
-    expect(the.calls.length).toBe(before);
-    // with both: the secret, then the ask answered, each signed; no take or give back around it (no holds, O1)
+    expect([typed, the.calls.length - before]).toEqual([[], 0]);
+    // with both: typed into the page, then only the ask's answer to obid, signed
     input();
     before = the.calls.length;
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBeNull();
-    const sent = the.calls.slice(before).filter((c) => c.method === 'POST');
-    expect(sent.map((c) => [c.path, c.body])).toEqual([
-      ['/v1/browser/tabs/t1/secret', { field: '#pw', value: SECRET }],
-      ['/v1/browser/asks/a1/answer', {}],
-    ]);
-    expect(sent.every((c) => /^d1 \S+ \S+$/.test(c.words ?? ''))).toBe(true);
+    expect(typed).toEqual([['t1', '#pw', SECRET]]);
+    const sent = the.calls.slice(before);
+    expect(sent.filter((c) => c.method === 'POST').map((c) => [c.path, c.body])).toEqual([['/v1/browser/asks/a1/answer', {}]]);
+    expect(sent.every((c) => c.method !== 'POST' || /^d1 \S+ \S+$/.test(c.words ?? ''))).toBe(true);
+    // the value goes to obid in no request at all
+    expect(JSON.stringify(the.calls)).not.toContain(SECRET);
     expect(errors.mock.calls.flat().join(' ')).not.toContain(SECRET);
+  });
+
+  it('browserapp_12_a_page_that_cant_be_typed_into_answers_no_ask', async () => {
+    typeInPages(async () => 'That field isn’t on the page.');
+    input();
+    const before = the.calls.length;
+    expect(await fillSecret('t1', '#nope', SECRET, 'a1', true)).toBe('That field isn’t on the page.');
+    expect(the.calls.slice(before).filter((c) => c.method === 'POST')).toEqual([]);
   });
 });

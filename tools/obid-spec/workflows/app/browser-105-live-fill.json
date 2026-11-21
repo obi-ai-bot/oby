@@ -1,0 +1,286 @@
+{
+  "schemaVersion": "2",
+  "name": "App live: a password typed in Oby's card goes into the page's field through the window, never through obid (board 8, live)",
+  "version": "1.0.0",
+  "description": "Fill in on the browser as T3 Code has it (docs/plans/browser-t3.md, W4; BROWSERAPP-12): a stand-in Codex job opens the fixture site on a scratch obid and asks the person to sign in, naming the page's password field. In the real app the job's task shows board 7's card over its message box; Type the password opens board 8's card, the owner types into it and presses Fill in. Main types the value into the tab's own webview through its debugger and tells obid only that the ask is answered: the page's field holds as many characters as were typed, the ask is answered, and the value is in no file of obid's, its log or any answer or event the workflow read.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "obid": "${state.obid}",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "1"
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "within": 60,
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-26"
+        ]
+      }
+    },
+    {
+      "id": "ask",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_ask_person",
+        "args": {
+          "tab": "${state.open.structured.result.tab}",
+          "kind": "signIn",
+          "reason": "Sign in to the lab",
+          "field": "#pw"
+        },
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-11"
+        ]
+      }
+    },
+    {
+      "id": "conversation",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "text": "SLEEP TOKEN FILE"
+        }
+      }
+    },
+    {
+      "id": "ask-card",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=asks]"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "words": {
+              "$contains": "Sign in to the lab"
+            }
+          }
+        },
+        "within": 30
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-11"
+        ]
+      }
+    },
+    {
+      "id": "type-the-password",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Type the password"
+        }
+      }
+    },
+    {
+      "id": "type-secret",
+      "use": "runtime.rust:app.type",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=secret-input]"
+        },
+        "text": "lab-pw-typed-in-oby-73"
+      }
+    },
+    {
+      "id": "fill-in",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "role": "button",
+          "name": "Fill in"
+        }
+      }
+    },
+    {
+      "id": "in-the-page",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "tab": "${state.open.structured.result.tab}",
+          "expression": "document.querySelector('#pw').value.length"
+        },
+        "within": 15,
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data": 22
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-12"
+        ]
+      }
+    },
+    {
+      "id": "answered",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs.0.ask": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-12"
+        ]
+      }
+    },
+    {
+      "id": "no-box-left",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=secret-input]"
+        },
+        "expect": {
+          "paths": {
+            "count": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "not-in-the-window",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "html"
+        },
+        "expect": {
+          "paths": {
+            "count": 1,
+            "text": {
+              "$not": {
+                "$contains": "lab-pw-typed-in-oby-73"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-12"
+        ]
+      }
+    },
+    {
+      "id": "never-in-obid",
+      "use": "runtime.rust:browser-scan",
+      "inputs": {
+        "obid": "${state.obid}",
+        "secrets": [
+          "lab-pw-typed-in-oby-73"
+        ],
+        "expect": {
+          "paths": {
+            "clean": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-12"
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}",
+        "job": "${state.job.job}",
+        "end": true
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

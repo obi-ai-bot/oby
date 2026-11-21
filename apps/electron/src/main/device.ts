@@ -9,7 +9,7 @@ import { mayConfirm, signedHeader, takeInput, wordsHeader } from './words';
 import { ipc } from './ipc';
 import { FINISH_WORDS } from '../shared/finish';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
-import { browserAskPath, browserTabPath } from '../shared/obid-wire';
+import { browserAskPath } from '../shared/obid-wire';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept in the app's own folder as a 0600 file,
@@ -192,26 +192,31 @@ export async function ownersWords(method: string, path: string, body: unknown, o
   return r;
 }
 
+// Who types into the window's pages: the webviews' host (browserGuest.ts), handed in by browser.ts
+type PageTyper = (tab: string, field: string, value: string) => Promise<string | null>;
+let typer: PageTyper | null = null;
+export const typeInPages = (t: PageTyper) => { typer = t; };
+
 // Fetch and verify the current options before signing; the revision and destination are covered.
 // A password or a code typed in Oby's card, put straight into the page's field (docs/contracts/browser-app.md,
 // BROWSERAPP-12), on the owner's own press of Fill in (the preload saw it, `clicked`) and a real click
-// or Enter main saw itself: one input, one fill. Main puts the value in (`…/secret`) and answers
-// the ask it was for, each request signed. The value goes to obid once and nowhere else: never logged, kept or
-// answered back; a refusal says obid's words, which never carry it. Null once filled, else why not.
+// or Enter main saw itself: one input, one fill. Main types the value into the tab's own webview
+// (browserGuest.ts) and tells obid only that the ask is answered, signed. The value never goes to
+// obid, a log or a script, and is never kept. Null once filled, else why not.
 export async function fillSecret(tab: string, field: string, value: string, ask: string | undefined, clicked: boolean): Promise<string | null> {
   if (!clicked || !takeInput()) return 'Filling in takes your own click.';
   const refused = (a: Answer) => {
     if (a.status >= 200 && a.status < 300) return null;
     try { return (JSON.parse(a.text) as { error?: string }).error ?? `obid answered ${a.status}.`; } catch { return a.status ? `obid answered ${a.status}.` : a.text; }
   };
+  if (!typer) return 'The window isn’t up yet.';
   try {
+    const typed = await typer(tab, field, value);
+    if (typed) return typed;
+    if (!ask) return null;
     const id = (device ??= await register());
-    const send = (path: string, body: unknown) => obid('POST', path, body, signedHeader(deviceKey(), id, 'POST', path, body));
-    // no hold around it: obid retired holds with its own browser (O1); on a webview Fill in becomes
-    // main's own typing into the page (the plan's W4), and until then obid answers …/secret 410
-    const filled = refused(await send(browserTabPath(tab, 'secret'), { field, value }));
-    if (!filled && ask) await send(browserAskPath(ask), {});
-    return filled;
+    const path = browserAskPath(ask);
+    return refused(await obid('POST', path, {}, signedHeader(deviceKey(), id, 'POST', path, {})));
   } catch (err) {
     return `Oby couldn’t sign the fill: ${err instanceof Error ? err.message : String(err)}`;
   }

@@ -201,6 +201,8 @@ once a webview is live; obid's use Blok workflows (`tools/obid-spec`, on Azure).
 
 ### W4 (window). Fill in, downloads and page states on the webview
 
+- **Fill in comes first, on its own** (the orchestrator's order, 2026-11-21): O1 retired `…/secret`, so the password card filled nothing until main typed into the webview. Downloads through `will-download` and board 10's states from the webview follow it.
+
 - **What:** Fill in typed by main into the webview (the ask answered to obid, the value never sent);
   agent downloads saved by `will-download` into obid's folder; board 10's states from the webview
   (`did-fail-load`, `render-process-gone`, `certificate-error` with Go on anyway per partition).
