@@ -13,7 +13,8 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::api::{ApiError, Shared};
-use crate::artifacts::Kind;
+use crate::artifacts::seed::carried;
+use crate::artifacts::{Kind, Marks};
 use crate::conversation::{Begun, Target};
 
 /// `artifact` as the app sends it: the artifact open, and the version it shows (left out, the
@@ -140,7 +141,7 @@ pub fn into_room(shared: &Shared, room: &Path, open: &OpenArtifact) -> Result<St
     let artifact = (shared.artifacts.get(&open.id)).ok_or("the artifact is gone")?;
     let entry = crate::artifacts::seed::entry_for(&artifact, open.version)
         .ok_or("the artifact has no such version")?;
-    let folder = room.join("artifacts");
+    let folder = room.join(LAID);
     crate::jobs::not_a_link(&folder)?;
     crate::store::make_private_dir(&folder).map_err(|e| e.to_string())?;
     let old = folder.join(&entry);
@@ -151,7 +152,58 @@ pub fn into_room(shared: &Shared, room: &Path, open: &OpenArtifact) -> Result<St
     }
     .map_err(|e| e.to_string())?;
     (shared.artifacts).lay_out(&open.id, open.version, &folder, &entry)?;
-    Ok(format!("artifacts/{entry}"))
+    Ok(format!("{LAID}/{entry}"))
+}
+
+/// The room's folder [`into_room`] lays artifacts in.
+const LAID: &str = "artifacts";
+
+/// What files the turn publishes from `path` (relative to its room) carry of the artifacts laid
+/// there (ARTIFACTS-24, LANE-3a), so a new artifact made of them is never cleaner than they are:
+/// the turn's `open` artifact's, wherever in the room the files were copied, and for a path
+/// under `artifacts/`, every artifact laid there, an earlier turn's too, by the id its entry's
+/// name starts with. An entry of none of the conversation's artifacts withholds the declared
+/// secrets, as obid can't tell where its files came from.
+pub fn laid_marks(
+    shared: &Shared,
+    room: &Path,
+    conversation: &str,
+    path: &str,
+    open: Option<&OpenArtifact>,
+) -> Marks {
+    let mut marks = Marks::default();
+    if let Some(open) = open
+        && let Some(artifact) = shared.artifacts.get(&open.id)
+    {
+        marks.join(carried(&artifact, open.version));
+    }
+    let mut parts = path.split('/');
+    if parts.next() != Some(LAID) {
+        return marks;
+    }
+    let entries: Vec<String> = match parts.next().filter(|p| !p.is_empty()) {
+        Some(entry) => vec![entry.to_owned()],
+        None => std::fs::read_dir(room.join(LAID))
+            .map(|dir| {
+                dir.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|name| !name.starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let theirs = shared.artifacts.list(Some(conversation), None);
+    for entry in entries {
+        let id: String = entry.chars().take(8).collect();
+        match theirs
+            .iter()
+            .find(|a| id.len() == 8 && a.id.starts_with(&id))
+        {
+            Some(artifact) => marks.join(carried(artifact, u32::MAX)),
+            None => marks.unproxied = true,
+        }
+    }
+    marks
 }
 
 /// The line that tells the brain which artifact is open: its id, version and kind, its title

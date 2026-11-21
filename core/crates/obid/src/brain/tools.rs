@@ -1099,6 +1099,21 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
             .conversations
             .foreign(&session.conversation)
             .is_some();
+    let mut marks = crate::artifacts::Marks {
+        foreign: shaped.then(|| {
+            "an artifact's files Oby's turn made after it read something untrusted".into()
+        }),
+        ..Default::default()
+    };
+    // And what the files laid in its room carry, should it publish them as a new artifact.
+    let open = session.control.artifact();
+    marks.join(super::open_artifact::laid_marks(
+        shared,
+        &session.room,
+        &session.conversation,
+        &path,
+        open.as_ref(),
+    ));
     let (id, version) = shared
         .artifacts
         .publish(crate::artifacts::Publish {
@@ -1110,12 +1125,7 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
             job: None,
             artifact: artifact.as_deref(),
             kept: None,
-            marks: crate::artifacts::Marks {
-                foreign: shaped.then(|| {
-                    "an artifact's files Oby's turn made after it read something untrusted".into()
-                }),
-                ..Default::default()
-            },
+            marks,
         })
         .await?;
     let mut made = session.artifacts.lock().unwrap_or_else(|e| e.into_inner());

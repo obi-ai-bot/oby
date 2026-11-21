@@ -171,6 +171,13 @@ impl Marks {
     pub fn taints(&self) -> bool {
         self.foreign.is_some() || self.reached.is_some()
     }
+
+    /// Takes in what `other` carries: the first reason of each kind is kept.
+    pub fn join(&mut self, other: Marks) {
+        self.foreign = self.foreign.take().or(other.foreign);
+        self.reached = self.reached.take().or(other.reached);
+        self.unproxied |= other.unproxied;
+    }
 }
 
 impl Artifact {

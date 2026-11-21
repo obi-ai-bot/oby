@@ -72,9 +72,7 @@ pub fn carried(artifact: &Artifact, upto: u32) -> Marks {
                 ..Marks::default()
             },
         };
-        carried.foreign = carried.foreign.or(marks.foreign);
-        carried.reached = carried.reached.or(marks.reached);
-        carried.unproxied |= marks.unproxied;
+        carried.join(marks);
     }
     carried
 }
