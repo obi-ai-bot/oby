@@ -160,7 +160,8 @@
       "ui": {
         "proves": [
           "RECOVERY-15"
-        ]
+        ],
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once"
       }
     },
     {
@@ -178,6 +179,9 @@
         "expect": {
           "status": 200
         }
+      },
+      "ui": {
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once (fails when recovery-15-one-item-with-try-again does: it answers the item that step picks)"
       }
     },
     {
@@ -205,7 +209,8 @@
       "ui": {
         "proves": [
           "RECOVERY-15"
-        ]
+        ],
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once (fails when recovery-15-one-item-with-try-again does: no Try again was answered)"
       }
     }
   ]

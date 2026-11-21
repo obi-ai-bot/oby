@@ -94,7 +94,8 @@
       "ui": {
         "proves": [
           "LIMITS-11"
-        ]
+        ],
+        "flaky": "#2804: the stand-in's one-second reset can read as already gone, so the job waits an hour instead of seconds"
       }
     },
     {
