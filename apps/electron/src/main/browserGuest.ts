@@ -14,6 +14,12 @@ export { pageOk } from './pageRule';
 export const SETTLE_MS = 5_000;
 /** the permissions a page gets (T3's list, less geolocation and the loopback network): no others */
 export const PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', 'pointerLock']);
+/** how long a page may take to answer before main leaves it anyway, stuck in a script (T3: Manager.ts:139) */
+export const BUSY_PAGE_PROBE_MS = 1_000;
+/** the owner's Back, Forward, Reload and Stop loading on a tab's own page */
+export type NavOp = 'back' | 'forward' | 'reload' | 'stop';
+/** what main tells the page of a tab's own page: is there one behind, one ahead, is it loading */
+export type NavState = { threadId: string; tabId: string; canGoBack: boolean; canGoForward: boolean; loading: boolean };
 
 // The webview's preferences, whatever the page asked for: sandboxed, no Node anywhere, no preload,
 // its partition checked (T3: DesktopWindow.ts:620-645)
@@ -59,12 +65,33 @@ function asGuest(wc: WebContents): Guest {
   };
 }
 
+// Before Back, Forward or Reload: a page stuck in a script never commits a navigation, so main asks
+// it something with its own debugger and, with no answer within BUSY_PAGE_PROBE_MS, ends the script,
+// not waiting for that either; with no debugger (DevTools have it) it acts at once (T3: Manager.ts:2077-2093)
+async function leaveBusyPage(wc: WebContents) {
+  if (!wc.debugger.isAttached()) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answered = await Promise.race([
+    wc.debugger.sendCommand('Runtime.evaluate', { expression: '0' }).then(() => true, () => true),
+    new Promise<false>((done) => { timer = setTimeout(() => done(false), BUSY_PAGE_PROBE_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (!answered) wc.debugger.sendCommand('Runtime.terminateExecution').catch(() => undefined);
+}
+
 /**
  * The window's webviews for the relay: `register` ties one the page mounted to obid's tab (the page
  * says which; main checks the webview is this window's and its partition is the one obid named),
- * `shown` passes on whether it's on screen.
+ * `shown` passes on whether it's on screen, `nav` moves a tab's own page on the owner's click, and
+ * `report` hears each tab's page state.
  */
-export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) => string | undefined) {
+export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) => string | undefined, report: (s: NavState) => void) {
+  // a keyed tab's page state, from its own webContents (T3: Manager.ts:1214-1257)
+  const told = (wc: WebContents) => {
+    const k = keyed.get(wc.id);
+    if (!k || wc.isDestroyed()) return;
+    report({ threadId: k.threadId, tabId: k.tabId, canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame() });
+  };
   win.webContents.on('will-attach-webview', (e, prefs, params) => {
     if (!harden(prefs as Record<string, unknown>, params)) e.preventDefault();
   });
@@ -77,6 +104,13 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       const k = keyed.get(wc.id);
       if (k && isMainFrame && code !== -3) host.loadFailed(k, url, code, description);
     });
+    // the page state, each time it may have changed (T3: Manager.ts:1662-1670)
+    const tell = () => told(wc);
+    wc.on('did-navigate', tell);
+    wc.on('did-navigate-in-page', tell);
+    wc.on('did-start-loading', tell);
+    wc.on('did-stop-loading', tell);
+    wc.on('did-fail-load', tell);
     wc.on('render-process-gone', () => { const k = keyed.get(wc.id); if (k) host.detach(k); });
     wc.once('destroyed', () => {
       const k = keyed.get(wc.id);
@@ -120,9 +154,34 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       const was = keyed.get(wc.id);
       if (was && (was.threadId !== k.threadId || was.tabId !== k.tabId)) return 'This page is already another tab’s.';
       keyed.set(wc.id, k);
+      told(wc);
       attach(wc, k);
       return null;
     },
     shown: (k: TabKey, shown: boolean) => host.shown(k, shown),
+    /**
+     * The owner's Back, Forward, Reload or Stop loading, on that tab's own webContents in this window
+     * (T3: Manager.ts:2213-2232): never through the debugger, the relay or obid, as Electron's
+     * debugger would reload the embedder (T3: GuestInput.ts:182-191). null once done, else why not.
+     */
+    async nav(k: TabKey, op: NavOp): Promise<string | null> {
+      let wc: WebContents | undefined;
+      for (const [id, t] of keyed) {
+        if (t.threadId !== k.threadId || t.tabId !== k.tabId) continue;
+        const w = webContents.fromId(id);
+        if (w && !w.isDestroyed() && w.hostWebContents === win.webContents) wc = w;
+      }
+      if (!wc) return 'This tab has no page in this window.';
+      try {
+        if (op !== 'stop') await leaveBusyPage(wc);
+        if (op === 'back') { if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); }
+        else if (op === 'forward') { if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); }
+        else if (op === 'reload') wc.reload();
+        else wc.stop();
+        return null;
+      } catch (e) {
+        return (e as Error).message;
+      }
+    },
   };
 }

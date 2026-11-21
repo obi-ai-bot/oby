@@ -68,6 +68,8 @@ export function BrowserPane({ width }: { width: number }) {
   // the conversation folded to one line: the tab's task, and what its agent is at (on obid, its job's title)
   const peek = demoPeek ?? (mode === 'obid' ? { agent: active.owner, title: (active.job && jobs[active.job]?.title) || active.title, line: active.action ?? shown(active.url) } : null);
   const where = active.computer;
+  // board 10's loading row: on obid while the tab's own page loads, as main says (BROWSERAPP-32)
+  const loading = mode === 'obid' ? active.pageLoading === true : active.state === 'loading';
   const { page, label } = mode === 'demo' ? demoPage(active) : { page: null, label: active.title };
   // the agent's label turns to the pointer's left near the page's right edge (5)
   const flip = active.pointer && viewWidth > 0 && active.pointer.x > viewWidth - 220;
@@ -77,7 +79,7 @@ export function BrowserPane({ width }: { width: number }) {
       <Panel width={width} full={ui.full} label={ui.full ? 'Browser, full width' : where ? `Browser on ${where.name}` : 'Browser'} resize={!ui.full && !held}>
         <Tabs full={ui.full} newTabLabel={where ? `New tab on ${where.name}` : 'New tab'} />
         {where && <div className="where-bar" data-browser="where"><Server size={13} strokeWidth={1.6} /><span>This browser runs on <b>{where.name}</b>. Its localhost is {where.name}’s, not this Mac’s.</span></div>}
-        {active.state === 'loading'
+        {loading
           ? <Nav tab={active} set="loading"><span className="br-loading" style={{ left: 8 }} /></Nav>
           : <Nav tab={active} warn={active.state === 'certificate'} />}
         <Control tab={active} />

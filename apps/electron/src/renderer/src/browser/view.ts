@@ -40,7 +40,16 @@ export type Tab = {
   hold?: number;
   /** the agent ran a script in the page, and has done nothing since (11); how long it took, when known */
   ran?: { ms?: number };
+  /** on obid: main's, from the tab's own webview: a page behind this one */
+  canGoBack?: boolean;
+  /** on obid: main's, from the tab's own webview: a page ahead of this one */
+  canGoForward?: boolean;
+  /** on obid: main's, from the tab's own webview: its page is loading */
+  pageLoading?: boolean;
 };
+
+/** The owner's Back, Forward, Reload and Stop loading on a tab's own page. */
+export type NavOp = 'back' | 'forward' | 'reload' | 'stop';
 
 /**
  * An agent's ask (7–9). `reason`: the agent's words, whose first sentence heads its card; `choices`
@@ -91,4 +100,6 @@ export interface BrowserApi {
   stopMac(): Promise<void>;
   /** the first-time sheet answered: Continue, or Not now (16) */
   answerMac(go: boolean): Promise<void>;
+  /** Back, Forward, Reload or Stop loading on the tab's own page: on obid main moves it, with no obid call */
+  nav(tab: string, op: NavOp): Promise<void>;
 }
