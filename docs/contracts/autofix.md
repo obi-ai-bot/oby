@@ -5,7 +5,7 @@ The business behavior contract for what happens when the checks on GitHub fail o
 ## Feature and status
 
 - **Outcome:** When GitHub's checks fail on a pull request the owner's own task pushed, that same task fixes it, in its own session and conversation, and pushes again, with no card and no question. The owner sees progress lines in the conversation, and hears from Oby only when it gives up ([why](../decisions/2026-11-17-red-ci-fixes-itself.md)).
-- **Status:** **Implemented** (AUTOFIX-1 to 20).
+- **Status:** **Implemented**: every scenario unless it says it's proposed.
 - **Scope:** the owner's own work's pull requests (MERGING-44): their red checks, a merge queue that takes them out, what the conversation hears, and the card when it gives up. And the owner's own pull request a Fix CI task pushed onto (TASKCONV-31): its red checks, its conflict with its base, and its green, followed by that task. **Out of scope:** pull requests no task of Oby's pushed (the feed's `CI failed` card, github-work.md), change requests (MERGING-40), conflicts (MERGING-38, unchanged), and work that isn't the owner's own, which keeps MERGING-39.
 
 ## Behavior

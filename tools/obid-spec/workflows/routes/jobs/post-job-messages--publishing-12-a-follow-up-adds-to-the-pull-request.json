@@ -212,34 +212,6 @@
       }
     },
     {
-      "id": "merging-24-one-card-the-carriers",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "GET",
-        "path": "/v1/inbox",
-        "within": 120,
-        "expect": {
-          "status": 200,
-          "paths": {
-            "$": {
-              "$count": [
-                {
-                  "kind": "merge"
-                },
-                1
-              ]
-            }
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "MERGING-24"
-        ]
-      }
-    },
-    {
       "id": "merging-24-the-card-is-the-follow-ups",
       "use": "runtime.rust:call",
       "inputs": {
@@ -256,11 +228,40 @@
               }
             }
           }
-        }
+        },
+        "within": 120
       },
       "ui": {
         "proves": [
           "MERGING-23",
+          "MERGING-24"
+        ]
+      }
+    },
+    {
+      "id": "merging-24-one-card-the-carriers",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "kind": "merge"
+                },
+                1
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
           "MERGING-24"
         ]
       }

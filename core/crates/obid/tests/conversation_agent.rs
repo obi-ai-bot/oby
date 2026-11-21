@@ -648,6 +648,56 @@ fn accounts_19_a_job_that_cant_start_keeps_why_on_its_account() {
     assert_eq!(next.body["account"], CLAUDE);
 }
 
+/// AGENTS-3: the conversation's agent is told, with each turn, which account new tasks go to,
+/// only while routing would put a task there: none before the owner picks one, then the one
+/// picked, and never a default that can't take the work (its CLI went).
+#[test]
+fn agents_3_the_conversations_agent_is_told_where_new_tasks_go() {
+    let folder = Folder::new("agents-3-told");
+    let mut config = configured(&folder);
+    let codex = folder.0.join("bin/codex");
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(agent("fake-codex-harness"), &codex).unwrap();
+    config["agents"]["codex"]["bin"] = json!(codex);
+    let obid = start(&folder.0, &config, None);
+    let told = || {
+        let answer = said(&obid, json!({"said": "HELLO", "new": true}));
+        let id = conversation(&answer);
+        let turns = recorded(
+            &obid
+                .home
+                .join("conversations")
+                .join(&id)
+                .join("config/turns.jsonl"),
+        );
+        let prompt = turns.last().unwrap()["prompt"].as_str().unwrap().to_owned();
+        assert!(
+            prompt.ends_with("HELLO"),
+            "the owner's words stay last: {prompt}"
+        );
+        prompt
+    };
+    const GOES: &str = "new tasks go here unless the user names another agent";
+    assert!(!told().contains(GOES), "no default picked yet");
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"defaultAccount": CODEX})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let prompt = told();
+    assert!(
+        prompt.contains(&format!("Accounts: Codex · Codex stub: {GOES}.")),
+        "{prompt}"
+    );
+    std::fs::remove_file(&codex).unwrap();
+    assert!(
+        !told().contains(GOES),
+        "a default that can't take the work isn't told"
+    );
+}
+
 /// ACCOUNTS-30: routing passes over an agent whose CLI isn't on this Mac, as over a signed-out
 /// account, even when it's where new tasks go; nothing says it moved, since the owner named none.
 #[test]

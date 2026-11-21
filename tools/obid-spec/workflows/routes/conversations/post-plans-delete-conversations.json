@@ -415,8 +415,7 @@
       "ui": {
         "proves": [
           "CONVERSATION-AGENT-23"
-        ],
-        "expectedRed": "#2706: a task that ends between the Confirm card and the Confirm adds obid's own report turn to its conversation, which moves its cursor, so obid keeps it as if the owner had used it"
+        ]
       }
     },
     {

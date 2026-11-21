@@ -94,6 +94,11 @@ pub struct Recovery {
     pub limit_resumes: usize,
     /// New sessions it got because its last grew too long for its model (RECOVERY-8).
     pub renewed: usize,
+    /// A run of the stalls in a row so far went quiet not idle (still writing in its worktree, or
+    /// its CPU couldn't be read): an idle verdict after it is a disk that held the writer, so the
+    /// job keeps RECOVERY-3's tries, never RECOVERY-12's (#2761). Starts again with `stalls`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub wrote: bool,
     /// An older file's accounts that refused it one model's limit, and until when (USAGE-13): read
     /// only to move them into the hold table at start (crate::limits::holds, LIMITS-23).
     #[serde(skip_serializing)]

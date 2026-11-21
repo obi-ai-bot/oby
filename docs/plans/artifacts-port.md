@@ -204,35 +204,58 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 
 ### P10. Sharing over the Sphere: offers, updates, answers, edits back
 
-- **Lane:** between owners. **Depends:** P9, and Dmytro's server pieces 1 to 7 (`oby-sphere#47`; the
-  list is in #2709's body). Until they land, the feature is off: obid offers no `artifacts.v1` and
-  every share route refuses `feature_not_taken` in words.
+- **Lane:** between owners. **Depends:** P9, and the Obysphere's Artifacts server, merged into
+  oby-sphere's `dev` as `d2ed70bf` (`oby-sphere#109`, which carries #107 and #108 and the fixes of
+  an independent security review). Until a member's Sphere offers it, the feature is off for that
+  member: obid offers no `artifacts` and every share route refuses in words.
+- **The server's names, which replace the lab's.** P10 takes these, not the lab's:
+  - the feature is `artifacts`, as `/v0.1/features` lists it (the lab's `artifacts.v1`);
+  - a share is sealed to the recipient card's X25519 key;
+  - a blob's id is the Sphere's UUID;
+  - expiry is RFC 3339;
+  - a refusal by the Sphere's rules is `policy_denied`;
+  - a recipient's Oby confirms what it kept with the new action `artifact_receipt`;
+  - a blob goes up in parts of at most 64 MiB (option B, below), checked in order, part 1 first.
+- **Its own PR first:** oby's `e2e/sphere.ref` moves to `d2ed70bf`, so the Blok workflows below
+  run against the real server.
 - **What:** the actions `artifact_offer`, `artifact_update`, `artifact_version`, `artifact_revoke`,
-  `artifact_deleted` and the replies `answer`, `decline`; `shares.json` per artifact; the routes
+  `artifact_deleted`, `artifact_receipt` and the replies `answer`, `decline`; `shares.json` per artifact; the routes
   `GET/POST /v1/artifacts/{id}/shares`, `DELETE …/shares/{to}`, `POST …/answers`, `POST …/sendBack`;
   `DELETE /v1/artifacts/{id}` revoking every share and the public link first; a received artifact
   kept with `origin: sphere` in the thread with its owner; an inbox item needing the owner only
   when it carries an ask; taint for the room's received artifacts (`harness.rs`'s list).
-- **Scenarios** (`artifact-sharing.md`): ARTSHARE-4, sending scans first and asks before files that instruct agents (LAB-ARTSPHERE-13); ARTSHARE-5, a new version reaches every share following the latest in one blob, a pinned one stays, a revoke deletes the blob and the copy says taken back (LAB-ARTSPHERE-15); ARTSHARE-6, a delete revokes every share and the public link first (LAB-ARTIFACTS-5); ARTSHARE-7, an answer shows quoted in the owner's conversation and member thread, view-only can't answer, a decline and an expiry say so (LAB-ARTSPHERE-16); ARTSHARE-8, a member without `artifacts.v1` and a policy refusal are said in words naming the admin (LAB-ARTSPHERE-18); ARTSHARE-9, every share act is refused unsigned (LAB-ARTSPHERE-19); ARTSHARE-10, a member given edit sends a version back, checked like anything received, kept `by` their Oby, nothing of it reaching the owner's agents, view-only refused both sides (LAB-ARTSPHERE-21).
+- **Scenarios** (`artifact-sharing.md`): ARTSHARE-4, sending scans first and asks before files that instruct agents (LAB-ARTSPHERE-13); ARTSHARE-5, a new version reaches every share following the latest in one blob, a pinned one stays, a revoke deletes the blob and the copy says taken back (LAB-ARTSPHERE-15); ARTSHARE-6, a delete revokes every share and the public link first (LAB-ARTIFACTS-5); ARTSHARE-7, an answer shows quoted in the owner's conversation and member thread, view-only can't answer, a decline and an expiry say so (LAB-ARTSPHERE-16); ARTSHARE-8, a member without `artifacts` and a policy refusal (`policy_denied`) are said in words naming the admin (LAB-ARTSPHERE-18); ARTSHARE-9, every share act is refused unsigned (LAB-ARTSPHERE-19); ARTSHARE-10, a member given edit sends a version back, checked like anything received, kept `by` their Oby, nothing of it reaching the owner's agents, view-only refused both sides (LAB-ARTSPHERE-21).
 - **Files:** `core/crates/obid/src/sphere/artifacts.rs` (new), `sphere/link.rs` (`FEATURES` gains
-  `artifacts.v1`), `sphere/routes.rs`, `brain/harness.rs` (the taint list),
+  `artifacts`), `sphere/routes.rs`, `brain/harness.rs` (the taint list),
   `core/crates/obi-protocol/src/types.rs` (the actions, add-only); `api.rs` (the share routes);
   `gateway.rs` (`GET …/shares`); `docs/contracts/artifact-sharing.md`; `docs/api/artifacts.md`;
   `docs/api/routes.txt`; `docs/contracts/signed-words.md` (WORDS-22: `Share with …`, `Remove`,
   the recipient's `{text}`).
 - **Blok proof:** `workflows/lab/artifactsphere/{share,receive,taint,update,answer,refusals,signed,edit}.json`
   as `workflows/routes/artifacts/*-shares*.json`, two scratch obids on the run's local Sphere (the
-  pinned `e2e/sphere.ref`, once it carries #47's pieces).
+  pinned `e2e/sphere.ref`, at `d2ed70bf` from its own PR above).
 
 ### P11. Public links in obid
 
-- **Lane:** between owners. **Depends:** P10, and Dmytro's public pages (piece 9 of #2709's list).
+- **Lane:** between owners. **Depends:** P10, and the Sphere's public links, merged with its
+  Artifacts server (`d2ed70bf`, `oby-sphere#109`).
+- **The server's side, as built.**
+  - **Its own feature:** public links are `public_links` in `/v0.1/features`, apart from
+    `artifacts`. obid makes no link for a member whose Sphere doesn't list it, and says so.
+  - **Their own origin:** links are served only on the Sphere's separate `PUBLIC_ORIGIN`, never
+    on its API's.
+  - **The URL:** the `PUT`'s answer gives the link's `url`; obid adds `#<key>` itself, so the key
+    never reaches the Sphere.
+  - **Expiry:** `expires_at` defaults to 30 days.
+  - **Quota:** 64 links and 1 GiB a member.
+  - **The viewer:** the Sphere serves its own `viewer.js`, pinned by SRI
+    `sha384-3KvRtu6DBv1CGhAUw/retmki3mwiTYD2tirg/BHT1YOVYjJDxhrWM5XsgcuHCtuq`.
 - **What:** `POST /v1/artifacts/{id}/public {acknowledged: "anyone-with-the-link"}`, signed: a key
   pair per link, the version sealed to it, only ciphertext uploaded, the whole link answered once
   and its key kept only in the vault (`oby.artifact.<id>.link`, 0600), never in artifact.json; a new
-  version going up again under the same link and key; `DELETE …/public`. The viewer
-  (`lab-ui/artifacts/public/`: the page, its script, typage vendored, BSD-3) goes to the Sphere with
-  the plan's pin (obid uploads it and checks its hash on the first view).
+  version going up again under the same link and key; `DELETE …/public`. The viewer is the Sphere's `viewer.js` at the SRI above, the lab's
+  (`lab-ui/artifacts/public/`: the page, its script, typage vendored, BSD-3) as it was taken there;
+  obid checks the pin on the first view, and a different hash is a link it refuses to show.
 - **Scenarios** (`artifact-sharing.md`): ARTSHARE-11, no link without `acknowledged`; the Sphere holds one age file and no plaintext, and never receives the key; the vault keeps it, artifact.json never (LAB-ARTSPHERE-17); ARTSHARE-12, the link opens in a browser, decrypts there, shows the files and only the invite, and says so once taken back (LAB-ARTSPHERE-17, 22).
 - **Files:** `core/crates/obid/src/sphere/public.rs` (new); `api.rs` (two routes);
   `docs/contracts/artifact-sharing.md`; `docs/api/artifacts.md`; `docs/api/routes.txt`;
@@ -279,8 +302,8 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 | P7 The artifact tab (app) | P4, P6 | P5, P9 |
 | P8 Conversation, Export, Import (app) | P2, P3, P7 | P9, P10 |
 | P9 Sharing: format and checks | P1 | P2 to P8 |
-| P10 Sharing over the Sphere | P9, Dmytro's server | P5 to P8 |
-| P11 Public links | P10, Dmytro's public pages | P8 |
+| P10 Sharing over the Sphere | P9, the Sphere's server (merged, `d2ed70bf`) | P5 to P8 |
+| P11 Public links | P10, the Sphere's public links (merged, `d2ed70bf`) | P8 |
 | P12 Share, Shared (app) | P7, P10, P11 | none |
 | P13 Settings › Artifacts | P5 | P7 to P12 |
 
@@ -298,18 +321,16 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
   the lock, and a future-Rust warning from `proc-macro-error2`, a dependency's.
 - **One origin per version** for the app's protocol, `oby-artifact://<id>-v<n>/` (the orchestrator,
   2026-11-20), with the reason above (P7).
+- **The blob cap: B, parts of at most 64 MiB** (built by the Sphere, `oby-sphere#109`). A version
+  may be 256 MB (Claude's limit, the owner's decision). obid cuts its ciphertext into parts of at
+  most 64 MiB, named in order in the offer (`blobs`, add-only). The Sphere checks them in order,
+  part 1 first, and obid checks each part's hash and joins them before it decrypts. It shapes P10's
+  offer and P11's upload.
 - **The Claude bridge stays the project zip** (the owner, 2026-11-20); #2713 found no Artifact tool
   headless on Claude Code 2.1.325, and its workflow checks again on each release.
 
 ## Open
 
-- **Dmytro: the blob cap.** A version may be 256 MB (Claude's limit, the owner's decision); the plan
-  capped a blob at 64 MB. (A) The Sphere takes blobs to 256 MB plus age's small overhead: nothing
-  changes in obid, and his server takes an upload that large in parts anyway (R2's multipart
-  upload). (B) obid cuts the ciphertext into parts of at most 64 MB, named in order in the offer
-  (`blobs`, add-only), each hash checked and the whole joined before it decrypts: about a hundred
-  lines in obid, a retry per part, nothing more on his side. **If he doesn't answer, B.** It shapes
-  P10's offer and P11's upload; the rest of #47's pieces are in #2709's body.
 - **Sangam: the invite's words and motion, and every screen's words.** The public link's invite
   (board 2c: Oby hopping and blinking, "Get Oby for Mac", "I have Oby: open it there", Reduce
   Motion respected) is his to design; the lab's words and animation are proposals, and so are the

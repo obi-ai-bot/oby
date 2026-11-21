@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "POST /v1/obid/sphere/pins/{owner}",
   "version": "1.0.0",
-  "description": "The owner verifies a pinned key with the fingerprint they compared: 422 for any other; the pinned key's own verifies it, in pins and members.",
+  "description": "The owner verifies a pinned key with the fingerprint they compared, signed by an app of theirs: obid's token alone is 403 and verifies nothing (SPHERE-25); 422 for any other fingerprint; the pinned key's own verifies it, in pins and members.",
   "trigger": {
     "http": {
       "method": "POST",
@@ -78,6 +78,13 @@
       }
     },
     {
+      "id": "alex-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.alex}"
+      }
+    },
+    {
       "id": "no-token-401",
       "use": "runtime.rust:call",
       "inputs": {
@@ -109,7 +116,29 @@
         },
         "expect": {
           "status": 422
+        },
+        "as": "device",
+        "device": "${state.alex-device}"
+      }
+    },
+    {
+      "id": "sphere-25-unsigned-403",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.alex}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/pins/dana",
+        "body": {
+          "fingerprint": "${state.dana-key.keyId}"
+        },
+        "expect": {
+          "status": 403
         }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-25"
+        ]
       }
     },
     {
@@ -128,6 +157,11 @@
             }
           }
         }
+      },
+      "ui": {
+        "proves": [
+          "SPHERE-25"
+        ]
       }
     },
     {
@@ -142,7 +176,9 @@
         },
         "expect": {
           "status": 200
-        }
+        },
+        "as": "device",
+        "device": "${state.alex-device}"
       }
     },
     {

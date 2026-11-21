@@ -116,6 +116,9 @@
 //                    (2025-03-26, then 1999-01-01) and an 80-character method obid doesn't serve
 //                    to the `tetrix` server and to the broker (its URL with /v1/agent/mcp/), and
 //                    keeps their answers in `shapes` (AGENTMCP-1, AGENTMCP-2)
+//   WRITES THEN QUIET: <n>  writes in its worktree as SLEEP does in its first <n> turns, then
+//                    says, writes and uses nothing, as a writer a slow disk holds looks (#2761);
+//                    its turns are counted in its HOME, never the worktree
 //   QUIET            says nothing and writes nothing until it is ended (a stalled job), again in
 //                    each turn obid continues by itself; QUIET ONCE, only this turn (RECOVERY-3)
 //   BUSY             says nothing and writes nothing, but keeps its CPU busy (a tenth of a core,
@@ -388,7 +391,7 @@ rl.on("line", (line) => {
   }
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
   // What obid cut, it does again when obid continues its session (its marked message).
-  const stuck = prompt.match(/QUIET|BUSY(?!:)|MAXTURNS|SLEEP|STDERR TOKEN|BACKGROUND: \d+ (?:SILENT|FOREVER)|\bFAIL\b/)?.[0];
+  const stuck = prompt.match(/WRITES THEN QUIET: \d+|QUIET|BUSY(?!:)|MAXTURNS|SLEEP|STDERR TOKEN|BACKGROUND: \d+ (?:SILENT|FOREVER)|\bFAIL\b/)?.[0];
   if (prompt.includes("Your run was cut")) {
     if (existsSync(".obi/stuck")) prompt += ` ${readFileSync(".obi/stuck", "utf8")}`;
     // A failing task a restart continued fails again when obid continues it once more.
@@ -872,6 +875,15 @@ ${probes}`;
     spawn(process.execPath, ["-e", SERVER], { stdio: "ignore" });
     let beats = 0;
     setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
+  } else if (prompt.match(/WRITES THEN QUIET: (\d+)/)) {
+    const counted = `${process.env.HOME}/writes-then-quiet`;
+    const turn = existsSync(counted) ? Number(readFileSync(counted, "utf8")) : 0;
+    writeFileSync(counted, String(turn + 1));
+    if (turn < Number(prompt.match(/WRITES THEN QUIET: (\d+)/)[1])) {
+      mkdirSync(".obi", { recursive: true });
+      let beats = 0;
+      setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
+    } else setInterval(() => {}, 1000);
   } else if (prompt.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });
     let beats = 0;
