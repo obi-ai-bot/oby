@@ -20,7 +20,7 @@ import { childGone, quit, quitting, renderFailed, rendererGone, started, windowL
 import { flag, https, string } from '../shared/decode';
 import { SCRATCH } from '../shared/build';
 import { ownFolder } from './appFolder';
-import { browsing } from './browser';
+import { browsing, hostBrowser } from './browser';
 import { macPill } from './macPill';
 import { previewing } from './artifactPreview';
 import { sawInput } from './browserInput';
@@ -180,7 +180,8 @@ function createWindow() {
     // scrollBounce: macOS's rubber-band at the ends of a scroll (off by default in Electron).
     // sandbox: the page's process, the preload's world too, has no Node and runs in Chromium's
     // sandbox, so a script that takes it over reaches only what the preload hands main over IPC
-    webPreferences: { preload: join(__dirname, '../preload/index.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: !dev, scrollBounce: true },
+    // webviewTag: the agents' pages, each a <webview> main hardens and relays (browserGuest.ts, docs/plans/browser-t3.md)
+    webPreferences: { preload: join(__dirname, '../preload/index.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: !dev, scrollBounce: true, webviewTag: true },
   });
 
   chrome = windowStyle?.useToolbarWindow(win.getNativeWindowHandle()) ?? null;
@@ -208,6 +209,7 @@ function createWindow() {
     if (!stays(url, win!.webContents.getURL(), dev)) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  hostBrowser(win);
   // its page loaded: this start counts as a good one (runMarker.ts)
   win.webContents.on('did-finish-load', windowLoaded);
   // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign

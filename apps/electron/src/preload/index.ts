@@ -246,6 +246,17 @@ contextBridge.exposeInMainWorld('app', {
     // a password or code into the page's field, filled by main on the owner's press of Fill in (or
     // Enter in the card's box): main checks it saw that input itself; null once filled, else why not
     fill: (tab: string, field: string, value: string, ask?: string) => ipcRenderer.invoke('browser-fill', tab, field, value, ask ?? '', pressed(FILL_IN)) as Promise<string | null>,
+    // a <webview> the page mounted for obid's tab, by its webContents id: main checks it's this
+    // window's and in the partition obid named, then relays it (docs/plans/browser-t3.md); null once relayed
+    register: (threadId: string, tabId: string, webContentsId: number) => ipcRenderer.invoke('browser-register', threadId, tabId, webContentsId) as Promise<string | null>,
+    // whether that webview is on screen
+    shown: (threadId: string, tabId: string, shown: boolean) => { void ipcRenderer.invoke('browser-shown', threadId, tabId, shown); },
+    // the agent's pointer on a tab, to draw over its webview (move, then click); a function that stops listening
+    pointer(fn: (p: { threadId: string; tabId: string; phase: 'move' | 'click'; x: number; y: number }) => void) {
+      const listener = (_: unknown, p: { threadId: string; tabId: string; phase: 'move' | 'click'; x: number; y: number }) => fn(p);
+      ipcRenderer.on('browser-pointer', listener);
+      return () => { ipcRenderer.off('browser-pointer', listener); };
+    },
     // Show in Finder for a download in Downloads, by its name (main/browser.ts): true once shown
     reveal: (name: string) => ipcRenderer.invoke('browser-reveal', name) as Promise<boolean>,
     watch(tab: string, fn: (data: string) => void) {

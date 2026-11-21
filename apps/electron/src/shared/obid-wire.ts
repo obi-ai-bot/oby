@@ -676,6 +676,8 @@ export const BROWSER_PATH = '/v1/browser';
 export const BROWSER_EVENTS = '/v1/browser/events';
 export const BROWSER_SETTINGS = '/v1/browser/settings';
 export const BROWSER_DOWNLOADS = '/v1/browser/downloads';
+/** the window's half of the relay: its webviews' events, in order (docs/plans/browser-t3.md) */
+export const BROWSER_RELAY = '/v1/browser/relay';
 export const browserTabPath = (tab: string, verb: 'stream' | 'input' | 'take' | 'giveBack' | 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
 export const browserAskPath = (ask: string) => `/v1/browser/asks/${encodeURIComponent(ask)}/answer`;
 export const browserSaveCopyPath = (download: string) => `/v1/browser/downloads/${encodeURIComponent(download)}/saveCopy`;
@@ -709,6 +711,8 @@ export interface BrowserTab {
   computer: { id: string; name: string };
   ask: BrowserAsk | null;
   dialog: string | null;
+  /** the session the tab's page lives in, as obid names it (docs/plans/browser-t3.md): absent from an obid before the relay */
+  partition?: string;
 }
 
 export interface BrowserDownload {
