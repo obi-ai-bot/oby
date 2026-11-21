@@ -6,7 +6,7 @@ The business behavior contract for artifacts in the Electron app, from [the temp
 
 - **Outcome:** An agent makes an artifact in a conversation, such as a page, a document or a picture. The owner sees its card in the first Oby message that tells of it (the turn that published it, or the report of the task that made it), and after the last turn when none does. They click it, or its row under the conversation in the side panel, and see the artifact beside the conversation, drawn as it is. Nothing about it leaves the Mac: no hosted bundler, no CDN, no CodeSandbox server.
 - **Status:**
-  - **Implemented:** the card, the pane beside the conversation, Preview of a version (ARTIFACTSAPP-1 to 4); Code, following the agent's new versions, and the open artifact sent with the owner's words (ARTIFACTSAPP-5 to 7); the owner's edits, Save and the version menu (ARTIFACTSAPP-8 to 10); Download, Copy and Import (ARTIFACTSAPP-11, 12); and the card in its message and its row (ARTIFACTSAPP-15 to 17).
+  - **Implemented:** the card, the pane beside the conversation, Preview of a version (ARTIFACTSAPP-1 to 4); Code, following the agent's new versions, and the open artifact sent with the owner's words (ARTIFACTSAPP-5 to 7); the owner's edits, Save and the version menu (ARTIFACTSAPP-8 to 10); Download, Copy and Import (ARTIFACTSAPP-11, 12); the card in its message and its row (ARTIFACTSAPP-15 to 17); and the card's picture (ARTIFACTSAPP-18).
   - **Proposed:** React artifacts, in the order of [the port plan](../plans/artifacts-port.md) (L5).
 - **Design:** Sangam's Oby Artifacts canvas (`tools/obid-spec/lab-ui/artifacts/design/project/`), 1280 by 800: board 1a, the card in Oby's message and the row under its conversation (`Conversation.dc.html`); board 1b, "Beside its conversation", the row lit while its artifact is open (`Viewer.dc.html`); and the kind words, `Canvas`, `Page`, `Document`, `Image` and `PDF` (`Main.dc.html`). The words are his.
 - **Scope:** the Electron app: `src/renderer/src/artifacts/`, its mount in `Home.tsx` and `ChatView.tsx`, its rows in `Sidebar.tsx`, `src/main/artifactPreview.ts`, `src/main/sandpackRelay.ts`, `src/main/previewRules.ts`, `resources/sandpack-relay/`, `stubs/nodebox/` and `scripts/local-only.mjs`.
@@ -30,6 +30,7 @@ The business behavior contract for artifacts in the Electron app, from [the temp
   - The cards come last in their message. With the message's words just before them, words, cards and time end it together, as board 1a draws it; Copy of Oby's words is on the time's line.
   - An artifact no message tells of (an obid that names none, a task whose report hasn't come) shows after the last turn.
   - Wherever it sits, the card names its task's agent when the window knows that task.
+  - Its top is a picture of its latest version, as its preview draws it, taken by main in the preview's own locked view, never in the window's page. Until the picture is ready, and when it can't be taken, the card shows the board's blocks. A new version shows its own picture, the blocks until it comes.
 - **The row under its conversation.** In the side panel, each artifact of a conversation has a row after the conversation's tasks, in their group, in the order obid lists them: the Frame, `<b><title></b> · <kind>`, and `<title>, made in this conversation` as its title. A conversation with an artifact and no task gets the group as one with tasks does.
   - The row is lit (`is-on`) while its artifact is open.
   - Its click opens the conversation and the artifact beside it on its latest version, as the card's does; the artifact stays open once the conversation left has gone.
@@ -76,6 +77,7 @@ As LibreChat does, the `static` template always opens `index.html`:
 - **The view:**
   - It has its own partition, `oby-artifact-preview`, in memory only. It shares no cookie, storage, cache or service worker with the window's page.
   - It has no preload, no Node in its frames or workers, Chromium's sandbox and context isolation. The page's bridge (`window.app`) and obid aren't there.
+  - A second view, never shown and never in the window, takes the cards' pictures (`preview.html?thumb`). It is built the same way, in the same partition, on the same locked session and the same relay, and its session lets go of nothing more.
 - **What its session lets go:** its host page (this build's `preview.html` and its assets), the relay on its port, `data:` and `blob:`.
   - Every other request is cancelled before it leaves.
   - It opens no window, downloads nothing, and is granted no permission.
@@ -96,6 +98,7 @@ As LibreChat does, the `static` template always opens `index.html`:
 
 - Nothing an artifact holds reaches the network: its preview reaches only its own origin on loopback.
 - The preview never reaches the window's page, its bridge, obid or main's token.
+- The page gets only a picture's pixels of an artifact for its card, never its files.
 - No hosted bundler, no CDN, and no Nodebox code is in the built app.
 
 ## Interfaces and dependencies
@@ -103,7 +106,7 @@ As LibreChat does, the `static` template always opens `index.html`:
 - **obid:** `GET /v1/artifacts?conversation=`, `GET /v1/artifacts` (no filter, for the side panel), `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/{version}/{*path}` ([docs/api/artifacts.md](../api/artifacts.md)), unchanged.
 - **obid's turns:** `Turn.artifacts` (`shared/obid-wire.ts`, `[{id, version}]`, on Oby's turn that published them; none from an older obid) and the report turn (`ended`, `jobs: [<job>]`), [docs/api/conversations.md](../api/conversations.md).
 - **obid's events:** `artifact` (`shared/obid-wire.ts`, `{id, version, conversation, renamed, title}`), passed on by main as every event is; `POST /v1/plans`' `artifact` (`artifact-turn-v1`).
-- **The page into main:** `artifact-preview` ([ipc.md](ipc.md)), with `{ id, version, bounds, edits? }` or `null`; `artifact-export`, with the id, the version and `zip` or `html`, answering `{ saved }`, `{ cancelled: true }` or `{ error }`. It answers `{ shown: true }`, or `{ error }` saying why nothing shows.
+- **The page into main:** `artifact-preview` ([ipc.md](ipc.md)), with `{ id, version, bounds, edits? }` or `null`; `artifact-export`, with the id, the version and `zip` or `html`, answering `{ saved }`, `{ cancelled: true }` or `{ error }`. It answers `{ shown: true }`, or `{ error }` saying why nothing shows. `artifact-thumb`, with `{ id, version }`, answering `{ src }` (a PNG `data:` URL) or `{ none: true }`, kept in main's memory only (50 at most, until the window closes).
 - **Packages:** `@codesandbox/sandpack-client` 2.19.8, and through it `static-browser-server` 1.0.3 (both Apache-2.0); CodeMirror 6 (`@codemirror/state`, `view`, `language`, `lang-html`, `lang-css`, `lang-javascript`, `lang-markdown`, `lang-json`, `@lezer/highlight`, all MIT, pinned exactly); `marked` (MIT), already the app's.
 
 ## Acceptance scenarios
@@ -190,3 +193,10 @@ As LibreChat does, the `static` template always opens `index.html`:
   - the side panel reads the list once, and once more at each artifact event; on the mock, never.
 
   Unit tests: `artifactsapp_17_the_row_under_its_conversation_says_what_it_is_and_opens_it` (`artifactsRow.test.tsx`), `artifactsapp_17_the_new_dot_shows_until_the_owner_opens_it`, `artifactsapp_17_the_side_panel_reads_the_artifacts_once_not_per_row` (`artifactsFollow.test.tsx`). Mac: `artifactsapp_17` (at 1280 by 800, a version made while the import is open dots the page's row; its click opens v2, lit, the dot gone).
+- **ARTIFACTSAPP-18** Given an artifact's card:
+  - main sends the picture of its latest version, and the card's top is that picture, filling it; until it comes, when main answers none, or with no bridge (the mock), the board's blocks;
+  - a new version asks for its own picture, and a late picture of the one before never shows on it;
+  - main answers only `{ id, version }`, a lower-case UUID and a version from 1, and refuses anything else, another key included, with `null`, asking obid nothing;
+  - main takes the picture in its preview's second view, never shown: a 720-wide PNG of the page's first screen, sent as a `data:` URL; taking it reaches nothing but the host page and the pane's own relay, and is refused nothing the pane's view isn't.
+
+  Unit tests: `artifactsapp_18_the_card_shows_the_versions_picture_once_main_sends_it`, `artifactsapp_18_the_card_keeps_the_boards_blocks_until_then_and_on_none`, `artifactsapp_18_a_new_version_asks_for_its_own_picture` (`artifactsPane.test.tsx`), `artifactsapp_18_the_channel_refuses_a_bad_ask` (`ipc.test.ts`). Mac: `artifactsapp_18_the_cards_picture_is_the_artifacts_first_screen`, `artifactsapp_18_taking_the_picture_reaches_nothing_new`.

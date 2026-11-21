@@ -87,3 +87,67 @@ describe('ARTIFACTSAPP-15', () => {
     }
   });
 });
+
+describe('ARTIFACTSAPP-18', () => {
+  const v1: Artifact = { ...page, versions: page.versions.slice(0, 1) };
+  const withThumb = (artifactThumb?: (id: string, version: number) => Promise<unknown>) => {
+    (window as unknown as { app: unknown }).app = { artifactPreview: preview, ...(artifactThumb ? { artifactThumb } : {}) };
+  };
+  const show = async (artifact: Artifact) => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<ArtifactCard artifact={artifact} />));
+    return host;
+  };
+  const blocks = (host: HTMLElement) => {
+    const t = host.querySelector('.art-thumb')!;
+    return { a: t.querySelectorAll('.art-thumb-a').length, b: t.querySelectorAll('.art-thumb-b span').length, img: t.querySelectorAll('img').length };
+  };
+
+  it('artifactsapp_18_the_card_shows_the_versions_picture_once_main_sends_it', async () => {
+    withThumb(async () => ({ src: 'data:image/png;base64,AAAA' }));
+    const thumb = (await show(page)).querySelector('.art-thumb')!;
+    const imgs = thumb.querySelectorAll('img.art-thumb-img');
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].getAttribute('src')).toBe('data:image/png;base64,AAAA');
+    expect(imgs[0].getAttribute('alt')).toBe('');
+    expect(thumb.children).toHaveLength(1);
+    expect(thumb.querySelector('.art-thumb-a, .art-thumb-b')).toBeNull();
+  });
+
+  it('artifactsapp_18_the_card_keeps_the_boards_blocks_until_then_and_on_none', async () => {
+    let answer!: (a: unknown) => void;
+    withThumb(() => new Promise((done) => { answer = done; }));
+    const host = await show(page);
+    expect(blocks(host), 'pending').toEqual({ a: 1, b: 2, img: 0 });
+    await act(async () => answer({ none: true }));
+    expect(blocks(host), 'none').toEqual({ a: 1, b: 2, img: 0 });
+    await act(async () => root!.unmount());
+    host.remove();
+    for (const thumb of [undefined, async () => null, async () => { throw new Error('gone'); }]) {
+      withThumb(thumb);
+      const h = await show(page);
+      expect(blocks(h)).toEqual({ a: 1, b: 2, img: 0 });
+      await act(async () => root!.unmount());
+      h.remove();
+    }
+  });
+
+  it('artifactsapp_18_a_new_version_asks_for_its_own_picture', async () => {
+    const answers: ((a: unknown) => void)[] = [];
+    const thumb = vi.fn((_id: string, _version: number) => new Promise((done) => { answers.push(done); }));
+    withThumb(thumb);
+    const host = await show(v1);
+    expect(thumb).toHaveBeenCalledTimes(1);
+    expect(thumb).toHaveBeenLastCalledWith(ID, 1);
+    await act(async () => root!.render(<ArtifactCard artifact={page} />));
+    expect(thumb).toHaveBeenCalledTimes(2);
+    expect(thumb).toHaveBeenLastCalledWith(ID, 2);
+    // version 1's picture, come late, isn't version 2's
+    await act(async () => answers[0]({ src: 'data:image/png;base64,V1' }));
+    expect(blocks(host)).toEqual({ a: 1, b: 2, img: 0 });
+    await act(async () => answers[1]({ src: 'data:image/png;base64,V2' }));
+    expect(host.querySelector('img.art-thumb-img')!.getAttribute('src')).toBe('data:image/png;base64,V2');
+  });
+});
