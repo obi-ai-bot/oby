@@ -492,24 +492,73 @@ fn artifacts_24_an_unproxied_jobs_version_opened_in_a_turn_starts_no_untrusted_t
     );
 }
 
-/// ARTIFACTS-24 (LANE-3a): what Oby's turn publishes from a version laid in its room keeps that
-/// version's marks, here `unproxied`, even as a new artifact: an unproxied job's files never
-/// become a clean artifact through Oby.
+/// `words` said in `conversation` on words the owner's app signed, or with none when `signed` is
+/// false (the conversation then hears words off obid's allowlist): the answer.
+fn told(obid: &Obid, conversation: &str, words: &str, signed: bool) -> Answer {
+    let body = json!({"said": words, "conversation": conversation});
+    let answer = if signed {
+        call_typed(obid, "POST", "/v1/plans", &body)
+    } else {
+        plan(obid, body)
+    };
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer
+}
+
+/// Whether job `id`'s kept file says it ran with no egress proxy of obid's (LANE-3a).
+fn ran_unproxied(obid: &Obid, id: &str) -> bool {
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    kept["ranUnproxied"] == json!(true)
+}
+
+/// The job `words` (an `oby_dispatch` of a task with nothing to do) start in `conversation`,
+/// unsigned so it runs in Oby's box, behind obid's proxy, waited on to its end: its id.
+fn boxed_task(obid: &Obid, conversation: &str) -> String {
+    let started = told(
+        obid,
+        conversation,
+        "OBY oby_dispatch {\"repo\": \"obi-e2e/fixture-app\", \"task\": \"Look around\", \"kind\": \"research\"}",
+        false,
+    );
+    let id = started.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no job: {}", started.text))
+        .to_owned();
+    ended_within(obid, &id, 120);
+    id
+}
+
+/// ARTIFACTS-24 (LANE-3a): a conversation that had an unproxied version laid in its room keeps
+/// that for good, as it keeps a taint, whatever its later turns open or name: what it publishes
+/// from then on, from files copied anywhere in its room, records `unproxied`, and a job it plans
+/// runs as LANE-3a's (no declared secrets for its check) though Oby's box would have kept it
+/// behind obid's proxy; none of it is someone else's. A clean conversation's job isn't.
 #[test]
-fn artifacts_24_obys_new_artifact_from_laid_files_keeps_their_marks() {
-    let folder = Folder::new("artifacts-24-unproxied-copy");
+fn artifacts_24_a_conversation_that_laid_an_unproxied_version_keeps_it() {
+    let folder = Folder::new("artifacts-24-conversation");
     let obid = started_with_jobs(&folder);
     let (c1, artifact) = made_page(&obid);
     edited_with_open(&obid, &artifact);
-    let entry = &artifact[..8];
-    let said = format!("OBY oby_artifact {{\"title\": \"Copy\", \"path\": \"artifacts/{entry}\"}}");
-    let copied = call_typed(
+    let opened = call_typed(
         &obid,
         "POST",
         "/v1/plans",
-        &json!({"said": said, "conversation": c1, "artifact": {"id": artifact}}),
+        &json!({"said": "SAY looked", "artifact": {"id": artifact}}),
     );
-    assert_eq!(copied.status, 200, "{}", copied.text);
+    assert_eq!(opened.status, 200, "{}", opened.text);
+    // A later turn with nothing open publishes the laid files copied elsewhere in the room.
+    let room = obid.home.join(format!("conversations/{c1}/room"));
+    let laid = room.join(format!("artifacts/{}/index.html", &artifact[..8]));
+    std::fs::create_dir_all(room.join("copy")).unwrap();
+    std::fs::copy(&laid, room.join("copy/index.html")).unwrap();
+    let copied = told(
+        &obid,
+        &c1,
+        "OBY oby_artifact {\"title\": \"Copy\", \"path\": \"copy\"}",
+        true,
+    );
     let new = copied.body["artifacts"][0]["id"]
         .as_str()
         .unwrap_or_else(|| panic!("no artifact: {}", copied.text))
@@ -517,8 +566,50 @@ fn artifacts_24_obys_new_artifact_from_laid_files_keeps_their_marks() {
     assert_ne!(new, artifact);
     let kept = artifact_of(&obid, &new);
     assert_eq!(
-        kept["versions"][0]["marks"]["unproxied"],
-        json!(true),
+        kept["versions"][0]["marks"],
+        json!({"unproxied": true}),
         "{kept}"
     );
+    // A job it plans, boxed, is LANE-3a's; one of a clean conversation isn't.
+    let theirs = boxed_task(&obid, &c1);
+    assert!(ran_unproxied(&obid, &theirs), "{theirs}");
+    let clean = plan(&obid, json!({"said": "SAY hello", "new": true}));
+    let c2 = clean.body["conversation"].as_str().unwrap().to_owned();
+    let other = boxed_task(&obid, &c2);
+    assert!(!ran_unproxied(&obid, &other), "{other}");
+}
+
+/// ARTIFACTS-24: what Oby publishes with a version open carries that version's marks, never a
+/// later one's it never laid out: a copy of clean version 1, its version 2 someone else's, is
+/// clean.
+#[test]
+fn artifacts_24_a_copy_of_the_open_version_carries_only_its_marks() {
+    let folder = Folder::new("artifacts-24-laid-version");
+    let obid = started_with_jobs(&folder);
+    let (c1, artifact) = made_page(&obid);
+    edited_with_open(&obid, &artifact);
+    // Version 2 someone else's, as a marked job would have kept it.
+    let file = obid
+        .home
+        .join(format!("artifacts/{artifact}/artifact.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["versions"][1]["marks"] = json!({"foreign": "a job that was someone else's"});
+    std::fs::write(&file, serde_json::to_vec_pretty(&kept).unwrap()).unwrap();
+    let said = format!(
+        "OBY oby_artifact {{\"title\": \"Copy\", \"path\": \"artifacts/{}\"}}",
+        &artifact[..8]
+    );
+    let copied = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": said, "conversation": c1, "artifact": {"id": artifact, "version": 1}}),
+    );
+    assert_eq!(copied.status, 200, "{}", copied.text);
+    let new = copied.body["artifacts"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no artifact: {}", copied.text))
+        .to_owned();
+    let kept = artifact_of(&obid, &new);
+    assert_eq!(kept["versions"][0]["marks"], json!({}), "{kept}");
 }
