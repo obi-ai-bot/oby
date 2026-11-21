@@ -9,10 +9,10 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{Value, json};
 
+use super::Call;
 use super::WindowDriver;
 use super::snapshot::snapshot;
 use crate::browser::contract::PointerPhase;
-use crate::browser::driver::Call;
 use crate::browser::relay::RelayError;
 
 /// How long the agent's pointer rests on its target before the click (T3's 160 ms).
@@ -129,7 +129,7 @@ impl WindowDriver {
             return Ok(());
         }
         self.send(tab, "Page.enable", json!({}), until).await?;
-        let folder = self.downloads(job);
+        let folder = self.downloads_folder(job);
         let _ = crate::store::make_private_dir(&folder);
         self.send(
             tab,

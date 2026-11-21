@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 pub(crate) mod chain;
 mod lifecycle;
-pub use lifecycle::{Command, EndKind, Ended, Refused, transition};
+pub use lifecycle::{Command, EndKind, Ended, Refused, as_opened, transition};
 pub(crate) use lifecycle::{TAKING_OVER, hands_over};
 
 /// `queued`, `running`, `done`, `failed`, `stopped` or `interrupted`. On obid, `interrupted` is a
@@ -505,6 +505,11 @@ pub struct Job {
     /// ended done: the only commit publishing pushes (docs/contracts/publishing.md, PUBLISHING-1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_head: Option<String>,
+    /// The commit obid last put its branch at in its clone (its worktree's start, then each
+    /// `keep_commits`): obid moves the branch only from there, so a move anyone else made since is
+    /// left as it is (PUBLISHING-2, #2831). Kept in its file only, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<String>,
     /// The name GitHub gives its repository now (`gh repo view`), when that was read at its pull
     /// request step: a pull request under it is its own too (PUBLISHING-38). Kept in its file only,
     /// never in the API, like `checked_head`.

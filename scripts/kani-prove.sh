@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Proves obid's Kani harnesses that a change requires (docs/proofs.md, CI-58 and 59), from core/,
-# after `cargo kani -p obid --tests --only-codegen` (CI-57) wrote every harness's name.
+# Proves obid's Kani harnesses that a change requires (docs/proofs.md), from core/,
+# after `cargo kani -p obid --tests --only-codegen` wrote every harness's name.
 #
 #   scripts/kani-prove.sh "<filters>"   the harnesses whose names hold any filter (Kani's own
 #                                        rule), or every one for `all`; nothing for none

@@ -17,6 +17,10 @@ export type Tab = {
   owner: Owner;
   /** on obid: the agent's job the tab is for */
   job?: string;
+  /** on obid: the page's full address, as obid gave it, for its webview to open */
+  src?: string;
+  /** on obid: the session obid named for the tab's page (docs/plans/browser-t3.md); none from an obid before the relay */
+  partition?: string;
   title: string;
   /** host, then path: drawn as <b>host</b>path */
   url: string;
@@ -87,6 +91,4 @@ export interface BrowserApi {
   stopMac(): Promise<void>;
   /** the first-time sheet answered: Continue, or Not now (16) */
   answerMac(go: boolean): Promise<void>;
-  /** on obid: your mouse and keys on the page while you hold it */
-  input?(tab: string, e: import('../../../shared/obid-wire').BrowserInput): Promise<void>;
 }

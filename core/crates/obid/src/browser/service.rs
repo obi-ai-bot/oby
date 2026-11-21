@@ -1,13 +1,14 @@
-//! The browser as obid serves it (BROWSER-2 to 16, 25): the API core ([`Api`]) behind one lock,
-//! the driver of every job's browser, and the events the screens follow, each handed to the
-//! readers right after the change that made it (the lab's `Shared::flush`). It owns that state in
-//! memory, and the two switches in obid's settings file (`browser`, add-only, both on by default);
-//! it writes nothing else, the driver writing the browsers' own folders.
+//! The browser as obid serves it (BROWSER-2 to 4, 9 to 13, 15, 16, 25, 30 to 32): the API core
+//! ([`Api`]) behind one lock, the window's relay and the window's browser driven over it (every
+//! agent tab a `<webview>` in Oby's window, docs/plans/browser-t3.md), and the events the screens
+//! follow, each handed to the readers right after the change that made it (the lab's
+//! `Shared::flush`). It owns that state in memory, and the two switches in obid's settings file
+//! (`browser`, add-only, both on by default); it writes nothing else. obid runs no browser of its
+//! own.
 //!
-//! Created at obid's start beside `Connections` ([`Service::open`], which first reaps the browsers a
-//! stopped obid left), told when a job ends ([`Service::end_job`], from `crate::jobs`), and swept
-//! every [`SWEEP_EVERY`] so a browser that closed itself (10 minutes idle) is `notStarted` again and
-//! its tabs leave the list. Its routes are [`super::routes`], its tools [`super::tools`].
+//! Created at obid's start beside `Connections` ([`Service::open`]) and told when a job ends
+//! ([`Service::end_job`], from `crate::jobs`). Its routes are [`super::routes`], its tools
+//! [`super::tools`].
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -17,19 +18,14 @@ use tokio::sync::broadcast;
 
 use super::api::Api;
 use super::contract as c;
-use super::driver::{self, Binaries, Driver};
 use super::engine::{Actor, Browsers};
-use super::install::{Installer, pinned_options};
 
-/// How often a browser that closed itself is looked for.
-pub const SWEEP_EVERY: Duration = Duration::from_secs(30);
 /// How many events the stream's channel holds before a slow reader catches up from the log.
 const CHANNEL: usize = 256;
 
 /// The browser as obid serves it.
 pub struct Service {
     api: Mutex<Api>,
-    driver: Arc<Driver>,
     events: broadcast::Sender<c::Event>,
     /// The last event handed to the stream's readers.
     published: Mutex<u64>,
@@ -42,18 +38,12 @@ pub struct Service {
     pub(super) commit_delay: Duration,
     /// The window's relay (T3 Code's design): each agent tab a `<webview>` in the window.
     relay: Arc<super::relay::Relay>,
-    /// The window's browser: the agents' tools run on it, over the relay, on the same core.
+    /// The window's browser: the agents' tools run on it, over the relay, on the engine's core.
     window: Arc<super::window::WindowDriver>,
 }
 
 impl Service {
-    pub fn new(
-        api: Api,
-        driver: Arc<Driver>,
-        home: PathBuf,
-        downloads_to: PathBuf,
-        commit_delay: Duration,
-    ) -> Service {
+    pub fn new(api: Api, home: PathBuf, downloads_to: PathBuf, commit_delay: Duration) -> Service {
         let relay = Arc::new(super::relay::Relay::new());
         Service {
             api: Mutex::new(api),
@@ -63,11 +53,10 @@ impl Service {
             commit_delay,
             window: Arc::new(super::window::WindowDriver::new(
                 relay.clone(),
-                driver.core().clone(),
+                Arc::new(Mutex::new(Browsers::new())),
                 &home,
             )),
             relay,
-            driver,
             home,
         }
     }
@@ -93,28 +82,13 @@ impl Service {
         &self.relay
     }
 
-    /// The browser for obid's `home`: browsers a stopped obid left reaped first, the switches as the
-    /// settings file keeps them, the engine downloaded on first use and checked against its pins.
-    /// A debug build's test may name the tests' stand-in agent-browser instead
-    /// (`OBID_TEST_BROWSER_STAND_IN`), never a release build.
+    /// The browser for obid's `home`: the switches as the settings file keeps them. obid starts no
+    /// browser: every agent tab is the window's.
     pub async fn open(home: &Path) -> Arc<Service> {
-        let reaped = driver::reap_at_start(home).await;
-        if !reaped.is_empty() {
-            tracing::info!(
-                "stopped {} browser processes a previous obid left",
-                reaped.len()
-            );
-        }
         let mut api = Api::new();
         if let Some(settings) = crate::settings::load(home).browser {
             api.settings = settings;
         }
-        let binaries = test_binaries(home)
-            .unwrap_or_else(|| Binaries::Download(Arc::new(Installer::new(pinned_options(home)))));
-        let driver = Driver::new(
-            driver::Options::new(home.to_path_buf(), binaries),
-            Arc::new(Mutex::new(Browsers::new())),
-        );
         let downloads_to = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|h| h.is_absolute())
@@ -122,7 +96,6 @@ impl Service {
             .join("Downloads");
         let service = Arc::new(Service::new(
             api,
-            Arc::new(driver),
             home.to_path_buf(),
             downloads_to,
             test_commit_delay(),
@@ -134,10 +107,6 @@ impl Service {
     /// The API core, under its lock.
     pub fn api<T>(&self, f: impl FnOnce(&mut Api) -> T) -> T {
         f(&mut self.api.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    pub fn driver(&self) -> &Arc<Driver> {
-        &self.driver
     }
 
     pub fn downloads_to(&self) -> &Path {
@@ -175,7 +144,7 @@ impl Service {
     /// A job's tabs as the engine knows them, into the API (`tab` and `tabClosed` events).
     pub fn sync(&self, job: &str) {
         let status = self
-            .driver
+            .window
             .core()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -203,60 +172,21 @@ impl Service {
         Ok(settings)
     }
 
-    /// A job ended (BROWSER-25): its browser and every process it started stop, and its tabs
-    /// leave the list.
+    /// A job ended (BROWSER-25): its tabs are released on the relay and leave the list.
     pub async fn end_job(&self, job: &str) {
         self.window.end(job);
-        self.driver.end(job).await;
         self.api(|a| a.end_job(job));
         self.flush();
     }
 
-    /// obid is stopping: every live browser stops with it (BROWSER-25), rather than waiting for the
-    /// next start to reap it, each killed after [`driver::STOP_GRACE`] so that all of it fits in
-    /// obid's own stop.
+    /// obid is stopping: every job's tabs are released and leave the list.
     pub async fn end_all(&self) {
-        let jobs = self.driver.live_jobs();
-        futures_util::future::join_all(jobs.iter().map(|job| async move {
-            self.driver.end_within(job, driver::STOP_GRACE).await;
-            self.api(|a| a.end_job(job));
-        }))
-        .await;
-        self.flush();
-    }
-
-    /// Browsers that closed themselves: each job's is `notStarted` again and its tabs go.
-    pub async fn sweep(&self) {
-        for job in self.driver.sweep().await {
-            self.api(|a| a.set_browser(&job, c::BrowserState::NotStarted, None));
-            self.sync(&job);
+        for job in self.api(|a| a.job_ids()) {
+            self.window.end(&job);
+            self.api(|a| a.end_job(&job));
         }
         self.flush();
     }
-
-    /// [`Service::sweep`] every [`SWEEP_EVERY`], until obid stops.
-    pub fn spawn_sweeper(self: &Arc<Self>, mut stopping: tokio::sync::watch::Receiver<bool>) {
-        let me = self.clone();
-        tokio::spawn(async move {
-            let mut every = tokio::time::interval(SWEEP_EVERY);
-            loop {
-                tokio::select! {
-                    _ = every.tick() => me.sweep().await,
-                    _ = stopping.changed() => return,
-                }
-            }
-        });
-    }
-}
-
-/// The tests' stand-in agent-browser, in a debug build whose test asks for it.
-fn test_binaries(home: &Path) -> Option<Binaries> {
-    #[cfg(debug_assertions)]
-    if std::env::var("OBID_TEST_BROWSER_STAND_IN").is_ok_and(|v| v == "1") {
-        return Some(Binaries::InPlace(driver::stand_in::install(home)));
-    }
-    let _ = home;
-    None
 }
 
 /// The race's window a debug build's test may ask for, at most 10 s.

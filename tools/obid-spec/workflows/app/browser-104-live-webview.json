@@ -1,0 +1,262 @@
+{
+  "schemaVersion": "2",
+  "name": "App live: an agent opens a page and it is a real webview in Oby's window, driven through obid's relay (board 2, live)",
+  "version": "1.0.0",
+  "description": "The browser as T3 Code has it (docs/plans/browser-t3.md, W2): a stand-in Codex job calls oby_browser_open on a scratch obid that has no Chrome of its own. obid names the tab's partition, the real app mounts a <webview> at its address in that partition, main attaches its debugger and relays it (BROWSERAPP-22 to 26). The page shows in the panel's slot; the agent's snapshot, its typing into the page's Name box and its evaluate of that box's value all run on the window's own webview, through POST /v1/browser/relay and the events stream.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "obid": "${state.obid}",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "within": 60,
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-26"
+        ]
+      }
+    },
+    {
+      "id": "partition",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.obid}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs.0.id": "${state.open.structured.result.tab}",
+            "tabs.0.partition": "persist:oby-agent-codex"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-26"
+        ]
+      }
+    },
+    {
+      "id": "webview",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=webview] webview"
+        },
+        "attributes": [
+          "partition"
+        ],
+        "within": 15,
+        "expect": {
+          "paths": {
+            "count": 1,
+            "attributes.partition": "persist:oby-agent-codex"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-26"
+        ]
+      }
+    },
+    {
+      "id": "globe",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=globe]"
+        },
+        "within": 30,
+        "expect": {
+          "paths": {
+            "count": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-8"
+        ]
+      }
+    },
+    {
+      "id": "show",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=globe]"
+        }
+      }
+    },
+    {
+      "id": "in-the-panel",
+      "use": "runtime.rust:app.measure",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=webview]"
+        },
+        "against": {
+          "slot": {
+            "css": "aside.br [data-browser=slot]"
+          }
+        },
+        "within": 10,
+        "expect": {
+          "paths": {
+            "slot.overlap": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-26"
+        ]
+      }
+    },
+    {
+      "id": "snap",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_snapshot",
+        "args": {},
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-22"
+        ]
+      }
+    },
+    {
+      "id": "types",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_act",
+        "args": {
+          "action": "type",
+          "text": "agent"
+        },
+        "refFor": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "snapshot": "${state.snap}",
+        "expect": {
+          "paths": {
+            "isError": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-23"
+        ]
+      }
+    },
+    {
+      "id": "typed",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "document.querySelector('input').value"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data": "agent"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-23"
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}",
+        "job": "${state.job.job}",
+        "end": true
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

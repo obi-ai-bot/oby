@@ -272,14 +272,14 @@ impl Jobs {
     /// An own Codex conversation's thread (crate::brain::harness_codex, LANES-13), as an own Codex
     /// job's run (LANES-18): unboxed by obid, on `account`'s own folder as `CODEX_HOME` with the
     /// person's `HOME` ([`own_run_env`]) and the owner's shell's environment, its shell on under
-    /// Codex's own sandbox and approvals as `mode` sets them (`codex::own::policy`), in `room`.
-    /// `flags` come before `app-server`.
+    /// Codex's own sandbox and approvals as `policy` sets them (its mode's, [`Self::conversation_codex_policy`],
+    /// with its folders, WORKSPACE-1), in `room`. `flags` come before `app-server`.
     pub fn conversation_own_codex_launch(
         &self,
         account: &crate::config::Account,
         room: &Path,
         temp: &Path,
-        mode: Mode,
+        policy: &codex::own::Policy,
         flags: Vec<OsString>,
         stderr: PathBuf,
     ) -> Result<Launch, String> {
@@ -290,12 +290,7 @@ impl Jobs {
         let mut extra = process::no_publish_env(temp);
         extra.extend(own_run_env(Tool::Codex, account, &spec, temp)?);
         let argv: Vec<OsString> = std::iter::once(bin.into_os_string())
-            .chain(
-                self.conversation_codex_policy(room, mode)
-                    .settings()
-                    .into_iter()
-                    .map(OsString::from),
-            )
+            .chain(policy.settings().into_iter().map(OsString::from))
             .chain(flags)
             .chain(["app-server".into()])
             .collect();
@@ -372,9 +367,23 @@ impl Jobs {
             .flatten()
             .flatten()
             .map(|entry| entry.file_name())
-            .filter(|name| name != "conversations")
+            .filter(|name| name != "conversations" && name != "workspaces")
             .map(|name| home.join(name))
             .collect();
+        // The conversations' workspaces (WORKSPACE-1): their choices, obid's scan folder and every
+        // other conversation's worktrees, by name; this one's own worktrees are its to work in.
+        let workspaces = crate::workspace::worktrees(home);
+        let this = room.parent().and_then(Path::file_name);
+        places.extend(["*.json", "scan"].map(|n| workspaces.join(n)));
+        places.extend(
+            std::fs::read_dir(&workspaces)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| entry.path().is_dir() && entry.file_name() != "scan")
+                .filter(|entry| Some(entry.file_name().as_os_str()) != this)
+                .map(|entry| entry.path()),
+        );
         places.extend(["vault", "keys", "api-token", "accounts", "logins"].map(|n| home.join(n)));
         let conversations = home.join("conversations");
         // The stored threads, every conversation's (LANES-15), and the next one's id.
@@ -386,7 +395,6 @@ impl Jobs {
         // Every other conversation's `HOME` whole, by name: a deny rule can't leave one folder out
         // of a pattern. One made after this launch has its tokens and login state denied by name
         // (a boxed session's MCP configuration is in its `HOME`).
-        let this = room.parent().and_then(Path::file_name);
         places.extend(
             std::fs::read_dir(&conversations)
                 .into_iter()
@@ -1347,7 +1355,14 @@ mod tests {
         let flags = vec!["-c".into(), "features.apps=false".into()];
         let stderr = place.join("agent.log");
         let launch = jobs
-            .conversation_own_codex_launch(&codex, &room, &temp, Mode::AcceptEdits, flags, stderr)
+            .conversation_own_codex_launch(
+                &codex,
+                &room,
+                &temp,
+                &jobs.conversation_codex_policy(&room, Mode::AcceptEdits),
+                flags,
+                stderr,
+            )
             .unwrap();
         assert!(launch.own_sandbox);
         assert_eq!(launch.cwd, room);

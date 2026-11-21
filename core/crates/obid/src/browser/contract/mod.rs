@@ -195,10 +195,6 @@ pub const TAB_STATES: &[&str] = &[
     "crashed",
 ];
 
-/// How long a job's browser may take to start (Chrome launching for its profile), apart from
-/// any command's deadline: a command's deadline counts only once the browser is up.
-pub const BROWSER_START_ALLOWANCE_MS: u64 = 60_000;
-
 pub const BROWSER_STATES: &[&str] = &["notStarted", "starting", "ready", "failed"];
 
 pub const ASK_KINDS: &[&str] = &["signIn", "captcha", "choice", "code", "passkey"];

@@ -1,11 +1,11 @@
 // The browser on obid (docs/contracts/browser-app.md, BROWSERAPP-8 to 10), moved from the lab
 // (tools/obid-spec/lab-ui/browser/src/live.ts): its tabs from GET /v1/browser and every event after
-// it, what an agent is doing from its `action` events, and the page from the tab's stream, newest
-// frame only. Main holds obid's token and follows the streams (window.app.browser); calls go through
-// window.app.obid, the owner's acts signed by main on their own click (shared/words.ts).
+// it, and what an agent is doing from its `action` events; the page itself is the tab's own <webview>
+// (Webviews.tsx). Main holds obid's token and follows the events (window.app.browser); calls go
+// through window.app.obid, the owner's acts signed by main on their own click (shared/words.ts).
 import {
   BROWSER_DOWNLOADS, BROWSER_PATH, BROWSER_SETTINGS, browserAskPath, browserSaveCopyPath, browserTabPath,
-  type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent, type BrowserFrame, type BrowserInput,
+  type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
 import type { AgentId, BrowserState, Download, Tab } from './view';
@@ -13,8 +13,6 @@ import type { AgentId, BrowserState, Download, Tab } from './view';
 export type Live = {
   take(tab: string): Promise<void>;
   giveBack(tab: string): Promise<void>;
-  /** your mouse and keys on the page while you hold the tab (POST …/input), sent in order */
-  input(tab: string, e: BrowserInput): Promise<void>;
   /** a password or code into the page's field, through main on your click; true once filled */
   fill(tab: string, field: string, value: string, ask?: string): Promise<boolean>;
   /** an ask answered: a choice, or none (Skip) */
@@ -30,7 +28,6 @@ export type Sinks = {
   /** whether this obid has the browser at all (GET /v1/browser answered) */
   offered: (on: boolean) => void;
   state: (s: BrowserState) => void;
-  frame: (tab: string, url: string, size: { width: number; height: number }) => void;
   /** why the last call didn't go (obid's words), or null */
   problem: (why: string | null) => void;
 };
@@ -38,7 +35,6 @@ export type Sinks = {
 type Calls = {
   call: (method: string, path: string, body?: unknown) => Promise<{ status: number; text: string }>;
   follow: (fn: (m: { name: string; data: string }) => void) => () => void;
-  watch: (tab: string, fn: (data: string) => void) => () => void;
   /** main fills the field on the owner's click (main/browser.ts): null once filled, else why not */
   fill: (tab: string, field: string, value: string, ask?: string) => Promise<string | null>;
 };
@@ -67,7 +63,6 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   const saved = new Map<string, string>();
   // the tabs whose agent ran a script and has done nothing since (11)
   const ran = new Set<string>();
-  const streams = new Map<string, () => void>();
   // The last event each list reflects: a list answer older than an event already applied isn't
   // taken (it would roll the screen back), and an event a newer answer reflects isn't applied again
   // (LAB-UI-LIVE-6, docs/api/browser.md `seq`)
@@ -93,6 +88,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         id: t.id,
         owner: t.owner.kind === 'agent' ? { kind: 'agent', agent: agentOf(t.owner.agent) } : { kind: 'you' },
         job: t.owner.kind === 'agent' ? t.owner.job : undefined,
+        src: t.url,
+        partition: t.partition,
         title: t.title || shown(t.url),
         url: shown(t.url),
         secure: t.url.startsWith('https:'),
@@ -120,21 +117,6 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   };
   const publish = () => { if (!closed) sinks.state(view()); };
 
-  // The page: `event: frame` on the tab's stream, the newest one drawn.
-  const watch = (tab: string) => {
-    streams.set(tab, calls.watch(tab, (data) => {
-      try {
-        const f = JSON.parse(data) as BrowserFrame;
-        sinks.frame(tab, `data:${f.mime || 'image/jpeg'};base64,${f.data}`, { width: f.width, height: f.height });
-      } catch { /* a frame that isn't JSON: dropped */ }
-    }));
-  };
-  const unwatch = (tab: string) => { streams.get(tab)?.(); streams.delete(tab); };
-  const watchAll = () => {
-    for (const t of tabs) if (!streams.has(t.id)) watch(t.id);
-    for (const id of [...streams.keys()]) if (!tabs.some((t) => t.id === id)) unwatch(id);
-  };
-
   let following: (() => void) | null = null;
   const refresh = async () => {
     try {
@@ -143,7 +125,6 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
       if (b.seq === undefined || b.seq >= tabsSeq) { tabs = b.tabs; settings = b.settings; tabsSeq = b.seq ?? tabsSeq; }
       if (d.seq === undefined || d.seq >= downloadsSeq) { downloads = d.downloads; downloadsSeq = d.seq ?? downloadsSeq; }
       sinks.offered(true);
-      watchAll();
       publish();
       return true;
     } catch (e) {
@@ -185,13 +166,10 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
       case 'settings': settings = e.settings; break;
       default: return;
     }
-    watchAll();
     publish();
   };
   void refresh().then((has) => { if (has && !closed) following = calls.follow(on); });
 
-  // one at a time, so a press never overtakes the move before it
-  let inputs: Promise<unknown> = Promise.resolve();
   const act = async (path: string) => {
     try { await call('POST', path, {}); sinks.problem(null); } catch (e) { sinks.problem((e as Error).message); }
     await refresh();
@@ -199,10 +177,6 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   return {
     take: (t) => act(browserTabPath(t, 'take')),
     giveBack: (t) => act(browserTabPath(t, 'giveBack')),
-    input: (t, e) => {
-      inputs = inputs.catch(() => undefined).then(() => call('POST', browserTabPath(t, 'input'), e)).catch((err) => { sinks.problem((err as Error).message); });
-      return inputs.then(() => undefined);
-    },
     fill: async (t, field, value, ask) => {
       const why = await calls.fill(t, field, value, ask);
       sinks.problem(why);
@@ -225,6 +199,6 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
       try { settings = (await call<BrowserSettings>('PUT', BROWSER_SETTINGS, x)) ?? settings; sinks.problem(null); publish(); } catch (e) { sinks.problem((e as Error).message); }
       await refresh();
     },
-    close: () => { closed = true; following?.(); for (const stop of streams.values()) stop(); streams.clear(); },
+    close: () => { closed = true; following?.(); },
   };
 }

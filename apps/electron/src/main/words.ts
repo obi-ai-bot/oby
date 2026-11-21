@@ -12,10 +12,11 @@ export function wordsHeader(key: KeyObject, device: string, method: string, path
   return signedHeader(key, device, method, path, body, signedAt);
 }
 
-// The header itself, for a request main has decided to sign: the words above, or the owner's own
-// mouse and keys on a browser tab they hold, each right after a real input main saw (browser.ts, mayInput)
+// The header itself, for a request main has decided to sign: the words above, or a request main
+// makes itself on the owner's own press (device.ts: Fill in)
 export function signedHeader(key: KeyObject, device: string, method: string, path: string, body: unknown, signedAt = new Date().toISOString()): string {
-  const digest = createHash('sha256').update(body === undefined ? '' : JSON.stringify(body)).digest('hex');
+  // bytes (an artifact's import, WORDS-21) are signed as they are, as obid hashes them; anything else as its JSON
+  const digest = createHash('sha256').update(body === undefined ? '' : body instanceof Uint8Array ? body : JSON.stringify(body)).digest('hex');
   const signature = sign('sha256', Buffer.from(`oby-words\n${method}\n${path.split('?')[0]}\n${digest}\n${signedAt}`, 'utf8'), key).toString('base64');
   return `${device} ${signedAt} ${signature}`;
 }

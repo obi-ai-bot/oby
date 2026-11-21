@@ -1,10 +1,9 @@
 //! The browser's API on the real obid (docs/contracts/browser.md), for what its workflows can't
-//! easily show: the person's input from a device that doesn't hold the tab never reaching the page
-//! (BROWSER-7), the agents' server refusing a missing, made-up or ended job's token (BROWSER-16),
-//! a secret in no file under obid's home (BROWSER-8), the switches kept across a restart
-//! (BROWSER-15), and a refused call reading its whole 401, never a reset (BROWSER-28). obid runs the tests' stand-in agent-browser (`OBID_TEST_BROWSER_STAND_IN`, a debug
-//! build's only), whose live stream is a WebSocket server of the test's own; a Codex job sleeping as
-//! its agent hands back its broker token (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
+//! easily show: the agents' server refusing a missing, made-up or ended job's token (BROWSER-16),
+//! the switches kept across a restart (BROWSER-15), a refused call reading its whole 401, never a
+//! reset (BROWSER-28), the window's relay taking only obid's runner token and the routes the window
+//! does now answering 410 (BROWSER-30, 31). A Codex job sleeping as its agent hands back its broker
+//! token (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
 mod support;
 
 use std::io::{Read as _, Write as _};
@@ -15,13 +14,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use support::*;
 
-/// A scratch obid on the stand-in agent-browser, with a Codex account for its jobs.
+/// A scratch obid with a Codex account for its jobs.
 fn browser_obid(folder: &Folder) -> Obid {
-    start_with(&folder.0, &browser_config(folder), None, &stand_in_env())
-}
-
-fn stand_in_env() -> [(&'static str, &'static str); 1] {
-    [("OBID_TEST_BROWSER_STAND_IN", "1")]
+    start_with(&folder.0, &browser_config(folder), None, &[])
 }
 
 fn browser_config(folder: &Folder) -> Value {
@@ -284,7 +279,7 @@ fn browser_15_the_switches_are_kept_across_a_restart() {
     let config: Value =
         serde_json::from_str(&std::fs::read_to_string(folder.0.join("config.json")).unwrap())
             .unwrap();
-    let mut again = start_with(&folder.0, &config, None, &stand_in_env());
+    let mut again = start_with(&folder.0, &config, None, &[]);
     let after = call(&again, "GET", "/v1/browser/settings", None);
     assert_eq!(
         after.body,

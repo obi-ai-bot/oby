@@ -155,11 +155,12 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
   help: { args: ['reveal-log'], refusal: 'Not this app’s page.' },
   'browser-follow': { args: [], refusal: null },
-  'browser-watch': { args: ['t1'], refusal: null },
-  'browser-unwatch': { args: ['t1'], refusal: null },
+  'browser-register': { args: ['j1', 't1', 5], refusal: 'Not this app’s page.' },
+  'browser-shown': { args: ['j1', 't1', true], refusal: null },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
   'artifact-preview': { args: [null], refusal: null },
+  'artifact-export': { args: ['3f0c2a1e-1111-4222-8333-944455556666', 1, 'zip'], refusal: null },
   'mac-pill': { args: [null], refusal: null },
   'mac-pill-stop': { args: [], refusal: undefined },
   'mac-pill-now': { args: [], refusal: null },
@@ -365,6 +366,19 @@ describe('IPC-4', () => {
     expect(files).toContain('index.ts');
     const raw = files.filter((f) => /ipcMain\s*\.\s*(handle|on)\s*\(/.test(readFileSync(join(main, f), 'utf8')));
     expect(raw).toEqual([]);
+  });
+});
+
+describe('ARTIFACTSAPP-11', () => {
+  it('artifactsapp_11_pdf_and_png_stay_off', async () => {
+    const before = { calls: the.calls.length, dialogs: the.dialogs };
+    // send never answers here, so a kind let through would hang: bounded, it fails instead
+    const bounded = (p: unknown) => Promise.race([p, new Promise((r) => setTimeout(() => r('hung'), 300))]);
+    for (const as of ['pdf', 'png']) {
+      expect(await bounded(call('artifact-export', own(), '3f0c2a1e-1111-4222-8333-944455556666', 1, as)), as).toBeNull();
+    }
+    expect(the.calls.length).toBe(before.calls);
+    expect(the.dialogs).toBe(before.dialogs);
   });
 });
 

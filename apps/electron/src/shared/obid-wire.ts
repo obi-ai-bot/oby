@@ -407,6 +407,8 @@ export type PlanRequest = {
   // where a new conversation works (obid only, workspace-v1; docs/api/folders.md, "Workspace"): with
   // new only, never changed after (WORKSPACE-3)
   workspace?: Workspace;
+  // the artifact open while the words were said (obid only, artifact-turn-v1; docs/api/artifacts.md, ARTIFACTS-12)
+  artifact?: { id: string; version: number };
 };
 // "GET /v1/conversations/{id}/workspace" (obid only, workspace-v1; docs/api/folders.md, "Workspace"):
 // where the conversation works in each of its folders, and what finishing can do there now
@@ -533,10 +535,15 @@ export function rememberedOf(value: unknown): RememberedDecision | null {
   };
 }
 
+/** `artifact` on /v1/events: which artifact, its new version when it got one, its conversation. */
+export type ArtifactEvent = { id: string; version: number | null; conversation: string | null; renamed: boolean; title: string | null };
 export type Event =
   | { kind: 'roomPost'; post: RoomPost }
   // its posts aren't taken from it: the thread is read again (peers.ts)
   | { kind: 'peerThread'; owner: string }
+  // an artifact made, given a new version, renamed or given a conversation (docs/api/events.md):
+  // the app reads it again where it shows it (docs/contracts/artifacts-app.md, ARTIFACTSAPP-6)
+  | { kind: 'artifact'; artifact: ArtifactEvent }
   | { kind: 'job'; job: Job }
   | { kind: 'jobGone'; id: string }
   | { kind: 'inbox'; item: InboxItem }
@@ -627,6 +634,11 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
     case 'roomPost': { const post = roomPostOf(value); return post ? { kind: 'roomPost', post } : null; }
     case 'peerThread': return typeof v.owner === 'string' ? { kind: 'peerThread', owner: v.owner } : null;
+    case 'artifact': return typeof v.id === 'string' ? { kind: 'artifact', artifact: {
+      id: v.id, version: typeof v.version === 'number' ? v.version : null,
+      conversation: typeof v.conversation === 'string' ? v.conversation : null,
+      renamed: v.renamed === true, title: typeof v.title === 'string' ? v.title : null,
+    } } : null;
     case 'accounts': return Array.isArray(value) ? { kind: 'accounts', accounts: value as Account[] } : null;
     case 'conversation':
       if (typeof v.id !== 'string') return null;
@@ -676,7 +688,9 @@ export const BROWSER_PATH = '/v1/browser';
 export const BROWSER_EVENTS = '/v1/browser/events';
 export const BROWSER_SETTINGS = '/v1/browser/settings';
 export const BROWSER_DOWNLOADS = '/v1/browser/downloads';
-export const browserTabPath = (tab: string, verb: 'stream' | 'input' | 'take' | 'giveBack' | 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
+/** the window's half of the relay: its webviews' events, in order (docs/plans/browser-t3.md) */
+export const BROWSER_RELAY = '/v1/browser/relay';
+export const browserTabPath = (tab: string, verb: 'take' | 'giveBack' | 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
 export const browserAskPath = (ask: string) => `/v1/browser/asks/${encodeURIComponent(ask)}/answer`;
 export const browserSaveCopyPath = (download: string) => `/v1/browser/downloads/${encodeURIComponent(download)}/saveCopy`;
 
@@ -709,6 +723,8 @@ export interface BrowserTab {
   computer: { id: string; name: string };
   ask: BrowserAsk | null;
   dialog: string | null;
+  /** the session the tab's page lives in, as obid names it (docs/plans/browser-t3.md): absent from an obid before the relay */
+  partition?: string;
 }
 
 export interface BrowserDownload {
@@ -738,10 +754,3 @@ export type BrowserEvent = { seq: number } & (
   | { type: 'settings'; settings: BrowserSettings }
 );
 
-/** `event: frame` on a tab's stream: the newest frame only */
-export interface BrowserFrame { tabId: string; seq: number; data: string; mime: string; width: number; height: number; dropped: number }
-
-/** POST …/input: the person's mouse and keys on a tab they hold, in the page's CSS pixels (the lab's contract) */
-export type BrowserInput =
-  | { type: 'mouse'; eventType: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel'; x: number; y: number; button?: string | null; clickCount?: number | null; deltaX?: number | null; deltaY?: number | null }
-  | { type: 'key'; eventType: 'keyDown' | 'keyUp' | 'char'; key: string; text?: string | null; code?: string | null };

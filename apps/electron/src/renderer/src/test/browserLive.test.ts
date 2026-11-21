@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP, SAVE_A_COPY, BROWSER_SWITCHES } from '../../../shared/words';
-import { mayInput, sawInput } from '../../../main/browserInput';
 import { downloadsFile } from '../../../main/reveal';
 import { connectLive, LINGER_MS, type Sinks } from '../browser/live';
 import type { BrowserState } from '../browser/view';
@@ -32,45 +31,10 @@ describe('BROWSERAPP-9: Take control and Give back are signed by their own label
   });
 });
 
-describe('BROWSERAPP-10: the owner\'s input reaches the page only right after the very input main saw', () => {
-  const press = { type: 'mouse', eventType: 'mousePressed', x: 10, y: 20, button: 'left', clickCount: 1 } as const;
-  const move = { type: 'mouse', eventType: 'mouseMoved', x: 10, y: 20 } as const;
-  const key = (eventType: 'keyDown' | 'keyUp' | 'char', k: string) => ({ type: 'key', eventType, key: k } as const);
-
-  it('browserapp_10: with no real input, nothing is signed', () => {
-    expect(mayInput(press, 10_000_000)).toBe(false);
-    expect(mayInput(key('keyDown', 'a'), 10_000_000)).toBe(false);
-  });
-  it('browserapp_10: a press follows one real mouse-down, once; a move follows any real move in the last 2 s', () => {
-    sawInput('mouseDown', undefined, 20_000_000);
-    sawInput('mouseMove', undefined, 20_000_000);
-    expect(mayInput(press, 20_000_100)).toBe(true);
-    expect(mayInput(press, 20_000_200)).toBe(false);
-    expect(mayInput(move, 20_000_300)).toBe(true);
-    expect(mayInput(move, 20_000_400)).toBe(true);
-    expect(mayInput(move, 20_003_000)).toBe(false);
-  });
-  it('browserapp_10: a key follows the very key main saw, and a char rides on its keyDown', () => {
-    sawInput('keyDown', 'a', 30_000_000);
-    expect(mayInput(key('keyDown', 'b'), 30_000_050)).toBe(false);
-    expect(mayInput(key('char', 'a'), 30_000_060)).toBe(true);
-    expect(mayInput(key('keyDown', 'a'), 30_000_070)).toBe(true);
-    expect(mayInput(key('keyDown', 'a'), 30_000_080)).toBe(false);
-    expect(mayInput(key('keyUp', 'a'), 30_000_090)).toBe(false);
-  });
-  it('browserapp_10: a shape that isn\'t the contract\'s signs nothing', () => {
-    sawInput('mouseDown', undefined, 40_000_000);
-    expect(mayInput({ type: 'mouse', eventType: 'keyDown', x: 1, y: 1 }, 40_000_010)).toBe(false);
-    expect(mayInput({ kind: 'mouse', type: 'mousePressed' }, 40_000_010)).toBe(false);
-    expect(mayInput(null, 40_000_010)).toBe(false);
-  });
-});
-
-// A mock of obid's browser: its lists, its events (pushed by the test) and its frames
+// A mock of obid's browser: its lists and its events (pushed by the test)
 function mockObid(lists: { tabs: BrowserTab[]; seq?: number; status?: number }) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   let push: ((m: { name: string; data: string }) => void) | null = null;
-  const frames = new Map<string, (data: string) => void>();
   const api = {
     call: vi.fn(async (method: string, path: string, body?: unknown) => {
       calls.push({ method, path, body });
@@ -82,10 +46,9 @@ function mockObid(lists: { tabs: BrowserTab[]; seq?: number; status?: number }) 
       return { status: 200, text: '{}' };
     }),
     follow: vi.fn((fn: (m: { name: string; data: string }) => void) => { push = fn; return () => { push = null; }; }),
-    watch: vi.fn((tab: string, fn: (data: string) => void) => { frames.set(tab, fn); return () => frames.delete(tab); }),
     fill: vi.fn(async (_tab: string, _field: string, _value: string, _ask?: string): Promise<string | null> => null),
   };
-  return { api, calls, event: (e: object) => push?.({ name: (e as { type: string }).type, data: JSON.stringify(e) }), frame: (tab: string, f: object) => frames.get(tab)?.(JSON.stringify(f)), following: () => !!push };
+  return { api, calls, event: (e: object) => push?.({ name: (e as { type: string }).type, data: JSON.stringify(e) }), following: () => !!push };
 }
 const tab = (id: string, extra: Partial<BrowserTab> = {}): BrowserTab => ({
   id, owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Sign in · Acme', url: 'http://localhost:3000/login', state: 'ready',
@@ -95,9 +58,8 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('BROWSERAPP-8: on obid, the panel follows obid\'s browser through main', () => {
   let state: BrowserState | null, offered: boolean | null;
-  const frames: { tab: string; url: string }[] = [];
-  const sinks: Sinks = { offered: (on) => { offered = on; }, state: (s) => { state = s; }, frame: (t, url) => frames.push({ tab: t, url }), problem: () => {} };
-  beforeEach(() => { state = null; offered = null; frames.length = 0; });
+  const sinks: Sinks = { offered: (on) => { offered = on; }, state: (s) => { state = s; }, problem: () => {} };
+  beforeEach(() => { state = null; offered = null; });
   afterEach(() => vi.useRealTimers());
 
   it('browserapp_8: an obid without the browser (404) isn\'t offered and nothing is followed', async () => {
@@ -107,16 +69,26 @@ describe('BROWSERAPP-8: on obid, the panel follows obid\'s browser through main'
     expect(offered).toBe(false);
     expect(o.following()).toBe(false);
   });
-  it('browserapp_8: the tabs come from GET /v1/browser, each tab\'s frames are drawn, and every call is a /v1/browser one (main adds the token)', async () => {
-    const o = mockObid({ tabs: [tab('t1')], seq: 3 });
+  it('browserapp_8: the tabs come from GET /v1/browser with their address and partition, and every call is a /v1/browser one (main adds the token)', async () => {
+    const o = mockObid({ tabs: [tab('t1', { partition: 'persist:oby-agent-codex' })], seq: 3 });
     connectLive(sinks, o.api);
     await settle(); await settle();
     expect(offered).toBe(true);
-    expect(state?.tabs.map((t) => [t.id, t.url, t.holder, t.job])).toEqual([['t1', 'localhost:3000/login', 'agent', 'j1']]);
+    expect(state?.tabs.map((t) => [t.id, t.url, t.src, t.partition, t.holder, t.job])).toEqual([['t1', 'localhost:3000/login', 'http://localhost:3000/login', 'persist:oby-agent-codex', 'agent', 'j1']]);
     expect(o.following()).toBe(true);
-    o.frame('t1', { tabId: 't1', seq: 1, data: 'AAAA', mime: 'image/jpeg', width: 800, height: 600, dropped: 0 });
-    expect(frames).toEqual([{ tab: 't1', url: 'data:image/jpeg;base64,AAAA' }]);
     expect(o.calls.every((c) => c.path.startsWith('/v1/browser'))).toBe(true);
+  });
+  it('browserapp_8: the window asks obid for no tab\'s picture stream', async () => {
+    const o = mockObid({ tabs: [tab('t1'), tab('t2')], seq: 1 });
+    // an api that still offers the old picture stream's follower: the window never asks for it
+    const watch = vi.fn(() => () => {});
+    const api = { call: o.api.call, follow: o.api.follow, fill: o.api.fill, watch };
+    connectLive(sinks, api);
+    await settle(); await settle();
+    expect(state?.tabs.map((t) => t.id)).toEqual(['t1', 't2']);
+    o.event({ seq: 2, type: 'tab', tab: tab('t2', { title: 'Sign up · Acme' }) });
+    expect(watch).not.toHaveBeenCalled();
+    expect(o.calls.filter((c) => c.path.endsWith('/stream'))).toEqual([]);
   });
   it('browserapp_8: an event after the list is applied; one the list already reflects isn\'t; a list older than an event never rolls the screen back', async () => {
     const lists = { tabs: [tab('t1')], seq: 5 };
@@ -176,7 +148,7 @@ describe('BROWSERAPP-13: an ask answered by its own button', () => {
   });
   it('browserapp_13: the live adapter posts the choice, or {} for Skip, to the ask\'s answer', async () => {
     const o = mockObid({ tabs: [tab('t1')], seq: 1 });
-    const live = connectLive({ offered: () => {}, state: () => {}, frame: () => {}, problem: () => {} }, o.api);
+    const live = connectLive({ offered: () => {}, state: () => {}, problem: () => {} }, o.api);
     await settle(); await settle();
     await live.answer('a1', 'Team · $12');
     await live.answer('a1');
@@ -186,7 +158,7 @@ describe('BROWSERAPP-13: an ask answered by its own button', () => {
 
 describe('BROWSERAPP-15 and 16: a script\'s mark, and the agent\'s downloads', () => {
   let state: BrowserState | null = null;
-  const sinks: Sinks = { offered: () => {}, state: (x) => { state = x; }, frame: () => {}, problem: () => {} };
+  const sinks: Sinks = { offered: () => {}, state: (x) => { state = x; }, problem: () => {} };
   const act = (seq: number, tool: string) => ({ seq, type: 'action', tabId: 't1', job: 'j1', tool, text: 'Clicking Invite', pointer: null, outcome: 'started', reason: null });
 
   it('browserapp_15: a script run marks its tab until the agent does something else there', async () => {
@@ -224,7 +196,7 @@ describe('BROWSERAPP-18: Settings › General\'s two switches', () => {
   it('browserapp_18: the live adapter turns a switch with PUT and shows obid\'s answer', async () => {
     let state: BrowserState | null = null;
     const o = mockObid({ tabs: [], seq: 1 });
-    const live = connectLive({ offered: () => {}, state: (x) => { state = x; }, frame: () => {}, problem: () => {} }, o.api);
+    const live = connectLive({ offered: () => {}, state: (x) => { state = x; }, problem: () => {} }, o.api);
     await settle(); await settle();
     await live.setSettings({ agentsUseBrowser: false });
     expect(o.calls).toContainEqual({ method: 'PUT', path: '/v1/browser/settings', body: { agentsUseBrowser: false } });

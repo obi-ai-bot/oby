@@ -653,7 +653,6 @@ pub async fn serve(
         });
     }
     // A browser that closed itself (10 minutes idle) shows as not started again (crate::browser).
-    shared.browser.spawn_sweeper(stopping_rx.clone());
     // The worktrees' cleanup pass, in the background: never before the first answer.
     tokio::spawn(keep_worktrees_clean(shared.clone(), cancelled.clone()));
     // The machine's memory and each running job's, while jobs run (crate::meter).

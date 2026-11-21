@@ -235,6 +235,17 @@ impl Jobs {
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
+            // Where its branch is as its worktree starts: obid moves it only from there (#2831).
+            let kept = match branch_ref.starts_with("refs/heads/") {
+                true => git::git(
+                    &clone,
+                    &["rev-parse", "--verify", &format!("{branch_ref}^{{commit}}")],
+                )
+                .await
+                .ok()
+                .filter(|h| git::is_sha(h)),
+                false => None,
+            };
             let mut missing: Vec<String> = Vec::new();
             if git::uses_lfs(&clone, &start_commit).await {
                 missing.push("its Git LFS files are pointers".into());
@@ -252,6 +263,7 @@ impl Jobs {
             let worktree_text = worktree.to_string_lossy().into_owned();
             self.update(id, |job| {
                 job.made_worktree(worktree_text);
+                job.kept = kept;
                 job.start_commit.get_or_insert(start_commit);
                 job.base = Some(base.clone());
                 if !missing.is_empty() {

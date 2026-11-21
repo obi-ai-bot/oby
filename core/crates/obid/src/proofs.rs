@@ -1,7 +1,7 @@
 //! Kani proofs of obid's pure security deciders, over unnarrowed inputs: any bytes, any case,
 //! any combination of a job's marks (docs/proofs.md). Each file names the source files it proves
-//! on its `//! Proves:` lines; CI runs a file's harnesses whenever one of those changes
-//! (scripts/kani-required.sh), and every harness nightly. Compiled only by `cargo kani`.
+//! on its `//! Proves:` lines; scripts/kani-required.sh names a file's harnesses whenever one of
+//! those changes. Compiled only by `cargo kani`.
 #![cfg(kani)]
 
 mod accept;

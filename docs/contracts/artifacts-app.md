@@ -6,8 +6,8 @@ The business behavior contract for artifacts in the Electron app, from [the temp
 
 - **Outcome:** An agent makes an artifact in a conversation, such as a page, a document or a picture. The owner sees its card under the task that made it, clicks it, and sees the artifact beside the conversation, drawn as it is. Nothing about it leaves the Mac: no hosted bundler, no CDN, no CodeSandbox server.
 - **Status:**
-  - **Implemented:** the card, the pane beside the conversation, and Preview of a version (ARTIFACTSAPP-1 to 4).
-  - **Proposed:** Code, following the agent's new versions, editing, versions, export and import, and React artifacts. Each comes with its own scenarios, in the order of [the port plan](../plans/artifacts-port.md) (L2 to L5).
+  - **Implemented:** the card, the pane beside the conversation, Preview of a version (ARTIFACTSAPP-1 to 4); Code, following the agent's new versions, and the open artifact sent with the owner's words (ARTIFACTSAPP-5 to 7); the owner's edits, Save and the version menu (ARTIFACTSAPP-8 to 10); and Download, Copy and Import (ARTIFACTSAPP-11, 12).
+  - **Proposed:** React artifacts, in the order of [the port plan](../plans/artifacts-port.md) (L5).
 - **Design:** Sangam's board 1b, "Beside its conversation", on the Oby Artifacts canvas (`tools/obid-spec/lab-ui/artifacts/design/project/Viewer.dc.html`). The words are his.
 - **Scope:** the Electron app: `src/renderer/src/artifacts/`, its mount in `Home.tsx` and `ChatView.tsx`, `src/main/artifactPreview.ts`, `src/main/sandpackRelay.ts`, `src/main/previewRules.ts`, `resources/sandpack-relay/`, `stubs/nodebox/` and `scripts/local-only.mjs`.
 - **Out of scope:**
@@ -31,6 +31,24 @@ The business behavior contract for artifacts in the Electron app, from [the temp
 - **The pane.** A click on a card opens the pane in the browser panel's place, at its width, on the artifact's latest version.
   - One artifact is open at a time.
   - Close takes the pane and its preview away, and so does leaving the conversation.
+- **Preview and Code.** The pane's strip has Preview and Code, as LibreChat's panel has them; it opens on Preview.
+  - Code lists the version's files as tabs, `index.html` first, then by name, and shows the one picked in CodeMirror 6, read-only, with its language's colours. A file that isn't text (a picture, a font) is named, never read.
+  - While Code shows, main's preview view is hidden; back on Preview, it shows again.
+  - CodeMirror is the editor Sandpack's own `SandpackCodeEditor` wraps. `sandpack-react` isn't built in: it names CodeSandbox's hosted services, which the build refuses.
+- **Following the agent** (`artifact` on `/v1/events`, read again from obid, never taken from the event):
+  - a new version of the artifact open moves the pane to it when it was on the latest; on an older version it stays;
+  - a rename retitles it;
+  - an artifact made in the conversation on view (its version 1) opens by itself when none is open;
+  - the conversation's cards are read again.
+- **The owner's words.** Words said in a conversation while its artifact is open carry `artifact: {id, version}`, the version on view, once obid announces `artifact-turn-v1` (ARTIFACTS-12). They go signed, as the owner's words do ([signed-words.md](signed-words.md), WORDS-22). An answer to Oby's question carries none, nor do words to another conversation than the artifact's.
+- **The owner's edits** (as LibreChat's Code tab, with Save instead of saving by itself):
+  - On the latest version, Code is the owner's to edit; on an older one it is read-only. Each file edited is marked, and typing its text back unedits it.
+  - Preview shows the edits before they're saved: the page sends them with the preview's ask, and main lays each over its file of the version it read (`edits`, a file of that version only, at most 17 MB in all).
+  - **Save as v<n>** (`n` the version it makes) sends them as the owner's edit (`POST /v1/artifacts/{id}/versions`, ARTIFACTS-16), signed by main on that button's own click ([signed-words.md](signed-words.md), WORDS-23). Done, the pane is on the new version; refused (a secret, a limit, another version came first), obid's words show above the tab and the edits stay.
+  - A version the agent makes while the owner has unsaved edits never sweeps them away: the pane stays on the version they edit and says the newer one came; their Save then shows only once they open the latest.
+- **Download** (Sangam's board 1c, its Export's Download): the pane's Export opens **Project archive (.zip)** (for a design, "Every file, as Claude Design keeps it: opens there unchanged") and **Standalone HTML**. Either saves the version on view as obid exports it (`GET /v1/artifacts/{id}/export/{version}?as=`, ARTIFACTS-9 and 10), byte for byte, where the owner picks in main's own save dialog, named as obid names it, whole or not at all (a new file beside it, renamed over it) and never through a link there; the pane says where it went, or why not. Preview's view steps aside while the menu is open, as main's view lies over the page; Esc, a click outside it or the window changing size closes it, as the app's other menus. **Copy**, in Code, copies the file on view as it reads there, the owner's edit too.
+- **Import** (obid's import, ARTIFACTS-11): a project archive (.zip), a page (.html, .htm) or a document (.md, .markdown) dropped on a conversation's thread (not its message box, which keeps its own drops as attachments) is offered in a bar, `Import <name> as an artifact?`. The owner's own click on **Import** sends its bytes as they are, signed by main by that label over those bytes ([signed-words.md](signed-words.md), WORDS-21); main sends them as what they are (`PK\x03\x04`, a zip; text starting with `<`, a page; else a document). Imported, it opens beside the conversation; the owner's first words with it open make it that conversation's (ARTIFACTS-12). Another file is offered nothing; a file over 257 MB, or one obid refuses, says why in the bar.
+- **The version menu** (as LibreChat's `ArtifactVersion`): from two versions on, every version, newest first, the latest marked (`v3, the latest`). Another version on view leaves the edits on the one before.
 - **The preview.** While the pane shows, the page tells main which artifact, which version and the preview's box, and tells it again whenever the box moves or changes size. Main reads that version once and moves its view with the box.
 
 ### What each kind shows
@@ -76,8 +94,9 @@ As LibreChat does, the `static` template always opens `index.html`:
 ## Interfaces and dependencies
 
 - **obid:** `GET /v1/artifacts?conversation=`, `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/{version}/{*path}` ([docs/api/artifacts.md](../api/artifacts.md)), unchanged.
-- **The page into main:** `artifact-preview` ([ipc.md](ipc.md)), with `{ id, version, bounds }` or `null`. It answers `{ shown: true }`, or `{ error }` saying why nothing shows.
-- **Packages:** `@codesandbox/sandpack-client` 2.19.8, and through it `static-browser-server` 1.0.3 (both Apache-2.0); `marked` (MIT), already the app's.
+- **obid's events:** `artifact` (`shared/obid-wire.ts`, `{id, version, conversation, renamed, title}`), passed on by main as every event is; `POST /v1/plans`' `artifact` (`artifact-turn-v1`).
+- **The page into main:** `artifact-preview` ([ipc.md](ipc.md)), with `{ id, version, bounds, edits? }` or `null`; `artifact-export`, with the id, the version and `zip` or `html`, answering `{ saved }`, `{ cancelled: true }` or `{ error }`. It answers `{ shown: true }`, or `{ error }` saying why nothing shows.
+- **Packages:** `@codesandbox/sandpack-client` 2.19.8, and through it `static-browser-server` 1.0.3 (both Apache-2.0); CodeMirror 6 (`@codemirror/state`, `view`, `language`, `lang-html`, `lang-css`, `lang-javascript`, `lang-markdown`, `lang-json`, `@lezer/highlight`, all MIT, pinned exactly); `marked` (MIT), already the app's.
 
 ## Acceptance scenarios
 
@@ -106,3 +125,45 @@ As LibreChat does, the `static` template always opens `index.html`:
   - Close takes the pane and the preview away, and an error from main shows in the pane.
 
   Unit tests: `artifactsapp_4_the_card_says_what_it_is_and_a_click_opens_it_beside_the_conversation_on_its_latest_version`, `artifactsapp_4_an_error_from_main_shows_in_the_pane`. Mac: `artifactsapp_4: the card under its task opens the pane`.
+- **ARTIFACTSAPP-5** Given the pane open on a version of a page (`index.html`, `style.css`, `logo.png`), when the owner picks Code:
+  - Preview's view goes;
+  - the files show as tabs, `index.html` first, and `index.html`'s text shows in CodeMirror, read-only;
+  - another tab shows its file's text, and a picture is named ("logo.png isn’t text: Preview shows it.") and never read;
+  - back on Preview, its view comes back.
+
+  Unit test: `artifactsapp_5_code_shows_each_file_of_the_version_index_first_and_preview_stops` (`artifactsFollow.test.tsx`). Mac: `artifactsapp_5: Code shows each file of the version`.
+- **ARTIFACTSAPP-6** Given the pane open on an artifact's latest version:
+  - when obid says it has a new version, the pane moves there and Preview draws it;
+  - a rename retitles it;
+  - on an older version, the pane stays, and another artifact's version moves nothing;
+  - with none open, an artifact made in the conversation on view opens by itself, and one of another conversation, or with none on view, doesn't.
+
+  Unit tests: `artifactsapp_6_a_new_version_from_the_agent_moves_the_open_pane_to_it`, `artifactsapp_6_an_older_version_on_view_stays_and_another_artifact_moves_nothing`, `artifactsapp_6_an_artifact_the_agent_makes_in_the_conversation_on_view_opens`. Mac: `artifactsapp_6: a new version from the agent moves the open pane to it`.
+- **ARTIFACTSAPP-7** Given the pane open on version 1 of a conversation's artifact, when the owner says words in that conversation, then `POST /v1/plans` carries `artifact: {id, version: 1}`. Closed, the words go without it, and so they do to an obid that doesn't announce `artifact-turn-v1`, or to another conversation than the artifact's.
+
+  Unit tests: `artifactsapp_7_words_said_with_the_pane_open_carry_its_artifact_and_version`, `artifactsapp_7_not_to_an_obid_without_it_nor_to_another_conversation`; signed: `words_22_the_artifact_open_signs_with_its_words`.
+- **ARTIFACTSAPP-8** Given the pane on a page's latest version (v1), when the owner edits `style.css` in Code:
+  - the file is marked, **Save as v2** shows, and typing the text back takes both away;
+  - Preview shows the edit unsaved: main is asked for v1 with the edit, and lays it over v1's file (no other file, nothing over 17 MB);
+  - Save sends `{base: 1, files: {style.css: …}}`, and the pane moves to v2 with nothing unsaved.
+
+  Unit tests: `artifactsapp_8_an_edit_shows_in_preview_before_it_is_saved_and_save_makes_the_next_version`, `artifactsapp_8_typing_the_text_back_unedits_it`, `artifactsapp_8_main_takes_the_owners_unsaved_edits_to_lay_over_the_version_and_nothing_more`; signed: `words_23_an_artifacts_edit_signs_by_its_own_save_as_label`. Mac: `artifactsapp_8` (typed in the real editor, drawn unsaved, and Save making the owner's version on an obid with the edit route).
+- **ARTIFACTSAPP-9** Given an artifact with two versions, then the version menu lists `v2, the latest`, `v1`; picking v1 shows it in Preview and Code, read-only. With one version, there's no menu.
+
+  Unit test: `artifactsapp_9_the_version_menu_opens_any_version_the_latest_marked_an_older_one_read_only`. Mac: `artifactsapp_9`.
+- **ARTIFACTSAPP-10** Given the owner's unsaved edit on v1, when the agent makes v2, then the pane stays on v1 with the edit, says `Version 2 came after the one you’re editing.`, and offers no Save. On the latest, a Save obid refuses (`422` for a secret, `409` for a version that came after) shows obid's words, and the edit and Save stay.
+
+  Unit test: `artifactsapp_10_a_version_that_comes_meanwhile_keeps_the_edits_and_obids_refusal_shows_with_them_kept`. Mac: `artifactsapp_10` (an obid without the edit route: its refusal shows, the edit kept).
+- **ARTIFACTSAPP-11** Given the pane on v1 of an artifact, when the owner picks Export, then:
+  - its Download lists **Project archive (.zip)** and **Standalone HTML**, and Preview's view steps aside while the menu is open;
+  - each saves obid's export of v1, byte for byte, where main's dialog answered, named as obid names it (never a path in that name), and the pane says `Saved to <path>`;
+  - a cancelled dialog writes nothing and says nothing, and a version obid no longer has says so;
+  - a link where the owner picked is refused, and a write that fails leaves the file that was there whole;
+  - Esc, a click outside the menu or the window changing size closes it, and Preview comes back;
+  - Code's Copy takes the file on view.
+
+  Unit tests: `artifactsapp_11_download_saves_the_versions_zip_or_html_where_the_owner_picks_and_copy_takes_the_file`, `artifactsapp_11_main_saves_obids_export_byte_for_byte_where_the_owner_picked_and_nothing_when_cancelled`, `artifactsapp_11_a_download_replaces_the_file_whole_or_not_at_all_and_never_writes_through_a_link`, `artifactsapp_11_pdf_and_png_stay_off`. Mac: `artifactsapp_11` (the zip and the HTML saved, each compared with obid's export).
+- **ARTIFACTSAPP-12** Given a conversation, when the owner drops a page on its thread, then the bar offers it, and nothing is sent until their click on **Import**. Then its bytes go, exactly, signed, and the pane opens on the imported artifact, drawn. A picture dropped is offered nothing, and a refusal shows obid's words in the bar.
+
+  Unit tests: `artifactsapp_12_a_dropped_page_is_imported_on_import_and_opens_beside_the_conversation`, `artifactsapp_12_only_an_archive_a_page_or_a_document_is_offered_and_a_refusal_says_why`, `artifactsapp_12_an_import_is_sent_as_what_its_bytes_are`; signed: `words_21_an_artifacts_import_signs_its_bytes_as_they_are_by_its_own_import`. Mac: `artifactsapp_12` (dropped, imported on the real click, signed, kept by obid as `origin: import`, drawn).
+

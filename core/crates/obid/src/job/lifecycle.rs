@@ -250,10 +250,94 @@ impl Change {
     }
 }
 
+/// What words that opened a round answer (JOBSTATE-6): `now`, the job read after them, with that
+/// round's end taken back when its run already ended in it, as `opened`, the job the words kept,
+/// had it. A round that fails at once (a clone that can't start) can end before the answer is
+/// read; the end is in `GET` and the job's events. A stop is the owner's, and stays. Taken back,
+/// it reads as the round starts (`queued`, as [`Change::Round`] writes it), whatever ran between.
+pub fn as_opened(opened: &Job, mut now: Job) -> Job {
+    let ended = !now.status.is_active()
+        && !matches!(now.status, Status::Stopped | Status::Interrupted)
+        && opened.status.is_active()
+        && now.current_round() == opened.current_round();
+    if ended {
+        // The round as the words opened it, by the one writer of a round's start (its status,
+        // phase and cleared fields), then the rest `Change::End` wrote, as they left it.
+        Change::Round {
+            round: opened.current_round(),
+            rounds: opened.rounds,
+        }
+        .apply(&mut now);
+        now.summary = opened.summary.clone();
+        now.next_step = opened.next_step.clone();
+        now.resumes_at = opened.resumes_at;
+        now.reason = opened.reason.clone();
+        now.asked = opened.asked;
+        now.publish_step = opened.publish_step;
+        now.step = opened.step.clone();
+        now.finished = opened.finished;
+        now.review_result = opened.review_result.clone();
+        // And the revision it had then: the end's event is newer, so an app that has it keeps it
+        // (docs/contracts/live-state.md, LIVE-1).
+        now.revision = opened.revision;
+    }
+    now
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::job::{Stalled, Unjudged, Waiting};
+
+    /// JOBSTATE-6: a round that ended before its words' answer was read answers as they opened it,
+    /// whatever else changed since; a stop, an earlier round or a job that wasn't opened stays.
+    #[test]
+    fn jobstate_6_a_round_that_ended_before_its_answer_answers_as_opened() {
+        let mut failed = Job {
+            status: Status::Failed,
+            ..Job::default()
+        };
+        fill(&mut failed);
+        let mut opened = failed.clone();
+        transition(&opened, &Command::NextRound)
+            .unwrap()
+            .apply(&mut opened);
+        opened.asked = true;
+        let mut now = opened.clone();
+        let end = Ended {
+            kind: EndKind::Failed,
+            reason: "Couldn't get it ready.".into(),
+            next: Some(TRY_AGAIN),
+            resumes: None,
+            review: None,
+            at: 20,
+        };
+        transition(&now, &Command::RunEnded(end))
+            .unwrap()
+            .apply(&mut now);
+        now.unsigned = true;
+        // Kept twice since: the end, then the mark.
+        now.revision = opened.revision + 2;
+        assert_eq!(now.status, Status::Failed);
+
+        let mut want = opened.clone();
+        want.unsigned = true;
+        let answered = as_opened(&opened, now.clone());
+        assert_eq!(answered.to_json(), want.to_json());
+        // Older than the end's event, so an app holding that keeps it.
+        assert!(answered.revision < now.revision);
+
+        let mut stopped = now.clone();
+        stopped.status = Status::Stopped;
+        assert_eq!(
+            as_opened(&opened, stopped.clone()).to_json(),
+            stopped.to_json()
+        );
+        let mut later = now.clone();
+        later.round = Some(opened.current_round() + 1);
+        assert_eq!(as_opened(&opened, later.clone()).to_json(), later.to_json());
+        assert_eq!(as_opened(&failed, now.clone()).to_json(), now.to_json());
+    }
 
     /// `job` with every field of [`ROUND_CLEARS`] filled.
     pub(super) fn fill(job: &mut Job) {
@@ -413,7 +497,7 @@ mod tests {
                 review, approvals, review_of, security_paths, no_reviewer, review_failed,
                 summaries, issue, issue_url, agent_version, check, check_asked, checked, model, effort,
                 model_from_account, effort_named, complex, issue_unread, notes, files, attachments,
-                attachments_gone, start_commit, checked_head, mode, cut, after_pr_rebase,
+                attachments_gone, start_commit, checked_head, kept, mode, cut, after_pr_rebase,
                 checks_rounds, autofix, changes_rounds, crash_resumes, recovery, worktree, obi,
                 conversation, profile, project, turn, review_result, approvable, obi_request, permission,
                 question_call, parked, mac_check, apple_check, apple_ran, apple_token, answered,

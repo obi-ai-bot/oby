@@ -22,7 +22,9 @@ Three parts (paths in T3 Code; line numbers at `304cf149`):
   `ServerBrowserContexts.ts:280-290`). Opening a tab is not a channel command: the server publishes a
   preview session on its normal event stream, waits up to 10 s for `attached`, and announces again every
   second meanwhile (`ServerBrowser.ts:115, 1040-1055`). With no desktop it falls back to a headless
-  Chromium it streams (`ServerBrowser.ts:1100-1131`): **Oby has no fallback.**
+  Chromium it streams (`ServerBrowser.ts:1100-1131`). **Oby deliberately has no fallback**, the
+  owner's own words: "NO FALLBACK REMOVE CHROME ENTIRELY!". With no window, an agent's call is
+  refused `no_window`; nobody adds a headless browser back.
 - **Electron main** (`apps/desktop/src/preview/`) attaches `webContents.debugger` ("1.3") to each
   `<webview>` on `did-attach-webview` (`Manager.ts:1133-1146, 2042-2071`), and relays CDP between it
   and the server (`DesktopBrowserHost.ts`, `CdpRelay.ts`, `GuestInput.ts`). It fakes a one-page
@@ -49,14 +51,19 @@ Every message is keyed `{threadId, tabId}`: `threadId` is obid's job id. T3 carr
 inherited pipes (fd 6 and 7, NDJSON, `DesktopBackendConfiguration.ts:548-549`); Oby carries it over
 the window's existing connection to obid, on Electron main's runner token in both directions:
 
-- **obid → window:** new event types on `GET /v1/browser/events`, the SSE stream main already
-  follows (`apps/electron/src/main/browser.ts`):
+- **obid → window:** a stream of its own, `GET /v1/browser/relay` (SSE, runner token): `event:` the
+  command's type, `data:` its own JSON, `type` included, with no ids and no replay. A reconnecting
+  main gets only new commands, so it never re-runs a stale click or navigate, and a burst of CDP
+  never pushes the screens' events out of `/v1/browser/events`' replay log. While main follows it,
+  obid counts a window as there; when it drops, every call in flight fails `no_window`. The commands:
   - `cdp {threadId, tabId, message}`: one raw CDP JSON message, page level, its `id` obid's, no `sessionId`.
   - `release {threadId, tabId}`: drop the tab's relay; the debugger stays attached (T3's `release`).
   - `pointer {threadId, tabId, phase: "move" | "click", x, y}`: only draws the agent's cursor, in CSS px; no input.
   - `turn {threadId, active}`: an agent turn runs on the job, so its tabs keep focus emulation on between steps.
-  - A new tab is the existing `tab` event, with two add-only fields: `url`, and `partition` (below).
-    The window mounts a `<webview>` for every agent tab it sees, as T3's renderer does.
+  - A new tab is the existing `tab` event on `GET /v1/browser/events`, with two add-only fields:
+    `url`, and `partition` (below), sent before obid waits for `attached`. The window mounts a
+    `<webview>` for every agent tab it sees, as T3's renderer does; `tabClosed` unmounts it. Both stay
+    on the events stream, whose replay is right for them: a reconnecting window mounts the tabs it missed.
 - **window → obid:** `POST /v1/browser/relay {"events": [...]}`, in order, one request in flight per
   window, so CDP stays ordered and a burst of page events is one request. Each event is one of:
   - `attached {threadId, tabId}`: the debugger is attached and the first page settled (`dom-ready`,
@@ -65,10 +72,14 @@ the window's existing connection to obid, on Electron main's runner token in bot
   - `cdp {threadId, tabId, message}`: a reply `{id, result | error}` or a CDP event `{method, params}`.
   - `loadFailed {threadId, tabId, url, code, description}`: the main frame's `did-fail-load` (not `-3`), replayed on attach.
   - `shown {threadId, tabId, shown}`: the webview started or stopped being on screen.
-- **Reconnect:** when main's events stream reconnects, its next relay POST carries `attached` and
-  `shown` again for every live tab (T3's `announceAll`, `DesktopBrowserHost.ts:668-700`).
-- **No window:** with nobody following `/v1/browser/events`, an agent's browser tool is refused with
-  a new reason, `no_window` (add-only). obid waits up to 10 s for `attached` after a new tab, as T3 does.
+- **Reconnect:** when main's relay stream reconnects, its next relay POST carries `attached` and
+  `shown` again for every live tab (T3's `announceAll`, `DesktopBrowserHost.ts:668-700`); no command
+  runs again.
+- **No window:** with nobody following `GET /v1/browser/relay`, an agent's browser tool is refused
+  with a new reason, `no_window` (add-only). obid waits up to 10 s for `attached` after a new tab, as T3 does.
+- **obid-spec's test window** (O3) is a headless Chrome behind the same relay, standing in for the
+  webview's debugger so obid's half is proven on Azure with no Mac. It is the tests' only: the product
+  has no browser of its own.
 - **Signing:** the relay is the window's, on the runner token, like the events stream. The owner's
   own acts that reach obid stay signed as today (an ask answered, Save a copy, the settings).
 
@@ -152,7 +163,7 @@ once a webview is live; obid's use Blok workflows (`tools/obid-spec`, on Azure).
 
 - **What:** `webviewTag: true`; `will-attach-webview` hardening and the partition check;
   `did-attach-webview` attaches the debugger; a host keyed `job\0tab` that reads obid's `cdp`,
-  `release`, `pointer` and `turn` from the events stream and POSTs `attached`, `detached`, `cdp`,
+  `release`, `pointer` and `turn` from `GET /v1/browser/relay` and POSTs `attached`, `detached`, `cdp`,
   `loadFailed` and `shown` in order; the domain allowlist; T3's input and reload special cases; the
   64 MB cap; detach recovery and DevTools; re-announce on reconnect; per-partition permissions
   (T3's allowlist, `BrowserSession.ts:28-39`), downloads and popups.
@@ -172,7 +183,7 @@ once a webview is live; obid's use Blok workflows (`tools/obid-spec`, on Azure).
 - **Files:** `apps/electron/src/renderer/src/browser/Webviews.tsx` (new), `browser/Slot.tsx` (new),
   `browser/Panel.tsx`, `browser/BrowserPane.tsx`, `browser/live.ts`, `browser/store.tsx`,
   `browser/view.ts`, `browser/browser.css`, `renderer/src/Home.tsx` (the host's mount), their tests.
-- **Proof:** vitest; then the live app workflows (`browser-101`, `browser-102`) rewritten so a
+- **Proof:** vitest; then a new live app workflow (`browser-104`; `browser-102`, the streamed picture's Take control, retired with it) so a
   stand-in agent opens a page through obid (O1) and the real app draws it in a real webview.
 
 ### W3 (window). Delete the window's Chrome-era pieces
@@ -211,20 +222,26 @@ once a webview is live; obid's use Blok workflows (`tools/obid-spec`, on Azure).
 4. W4 and O3/O4.
 5. The human drive on real pages.
 
+## Decided since
+
+- **The window's guards are agreed with obid's half (2026-11-21):** the CDP domain allowlist (obid
+  uses `Page`, `Runtime`, `DOM`, `Accessibility`, `Input`, `Emulation`; `Network` stays for cookies),
+  downloads only under `<obid home>/browser/downloads/` (obid names `<job>` there and hears
+  `Page.downloadWillBegin` and `downloadProgress` through the relay), and Fill in typed by main, so
+  `POST …/secret` retires and obid only hears the ask answered.
+- **No holds, for any job.** Take control is clicking the page; take, give back, input, the stream,
+  `human_control` and `control_changed` go in O2 and W3. The box's foreign jobs are kept apart by
+  their partition and the box's edge, not by a hold. No `person` event at first, as T3.
+- **Sangam's words stay; new lines are the plainest true sentence, marked his to change.** The
+  buttons keep their labels (Take control, Give back, Go on anyway). Where a board's line stops being
+  true (board 6's "Codex waits until you give it back"; Go on anyway's "starts this task's browser
+  again"), the PR that changes the behavior writes the plainest true sentence and marks it, in the
+  code and the PR, as Sangam's to change.
+
 ## Open
 
-- **The window's guards are proposed, not yet agreed with obid's half:** the CDP domain allowlist,
-  the download folder under `<obid home>/browser/downloads/`, and Fill in typed by main (obid's
-  notes still have obid typing a signed value through `…/secret`). Settled before W1 and O1 build.
-- **The strip's words without Take control** (board 6: "You have this tab. Codex waits until you
-  give it back."). With no lock those words aren't true. Proposed: the strip keeps "Codex is using
-  this tab" and loses Take control and Give back; the owner (and Sangam) decide the words.
-- **Go on anyway's approved line** ("Going on starts this task's browser again: its other tabs
-  close.") described obid's restart of its Chrome; on a webview nothing restarts, so the line goes
-  unless the owner wants other words.
-- **A "person is driving" signal.** T3 sends none to its server for native webviews. Proposed: none
-  at first; add a throttled `person {threadId, tabId}` event if agents and the owner's clicks fight.
-- **Whether obid keeps holds** (take, give back) for the box's foreign jobs: obid's half decides in O4.
+- **A "person is driving" signal**, if agents and the owner's clicks fight: a throttled
+  `person {threadId, tabId}` event, window → obid.
 
 ## Sources
 

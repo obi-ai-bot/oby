@@ -1,10 +1,11 @@
 import { app, session, WebContentsView, type BrowserWindow, type Session } from 'electron';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { startRelay, type Relay } from './sandpackRelay';
-import { allowed, previewAsk } from './previewRules';
+import { allowed, noFiles, overlay, previewAsk, shownAs } from './previewRules';
 
 // An artifact's preview, drawn by Sandpack (docs/contracts/artifacts-app.md, ARTIFACTSAPP-1 and 3).
 // The page says which version and where (`artifact-preview`); main reads the version's files from
@@ -73,7 +74,7 @@ async function readVersion(id: string, version: number): Promise<{ kind: string;
   const a = await r.json() as { kind: string; title: string; versions: { version: number; files: string[] }[] };
   const v = a.versions.find((x) => x.version === version);
   if (!v) return `Version ${version} isn’t there.`;
-  const files: Record<string, { text: string } | { base64: string }> = {};
+  const files = noFiles();
   const utf8 = new TextDecoder('utf-8', { fatal: true });
   for (const path of v.files) {
     const f = await send('GET', `/v1/artifacts/${id}/${version}/${path.split('/').map(encodeURIComponent).join('/')}`, undefined);
@@ -95,7 +96,8 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
   ipc(trusted).handle('artifact-preview', [previewAsk], async (_e, ask): Promise<Shown> => {
     const win = window();
     if (!ask || !win || win.isDestroyed()) { hide(); return { shown: true }; }
-    const key = `${ask.id}/${ask.version}`;
+    // the owner's unsaved edits are part of what's on view (ARTIFACTSAPP-8)
+    const key = `${ask.id}/${ask.version}/${ask.edits ? createHash('sha256').update(JSON.stringify(ask.edits)).digest('hex') : ''}`;
     wanted = key;
     if (!current) {
       starting ??= makeView(win);
@@ -108,19 +110,20 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     // the same version already being read (the pane moved while it read): that read shows it
     if (reading?.key === key) return reading.done;
     onView = '';
-    const done = show(key, ask.id, ask.version);
+    const done = show(key, ask.id, ask.version, ask.edits);
     reading = { key, done };
     try { return await done; } finally { if (reading?.done === done) reading = null; }
   }, null);
-  async function show(key: string, id: string, version: number): Promise<Shown> {
+  async function show(key: string, id: string, version: number, edits?: Record<string, string>): Promise<Shown> {
     const { view, loaded, relay } = current!;
     const read = await readVersion(id, version);
+    // each edit over its file, a file of that version only
+    if (typeof read !== 'string') overlay(read.files, edits);
     // another version, or none, was asked for while this one read: that ask decides
     if (wanted !== key) return { shown: true };
     if (typeof read === 'string') { view.setVisible(false); return { error: read }; }
     await loaded;
-    // the files go as data, never as code: JSON is a JavaScript literal
-    await view.webContents.executeJavaScript(`window.obyShow(${JSON.stringify({ ...read, bundler: relay.origin })})`);
+    await view.webContents.executeJavaScript(shownAs({ ...read, bundler: relay.origin }));
     if (wanted === key) { onView = key; view.setVisible(true); }
     return { shown: true };
   }

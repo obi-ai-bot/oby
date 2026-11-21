@@ -635,3 +635,91 @@ fn workspace_4_push_runs_nothing_of_the_folders_settings() {
         done.text
     );
 }
+
+/// Words the owner typed to conversation `id` (or a new one in `folders`, in `workspace`), signed
+/// by their app: what Oby answered.
+fn said_signed(
+    obid: &Obid,
+    id: Option<&str>,
+    folders: &[&Path],
+    workspace: &str,
+    words: &str,
+) -> Value {
+    let mut body = json!({"said": words});
+    match id {
+        Some(id) => body["conversation"] = json!(id),
+        None => {
+            body["new"] = json!(true);
+            body["workspace"] = json!(workspace);
+            body["folders"] = json!(folders.iter().map(|f| text(f)).collect::<Vec<_>>());
+        }
+    }
+    let answer = call_typed(obid, "POST", "/v1/plans", &body);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
+}
+
+/// WORKSPACE-1 (docs/contracts/folders.md): an owner's own conversation started with "This
+/// folder", its words signed by their app, edits files in the project's folder with Claude Code's
+/// file tools; obid's rule refuses a write outside it and one of the repository's `.git/hooks` or
+/// `.git/config`. (An own Claude Code conversation's Bash follows the owner's own sandbox; Codex's
+/// commands, its sandbox: WORKSPACE-7 and WORKSPACE-8.)
+#[test]
+fn workspace_1_folder_edits_in_place_and_no_further() {
+    let folder = Folder::new("workspace-1");
+    let obid = harness_obid(&folder, None);
+    let [api, other] = <[PathBuf; 2]>::try_from(picked(&folder, &["api", "other"])).unwrap();
+    repository(&api);
+    let first = said_signed(&obid, None, &[&api], "folder", "SAY Ready.");
+    let id = first["conversation"].as_str().unwrap().to_owned();
+    let targets = [
+        api.join("tidied.md"),
+        other.join("escaped.md"),
+        api.join(".git/hooks/pre-commit"),
+        api.join(".git/config"),
+    ];
+    let paths: Vec<String> = targets.iter().map(|p| text(p)).collect();
+    let words = format!("WRITES {}", paths.join(" "));
+    let answer = said_signed(&obid, Some(&id), &[], "", &words);
+    assert_eq!(answer["text"], "writes: allow deny deny deny", "{answer}");
+    assert!(api.join("tidied.md").is_file());
+    assert!(!other.join("escaped.md").exists());
+    assert!(!api.join(".git/hooks/pre-commit").exists());
+}
+
+/// WORKSPACE-7: in "A new worktree" the conversation writes its worktree, never the folder it was
+/// made from, nor the worktree's `.git` file; words no app of the owner's signed give its room
+/// only, the folder too (`foreign`, #2650's sixth requirement).
+#[test]
+fn workspace_7_a_worktree_or_unsigned_words_write_no_further() {
+    let folder = Folder::new("workspace-1w");
+    let obid = harness_obid(&folder, None);
+    let [api] = <[PathBuf; 1]>::try_from(picked(&folder, &["api"])).unwrap();
+    repository(&api);
+    let first = said_signed(&obid, None, &[&api], "worktree", "SAY Ready.");
+    let id = first["conversation"].as_str().unwrap().to_owned();
+    let seen = workspace(&obid, &id);
+    let tree = PathBuf::from(seen["places"][0]["path"].as_str().unwrap());
+    let words = format!(
+        "WRITES {} {} {}",
+        text(&tree.join("tidied.md")),
+        text(&api.join("tidied.md")),
+        text(&tree.join(".git"))
+    );
+    let answer = said_signed(&obid, Some(&id), &[], "", &words);
+    assert_eq!(answer["text"], "writes: allow deny deny", "{answer}");
+    assert!(tree.join("tidied.md").is_file());
+    assert!(!api.join("tidied.md").exists());
+
+    // Words no app of the owner's signed: the folder is the room's to read only.
+    let unsigned = start(&obid, &[&api], Some("folder"));
+    let words = format!("WRITES {}", text(&api.join("unsigned.md")));
+    let answer = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": words, "conversation": unsigned})),
+    );
+    assert_eq!(answer.body["text"], "writes: deny", "{}", answer.text);
+    assert!(!api.join("unsigned.md").exists());
+}

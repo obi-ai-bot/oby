@@ -133,7 +133,7 @@ describe('BROWSERAPP-14: a page that didn\'t simply load', () => {
     act(() => root.unmount()); root = createRoot(host);
     const tabs = [{ id: 't1', owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Dashboard', url: 'http://localhost:3000/dashboard', state: 'failed', heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null }];
     const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
-    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {}, fill: async () => null, reveal: async () => true } };
+    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, fill: async () => null, reveal: async () => true } };
     await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());

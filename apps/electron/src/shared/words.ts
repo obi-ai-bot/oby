@@ -35,6 +35,16 @@ export const BACKGROUND_YES = 'Yes, it can';
 export const VAULT_ADD = 'Add Secret';
 export const VAULT_REMOVE = 'Remove Secret';
 
+// The owner's edit of an artifact (docs/contracts/artifacts-app.md, ARTIFACTSAPP-8, WORDS-23): its
+// Save button's own label, which names the version it makes (`Save as v3`, `base` + 1), so no other
+// button's click can stand for it; never the text, which sits in the Code tab's editor. The signature
+// still covers the exact body, the text included.
+export const saveAs = (base: number) => `Save as v${base + 1}`;
+// An artifact imported from a file dropped into a conversation (ARTIFACTSAPP-12, WORDS-21): its Import
+// button's own label, the bytes signed as they are
+export const IMPORT = 'Import';
+const ARTIFACT_EDIT = /^\/v1\/artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/versions$/;
+
 // The owner's hold on a browser tab (docs/contracts/browser-app.md, BROWSERAPP-9): Take control and
 // Give back, each signed by its own button's label, an empty body. A take is also the page dialog's
 // Take control to answer, and a choice's I'll choose in the page.
@@ -93,8 +103,17 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
     if (method === 'PUT') return isBody(body) && text(body.value) && shaped(body, { value: text }) ? [VAULT_ADD] : null;
   }
   if (method === 'DELETE' && COMPUTER.test(path.split('?')[0]) && path.split('?')[0] !== '/v1/computers/current') return body === undefined ? [REMOVE_COMPUTER] : null;
+  // an artifact imported from a dropped file: its bytes as they are, by its own Import button (WORDS-21)
+  if (method === 'POST' && path === '/v1/artifacts/import') return body instanceof Uint8Array && body.byteLength > 0 ? [IMPORT] : null;
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
+  // the owner's edit: the version it's made on, and some of its files' new text, nothing else
+  if (method === 'POST' && ARTIFACT_EDIT.test(p)) {
+    const files = body.files;
+    return Number.isSafeInteger(body.base) && (body.base as number) >= 1 && isBody(files) && Object.keys(files).length > 0
+      && Object.values(files).every(text) && shaped(body, { base: (b) => Number.isSafeInteger(b), files: isBody })
+      ? [saveAs(body.base as number)] : null;
+  }
   // a browser tab's take or give back: an empty body, nothing else
   const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
   if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;
@@ -128,6 +147,10 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
       // where the conversation the words start works (WORKSPACE-3, WORDS-20): "This folder" or
       // "A new worktree", with new only; signed with the body, never one of the words
       workspace: (w) => (w === 'folder' || w === 'worktree') && body.new === true,
+      // the artifact open beside the conversation (ARTIFACTS-12, WORDS-22): its id and version, in
+      // a conversation only; signed with the body, never one of the words
+      artifact: (a) => isBody(a) && typeof a.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(a.id)
+        && Number.isSafeInteger(a.version) && (a.version as number) >= 1 && shaped(a, { id: text, version: (v) => Number.isSafeInteger(v) }) && body.new !== true,
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;

@@ -620,50 +620,40 @@ def live_101():
     )
 
 
-def live_102():
+def live_104():
     tab = "${state.open.structured.result.tab}"
-    held = "You have this tab. Codex waits until you give it back."
     workflow(
-        "browser-102-live-take-control.json",
-        "App live: an agent's tab drawn live; Take control, your click reaches the page, Give back (board 6, live)",
-        "The real app on a scratch obid that serves the browser (BROWSERAPP-8 to 10): a stand-in Codex job opens the fixture "
-        "site; the panel shows its tab and draws the page from obid's stream. Take control (signed by main on the click it "
-        "saw) holds the tab: the strip says so and the agent's act is refused (human_control). Your click on the live page's "
-        "download link reaches the page, signed by main right after the real mouse input, and obid keeps the file as yours, "
-        "delivered. Give back returns the tab and the agent acts again. (Your keys are signed only after main sees that very key reach the window: a test's keys, made inside the page, never do, so they're proven by browserLive.test.ts and device.test.ts.)",
+        "browser-104-live-webview.json",
+        "App live: an agent opens a page and it is a real webview in Oby's window, driven through obid's relay (board 2, live)",
+        "The browser as T3 Code has it (docs/plans/browser-t3.md, W2): a stand-in Codex job calls oby_browser_open on a "
+        "scratch obid that has no Chrome of its own. obid names the tab's partition, the real app mounts a <webview> at its "
+        "address in that partition, main attaches its debugger and relays it (BROWSERAPP-22 to 26). The page shows in the "
+        "panel's slot; the agent's snapshot, its typing into the page's Name box and its evaluate of that box's value all "
+        "run on the window's own webview, through POST /v1/browser/relay and the events stream.",
         [
             *browser_obid(),
             step("site", "browser-site"),
             step("job", "browser-job", obid=OBID),
-            step("open", "browser-mcp", obid=OBID, token="${state.job.token}", tool="oby_browser_open", args={"url": "${state.site.url}/"},
-                 within=300, expect={"paths": {"isError": False, "structured.ok": True}}),
+            # obid publishes the tab with its partition and waits for the window's `attached`
+            step("open", "browser-mcp", "BROWSERAPP-26", obid=OBID, token="${state.job.token}", tool="oby_browser_open", args={"url": "${state.site.url}/"},
+                 within=60, expect={"paths": {"isError": False, "structured.ok": True}}),
+            step("partition", "call", "BROWSERAPP-26", obid=OBID, method="GET", path="/v1/browser",
+                 expect={"status": 200, "paths": {"tabs.0.id": tab, "tabs.0.partition": "persist:oby-agent-codex"}}),
+            step("webview", "app.read", "BROWSERAPP-26", app=APP, target={"css": "[data-browser=webview] webview"}, attributes=["partition"],
+                 within=15, expect={"paths": {"count": 1, "attributes.partition": "persist:oby-agent-codex"}}),
             step("globe", "app.read", "BROWSERAPP-8", app=APP, target={"css": "[data-browser=globe]"}, within=30, expect={"paths": {"count": 1}}),
             click("show", {"css": "[data-browser=globe]"}),
-            read("one-tab", {"css": ".br-tab .logo[aria-label='Codex’s']"}, "BROWSERAPP-8", count=1, within=30),
-            # the stream's frame, drawn in the panel's page
-            step("live-page", "app.measure", "BROWSERAPP-8", app=APP, target={"css": "[data-browser=frame]"}, against={"page": {"css": "aside.br .br-view"}},
-                 within=60, expect={"paths": {"page.overlap": True}}),
-            read("agent-strip", {"css": ".br-control-text"}, None, count=1, text="Codex opened this tab · idle", within=15),
-            step("snap", "browser-mcp", obid=OBID, token="${state.job.token}", tool="oby_browser_snapshot", args={},
+            # the page itself sits where the panel draws it
+            step("in-the-panel", "app.measure", "BROWSERAPP-26", app=APP, target={"css": "[data-browser=webview]"}, against={"slot": {"css": "aside.br [data-browser=slot]"}},
+                 within=10, expect={"paths": {"slot.overlap": True}}),
+            step("snap", "browser-mcp", "BROWSERAPP-22", obid=OBID, token="${state.job.token}", tool="oby_browser_snapshot", args={},
                  expect={"paths": {"isError": False}}),
-            click("take", {"role": "button", "name": "Take control"}),
-            read("held", {"css": ".br-control-text > span:last-child"}, "BROWSERAPP-9", count=1, text=held, within=15),
-            step("held-by-a-device", "call", "BROWSERAPP-9", obid=OBID, method="GET", path="/v1/browser",
-                 expect={"paths": {"tabs.0.heldBy": {"$type": "string"}, "tabs.0.holdGeneration": 1}}),
-            step("agent-refused", "browser-mcp", "BROWSERAPP-9", obid=OBID, token="${state.job.token}", tool="oby_browser_act",
+            step("types", "browser-mcp", "BROWSERAPP-23", obid=OBID, token="${state.job.token}", tool="oby_browser_act",
                  args={"action": "type", "text": "agent"}, refFor={"role": "textbox", "name": "Name"}, snapshot="${state.snap}",
-                 expect={"paths": {"isError": True, "structured.error.code": "human_control"}}),
-            step("click-download", "app.click", app=APP, target={"css": "[data-browser=frame-input]"}, pagePoint="${state.site.download}"),
-            step("your-download", "call", "BROWSERAPP-10", obid=OBID, method="GET", path="/v1/browser/downloads", within=20,
-                 expect={"status": 200, "paths": {"downloads": {"$len": 1}, "downloads.0.startedBy": "person", "downloads.0.place": "delivered"}}),
-            click("give-back", {"role": "button", "name": "Give back"}),
-            read("agent-again", {"css": ".br-control-text"}, "BROWSERAPP-9", count=1, text="Codex opened this tab · idle", within=15),
-            step("free-again", "call", None, obid=OBID, method="GET", path="/v1/browser", expect={"paths": {"tabs.0.heldBy": None, "tabs.0.holdGeneration": 2}}),
-            step("snap-again", "browser-mcp", obid=OBID, token="${state.job.token}", tool="oby_browser_snapshot", args={},
                  expect={"paths": {"isError": False}}),
-            step("agent-acts-again", "browser-mcp", "BROWSERAPP-9", obid=OBID, token="${state.job.token}", tool="oby_browser_act",
-                 args={"action": "type", "text": "agent"}, refFor={"role": "textbox", "name": "Name"}, snapshot="${state.snap-again}",
-                 expect={"paths": {"isError": False}}),
+            step("typed", "browser-mcp", "BROWSERAPP-23", obid=OBID, token="${state.job.token}", tool="oby_browser_evaluate",
+                 args={"expression": "document.querySelector('input').value"},
+                 expect={"paths": {"isError": False, "structured.result.outside.data": "agent"}}),
             step("end", "browser-job", obid=OBID, job="${state.job.job}", end=True),
             close(),
         ],
@@ -715,4 +705,4 @@ if __name__ == "__main__":
     board_16()
     board_17()
     live_101()
-    live_102()
+    live_104()
