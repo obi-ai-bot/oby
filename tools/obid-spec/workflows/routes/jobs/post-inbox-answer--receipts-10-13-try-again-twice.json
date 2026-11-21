@@ -114,6 +114,9 @@
         "expect": {
           "status": 200
         }
+      },
+      "ui": {
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once"
       }
     },
     {
@@ -134,6 +137,9 @@
         "expect": {
           "status": 200
         }
+      },
+      "ui": {
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once (fails when item does: it answers the item that step picks)"
       }
     },
     {
@@ -160,7 +166,8 @@
         "proves": [
           "RECEIPTS-10",
           "RECEIPTS-13"
-        ]
+        ],
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once (fails when item does: it answers the item that step picks)"
       }
     },
     {
@@ -184,6 +191,9 @@
             }
           }
         }
+      },
+      "ui": {
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once (fails when item does: no Try again was answered)"
       }
     },
     {
@@ -227,7 +237,8 @@
         "proves": [
           "RECEIPTS-10",
           "RECEIPTS-13"
-        ]
+        ],
+        "flaky": "#2819: obid flags the review before its failed item is in the inbox, and the step reads the inbox once (fails when item does: no Try again was answered)"
       }
     }
   ]
