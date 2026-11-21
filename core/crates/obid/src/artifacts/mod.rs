@@ -39,7 +39,10 @@ use crate::store::{make_private_dir, write_private};
 mod blobs;
 mod design;
 pub mod edit;
+pub mod export;
 mod limits;
+
+pub use export::Origin;
 
 pub use limits::{MAX_BYTES, MAX_ENTRIES, MAX_FILES, MAX_JOB_BYTES};
 
@@ -111,6 +114,10 @@ pub struct Artifact {
     pub created: String,
     /// Oldest first.
     pub versions: Vec<Version>,
+    /// How it came to be when no agent made it: `{"kind": "import", "from": …}`. Left out for an
+    /// agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -157,12 +164,14 @@ pub struct Publish<'a> {
     pub kept: Option<u32>,
 }
 
-/// Who made a version, past what [`Publish`] says: the owner's edit, and the uploads its files
-/// already hold (a design's, kept under `assets/` by the version it was made from).
+/// Who made a version, past what [`Publish`] says: the owner's edit, the uploads its files
+/// already hold (a design's, kept under `assets/` by the version it was made from), and, for a
+/// new artifact no agent made, how it came to be (an import, crate::artifacts::export).
 #[derive(Default)]
 struct Made {
     by: Option<&'static str>,
     blobs: Option<BTreeMap<String, String>>,
+    origin: Option<Origin>,
 }
 
 /// Every artifact obid keeps.
@@ -207,14 +216,27 @@ impl Artifacts {
     /// artifact's latest version, that version is the answer and nothing new is kept. `Err` is
     /// one line saying why nothing was published.
     pub async fn publish(&self, what: Publish<'_>) -> Result<(String, u32), String> {
-        match self.publish_unsaid(what).await {
+        self.publish_from(what, None).await
+    }
+
+    /// [`Artifacts::publish`], a new artifact keeping `origin` (an import, crate::artifacts::export).
+    async fn publish_from(
+        &self,
+        what: Publish<'_>,
+        origin: Option<Origin>,
+    ) -> Result<(String, u32), String> {
+        let made = Made {
+            origin,
+            ..Made::default()
+        };
+        match self.publish_unsaid(what, made).await {
             Ok(made) => Ok(made),
             // A refusal may name what it refused: never a name that looks like a secret.
             Err(why) => Err(self.speakable(why).await),
         }
     }
 
-    async fn publish_unsaid(&self, what: Publish<'_>) -> Result<(String, u32), String> {
+    async fn publish_unsaid(&self, what: Publish<'_>, made: Made) -> Result<(String, u32), String> {
         let title = clean_title(what.title)
             .ok_or("Not published: the title is one line of 1 to 100 characters.")?;
         let before = match what.artifact {
@@ -249,7 +271,7 @@ impl Artifacts {
                 .map_err(|e| format!("Not published: the copy stopped ({e})."))?
         };
         let result = self
-            .finish(&what, &title, before, &staging, copied, Made::default())
+            .finish(&what, &title, before, &staging, copied, made)
             .await;
         let _ = std::fs::remove_dir_all(&staging);
         result
@@ -329,6 +351,7 @@ impl Artifacts {
                 job: what.job.map(str::to_owned),
                 created: now.clone(),
                 versions: Vec::new(),
+                origin: made.origin,
             },
         };
         if artifact.versions.len() >= MAX_VERSIONS as usize {

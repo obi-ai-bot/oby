@@ -285,6 +285,16 @@ pub fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/v1/routines/{id}/run", post(crate::routines::run))
         .route("/v1/artifacts", get(crate::artifacts::list))
+        // Before `{id}`: `import` and `export/` are words, never an artifact's id or a version
+        // (an id is a UUID, a version a number), so a file named `export` stays served.
+        .route(
+            "/v1/artifacts/import",
+            post(crate::artifacts::export::import).layer(crate::artifacts::export::import_limit()),
+        )
+        .route(
+            "/v1/artifacts/{id}/export/{version}",
+            get(crate::artifacts::export::export),
+        )
         .route(
             "/v1/artifacts/{id}",
             get(crate::artifacts::get)

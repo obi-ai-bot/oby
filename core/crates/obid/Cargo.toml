@@ -52,6 +52,7 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_
 # The gateway calls obid's own router in process (src/gateway.rs).
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 uuid.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true
