@@ -1,6 +1,6 @@
 {
   "schemaVersion": "2",
-  "name": "obid's browser: the person's ways out of a page state, Try again and Reload, Go back, and the page's own dialog answered Leave or Stay, each signed and only on a tab the signing device holds",
+  "name": "obid's browser: the person's ways out of a page state, Try again and Reload, Go back, and the page's own dialog answered Leave or Stay, each signed by one of the owner's devices",
   "version": "1.0.0",
   "description": "BROWSER-26, board 10, ported from the lab's LAB-BROWSERAPI-8 (workflows/lab/browserapi/ways-out.json) onto obid (core/crates/obid/src/browser/routes.rs, way_out; api/state.rs, Api::way_out; driver/person_page.rs): the agent's navigate to a site that refuses fails and the tab is failed. POST …/reload unsigned is refused (unsigned), with the job's token too (bad_token: the agents' tools never get these routes); signed by a device on a tab nobody holds it is refused (not_held); once the device takes, another device is refused (not_holder); a reload while the site still refuses leaves the tab failed (browser); with the site fixed the same address loads and the tab is ready. Go back: the agent goes from the home page to the second, the device takes, …/back brings the home page back. The page's dialog: the agent clicks Leave, the page asks its confirm and the tab is in state dialog; the device takes, …/dialog {accept: false} is Stay (the page is still there, the dialog gone), with no dialog left a second answer is refused (no_dialog), and once the page asks again {accept: true} is Leave (the page goes home). The lab's own read of the tab's URL (lab.browser.read) is the agent's snapshot here, which reads the live URL too. A scratch obid on the stand-ins, a Codex job sleeping as its agent with its broker token, the lab API's fixture sites, the real agent-browser and Chrome for Testing obid installs.",
   "trigger": {
@@ -18,6 +18,13 @@
         "owner": "alex",
         "agent": "fake-harness-jobs",
         "browser": true
+      }
+    },
+    {
+      "id": "o-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.o}"
       }
     },
     {
@@ -166,72 +173,6 @@
       }
     },
     {
-      "id": "reload-not-held",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 409,
-          "paths": {
-            "reason": "not_held"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "take",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {
-            "heldBy": "${state.d1.id}"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "reload-other-device",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/reload",
-        "device": "${state.d2}",
-        "as": "device",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
       "id": "reload-still-refused",
       "use": "runtime.rust:call",
       "inputs": {
@@ -299,8 +240,7 @@
           "paths": {
             "id": "${state.open.structured.result.tab}",
             "state": "ready",
-            "url": "${state.flakydown.url}/",
-            "heldBy": "${state.d1.id}"
+            "url": "${state.flakydown.url}/"
           }
         }
       },
@@ -378,23 +318,6 @@
       }
     },
     {
-      "id": "give-back",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {
-            "heldBy": null
-          }
-        }
-      }
-    },
-    {
       "id": "home",
       "use": "runtime.rust:browser-mcp",
       "inputs": {
@@ -449,67 +372,6 @@
       }
     },
     {
-      "id": "back-not-held",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 409,
-          "paths": {
-            "reason": "not_held"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "take-again",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {
-            "heldBy": "${state.d1.id}"
-          }
-        }
-      }
-    },
-    {
-      "id": "back-other-device",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/back",
-        "device": "${state.d2}",
-        "as": "device",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
       "id": "back",
       "use": "runtime.rust:call",
       "inputs": {
@@ -551,21 +413,6 @@
         "proves": [
           "BROWSER-26"
         ]
-      }
-    },
-    {
-      "id": "give-back-again",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {}
-        }
       }
     },
     {
@@ -651,46 +498,6 @@
       }
     },
     {
-      "id": "dialog-not-held",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
-        "device": "${state.d1}",
-        "body": {
-          "accept": false
-        },
-        "as": "device",
-        "expect": {
-          "status": 409,
-          "paths": {
-            "reason": "not_held"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "take-for-dialog",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {}
-        }
-      }
-    },
-    {
       "id": "dialog-unsigned",
       "use": "runtime.rust:call",
       "inputs": {
@@ -704,31 +511,6 @@
           "status": 401,
           "paths": {
             "reason": "unsigned"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-26"
-        ]
-      }
-    },
-    {
-      "id": "dialog-other-device",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/dialog",
-        "device": "${state.d2}",
-        "body": {
-          "accept": false
-        },
-        "as": "device",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
           }
         }
       },
@@ -812,21 +594,6 @@
       }
     },
     {
-      "id": "give-back-for-leave",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/giveBack",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {}
-        }
-      }
-    },
-    {
       "id": "snap-again",
       "use": "runtime.rust:browser-mcp",
       "inputs": {
@@ -867,21 +634,6 @@
         "proves": [
           "BROWSER-26"
         ]
-      }
-    },
-    {
-      "id": "take-to-leave",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "device": "${state.d1}",
-        "as": "device",
-        "expect": {
-          "status": 200,
-          "paths": {}
-        }
       }
     },
     {

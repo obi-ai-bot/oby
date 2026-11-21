@@ -1,8 +1,8 @@
 {
   "schemaVersion": "2",
-  "name": "POST /v1/browser/tabs/{id}/giveBack",
+  "name": "obid's browser: POST /v1/browser/tabs/{id}/giveBack is retired with obid's own browser and answers 410",
   "version": "1.0.0",
-  "description": "Giving a tab back is the holder's own signed act: unsigned, 401 unsigned; signed for a tab obid doesn't have, 404 no_such_tab. Taking and giving back a real tab, and another device refused not_holder, are in post-browser-tab-take.json (BROWSER-5).",
+  "description": "BROWSER-30 (docs/plans/browser-t3.md, the window's browser): Give back: with no hold, there is nothing to give back. The route stays, answering 410 with `retired`, so an app that still calls it is told, never left hanging (the add-only API).",
   "trigger": {
     "http": {
       "method": "POST",
@@ -20,52 +20,27 @@
       }
     },
     {
-      "id": "d1",
-      "use": "runtime.rust:device-pair",
-      "inputs": {
-        "obid": "${state.o}",
-        "name": "d1"
-      }
-    },
-    {
-      "id": "unsigned",
+      "id": "retired",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
         "method": "POST",
         "path": "/v1/browser/tabs/tab-1/giveBack",
+        "as": "owner",
         "expect": {
-          "status": 401,
+          "status": 410,
           "paths": {
-            "reason": "unsigned"
+            "reason": "retired",
+            "error": {
+              "$contains": "Oby's window does this now"
+            }
           }
-        }
+        },
+        "body": {}
       },
       "ui": {
         "proves": [
-          "BROWSER-5"
-        ]
-      }
-    },
-    {
-      "id": "no-such-tab",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/tab-1/giveBack",
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 404,
-          "paths": {
-            "reason": "no_such_tab"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-5"
+          "BROWSER-30"
         ]
       }
     }

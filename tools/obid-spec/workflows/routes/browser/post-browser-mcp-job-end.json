@@ -21,6 +21,13 @@
       }
     },
     {
+      "id": "o-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
       "id": "site",
       "use": "runtime.rust:browser-site",
       "inputs": {}
@@ -68,29 +75,6 @@
               "$any": {
                 "job": "${state.j1.job}",
                 "state": "ready"
-              }
-            }
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-25"
-        ]
-      }
-    },
-    {
-      "id": "live",
-      "use": "runtime.rust:home-file",
-      "inputs": {
-        "obid": "${state.o}",
-        "path": "browser/live/${state.j1.job}.json",
-        "expect": {
-          "exists": true,
-          "json": {
-            "paths": {
-              "daemon": {
-                "$type": "number"
               }
             }
           }
@@ -153,22 +137,6 @@
               }
             }
           }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-25"
-        ]
-      }
-    },
-    {
-      "id": "no-live",
-      "use": "runtime.rust:home-file",
-      "inputs": {
-        "obid": "${state.o}",
-        "path": "browser/live/${state.j1.job}.json",
-        "expect": {
-          "exists": false
         }
       },
       "ui": {

@@ -1,8 +1,8 @@
 {
   "schemaVersion": "2",
-  "name": "obid's browser: a tab's stream sends its frames, a slow reader drops frames without holding a fast one back, and the person's input reaches the page only while they hold it",
+  "name": "obid's browser: GET /v1/browser/tabs/{id}/stream is retired with obid's own browser and answers 410",
   "version": "1.0.0",
-  "description": "LAB-BROWSERAPI-7 (src/lab/browserapi.rs, the stream bridge, frames_stream and person_input over browser.rs's FrameSlot): on the fixture's animated counter two readers watch the same tab for 5 s, one reading as fast as it can, one stuck for 3.5 s before it reads again: the fast one gets frames all along, never held back; the stuck one, once it reads, jumps to the newest frames with the ones it missed dropped (counted in each frame's dropped), never queued for it. Input before a take is refused (not_held); after a signed take a click on the Name field and the keys h, i land in it. Ported from the lab onto obid (docs/contracts/browser.md): a scratch obid on the stand-ins, a Codex job sleeping as its agent with its broker token, the lab API's fixture site, the real agent-browser and Chrome for Testing obid installs, seeded from obid-spec's cache.",
+  "description": "BROWSER-30 (docs/plans/browser-t3.md, the window's browser): the live stream: the person sees the page in the window's webview. The route stays, answering 410 with `retired`, so an app that still calls it is told, never left hanging (the add-only API).",
   "trigger": {
     "http": {
       "method": "GET",
@@ -16,265 +16,30 @@
       "inputs": {
         "name": "o",
         "owner": "alex",
-        "agent": "fake-harness-jobs",
-        "browser": true
+        "agent": "fake-harness-jobs"
       }
     },
     {
-      "id": "site",
-      "use": "runtime.rust:browser-site",
-      "inputs": {}
-    },
-    {
-      "id": "d1",
-      "use": "runtime.rust:device-pair",
+      "id": "retired",
+      "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
-        "name": "d1"
-      }
-    },
-    {
-      "id": "j1",
-      "use": "runtime.rust:browser-job",
-      "inputs": {
-        "obid": "${state.o}"
-      }
-    },
-    {
-      "id": "open",
-      "use": "runtime.rust:browser-mcp",
-      "inputs": {
-        "obid": "${state.o}",
-        "token": "${state.j1.token}",
-        "tool": "oby_browser_open",
-        "args": {
-          "url": "${state.site.url}/"
-        },
+        "method": "GET",
+        "path": "/v1/browser/tabs/tab-1/stream",
+        "as": "owner",
         "expect": {
+          "status": 410,
           "paths": {
-            "isError": false,
-            "structured.ok": true
-          }
-        },
-        "within": 300
-      }
-    },
-    {
-      "id": "watch",
-      "use": "runtime.rust:browser-watch",
-      "inputs": {
-        "obid": "${state.o}",
-        "tab": "${state.open.structured.result.tab}",
-        "ms": 5000,
-        "readers": [
-          {
-            "readEveryMs": 0
-          },
-          {
-            "stallMs": 3500
-          }
-        ],
-        "expect": {
-          "paths": {
-            "fastFramesArrived": true,
-            "stuckDropped": true,
-            "fastNotHeldBack": true,
-            "stuckCaughtUp": true,
-            "readers.0.width": {
-              "$ne": 0
+            "reason": "retired",
+            "error": {
+              "$contains": "Oby's window does this now"
             }
           }
         }
       },
       "ui": {
         "proves": [
-          "BROWSER-14"
-        ]
-      }
-    },
-    {
-      "id": "not-held",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyDown",
-          "key": "x",
-          "text": "x"
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 409,
-          "paths": {
-            "reason": "not_held"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-14"
-        ]
-      }
-    },
-    {
-      "id": "take",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "press",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "mouse",
-          "eventType": "mousePressed",
-          "x": "${state.site.name.x}",
-          "y": "${state.site.name.y}",
-          "button": "left",
-          "clickCount": 1
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "release",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "mouse",
-          "eventType": "mouseReleased",
-          "x": "${state.site.name.x}",
-          "y": "${state.site.name.y}",
-          "button": "left",
-          "clickCount": 1
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "h-down",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyDown",
-          "key": "h",
-          "text": "h"
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "h-up",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyUp",
-          "key": "h"
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "i-down",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyDown",
-          "key": "i",
-          "text": "i"
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "i-up",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyUp",
-          "key": "i"
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "landed",
-      "use": "runtime.rust:browser-read",
-      "inputs": {
-        "obid": "${state.o}",
-        "token": "${state.j1.token}",
-        "selector": "#name",
-        "within": 5,
-        "expect": {
-          "paths": {
-            "value": "hi"
-          }
-        },
-        "tab": "${state.open.structured.result.tab}",
-        "device": "${state.d1}"
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-7"
+          "BROWSER-30"
         ]
       }
     }
