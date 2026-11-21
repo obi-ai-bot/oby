@@ -12,7 +12,6 @@ import type { BrowserApi, BrowserState, Tab } from './view';
 import { demoBoard } from './demo';
 import { connectLive, type Live } from './live';
 import { closeChanges, useChangesOpen } from '../ChangesPanel';
-import { focusPage } from './Webviews';
 
 /** The window's own state: not the browser's, never sent anywhere. */
 export type Ui = {
@@ -99,10 +98,8 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
     if (onLive) {
       // the owner's acts, signed by main on their own click (shared/words.ts)
       return {
-        // the page is the tab's own webview and obid holds no tabs (O1): Take control puts the keyboard
-        // on it, as a click on it would; nothing goes to obid, and there's nothing to give back
-        take: async (t) => { focusPage(t); },
-        giveBack: async () => undefined,
+        take: (t) => conn.current?.take(t) ?? Promise.resolve(),
+        giveBack: async (t) => { await conn.current?.giveBack(t); setUi({ gaveBack: true }); },
         // the password or code goes to main, which fills it on your click and keeps nothing (BROWSERAPP-12)
         secret: async (t, field, value, ask) => { setUi({ card: null, typed: 0 }); const at = await conn.current?.fill(t, field, value, ask); if (at === true) setUi({ filled: { tab: t, field, length: value.length } }); },
         answer: (a, choice) => conn.current?.answer(a, choice) ?? Promise.resolve(),

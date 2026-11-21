@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { owners, wordsOf, SKIP, SAVE_A_COPY, BROWSER_SWITCHES } from '../../../shared/words';
+import { owners, wordsOf, TAKE_CONTROL, GIVE_BACK, SKIP, SAVE_A_COPY, BROWSER_SWITCHES } from '../../../shared/words';
 import { downloadsFile } from '../../../main/reveal';
 import { connectLive, LINGER_MS, type Sinks } from '../browser/live';
 import type { BrowserState } from '../browser/view';
@@ -10,14 +10,24 @@ import type { BrowserTab } from '../../../shared/obid-wire';
 
 const TAKE = '/v1/browser/tabs/t1/take', GIVE = '/v1/browser/tabs/t1/giveBack';
 
-describe('BROWSERAPP-9: Take control and Give back go to nobody: the page is the tab\'s own webview', () => {
-  it('browserapp_9: a take or a give back is no request main signs, whatever holds its label', () => {
-    expect(wordsOf('POST', TAKE, {})).toBeNull();
-    expect(wordsOf('POST', GIVE, {})).toBeNull();
-    for (const label of ['Take control', 'Take control to answer', 'I’ll choose in the page', 'Give back']) {
-      expect(owners('POST', TAKE, {}, [label], [])).toBeNull();
-      expect(owners('POST', GIVE, {}, [label], [])).toBeNull();
-    }
+describe('BROWSERAPP-9: Take control and Give back are signed by their own labels', () => {
+  it('browserapp_9: an empty take is Take control, an empty give back is Give back', () => {
+    expect(wordsOf('POST', TAKE, {})).toEqual([TAKE_CONTROL]);
+    expect(wordsOf('POST', GIVE, {})).toEqual([GIVE_BACK]);
+  });
+  it('browserapp_9: a body with anything in it, another method, or another verb signs nothing', () => {
+    expect(wordsOf('POST', TAKE, { device: 'x' })).toBeNull();
+    expect(wordsOf('PUT', TAKE, {})).toBeNull();
+    expect(wordsOf('POST', '/v1/browser/tabs/t1/close', {})).toBeNull();
+    expect(wordsOf('POST', TAKE, undefined)).toBeNull();
+  });
+  it('browserapp_9: a take is held by Take control, Take control to answer or I’ll choose in the page; never by Give back, Type the password or a card\'s words', () => {
+    for (const label of ['Take control', 'Take control to answer', 'I’ll choose in the page']) expect(owners('POST', TAKE, {}, [label], [])).toEqual([0]);
+    expect(owners('POST', TAKE, {}, ['Type the password'], [])).toBeNull();
+    expect(owners('POST', TAKE, {}, ['Give back'], [])).toBeNull();
+    expect(owners('POST', TAKE, {}, ['Codex asks you to sign in here'], [])).toBeNull();
+    expect(owners('POST', GIVE, {}, ['Give back'], [])).toEqual([0]);
+    expect(owners('POST', GIVE, {}, ['Take control'], [])).toBeNull();
   });
 });
 
@@ -94,6 +104,18 @@ describe('BROWSERAPP-8: on obid, the panel follows obid\'s browser through main'
     expect(state?.tabs[0].action).toBe('Clicking Sign in');
     vi.advanceTimersByTime(LINGER_MS + 10);
     expect(state?.tabs[0].action).toBeUndefined();
+  });
+  it('browserapp_9: Take control posts an empty body to the tab\'s take, Give back to its giveBack; a held tab reads as yours', async () => {
+    const lists = { tabs: [tab('t1')], seq: 1 };
+    const o = mockObid(lists);
+    const live = connectLive(sinks, o.api);
+    await settle(); await settle();
+    lists.tabs = [tab('t1', { heldBy: 'device-1', holdGeneration: 1 })]; lists.seq = 2;
+    await live.take('t1');
+    expect(o.calls).toContainEqual({ method: 'POST', path: TAKE, body: {} });
+    expect(state?.tabs[0].holder).toBe('you');
+    await live.giveBack('t1');
+    expect(o.calls).toContainEqual({ method: 'POST', path: GIVE, body: {} });
   });
 });
 

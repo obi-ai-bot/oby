@@ -108,9 +108,6 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
   if (ui.card === 'password') {
     return <div className="br-control is-held" role="status" data-browser="control"><span className="br-control-text"><KeyRound size={14} strokeWidth={1.6} /><span><b>You’re filling the password.</b> {who} waits.</span></span></div>;
   }
-  // On obid nobody holds a tab (O1): the page is the tab's own webview, which you and the agent both
-  // use, so no tab reads as yours and the strip stays as the board draws a tab nobody holds. Sangam's
-  // screens have no words yet for "you're on the page" (docs/plans/browser-t3.md, Open).
   if (tab.holder === 'you') {
     return (
       <div className="br-control is-held" role="status" data-browser="control">

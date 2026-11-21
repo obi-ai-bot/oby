@@ -4,13 +4,15 @@
 // (Webviews.tsx). Main holds obid's token and follows the events (window.app.browser); calls go
 // through window.app.obid, the owner's acts signed by main on their own click (shared/words.ts).
 import {
-  BROWSER_DOWNLOADS, BROWSER_PATH, BROWSER_SETTINGS, browserAskPath, browserSaveCopyPath,
+  BROWSER_DOWNLOADS, BROWSER_PATH, BROWSER_SETTINGS, browserAskPath, browserSaveCopyPath, browserTabPath,
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
 import type { AgentId, BrowserState, Download, Tab } from './view';
 
 export type Live = {
+  take(tab: string): Promise<void>;
+  giveBack(tab: string): Promise<void>;
   /** a password or code into the page's field, through main on your click; true once filled */
   fill(tab: string, field: string, value: string, ask?: string): Promise<boolean>;
   /** an ask answered: a choice, or none (Skip) */
@@ -115,7 +117,6 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   };
   const publish = () => { if (!closed) sinks.state(view()); };
 
-
   let following: (() => void) | null = null;
   const refresh = async () => {
     try {
@@ -169,7 +170,13 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   };
   void refresh().then((has) => { if (has && !closed) following = calls.follow(on); });
 
+  const act = async (path: string) => {
+    try { await call('POST', path, {}); sinks.problem(null); } catch (e) { sinks.problem((e as Error).message); }
+    await refresh();
+  };
   return {
+    take: (t) => act(browserTabPath(t, 'take')),
+    giveBack: (t) => act(browserTabPath(t, 'giveBack')),
     fill: async (t, field, value, ask) => {
       const why = await calls.fill(t, field, value, ask);
       sinks.problem(why);

@@ -77,8 +77,8 @@ declare global {
         onPill(fn: (use: import('./browser/Mac').MacUse) => void): () => void;
         stop(): void;
       };
-      // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, and a
-      // tab's frames; each a function that stops listening
+      // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, each a
+      // function that stops listening
       browser?: {
         follow(fn: (m: { name: string; data: string }) => void): () => void;
         // a password or code into the page's field, filled by main on the owner's click (BROWSERAPP-12): null once filled

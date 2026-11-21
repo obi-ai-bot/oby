@@ -207,8 +207,7 @@ export async function fillSecret(tab: string, field: string, value: string, ask:
   try {
     const id = (device ??= await register());
     const send = (path: string, body: unknown) => obid('POST', path, body, signedHeader(deviceKey(), id, 'POST', path, body));
-    // no hold around it: obid retired holds with its own browser (O1); on a webview Fill in becomes
-    // main's own typing into the page (the plan's W4), and until then obid answers …/secret 410
+    // no hold around the fill: whether Fill in holds the tab is the Fill in task's call, on the webview
     const filled = refused(await send(browserTabPath(tab, 'secret'), { field, value }));
     if (!filled && ask) await send(browserAskPath(ask), {});
     return filled;

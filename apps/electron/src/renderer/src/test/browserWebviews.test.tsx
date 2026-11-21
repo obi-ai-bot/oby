@@ -72,26 +72,6 @@ describe('BROWSERAPP-26: each agent tab is a real webview in the window, in the 
     }
   });
 
-  it('browserapp_9: on obid, Take control puts the keyboard on the tab\'s own page; the strip stays as the board draws a tab nobody holds; nothing goes to obid', async () => {
-    const posts: string[] = [];
-    await live([tab('t1', { partition: 'persist:oby-agent-codex' })]);
-    const call = (window as unknown as { app: { obid: { call: (m: string, p: string) => Promise<unknown> } } }).app.obid.call;
-    (window as unknown as { app: { obid: { call: unknown } } }).app.obid.call = async (m: string, p: string) => { if (m !== 'GET') posts.push(`${m} ${p}`); return call(m, p); };
-    await act(async () => { (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click(); });
-    const page = webviews()[0];
-    const focus = vi.spyOn(page, 'focus');
-    const button = (label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === label) as HTMLButtonElement | undefined;
-    const strip = () => host.querySelector('[data-browser="control"]')?.textContent;
-    const before = strip();
-    await act(async () => { button('Take control')!.click(); });
-    expect(focus).toHaveBeenCalled();
-    // no words of ours: Sangam's screens have none yet for you on a page nobody holds
-    expect(strip()).toBe(before);
-    expect(strip()).toContain('Codex opened this tab · idle');
-    expect(button('Give back')).toBeUndefined();
-    expect(posts).toEqual([]);
-  });
-
   it('browserapp_26: a crashed page comes back at its last address; the agent\'s pointer is drawn over it while it shows', async () => {
     await live([tab('t1', { partition: 'persist:oby-agent-codex' })]);
     await act(async () => { (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click(); });

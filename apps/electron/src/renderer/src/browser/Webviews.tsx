@@ -123,12 +123,6 @@ function Hosted({ job, tab }: { job: string; tab: Tab }) {
   );
 }
 
-/** Take control on obid: the tab's own page gets the keyboard, as a click on it would give it. */
-export function focusPage(tab: string) {
-  const w = document.querySelector<HTMLElement>(`[data-browser="webview"][data-tab="${CSS.escape(tab)}"] webview`);
-  w?.focus();
-}
-
 /** Every agent tab's webview, mounted once at the app's root (main.tsx), in a fixed order. */
 export function BrowserWebviews() {
   const { mode, s } = useBrowser();
