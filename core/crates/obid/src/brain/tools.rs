@@ -1967,6 +1967,7 @@ fn asked(session: &Session) -> Asked<'_> {
         turn: &session.control.turn,
         signed: session.control.signed(),
         defaults: session.defaults.as_ref(),
+        artifact: session.control.artifact(),
     }
 }
 

@@ -2,7 +2,9 @@
 //! ATTACH-6, 13, 21 to 23): at its start, and to a job already at work, with the words they came
 //! with. It owns the copy (text with every secret obid knows taken out; a binary file holding one
 //! refused) and the words that name them; it never reads a path outside obid's attachments folder,
-//! writes nothing in the worktree but `.obi/inputs`, and saves only the job's `attachments`.
+//! writes nothing in the worktree but `.obi/inputs`, and saves only the job's `attachments`. It
+//! also lays the artifacts a job starts with into `.obi/artifacts` (docs/contracts/artifacts.md,
+//! ARTIFACTS-19, 20), from obid's artifacts store only, saving only the job's `artifacts`.
 
 use super::*;
 
@@ -74,7 +76,128 @@ impl Jobs {
         });
         Ok(Some(told_with_files(text, &copied, &gone)))
     }
+
+    /// The artifacts job `id` starts with, laid into its worktree's `.obi/artifacts/<entry>`
+    /// before its agent runs (ARTIFACTS-19, 20), so what the agent changes there publishes as
+    /// their next version: the version each names, or a follow-up's the latest. An entry already
+    /// there (its own work of an earlier run) is left as it is, and kept on the job (ARTIFACTS-7).
+    /// One gone, or neither of the job's conversation nor made by the job itself, is dropped from
+    /// the job. What a laid version's text carries marks the job ([`Jobs::carried_marks`],
+    /// ARTIFACTS-24). One that can't be laid out is said in the log and left out.
+    pub(super) fn seed_artifacts(&self, id: &str, worktree: &Path) {
+        let (Some(store), Some(job)) = (self.artifacts.get(), self.get(id)) else {
+            return;
+        };
+        let at = worktree.join(crate::obi_dir::OBI).join("artifacts");
+        let mut seeded = Vec::new();
+        let mut marks = Vec::new();
+        for mut one in job.artifacts.clone() {
+            if std::fs::symlink_metadata(at.join(&one.entry)).is_ok() {
+                seeded.push(one);
+                continue;
+            }
+            let Some(artifact) = store.get(&one.id).filter(|a| {
+                (a.conversation.is_some() && a.conversation == job.conversation)
+                    || a.job.as_deref() == Some(id)
+            }) else {
+                continue;
+            };
+            let version = match (&job.follow_up_of, artifact.versions.last()) {
+                (Some(_), Some(latest)) => latest.version,
+                _ => one.version,
+            };
+            let laid = crate::obi_dir::folder(worktree, "artifacts")
+                .map_err(|e| e.to_string())
+                .and_then(|into| store.lay_out(&one.id, version, &into, &one.entry));
+            match laid {
+                Ok(()) => {
+                    let turns =
+                        turns_read_untrusted(&self.config.home, artifact.conversation.as_deref());
+                    marks.extend(self.carried_marks(&artifact, version, turns));
+                    one.version = version;
+                    seeded.push(one);
+                }
+                Err(why) => tracing::warn!("job {id}: artifact {} isn't laid out: {why}", one.id),
+            }
+        }
+        for (why, reach) in marks {
+            self.mark(id, why, reach);
+        }
+        if seeded != job.artifacts {
+            self.update(id, |job| job.artifacts = seeded);
+        }
+    }
+
+    /// The marks `artifact`'s text up to version `upto` carries to a job or a turn it is laid
+    /// into (ARTIFACTS-24), as [`Jobs::mark`] takes them, `reached` with `true`: an import's
+    /// (`origin`); for each version, the job that made it when it is someone else's or reached
+    /// past the registries, or when obid no longer has it; and Oby's own turn when its
+    /// conversation read something untrusted (`turns_untrusted`). The owner's own edit carries
+    /// nothing. The text of every earlier version counts, as an edit keeps what it doesn't change.
+    pub(crate) fn carried_marks(
+        &self,
+        artifact: &crate::artifacts::Artifact,
+        upto: u32,
+        turns_untrusted: bool,
+    ) -> Vec<(String, bool)> {
+        let mut foreign = artifact.origin.is_some().then(|| IMPORTED.to_owned());
+        let mut reached = None;
+        for version in artifact.versions.iter().filter(|v| v.version <= upto) {
+            match (&version.job, version.by.as_deref()) {
+                (Some(maker), _) => match self.get(maker) {
+                    None => {
+                        foreign.get_or_insert_with(|| GONE.to_owned());
+                    }
+                    Some(maker) => {
+                        if let Some(why) = maker.untrusted_why() {
+                            foreign.get_or_insert_with(|| format!("{CARRIED}{why}"));
+                        }
+                        if let Some(why) = &maker.reached {
+                            reached.get_or_insert_with(|| format!("{CARRIED}{why}"));
+                        }
+                    }
+                },
+                (None, Some("owner")) => {}
+                (None, _) if turns_untrusted => {
+                    foreign.get_or_insert_with(|| TURN.to_owned());
+                }
+                (None, _) => {}
+            }
+        }
+        (foreign.map(|why| (why, false)).into_iter())
+            .chain(reached.map(|why| (why, true)))
+            .collect()
+    }
 }
+
+/// Whether a turn of conversation `id` read something untrusted, as obid keeps it in
+/// `home/conversations/<id>.json` (`readUntrusted`, written by crate::conversation only): one it
+/// doesn't keep, or none, can't be told, so it did.
+fn turns_read_untrusted(home: &Path, id: Option<&str>) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Kept {
+        #[serde(default, rename = "readUntrusted")]
+        read_untrusted: bool,
+    }
+    let Some(id) =
+        id.filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    else {
+        return true;
+    };
+    std::fs::read(home.join("conversations").join(format!("{id}.json")))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok())
+        .is_none_or(|kept| kept.read_untrusted)
+}
+
+/// What marks a job an imported artifact's files reached (crate::secretspec).
+const IMPORTED: &str = "an imported artifact's files, which may hold anyone's words";
+/// What starts the mark a job's artifact files carry from the job that made them.
+const CARRIED: &str = "an artifact's files another job made: ";
+/// The mark of an artifact's files a job obid no longer has made: it can't tell whose.
+const GONE: &str = "an artifact's files a job obid no longer has made";
+/// The mark of an artifact's files Oby's turn made after its conversation read something untrusted.
+const TURN: &str = "an artifact's files Oby made in a conversation that read something untrusted";
 
 /// Why files can't go to a job now (ATTACH-23).
 pub const BUSY: &str = "It can't take files now: it's getting ready, waiting for your answer or wrapping up. Send them again once it's at work.";
@@ -202,5 +325,173 @@ mod tests {
         let refused = copy_inputs(&home, &worktree, &[outside.to_string_lossy().into_owned()]);
         assert!(refused.unwrap_err().contains("isn't one of the files"));
         std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    /// Jobs on `o/r` with an artifacts store, their home in `root` (made afresh).
+    fn seeding(root: &Path) -> (Arc<Jobs>, Arc<crate::artifacts::Artifacts>) {
+        let _ = std::fs::remove_dir_all(root);
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let store =
+            crate::artifacts::Artifacts::open(&root.join("home"), crate::events::Events::new());
+        jobs.use_artifacts(store.clone());
+        (jobs, store)
+    }
+
+    /// Job `id` of conversation `conversation`, kept, after `change`; in a clone apart, so a mark
+    /// writes no clone.
+    fn put(jobs: &Jobs, id: &str, conversation: Option<&str>, change: impl FnOnce(&mut Job)) {
+        let mut job = Job::new(
+            id.into(),
+            "o/r".into(),
+            "research".into(),
+            "Look".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.conversation = conversation.map(str::to_owned);
+        job.apart = true;
+        change(&mut job);
+        jobs.lock().jobs.insert(id.into(), job);
+    }
+
+    /// `text` published as a page by `job` of `conversation`, a new version of `of` if given.
+    async fn page(
+        store: &crate::artifacts::Artifacts,
+        root: &Path,
+        text: &str,
+        (conversation, job, of): (Option<&str>, Option<&str>, Option<&str>),
+    ) -> (String, u32) {
+        let from = root.join(format!("from-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(from.join("page")).unwrap();
+        std::fs::write(from.join("page/index.html"), text).unwrap();
+        store
+            .publish(crate::artifacts::Publish {
+                root: &from,
+                path: "page",
+                title: "Page",
+                kind: None,
+                conversation,
+                job,
+                artifact: of,
+                kept: None,
+            })
+            .await
+            .unwrap()
+    }
+
+    fn seeded(jobs: &Jobs, id: &str, artifact: &str, version: u32) -> Job {
+        let entry = artifact[..8].to_owned();
+        jobs.update(id, |job| {
+            job.artifacts = vec![JobArtifact {
+                id: artifact.into(),
+                version,
+                entry,
+            }]
+        });
+        let worktree = jobs.worktree_path(id);
+        std::fs::create_dir_all(&worktree).unwrap();
+        jobs.seed_artifacts(id, &worktree);
+        let job = jobs.get(id).unwrap();
+        assert_eq!(job.artifacts.len(), 1, "{job:?}");
+        job
+    }
+
+    /// ARTIFACTS-7: a job with no conversation, run again (Try again, a resume), keeps the
+    /// artifact it made: its own work in `.obi/artifacts/` is left as it is, and in a worktree
+    /// made again its version is laid out, so its next end versions it rather than making another.
+    #[tokio::test]
+    async fn artifacts_7_a_job_run_again_keeps_the_artifact_it_made() {
+        let root = std::env::temp_dir().join(format!("obid-seed-7-{}", std::process::id()));
+        let (jobs, store) = seeding(&root);
+        put(&jobs, "j", None, |_| {});
+        let (id, _) = page(&store, &root, "<h1>One</h1>", (None, Some("j"), None)).await;
+        let own = JobArtifact {
+            id: id.clone(),
+            version: 1,
+            entry: "page".into(),
+        };
+        jobs.update("j", |job| job.artifacts = vec![own.clone()]);
+        let worktree = jobs.worktree_path("j");
+        let work = worktree.join(".obi/artifacts/page/index.html");
+        std::fs::create_dir_all(work.parent().unwrap()).unwrap();
+        std::fs::write(&work, "<h1>Two</h1>").unwrap();
+        jobs.seed_artifacts("j", &worktree);
+        assert_eq!(jobs.get("j").unwrap().artifacts, vec![own.clone()]);
+        assert_eq!(std::fs::read_to_string(&work).unwrap(), "<h1>Two</h1>");
+        // Its worktree made again: its version is laid out.
+        std::fs::remove_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        jobs.seed_artifacts("j", &worktree);
+        assert_eq!(jobs.get("j").unwrap().artifacts, vec![own]);
+        assert_eq!(std::fs::read_to_string(&work).unwrap(), "<h1>One</h1>");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ARTIFACTS-24: a job laid a version whose text, up to that version, a marked job made, a
+    /// job obid no longer has, or a turn of a conversation that read something untrusted, carries
+    /// the mark: `reached` as `reached`, the rest as someone else's. A version only clean jobs
+    /// and clean turns made marks nothing.
+    #[tokio::test]
+    async fn artifacts_24_a_version_someone_elses_text_made_marks_the_job_it_reaches() {
+        let root = std::env::temp_dir().join(format!("obid-seed-24-{}", std::process::id()));
+        let (jobs, store) = seeding(&root);
+        let kept = root.join("home/conversations");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::write(kept.join("c1.json"), "{}").unwrap();
+        std::fs::write(kept.join("c2.json"), r#"{"readUntrusted": true}"#).unwrap();
+        put(&jobs, "clean", Some("c1"), |_| {});
+        put(&jobs, "marked", Some("c1"), |job| job.untrusted = true);
+        put(&jobs, "reached", Some("c1"), |job| {
+            job.reached = Some("a web page".into())
+        });
+        let c1 = |job| (Some("c1"), job, None);
+        let foreign = |job: &Job| job.foreign.is_some();
+
+        // Clean jobs and a clean turn: nothing.
+        let (ok, _) = page(&store, &root, "1", c1(Some("clean"))).await;
+        page(&store, &root, "2", (Some("c1"), None, Some(&ok))).await;
+        put(&jobs, "a", Some("c1"), |_| {});
+        let a = seeded(&jobs, "a", &ok, 2);
+        assert!(!foreign(&a) && a.reached.is_none(), "{a:?}");
+
+        // A marked job's version 1, edited by a clean job: version 2 still carries it.
+        let (theirs, _) = page(&store, &root, "1", c1(Some("marked"))).await;
+        page(
+            &store,
+            &root,
+            "2",
+            (Some("c1"), Some("clean"), Some(&theirs)),
+        )
+        .await;
+        put(&jobs, "b", Some("c1"), |_| {});
+        assert!(foreign(&seeded(&jobs, "b", &theirs, 2)));
+
+        // A reached job's: reached, and nothing more.
+        let (web, _) = page(&store, &root, "1", c1(Some("reached"))).await;
+        put(&jobs, "c", Some("c1"), |_| {});
+        let c = seeded(&jobs, "c", &web, 1);
+        assert!(c.reached.is_some() && !foreign(&c), "{c:?}");
+
+        // A job obid no longer has.
+        let (gone, _) = page(&store, &root, "1", c1(Some("gone"))).await;
+        put(&jobs, "d", Some("c1"), |_| {});
+        assert!(foreign(&seeded(&jobs, "d", &gone, 1)));
+
+        // A turn of a conversation that read something untrusted.
+        let (turn, _) = page(&store, &root, "1", (Some("c2"), None, None)).await;
+        put(&jobs, "e", Some("c2"), |_| {});
+        assert!(foreign(&seeded(&jobs, "e", &turn, 1)));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

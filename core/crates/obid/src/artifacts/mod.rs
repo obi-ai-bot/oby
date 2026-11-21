@@ -41,6 +41,7 @@ mod design;
 pub mod edit;
 pub mod export;
 mod limits;
+pub mod seed;
 
 pub use export::Origin;
 

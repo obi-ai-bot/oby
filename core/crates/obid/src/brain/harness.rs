@@ -2133,9 +2133,28 @@ async fn attempts(
     });
     let heard = session.control.asked_mentioned();
     let goes_to = super::briefing::default_account_line(shared, &control.conversation);
-    // The artifact open where the owner said the words (ARTIFACTS-12): what they're about.
-    let open = (session.control.artifact())
-        .map(|open| super::open_artifact::told_line(&open, &session.nonce));
+    // The artifact open where the owner said the words (ARTIFACTS-12): what they're about, its
+    // files in the room (ARTIFACTS-21). Text someone else's made reaches the turn with them
+    // (ARTIFACTS-24): it read something untrusted.
+    let open = session.control.artifact().map(|open| {
+        if let Some(artifact) = shared.artifacts.get(&open.id) {
+            let turns = (artifact.conversation.as_deref())
+                .is_none_or(|c| shared.conversations.read_untrusted(c));
+            if !(shared.jobs.carried_marks(&artifact, open.version, turns)).is_empty() {
+                session.taint();
+            }
+        }
+        let laid = super::open_artifact::into_room(shared, &place.room, &open)
+            .inspect_err(|why| {
+                tracing::warn!(
+                    "conversation {}: artifact {} isn't in its room: {why}",
+                    control.conversation,
+                    open.id
+                )
+            })
+            .ok();
+        super::open_artifact::told_line(&open, &session.nonce, laid.as_deref())
+    });
     let working = super::folder_writes::note(&place.writable);
     let with = |prompt: String| {
         let prompt = match &open {
