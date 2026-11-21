@@ -240,6 +240,41 @@ once a webview is live; obid's use Blok workflows (`tools/obid-spec`, on Azure).
   the words his screen has for what's true, or none: no sentence of ours stands in for his. What his
   screens still need is listed under Open.
 
+### B-hold (window). Take control as a hold kept in main alone (designed, not built)
+
+The orchestrator's design point (2026-11-21): since W3, Take control on obid only focuses the page,
+so the real app no longer shows board 6 (the held tab, its strip and Give back). A hold kept in main
+alone brings board 6 back with nothing reaching obid: main is obid's only path to the page. Its own
+pull request, after W3 and W4.
+
+- **State.** Main keeps the held tabs (`job\0tab`) in memory. Take control holds; Give back, the tab
+  closing or the window closing releases. obid's `heldBy` stays null.
+- **While held, the relay passes reads only**, by an allowlist, never a denylist: `Accessibility.*`
+  reads; `DOM.getDocument`, `querySelector(All)`, `describeNode`, `getBoxModel`, `getContentQuads`,
+  `getOuterHTML`, `getAttributes`; `Page.captureScreenshot`, `getFrameTree`, `getLayoutMetrics`;
+  `*.enable` and `*.disable`. Everything else is refused with a CDP error naming the hold: `Input.*`,
+  `Page.navigate`, `reload`, `handleJavaScriptDialog`, `Runtime.*` (a script can act), DOM writes,
+  `Network.clearBrowserCookies`. The agent gets the refusal through obid's tool error, as text.
+- **The page.** The strip shows board 6's own words with Give back, the page is ringed and the tab's
+  dot is `--unread`, as on the demo data. The agent's pointer is hidden while held.
+- **Signing.** None needed: a hold only restricts the agent, and a forged Give back is no hold. It
+  can take the owner's click like Fill in (`pressed` and `takeInput`) if wanted.
+- **What it can't do.** An act already handed to the debugger when Take control is pressed still
+  finishes: main can't recall a sent CDP command (obid's old core had `control_changed`; a webview has
+  no such thing).
+- **Files.** `main/browserRelay.ts` (held set, read allowlist, `hold`/`holds`, `forget` clears it);
+  `main/browser.ts` (`browser-hold` threadId, tabId, flag; `browser-holds` so a reloaded page reads
+  them back); `preload/index.ts`, `renderer/src/Oby.tsx` (`browser.hold`, `browser.holds`);
+  `browser/store.tsx` (live take and give back call it; held tabs read as `holder: 'you'`);
+  `browser/Webviews.tsx` (no pointer while held); `browser/Panel.tsx` (board 6 as is);
+  `docs/contracts/browser-app.md` (BROWSERAPP-9), `docs/contracts/ipc.md`, `tools/obid-spec/scope.json`.
+- **Proof.** `browserRelay.test.ts` (acts refused, reads pass, release; and a test that every method
+  obid's driver sends is classified as a read or an act), `browserWebviews.test.tsx` (board 6's strip,
+  Give back), `ipc.test.ts`; live, `workflows/app/browser-106-live-hold.json` (Take control in the real
+  app, the agent's act refused, its snapshot still working, after Give back its act running).
+- **Cost.** One pull request, about 300 lines with tests, no obid change, one live run of the real
+  app. The risk is classifying CDP methods: the read allowlist is the safe direction.
+
 ## Open
 
 - **Sangam's screen for you on a page nobody holds.** On obid, Take control (or a click) puts you on
