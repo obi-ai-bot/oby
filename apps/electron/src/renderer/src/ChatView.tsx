@@ -162,12 +162,22 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // (the last, as its words come in, then the card or task it ends with)
   }, [thread.length, typing, step, limits.length, (thread.at(-1) as Message | undefined)?.text?.length, (thread.at(-1) as Message | undefined)?.streaming, (thread.at(-1) as Message | undefined)?.jobs?.length]);
 
-  // a live card growing at the end of the thread stays in view, while you're there
+  // a live card growing at the end of the thread stays in view, while you're there; and so does the
+  // end, or the card just opened at, when the thread's own room shrinks: the drawer over the box takes
+  // its own row under it and grows (a question with described options, a third of the window), so
+  // what was at its foot went out under the drawer (#2786)
+  const aimed = useRef<string | null>(null);
   useEffect(() => {
     const l = list.current, column = l?.firstElementChild;
     if (!l || !column) return;
-    const ro = new ResizeObserver(() => { if (atEnd.current) l.scrollTop = l.scrollHeight; });
+    const ro = new ResizeObserver(() => {
+      const card = aimed.current && l.querySelector<HTMLElement>(`[data-task="${CSS.escape(aimed.current)}"]`);
+      if (card) card.scrollIntoView({ block: 'center' });
+      else if (atEnd.current) l.scrollTop = l.scrollHeight;
+    });
     ro.observe(column);
+    // its border box: the find bar's room at its top is padding, and moves nothing (SHORTCUTS-3)
+    ro.observe(l, { box: 'border-box' });
     return () => ro.disconnect();
   }, [list]);
 
@@ -180,6 +190,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
     if (!el) return;
     flashed.current = flash.n;
     atEnd.current = false;
+    aimed.current = flash.task;
     el.scrollIntoView({ block: 'center' });
     setLit(flash.task);
     setOpenings((n) => n + 1);
@@ -187,7 +198,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   });
   useEffect(() => {
     if (!lit) return;
-    const t = setTimeout(() => setLit(null), 1600);
+    // (lit, it's kept in view as the thread's room changes; then it's the owner's to scroll)
+    const t = setTimeout(() => { setLit(null); aimed.current = null; }, 1600);
     return () => clearTimeout(t);
   }, [lit, flash?.n]);
 
