@@ -297,6 +297,26 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'DELETE', path, {})).toBeNull();
   });
 
+  it('COMPUTERSAPP-6: a computer added with a code signs exactly {link, code} by the code the owner typed', () => {
+    const link = 'oby-computer:eyJuYW1lIjoiZGV2Ym94In0', body = { link, code: '482913' };
+    expect(wordsOf('POST', '/v1/computers', body)).toEqual(['482913']);
+    // Enter in its box holds the box as typed, the other computer's way ("482 913"); a click on Add
+    // computer holds its form's boxes too: either stands for it
+    expect(owners('POST', '/v1/computers', body, ['482 913'], [])).toEqual([0]);
+    expect(owners('POST', '/v1/computers', body, ['Add computer', link, '482913'], [])).toEqual([2]);
+    // the button alone, or another code, is no word of the owner's for it
+    expect(owners('POST', '/v1/computers', body, ['Add computer'], [])).toBeNull();
+    expect(owners('POST', '/v1/computers', body, ['482 914'], [])).toBeNull();
+    // only that shape: six digits, the link, nothing else; never another verb or path
+    for (const b of [{ link }, { code: '482913' }, { link, code: '48291' }, { link, code: '482 913' }, { link, code: '482913', ssh: 'devbox' }, { link: 1, code: '482913' }]) {
+      expect(wordsOf('POST', '/v1/computers', b)).toBeNull();
+    }
+    expect(wordsOf('PUT', '/v1/computers', body)).toBeNull();
+    expect(wordsOf('POST', '/v1/computers/link', { link })).toBeNull();
+    // a code stands for nothing else: a message with those digits needs its own words
+    expect(owners('POST', '/v1/jobs/j1/messages', { text: '482913' }, ['482 913'], [])).toBeNull();
+  });
+
   it('WORDS-7: main signs once per real keystroke or click it saw, and only right after it', () => {
     expect(takeInput(1_000)).toBe(false);
     input(1_000);

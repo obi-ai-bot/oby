@@ -49,7 +49,7 @@ vi.mock('../../../main/obid', async (original) => ({
   obid: async () => ({ status: 200, text: '[]' }),
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
-  chooseProfile: () => false,
+  chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
   openedProfile: () => null,
 }));
 

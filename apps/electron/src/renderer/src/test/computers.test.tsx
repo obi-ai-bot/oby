@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComputerButton } from '../computers/ComputerButton';
 import { ComputerLine, ComputerStage, QUIET_MS } from '../computers/ComputerHome';
 import { DEMO_CODE, DEMO_LINK, DEVBOX, STUDIO, codeRefused, demoApi } from '../computers/demo';
-import { Refusal, obidComputers, type ComputersApi } from '../computers/obid';
+import { NOT_YET, Refusal, computersOn, obidComputers, type ComputerEvents, type ComputersApi } from '../computers/obid';
 import { rename as renameKept, resetComputers, startComputers, type Ui } from '../computers/store';
 import { fingerprintText, type Computer, type ComputerList } from '../computers/view';
 
@@ -390,20 +390,123 @@ describe('COMPUTERSAPP-11: Remove…', () => {
   });
 });
 
-describe('COMPUTERSAPP-12: on obid, offered only once obid serves the picker', () => {
-  it('computersapp_12: obid serves none of the picker’s routes yet: no button, no menu, and no call', async () => {
-    const call = vi.fn();
-    (window as unknown as { app: unknown }).app = { obid: { call } };
-    await act(async () => { await startComputers(await obidComputers()); });
+// obid as the Mac's answers it (docs/api/remote.md, "This Mac's computers"): each call's method, path
+// and body, its answer by method and path, and the `computers` and `computer.route` events to send
+function fakeObid(list: unknown = { current: 'this', computers: [] }) {
+  const calls: [string, string, unknown?][] = [];
+  const answers = new Map<string, { status: number; body: unknown }>([['GET /v1/computers', { status: 200, body: list }]]);
+  const call = async (method: string, path: string, body?: unknown) => {
+    calls.push(body === undefined ? [method, path] : [method, path, body]);
+    const a = answers.get(`${method} ${path}`) ?? { status: 200, body: {} };
+    return { status: a.status, text: JSON.stringify(a.body) };
+  };
+  let heard: Parameters<ComputerEvents>[0] = () => {};
+  const events: ComputerEvents = (f) => { heard = f; return () => { heard = () => {}; }; };
+  return { calls, answers, call, events, send: (e: Parameters<Parameters<ComputerEvents>[0]>[0]) => act(async () => heard(e)) };
+}
+const STUDIO_WIRE = { id: 'studio', name: 'Studio', os: 'mac', state: 'connected', route: { id: 'r1', kind: 'lan', address: '192.168.1.30' } };
+const DEVBOX_WIRE = { id: 'devbox', name: 'devbox', os: 'linux', state: 'idle' };
+
+describe('COMPUTERSAPP-12: on obid, offered once obid answers its list of computers', () => {
+  it('computersapp_12: an obid that serves no list of computers (404): no button, no menu, and no call but that one', async () => {
+    const o = fakeObid();
+    o.answers.set('GET /v1/computers', { status: 404, body: { error: 'Not found.' } });
+    await act(async () => { await startComputers(await computersOn(o.call, o.events)); });
     await act(async () => root.render(<><ComputerButton /><ComputerStage /><ComputerLine onHome /></>));
     expect($('.rail-computer')).toBeNull();
     expect($('.attention')).toBeNull();
-    expect(call).not.toHaveBeenCalled();
-    delete (window as unknown as { app?: unknown }).app;
+    expect(o.calls).toEqual([['GET', '/v1/computers']]);
+  });
+  it('computersapp_12: an obid that answers it: the button, with obid’s computers as it names them', async () => {
+    const o = fakeObid({ current: 'studio', computers: [STUDIO_WIRE, DEVBOX_WIRE] });
+    await show((await computersOn(o.call, o.events))!);
+    expect(rail().getAttribute('aria-label')).toBe('Computer: Studio. Change');
+    await click(rail());
+    expect(rows()).toEqual(['This Mac', 'Studio', 'devbox']);
+    expect($$('.computer-menu .talk-choice-about').map((n) => n.textContent)).toContain('Mac · Local network');
+  });
+  it('computersapp_12: without the Mac app’s bridge there is no obid to ask', async () => {
+    expect(await obidComputers()).toBeNull();
   });
   it('computersapp_12: nothing of the demo data shows outside ?everything', async () => {
     await act(async () => root.render(<ComputerButton />));
     expect($('.rail-computer')).toBeNull();
     expect(document.documentElement.dataset.computer).toBeUndefined();
+  });
+});
+
+describe('the picker on obid’s routes (docs/api/remote.md)', () => {
+  it('COMPUTERSAPP-3: a row picked puts obid’s current on it, and obid’s answer is the list; a computer gone from it reads the list again', async () => {
+    const o = fakeObid({ current: 'this', computers: [STUDIO_WIRE, DEVBOX_WIRE] });
+    const api = (await computersOn(o.call, o.events))!;
+    const seen: string[] = [];
+    api.follow((l) => seen.push(l.current));
+    o.answers.set('PUT /v1/computers/current', { status: 200, body: { current: 'studio', computers: [STUDIO_WIRE, DEVBOX_WIRE] } });
+    await api.use('studio');
+    expect(o.calls.at(-1)).toEqual(['PUT', '/v1/computers/current', { id: 'studio' }]);
+    expect(seen).toEqual(['studio']);
+    o.answers.set('PUT /v1/computers/current', { status: 404, body: { error: 'Oby doesn’t know that computer.', reason: 'no_such_computer' } });
+    o.answers.set('GET /v1/computers', { status: 200, body: { current: 'studio', computers: [STUDIO_WIRE] } });
+    await expect(api.use('devbox')).rejects.toEqual(new Refusal('Oby doesn’t know that computer.'));
+    expect(o.calls.at(-1)).toEqual(['GET', '/v1/computers']);
+    expect((await api.list()).computers.map((c) => c.id)).toEqual(['studio']);
+  });
+  it('COMPUTERSAPP-6: obid reads the link and adds with the code; its refusals in its own words', async () => {
+    const o = fakeObid();
+    const api = (await computersOn(o.call, o.events))!;
+    o.answers.set('POST /v1/computers/link', { status: 200, body: { name: 'devbox', fingerprint: '7F3A91C25D0E44B80C6EA1F793D26B10', routes: [{ kind: 'lan', address: '192.168.1.40:7779' }] } });
+    expect(await api.readLink('oby-computer:x')).toEqual({ name: 'devbox', fingerprint: '7F3A91C25D0E44B80C6EA1F793D26B10' });
+    expect(o.calls.at(-1)).toEqual(['POST', '/v1/computers/link', { link: 'oby-computer:x' }]);
+    o.answers.set('POST /v1/computers', { status: 422, body: { error: 'That code isn’t devbox’s.', reason: 'wrong_code' } });
+    await expect(api.addWithCode('oby-computer:x', '111111')).rejects.toEqual(new Refusal('That code isn’t devbox’s.'));
+    o.answers.set('POST /v1/computers', { status: 201, body: DEVBOX_WIRE });
+    expect(await api.addWithCode('oby-computer:x', '482913')).toBe('devbox');
+    expect(o.calls.at(-1)).toEqual(['POST', '/v1/computers', { link: 'oby-computer:x', code: '482913' }]);
+    o.answers.set('POST /v1/computers/link', { status: 422, body: { error: 'That isn’t a link from Oby.', reason: 'not_a_link' } });
+    await expect(api.readLink('hello')).rejects.toEqual(new Refusal('That isn’t a link from Oby.'));
+  });
+  it('COMPUTERSAPP-9: obid’s computer.route says a computer moved, or that none of its routes answers with each tried', async () => {
+    const o = fakeObid({ current: 'studio', computers: [STUDIO_WIRE] });
+    const api = (await computersOn(o.call, o.events))!;
+    let last: ComputerList | null = null;
+    api.follow((l) => { last = l; });
+    await o.send({ kind: 'computerRoute', route: { id: 'studio', change: 'lost', tried: [{ route: 'lan', what: '192.168.1.30', why: 'no answer in 5 s' }, { route: 'ssh', why: 'ssh: connect refused' }] } });
+    expect(last!.computers[0]).toMatchObject({ state: 'lost', tried: [{ route: 'lan', what: '192.168.1.30', why: 'no answer in 5 s' }, { route: 'ssh', why: 'ssh: connect refused' }] });
+    expect(last!.computers[0].route).toBeUndefined();
+    await o.send({ kind: 'computerRoute', route: { id: 'studio', change: 'moved', from: 'lan', to: 'ssh' } });
+    expect(last!.computers[0]).toMatchObject({ state: 'connected', route: { kind: 'ssh' }, from: 'lan' });
+    // the list obid sends again wins
+    await o.send({ kind: 'computers', list: { current: 'this', computers: [STUDIO_WIRE] } });
+    expect(last!).toEqual({ current: 'this', computers: [{ id: 'studio', name: 'Studio', os: 'mac', state: 'connected', route: { kind: 'lan', address: '192.168.1.30' } }] });
+    o.answers.set('POST /v1/computers/studio/retry', { status: 200, body: STUDIO_WIRE });
+    await api.retry('studio');
+    expect(o.calls.at(-1)).toEqual(['POST', '/v1/computers/studio/retry']);
+  });
+  it('COMPUTERSAPP-10 and 11: Rename… is obid’s PATCH on this Mac; Remove… its DELETE, the window back on This Mac', async () => {
+    const o = fakeObid({ current: 'studio', computers: [STUDIO_WIRE, DEVBOX_WIRE] });
+    const api = (await computersOn(o.call, o.events))!;
+    o.answers.set('PATCH /v1/computers/devbox', { status: 200, body: { ...DEVBOX_WIRE, name: 'Lab box' } });
+    await api.rename('devbox', 'Lab box');
+    expect(o.calls.at(-1)).toEqual(['PATCH', '/v1/computers/devbox', { name: 'Lab box' }]);
+    expect((await api.list()).computers.find((c) => c.id === 'devbox')!.name).toBe('Lab box');
+    o.answers.set('DELETE /v1/computers/studio', { status: 200, body: { removed: 'studio', there: true } });
+    await api.remove('studio');
+    expect(o.calls.at(-1)).toEqual(['DELETE', '/v1/computers/studio']);
+    expect(await api.list()).toMatchObject({ current: 'this', computers: [{ id: 'devbox' }] });
+  });
+  it('COMPUTERSAPP-4 and 7: what obid doesn’t do yet says so, and calls nothing: over SSH, this computer’s code, its reach', async () => {
+    const o = fakeObid();
+    const api = (await computersOn(o.call, o.events))!;
+    const before = o.calls.length;
+    await expect(api.addOverSsh('studio', () => {})).rejects.toEqual(new Refusal(NOT_YET.ssh));
+    await expect(api.invite()).rejects.toEqual(new Refusal(NOT_YET.code));
+    await expect(api.setReach('lan', false)).rejects.toEqual(new Refusal(NOT_YET.code));
+    expect(o.calls.length).toBe(before);
+  });
+  it('a state obid adds later reads as idle, and a route kind as the window names it (loopback: the local network)', async () => {
+    const o = fakeObid({ current: 'this', computers: [{ id: 'x', name: 'X', state: 'asleep' }, { ...STUDIO_WIRE, route: { kind: 'loopback', address: '127.0.0.1:7779' } }] });
+    const list = await (await computersOn(o.call, o.events))!.list();
+    expect(list.computers[0]).toEqual({ id: 'x', name: 'X', os: 'mac', state: 'idle' });
+    expect(list.computers[1].route).toEqual({ kind: 'lan', address: '127.0.0.1:7779' });
   });
 });

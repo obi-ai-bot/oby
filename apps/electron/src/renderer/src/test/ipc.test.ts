@@ -85,7 +85,7 @@ vi.mock('../../../main/obid', async (original) => ({
   obid: async (...a: unknown[]) => { the.calls.push(a); return { status: 200, text: '[]' }; },
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
-  chooseProfile: () => false,
+  chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
   openedProfile: () => null,
 }));
 vi.mock('../../../shared/sphere', async (original) => ({

@@ -1,5 +1,5 @@
 import type { BrowserWindow } from 'electron';
-import { chooseProfile, obid, openedProfile, reason, send, streamEnded, takesKeys, type Trusted } from './obid';
+import { chooseProfile, heardComputers, obid, onComputer, openedComputer, openedProfile, reason, send, streamEnded, takesKeys, type Trusted } from './obid';
 import { settings, writeSettings } from './settings';
 import { ipc } from './ipc';
 import { loadWhat, profileId, type LoadWhat } from '../shared/decode';
@@ -127,6 +127,8 @@ const ruled = (e: Event): e is ObidEvent => RULE.has(e.kind);
 // brings its job
 function take(e: Event, look = true) {
   if (ruled(e)) state = apply(state, e);
+  // which computer is in use, as obid says it (main/obid.ts): a change follows the new one
+  if (e.kind === 'computers') heardComputers(e.list);
   post({ kind: 'event', event: e });
   if (look && e.kind === 'inbox') lookUpJobOf(e.item);
 }
@@ -141,7 +143,9 @@ async function follow() {
   const mine = ++generation;
   const control = new AbortController();
   stream = control;
-  const r = await send('GET', '/v1/events?alerts=1', undefined, control.signal);
+  // on another computer, its events (main/obid.ts adds Oby-Computer): this Mac's own alerts and its
+  // computers come on this Mac's stream beside it (followMac)
+  const r = await send('GET', openedComputer() ? '/v1/events' : '/v1/events?alerts=1', undefined, control.signal);
   if (!(r instanceof Response)) return r.status ? refused(mine, r.status, r.text) : down(mine, r.text, r.why);
   if (!r.ok || !r.body) return refused(mine, r.status, await r.text().catch(() => ''));
   // whether obid takes keys, read again whenever its stream starts (notify.ts, device.ts)
@@ -176,7 +180,9 @@ async function follow() {
 // should the stream ever get it
 function refused(mine: number, status: number, text: string) {
   // the profile kept is none of obid's (gone, or another obid): obid's default profile, followed again
-  if (status === 400 && openedProfile()) { openProfile(null); return; }
+  if (status === 400 && openedProfile() && !openedComputer()) { openProfile(null); return; }
+  // the computer in use is none the Mac keeps now: its list says which is (obid.ts, heard)
+  if (status === 404 && openedComputer()) void obid('GET', '/v1/computers');
   if (status === 401) return down(mine, 'obid refused this Mac’s token (api-token).');
   let said: { error?: unknown; starting?: unknown } | null = null;
   try { said = JSON.parse(text); } catch { /* not obid's JSON */ }
@@ -216,6 +222,9 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     complete = conversations.complete;
     connection = { connection: 'live', problem: null };
     post({ kind: 'snapshot', ...now() });
+    // which computer obid keeps the window on, once a launch (obid keeps it across restarts): its
+    // answer moves the window there (obid.ts, heard); an obid with no computers answers 404, and nothing moves
+    if (!askedComputers) { askedComputers = true; void obid('GET', '/v1/computers'); }
     pending.splice(0).forEach((e) => take(e, false));
     onSynced();
     state.inbox.forEach(lookUpJobOf);
@@ -260,6 +269,57 @@ function openProfile(id: string | null) {
   void follow();
   return true;
 }
+// Another computer in use (docs/contracts/computers-app.md): what main holds was the last one's, so
+// it's dropped and the stream followed again, on the new one (its sync brings its snapshot). While
+// it's another computer, this Mac's own stream runs beside it: obid still counts the Mac app as
+// following (ALERTS-3), and the window's computers and their routes come on it alone
+function openComputer(id: string | null) {
+  state = EMPTY;
+  limits = [];
+  loaded.clear();
+  complete = false;
+  generation++;
+  stream?.abort();
+  stream = null;
+  void follow();
+  if (id) { if (!mac) void followMac(); } else stopMac();
+}
+
+let askedComputers = false;
+let mac: AbortController | null = null;
+let macRetry = 0;
+async function followMac() {
+  const control = new AbortController();
+  mac = control;
+  const again = () => {
+    if (mac !== control) return;
+    mac = null;
+    if (openedComputer()) setTimeout(() => { if (!mac && openedComputer()) void followMac(); }, Math.min(10_000, 1000 * 2 ** macRetry++));
+  };
+  const r = await send('GET', '/v1/events?alerts=1', undefined, control.signal, undefined, true);
+  if (!(r instanceof Response) || !r.ok || !r.body) return again();
+  macRetry = 0;
+  const heard = sseReader((name, data) => {
+    if (mac !== control) return;
+    const e = parseEvent(name, data);
+    if (e && (e.kind === 'computers' || e.kind === 'computerRoute')) take(e, false);
+  });
+  try {
+    const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      heard(value);
+    }
+  } catch { /* ended: again, below */ }
+  again();
+}
+function stopMac() {
+  const m = mac;
+  mac = null;
+  m?.abort();
+}
+
 // the profile kept from the last launch, named from the first call on
 const keptProfile = () => profileId(settings().profile)?.value ?? null;
 
@@ -271,6 +331,7 @@ export function living(trusted: Trusted, window: () => BrowserWindow | null) {
   channels.handle('obid-load', [loadWhat], (_e, what) => load(what), null);
   channels.handle('obid-profile', [profileId], (_e, id) => openProfile(id), null);
   chooseProfile(keptProfile());
+  onComputer(openComputer);
   setInterval(() => { if (connection.connection === 'live') void refreshLimits(); }, 15_000);
   void follow();
 }

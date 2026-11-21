@@ -555,7 +555,30 @@ export type Event =
   | { kind: 'transcriptLine'; job: string; n: number; append: string }
   // ...the words it's writing past that line, and a running command's last lines (LIVETASK-32, 34)
   | { kind: 'transcriptTail'; job: string; n: number; tail: string }
-  | { kind: 'transcriptOutput'; job: string; n: number; output: { text: string; lines: number } };
+  | { kind: 'transcriptOutput'; job: string; n: number; output: { text: string; lines: number } }
+  // obid only, on the Mac's own stream (docs/api/remote.md, "This Mac's computers"): the window's
+  // computers whenever they change, and a computer's route moved or lost
+  | { kind: 'computers'; list: ComputersWire }
+  | { kind: 'computerRoute'; route: ComputerRouteWire };
+
+// obid's list of the window's computers (GET /v1/computers, the `computers` event), as obid sends it:
+// `os`, `route` (while connected) and `tried` (while lost) left out when there are none. Its states
+// only grow: one this build doesn't know is read as idle (computers/obid.ts)
+export type ComputerWire = {
+  id: string; name: string; os?: string; state: string;
+  route?: { id?: string; kind: string; address?: string };
+  tried?: { route: string; what?: string; why: string }[];
+};
+export type ComputersWire = { current: string; computers: ComputerWire[] };
+// `computer.route`: moved from one route to another, or none answers, with each tried
+export type ComputerRouteWire =
+  | { id: string; change: 'moved'; from: string; to: string }
+  | { id: string; change: 'lost'; tried: { route: string; what?: string; why: string }[] };
+export const isComputersWire = (v: unknown): v is ComputersWire => {
+  const o = v as ComputersWire | null;
+  return !!o && typeof o.current === 'string' && Array.isArray(o.computers)
+    && o.computers.every((c) => !!c && typeof c.id === 'string' && typeof c.name === 'string' && typeof c.state === 'string');
+};
 
 // Server-Sent Events, as the stream's text comes in a piece at a time: each event's name and data
 // to `onEvent`; comments (`: ping`) and other fields are skipped (apps/web/src/api.ts).
@@ -619,6 +642,11 @@ export function parseEvent(name: string, data: string): Event | null {
         return { kind: 'transcriptOutput', job: v.job, n: v.n, output: { text: o.text, lines: typeof o.lines === 'number' ? o.lines : 0 } };
       }
       return typeof (v.entry as TranscriptEntry | undefined)?.n === 'number' ? { kind: 'transcript', job: v.job, entry: v.entry as TranscriptEntry } : null;
+    case 'computers': return isComputersWire(value) ? { kind: 'computers', list: value } : null;
+    case 'computer.route':
+      if (typeof v.id !== 'string') return null;
+      if (v.change === 'moved' && typeof v.from === 'string' && typeof v.to === 'string') return { kind: 'computerRoute', route: { id: v.id, change: 'moved', from: v.from, to: v.to } };
+      return v.change === 'lost' && Array.isArray(v.tried) ? { kind: 'computerRoute', route: { id: v.id, change: 'lost', tried: v.tried as { route: string; what?: string; why: string }[] } } : null;
     default: return null;
   }
 }

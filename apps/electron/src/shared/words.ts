@@ -61,6 +61,13 @@ const BROWSER_SAVE = /^\/v1\/browser\/downloads\/[^/]+\/saveCopy$/;
 // Confirm card's is (SPHERE-9), so it signs exactly `{fingerprint}` by this button's label.
 export const PIN_VERIFY = 'Verify';
 
+// A computer added with a code (docs/contracts/computers-app.md, COMPUTERSAPP-6): exactly `{link,
+// code}`, signed by the code the owner typed in its sheet, which Enter in its box and the sheet's
+// Add computer (a click holds its form's boxes) both hold. The sheet sends its six digits alone, so
+// a held text stands for it by its digits: "482 913", as the other computer shows it
+const COMPUTER_ADD = '/v1/computers';
+const digitsOf = (s: string) => s.replace(/\D/g, '');
+
 // whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
 const named = (words: string, owner: string) =>
   /^[a-z0-9-]{1,63}$/.test(owner) && new RegExp(`(?<![\\w@])@${owner}(?![\\w-])`, 'i').test(words);
@@ -130,6 +137,7 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   // a member's key the owner compared: the fingerprint alone (the path says whose), by Verify
   if (method === 'POST' && PIN.test(p)) return text(body.fingerprint) && shaped(body, { fingerprint: text }) ? [PIN_VERIFY] : null;
   // the yes alone: a no needs no signature (obid keeps it either way)
+  if (method === 'POST' && p === COMPUTER_ADD) return text(body.link) && text(body.code) && /^\d{6}$/.test(body.code) && shaped(body, { link: text, code: text }) ? [body.code] : null;
   if (method === 'POST' && /^\/v1\/accounts\/[^/]+\/background$/.test(p)) return body.given === true && shaped(body, { given: flag }) ? [BACKGROUND_YES] : null;
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;
   if (method === 'POST' && /^\/v1\/inbox\/[^/]+\/answer$/.test(p)) return text(body.answer) && shaped(body, { answer: text, clientRequestId: requestKey }) ? [body.answer] : null;
@@ -160,7 +168,8 @@ export function owners(method: string, path: string, body: unknown, held: string
     const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
     const take = w === TAKE_CONTROL && /\/take$/.test(path.split('?')[0]);
     const skip = w === SKIP && BROWSER_ANSWER.test(path.split('?')[0]);
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h)))));
+    const code = i === 0 && method === 'POST' && path.split('?')[0] === COMPUTER_ADD;
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h))) || (code && digitsOf(h) === n)));
     if (at < 0) return null;
     used.push(at);
   }
