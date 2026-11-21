@@ -24,6 +24,12 @@ export function loadBoards(file = join(HERE, 'boards/browser.json')) {
   return list;
 }
 
+/** The boards the run's arguments name, by number (`01` is board 1); all of them with none. An argument that names no board is refused. */
+export function pick(list, only) {
+  for (const arg of only) if (!list.some((b) => Number(arg) === b.n)) throw new Error(`no board ${arg}`);
+  return only.length ? list.filter((b) => only.some((arg) => Number(arg) === b.n)) : list;
+}
+
 const listens = (port) => new Promise((done) => {
   const s = connect({ host: '127.0.0.1', port });
   s.once('connect', () => { s.destroy(); done(true); });
@@ -43,7 +49,8 @@ export async function ready({ root = appRoot, port }) {
       .find((f) => statSync(f).isFile() && statSync(f).mtimeMs > built);
     if (newer) problems.push(`out/ is older than ${relative(root, newer)}: ${BUILD}`);
   }
-  if (Number(port) === 7777) problems.push(`port 7777 is the owner's obid: ${PORT}`);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) problems.push(`port ${port} isn't a port: ${PORT}`);
+  else if (port === 7777) problems.push(`port 7777 is the owner's obid: ${PORT}`);
   else if (await listens(port)) problems.push(`port ${port} is busy, something listens on 127.0.0.1:${port}: ${PORT}`);
   return problems;
 }
@@ -101,7 +108,7 @@ async function steps(ask, before = []) {
   }
 }
 
-async function run(out, only) {
+async function run(out, boards) {
   const port = process.env.OBY_BOARDS_PORT ? Number(process.env.OBY_BOARDS_PORT) : await idlePort();
   const problems = await ready({ port });
   if (problems.length) {
@@ -112,7 +119,7 @@ async function run(out, only) {
   const obid = { port, home: join(home, 'no-obid') };
   mkdirSync(obid.home);
   const checks = [], skipped = [], noCheck = [];
-  for (const entry of loadBoards().filter((b) => !only.length || only.includes(String(b.n)))) {
+  for (const entry of boards) {
     const nn = String(entry.n).padStart(2, '0');
     const scratch = join(home, nn);
     mkdirSync(scratch);
@@ -171,6 +178,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     console.error('usage: node scripts/boards.mjs <out-folder> [board numbers…]');
     process.exit(1);
   }
+  let boards;
+  try { boards = pick(loadBoards(), only); } catch (e) {
+    console.error(`${e.message}: board numbers are 1 to 17 (scripts/boards/browser.json)`);
+    console.error('usage: node scripts/boards.mjs <out-folder> [board numbers…]');
+    process.exit(1);
+  }
   mkdirSync(resolve(out), { recursive: true });
-  process.exit(await run(resolve(out), only));
+  process.exit(await run(resolve(out), boards));
 }

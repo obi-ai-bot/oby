@@ -113,6 +113,8 @@ test('BOARDS-5: no build, a stale build, port 7777 or a busy port each say what 
   assert.ok(build(await ready({ root, port })), 'a file under src/ newer than out/');
   utimesSync(files[2], old, old);
 
+  const notPort = await ready({ root, port: Number('ten') });
+  assert.ok(notPort.some((p) => p.includes('OBY_BOARDS_PORT')), notPort.join('\n'));
   const owner = await ready({ root, port: 7777 });
   assert.ok(owner.some((p) => p.includes('7777') && p.includes('OBY_BOARDS_PORT')), owner.join('\n'));
   const server = createServer().listen(0, '127.0.0.1');
@@ -121,6 +123,15 @@ test('BOARDS-5: no build, a stale build, port 7777 or a busy port each say what 
     const busy = await ready({ root, port: server.address().port });
     assert.ok(busy.some((p) => p.includes(String(server.address().port)) && p.includes('OBY_BOARDS_PORT')), busy.join('\n'));
   } finally { server.close(); }
+});
+
+test('BOARDS-5: board numbers name boards by number, and one that names none is refused', async () => {
+  const { loadBoards, pick } = await load();
+  const list = loadBoards();
+  assert.deepEqual(pick(list, ['01']).map((b) => b.n), [1]);
+  assert.deepEqual(pick(list, ['6', '10']).map((b) => b.n), [6, 10]);
+  assert.equal(pick(list, []).length, 17);
+  for (const arg of ['18', 'O1', '']) assert.throws(() => pick(list, [arg]), new RegExp(`no board ${arg}`));
 });
 
 test('OBY_BOARDS_DIR: the design folder is the one named, its boards and its base', () => {

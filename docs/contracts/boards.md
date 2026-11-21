@@ -18,7 +18,7 @@ The business behavior contract for `apps/electron/scripts/boards.mjs`, from [the
 
 ### What it runs
 
-`node scripts/boards.mjs <out-folder> [board numbers…]`, from `apps/electron`. With no out folder it prints its usage and exits 1. The board numbers limit the run to those boards.
+`node scripts/boards.mjs <out-folder> [board numbers…]`, from `apps/electron`. With no out folder it prints its usage and exits 1. The board numbers limit the run to those boards, matched by number (`01` is board 1). A number that names no board (`18`, a typo) is refused with `no board <arg>` and the usage line, exit 1, before anything launches: a run never passes on boards it didn't run.
 
 For each board of `apps/electron/scripts/boards/browser.json`, in order:
 
@@ -44,7 +44,7 @@ For each board of `apps/electron/scripts/boards/browser.json`, in order:
 ### Readiness and the port
 
 - Before anything launches, the build must be there and current: both `out/` files and Electron's binary exist, and the older `out/` file is not older than any file under `src/` (but `node_modules`, where vitest keeps its cache). Otherwise it exits 1 saying to run `npm ci` and `npm run build` in `apps/electron`.
-- The port the windows are given for obid is a free one of 127.0.0.1, taken as obid-spec's `idle_port()` takes one, or the one `OBY_BOARDS_PORT` names. 7777 is the owner's obid and is refused; so is a port something listens on. Each says to unset `OBY_BOARDS_PORT` or name a free port other than 7777, and nothing launches.
+- The port the windows are given for obid is a free one of 127.0.0.1, taken as obid-spec's `idle_port()` takes one, or the one `OBY_BOARDS_PORT` names. 7777 is the owner's obid and is refused; so are a port something listens on and an `OBY_BOARDS_PORT` that isn't a port. Each says to unset `OBY_BOARDS_PORT` or name a free port other than 7777, and nothing launches.
 - The scratch home is a new folder under the system's temporary folder: `no-obid/` (obid's home for every launch) and one `<nn>/` per board with its own `userData/`, so no board inherits another's stored choices.
 
 ### Judging
