@@ -1124,6 +1124,11 @@ fn computers_25_the_mac_adds_studio_over_ssh_and_works_there_through_its_tunnel(
     let asked = json!({"ssh": "studio"});
     let unsigned = call(&mac, "POST", "/v1/computers", Some(&asked));
     assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    assert_eq!(
+        unsigned.body["error"],
+        obid::routes::NEEDS_THE_OWNERS_APP,
+        "refused for being unsigned"
+    );
     let option = call_signed(
         &mac,
         "POST",

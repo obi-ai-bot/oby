@@ -105,3 +105,47 @@ pub fn os(status: &Value) -> Option<String> {
         .filter(|os| matches!(*os, "mac" | "linux"))
         .map(str::to_owned)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    /// A server on this machine that answers every request with `status` and `body`, as long as
+    /// the test runs: the far end of a tunnel.
+    async fn answers(status: &'static str, body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let answer = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(answer.as_bytes()).await;
+                });
+            }
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn computers_18_only_obid_answering_counts_not_something_on_the_port() {
+        let way = |base: String| Way {
+            client: plain(true).unwrap(),
+            base,
+        };
+        let obid = way(answers("200 OK", r#"{"runner":{"engine":"obid","os":"linux"}}"#).await);
+        let answered = status(&obid, "t").await.unwrap();
+        assert_eq!(os(&answered).as_deref(), Some("linux"));
+        let other = way(answers("200 OK", r#"{"hello":"world"}"#).await);
+        let said = status(&other, "t").await.unwrap_err();
+        assert!(said.contains("not Oby"), "{said}");
+        let refused = way(answers("401 Unauthorized", r#"{"error":"no"}"#).await);
+        let said = status(&refused, "t").await.unwrap_err();
+        assert!(said.contains("token"), "{said}");
+    }
+}
