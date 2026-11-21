@@ -3519,11 +3519,9 @@ fn merging_24_a_follow_up_let_go_hands_the_card_back_saying_why() {
     assert!(!calls(&folder.0).contains("-X PUT"));
 }
 
-/// MERGING-24, as the drive of 2026-10-31 had it: the task's card is open, then its follow-up
-/// pushes to the same pull request. The task's card is settled, and the follow-up's is the one.
-#[test]
-fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
-    let folder = Folder::new("merge-drive-order");
+/// The task's card open, then its follow-up's push to the same pull request: obid started again
+/// with `follow_seconds`, its follow-up's card open. Answers obid, the task's card and the push.
+fn task_card_then_follow_up_pushed(folder: &Folder, follow_seconds: &str) -> (Obid, Value, String) {
     let mut task = published();
     task.outgoing.push(obid::publish::Outgoing::new(
         "pullRequest",
@@ -3531,7 +3529,7 @@ fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
         PULL,
         None,
     ));
-    let obid = started_with_jobs(&folder, true, None, &[task], &[]);
+    let obid = started_with_jobs(folder, true, None, &[task], &[]);
     let first = within(30, "the task's card", || {
         open_merge_cards(&obid).into_iter().next()
     });
@@ -3560,8 +3558,17 @@ fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
         &folder.0,
         &config,
         Some(&folder.0.join("bin")),
-        &[("OBID_FOLLOW_SECONDS", "1")],
+        &[("OBID_FOLLOW_SECONDS", follow_seconds)],
     );
+    (obid, first, pushed)
+}
+
+/// MERGING-24, as the drive of 2026-10-31 had it: the task's card is open, then its follow-up
+/// pushes to the same pull request. The task's card is settled, and the follow-up's is the one.
+#[test]
+fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
+    let folder = Folder::new("merge-drive-order");
+    let (obid, first, pushed) = task_card_then_follow_up_pushed(&folder, "1");
     let card = within(30, "the follow-up's card", || {
         open_merge_cards(&obid)
             .into_iter()
@@ -3582,9 +3589,29 @@ fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
     assert_eq!(open[0]["id"], card["id"]);
     assert!(!settled["done"].is_null(), "{settled}");
     assert!(settled["answer"].is_null(), "{settled}");
-    // The card settles for its task (TASKS-27) as soon as the follow-up's opens; the task's own
-    // record follows on the follower's next pass over it.
+    // The card settles for its task (TASKS-27) as soon as the follow-up's opens, and the task's
+    // own record with it.
     let task = within(30, "the task asks nothing", || {
+        Some(job(&obid)).filter(|t| t["mergeNeedsYou"] == false)
+    });
+    assert_eq!(task["mergeError"], Value::Null, "{task}");
+}
+
+/// MERGING-24: the task asks nothing about merging once its follow-up's card opens, before the
+/// follower reads the task's pull request again. obid reads each one every 3 minutes, so the
+/// task's record said `mergeNeedsYou` for up to that long after its card had settled, and
+/// obid-spec's 30-second wait for it failed when a pass was slow.
+#[test]
+fn merging_24_the_tasks_record_settles_with_its_card() {
+    let folder = Folder::new("merge-record-settles");
+    // An hour between reads: the task, read just now, isn't read again here.
+    let (obid, _, pushed) = task_card_then_follow_up_pushed(&folder, "3600");
+    within(30, "the follow-up's card", || {
+        open_merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["id"] == format!("merge-ready-{FOLLOW_UP}-{pushed}"))
+    });
+    let task = within(5, "the task asks nothing", || {
         Some(job(&obid)).filter(|t| t["mergeNeedsYou"] == false)
     });
     assert_eq!(task["mergeError"], Value::Null, "{task}");
