@@ -125,6 +125,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   // the owner's earlier words here, for ↑ in an empty box (COMPOSER-20), and where a reply's picked
   // words go in it (COMPOSER-23)
   const history = useMemo(() => historyOf(thread.filter((m) => m.who === 'you').map((m) => m.text)), [thread]);
+  // the owner's words in this thread: a task's log leaves out words told it that show here already (#2787)
+  const yours = new Set(thread.flatMap((m) => (m.who === 'you' && m.text ? [m.text.trim()] : [])));
   const quote = useRef<((text: string) => void) | null>(null);
   // an Oby at work on an answer, and what it's on (someone else's: writing)
   const typing = !!(task ?? talk ?? convo)!.typing, step = talk ? talk.step : convo?.typing ? 'Writing' : undefined;
@@ -302,6 +304,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                         key={jid}
                         task={t}
                         lit={lit === jid}
+                        said={yours}
                         onMenu={(at) => setMenu({ id: jid, at })}
                       />
                     );
@@ -512,13 +515,13 @@ export function ThreadTask({ task, onMenu }: { task: Task; onMenu?: (at: DOMRect
 
 // A task in the conversation: its card, its Changes (CHANGES-4), and what it did under it, outside the card (TaskLog); data-task is
 // where opening the conversation at the task scrolls to (LIVETASK-28)
-export function TaskEntry({ task, lit = false, onMenu }: { task: Task; lit?: boolean; onMenu?: (at: DOMRect) => void }) {
+export function TaskEntry({ task, lit = false, said, onMenu }: { task: Task; lit?: boolean; said?: ReadonlySet<string>; onMenu?: (at: DOMRect) => void }) {
   return (
     <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${lit ? ' is-lit' : ''}`} data-task={task.id}>
       <ThreadTask task={task} onMenu={onMenu} />
       {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
       <ChangesPill task={task} />
-      <TaskLog task={task} />
+      <TaskLog task={task} said={said} />
     </div>
   );
 }
