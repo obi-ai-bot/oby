@@ -821,7 +821,10 @@ fn delete_conversations(
         text.push_str(&format!("\n> and {} more", going.len() - 20));
     }
     let payload = json!({"conversations": going.iter()
-        .map(|c| json!({"id": c["id"], "cursor": c["cursor"]}))
+        .map(|c| {
+            let owners = c["id"].as_str().and_then(|id| shared.conversations.owners_use(id));
+            json!({"id": c["id"], "cursor": c["cursor"], "owners": owners})
+        })
         .collect::<Vec<_>>()});
     actions::confirm(
         shared,

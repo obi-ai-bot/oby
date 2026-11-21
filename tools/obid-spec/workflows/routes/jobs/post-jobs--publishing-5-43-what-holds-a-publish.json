@@ -1,0 +1,168 @@
+{
+  "schemaVersion": "2",
+  "name": "What a job leaves uncommitted holds its publish, droppings don't (PUBLISHING-5, 43)",
+  "version": "1.0.0",
+  "description": "A tool's droppings left in the worktree (__pycache__, .pytest_cache, .DS_Store) don't hold a job's publish; a file of the job's own left uncommitted gets one turn told to commit, then the job ends done not published, saying so, and Publish answers 409 with the same words.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "p",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "DRAFT: __pycache__/m.cpython-312.pyc DRAFT: .pytest_cache/v/x DRAFT: .DS_Store COMMIT: a.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-43-droppings-dont-hold-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.p.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "commits": 1,
+            "pushed": 1
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-43"
+        ]
+      }
+    },
+    {
+      "id": "u",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "DRAFT: notes.txt COMMIT: b.txt KEEP PROMPTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-5-done-not-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.u.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "pushed": null
+          },
+          "paths": {
+            "reason": {
+              "$matches": "^Not published: its check ran with changes in the worktree that weren't committed"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-5"
+        ]
+      }
+    },
+    {
+      "id": "publishing-5-told-once-to-commit",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "worktrees/${state.u.body.id}/.obi/prompts.log",
+        "expect": {
+          "text": {
+            "$matches": "(?s)^(?:[^<]|<[^<]|<<[^<])*(?:<<<end of prompt>>>(?:[^<]|<[^<]|<<[^<])*){2}$"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-5"
+        ]
+      }
+    },
+    {
+      "id": "publishing-5-publish-says-the-same",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.u.body.id}/publish",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": "${state.publishing-5-done-not-published.body.reason}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-5"
+        ]
+      }
+    }
+  ]
+}

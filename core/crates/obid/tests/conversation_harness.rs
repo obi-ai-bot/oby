@@ -3932,6 +3932,71 @@ fn conversations_are_listed_with_dates_and_deleted_only_on_confirm() {
     assert!(left.contains(&used) && left.contains(&here), "{left:?}");
 }
 
+/// CONVERSATION-AGENT-23: a task that ends between the delete card and the owner's Confirm, its
+/// report landing in its conversation, doesn't keep that conversation: only what the owner did
+/// there (their words, a pin) does (#2706). The task itself stays.
+#[test]
+fn conversation_agent_23_a_task_ending_before_the_confirm_doesnt_keep_its_conversation() {
+    let (_folder, obid) = obid("harness-delete-after-a-task", true);
+    let started = said(
+        &obid,
+        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Look around. STALLS-ALWAYS", "title": "Look around", "kind": "build"}"#, "new": true}),
+    );
+    let job = started.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", started.text))
+        .to_owned();
+    let with_task = started.body["conversation"].as_str().unwrap().to_owned();
+    let start = || {
+        said(&obid, json!({"said": "HELLO", "new": true})).body["conversation"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (used, here) = (start(), start());
+    let delete = format!(r#"OBY oby_delete_conversations {{"ids": ["{with_task}", "{used}"]}}"#);
+    said(&obid, json!({"said": delete, "conversation": here}));
+    let item = (inbox(&obid).into_iter())
+        .find(|i| i["confirm"]["action"] == "delete_conversations")
+        .expect("the delete card");
+
+    // The task ends (stopped) and its report lands in its conversation, after the card.
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{job}/stop"), None);
+    assert!(stopped.status < 300, "{}", stopped.text);
+    within(60, "the task's end is told in its conversation", || {
+        let thread = call(
+            &obid,
+            "GET",
+            &format!("/v1/conversation?id={with_task}"),
+            None,
+        );
+        (thread.body.as_array().into_iter().flatten())
+            .any(|t| t["ended"] == true)
+            .then_some(())
+    });
+    // The owner goes back to the other one before they confirm: it stays.
+    said(&obid, json!({"said": "HELLO", "conversation": used}));
+    let done = confirmed(&obid, &item);
+    assert_eq!(done.status, 200, "{}", done.text);
+    let left: Vec<String> = call(&obid, "GET", "/v1/conversations", None)
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        !left.contains(&with_task),
+        "the task's report kept it: {left:?}"
+    );
+    assert!(left.contains(&used) && left.contains(&here), "{left:?}");
+    assert_eq!(
+        call(&obid, "GET", &format!("/v1/jobs/{job}"), None).status,
+        200,
+        "the task stays"
+    );
+}
+
 /// oby_continue_job picks a job that ended up again in its own session, its agent hearing Try
 /// again's words and the conversation's quoted; another conversation's job, or a turn that read
 /// something untrusted, waits for the owner's Confirm, which then continues it.

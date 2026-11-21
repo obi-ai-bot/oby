@@ -194,20 +194,23 @@ pub(super) async fn launch(
     };
     all_off(&launch, off(own)).await?;
     launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
-    let options = options(shared, account, url, tetrix, resume, own, helper).await;
+    let room = own.then_some(place.room.as_path());
+    let options = options(shared, account, url, tetrix, resume, room, helper).await;
     Ok((launch, Some(options)))
 }
 
 /// What a turn of the conversation's thread is started with, on a new `app-server` or one waiting
 /// for it (CONVERSATION-AGENT-44): `resume`'s thread when there is one, the conversation's
-/// orientation, the configured model (each turn's own: a model chosen since applies at once).
+/// orientation, the configured model (each turn's own: a model chosen since applies at once). An
+/// own session's (LANES-13) is held to its mode's settings, its commands never reading obid's
+/// secret places from its room `own` (LANES-27).
 pub(super) async fn options(
     shared: &Shared,
     account: &crate::config::Account,
     url: &str,
     tetrix: Option<&str>,
     resume: &Option<String>,
-    own: bool,
+    own: Option<&std::path::Path>,
     helper: Option<&Told>,
 ) -> crate::codex::Options {
     let offered = shared.jobs.model_lists.to_check(Tool::Codex, &account.id);
@@ -234,12 +237,18 @@ pub(super) async fn options(
         model,
         effort: None,
         plan: false,
-        instructions: Some(instructions(shared, tetrix.is_some(), own, helper)),
-        no_commands: !own,
+        instructions: Some(instructions(
+            shared,
+            tetrix.is_some(),
+            own.is_some(),
+            helper,
+        )),
+        no_commands: own.is_none(),
         usage: false,
         priced: None,
         chatgpt,
-        own: own.then(|| crate::codex::own::policy(shared.jobs.default_mode())),
+        own: own
+            .map(|room| (shared.jobs).conversation_codex_policy(room, shared.jobs.default_mode())),
     }
 }
 

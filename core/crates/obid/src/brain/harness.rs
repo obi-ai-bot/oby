@@ -789,6 +789,7 @@ async fn start_next(
                 None,
             )
             .await?;
+            let launch = grouped(shared, id, launch);
             let options = options.unwrap_or_default();
             match crate::codex::start_ahead(launch, &options, WARM_FOR, stop).await {
                 Ok(kept) => (Waiting::Codex(kept), key),
@@ -803,7 +804,11 @@ async fn start_next(
             let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own, None);
             let key = with_skills(flags_key(&flags), tool, &account, own);
             flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
-            let launch = claude_launch(shared, &account, &place, flags, own)?;
+            let launch = grouped(
+                shared,
+                id,
+                claude_launch(shared, &account, &place, flags, own)?,
+            );
             match crate::conn::Conn::spawn(&launch, WARM_FOR, stop, false).await {
                 Ok(conn) => (Waiting::Claude(conn), key),
                 Err(e) => {
@@ -913,7 +918,7 @@ fn own_lane(
 /// go less far (LANES-13, LANES-18), and it asks obid only what its launch's settings ask.
 fn narrowed(shared: &Shared, launched: crate::permissions::Mode) -> bool {
     let policy = crate::codex::own::policy;
-    policy(launched).narrowed_by(policy(shared.jobs.default_mode()))
+    policy(launched).narrowed_by(&policy(shared.jobs.default_mode()))
 }
 
 /// What the owner hears when a narrower mode ended an own Codex turn.
@@ -999,6 +1004,17 @@ fn claude_flags(
         .chain(&more)
         .map(OsString::from)
         .collect()
+}
+
+/// `launch`, a conversation's agent, with its process group recorded as a job's agent's is
+/// (crate::groups): obid killed mid-turn leaves it running, and the next start ends it before the
+/// conversation's next turn (DELIVERY-12, #2739).
+fn grouped(shared: &Shared, conversation: &str, mut launch: agent::Launch) -> agent::Launch {
+    launch.group = Some(crate::groups::Recording::conversation(
+        &shared.config.home,
+        conversation,
+    ));
+    launch
 }
 
 /// A conversation's Claude Code, in its lane ([`own_lane`]): an own one on the account's own folder
@@ -2108,6 +2124,7 @@ async fn attempts(
         )
     });
     let heard = session.control.asked_mentioned();
+    let goes_to = super::briefing::default_account_line(shared, &control.conversation);
     let with = |prompt: String| {
         let prompt = match &heard {
             Some(heard) => format!("{heard}\n\n{prompt}"),
@@ -2125,8 +2142,12 @@ async fn attempts(
             Some(names) => format!("{names}\n\n{prompt}"),
             None => prompt,
         };
-        match &tasks {
+        let prompt = match &tasks {
             Some(tasks) => format!("{tasks}\n\n{prompt}"),
+            None => prompt,
+        };
+        match &goes_to {
+            Some(line) => format!("{line}\n\n{prompt}"),
             None => prompt,
         }
     };
@@ -2229,7 +2250,7 @@ async fn attempts(
                     &url,
                     tetrix.as_deref(),
                     &resume,
-                    own,
+                    own.then_some(place.room.as_path()),
                     helper,
                 )
                 .await;
@@ -2258,7 +2279,7 @@ async fn attempts(
                     .await
                     .map_err(Unanswered::cant_start)?;
                     (
-                        Run::Cold(launch),
+                        Run::Cold(grouped(shared, &control.conversation, launch)),
                         codex.map_or(Protocol::Claude, Protocol::Codex),
                     )
                 }
@@ -2274,7 +2295,10 @@ async fn attempts(
                         &resume,
                     )
                     .map_err(Unanswered::cant_start)?;
-                    (Run::Cold(launch), Protocol::Cursor(options))
+                    (
+                        Run::Cold(grouped(shared, &control.conversation, launch)),
+                        Protocol::Cursor(options),
+                    )
                 }
                 Tool::Claude => {
                     // Written as each new Claude Code starts: a waiting one ended above took an
@@ -2283,6 +2307,7 @@ async fn attempts(
                     write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
                     let launch = claude_launch(shared, account, place, flags, own)
                         .map_err(Unanswered::cant_start)?;
+                    let launch = grouped(shared, &control.conversation, launch);
                     (Run::Cold(launch), Protocol::Claude)
                 }
             },

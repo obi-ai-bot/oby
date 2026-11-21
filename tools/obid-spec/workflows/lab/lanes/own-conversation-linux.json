@@ -50,8 +50,8 @@
           "new": true
         },
         "expect": {
-          "status": 200,
           "paths": {
+            "status": 200,
             "body.kind": "reply",
             "body.text": {
               "$contains": "tools: oby_"
@@ -78,8 +78,8 @@
           "conversation": "${state.lanes-26-oby-tools-on-loopback.body.conversation}"
         },
         "expect": {
-          "status": 200,
           "paths": {
+            "status": 200,
             "body.text": {
               "$contains": "bash: ran 0 in"
             }

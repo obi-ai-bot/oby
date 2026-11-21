@@ -17,6 +17,7 @@ pub mod liar;
 pub mod nodes;
 pub mod obid;
 pub mod procs;
+pub mod scope;
 pub mod sphere;
 pub mod t3_conversations;
 pub mod workflow;

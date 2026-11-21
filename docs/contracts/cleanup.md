@@ -5,7 +5,7 @@ The business behavior contract for what obid frees by itself on the Mac's disk, 
 ## Feature and status
 
 - **Outcome:** The owner's report of 2026-11-10: the Mac's disk fell to 350 MB because obid kept every finished job's builds (44 jobs, 75 GB: a worktree's `core/target` about 9.4 GB; in the job's HOME a check's `check-target` 4.9 GB, `oby-check-sim-target` 1.2 GB, `.cargo` 0.4 GB). A job's builds go when it ends, and a disk low on space gets room back by itself.
-- **Status:** **Implemented** (CLEANUP-1 to CLEANUP-7). The words in `why` are proposed, and Sangam's to change.
+- **Status:** **Implemented**: every scenario unless it says it's proposed. The words in `why` are proposed, and Sangam's to change.
 - **Scope:** Build outputs and caches: what a build makes again. A done job whose pull request merged or closed, or which has nothing to publish, frees its worktree and its HOME at once (CLEANUP-3 to CLEANUP-6); other jobs' worktrees go under the cleanup pass's rules (`cleanup` in runner-api.md). Outside it: a job's branch and commits, its login copies, and the clones in `home/clones`.
 
 ## Behavior

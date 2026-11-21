@@ -5,7 +5,7 @@ The business behavior contract for what the message box takes besides typing, do
 ## Feature and status
 
 - **Outcome:** The owner sets the mode the tasks their words start will run in right in the box, before they start, without changing Settings, and picks the model and effort on the one account menu (one Auto); sees the words they sent while Oby was still answering, and can take them back or change them; sees Stop being honoured; brings files in by dropping them or naming them with `@`; and starts one of their own agent skills with `/`, as in their own Claude Code or Codex.
-- **Status:** Implemented (COMPOSER-1 and 3 to 28; COMPOSER-2 retired by COMPOSER-17). Where obid gives no skills, the `/` list is honest about what's missing (COMPOSER-16).
+- **Status:** Implemented (every scenario unless it says it's proposed or retired; COMPOSER-2 retired by COMPOSER-17). Where obid gives no skills, the `/` list is honest about what's missing (COMPOSER-16).
 - **Scope:** The Electron app's message box on Home, in a conversation with Oby and, for `/`'s skills alone, in a task's box; obid's `defaults` on `POST /v1/plans`, `turn` on `POST /v1/plans/cancel`, `GET /v1/conversations/{id}/files`, `GET /v1/skills`, `skill` on `POST /v1/plans` and `POST /v1/jobs/{id}/messages`, and `POST /v1/conversations/{id}/restart`. **Out of scope:** a conversation with other people's Obys (no chips, no waiting row, no skills); a task's box's chips and waiting row; running an agent's built-in slash commands; the iPhone and Apple Watch apps (frozen).
 
 ## Behavior

@@ -1,0 +1,323 @@
+{
+  "schemaVersion": "2",
+  "name": "Checks that judged nothing spend no fix round (PUBLISHING-16, 17, 22, 29)",
+  "version": "1.0.0",
+  "description": "A check that says it couldn't judge, one that failed because the machine did (a host that didn't resolve, at a line's start), and one stopped at its limit each spend no fix round: run again by itself, then done and not published, saying why; the same words behind a diff's + still fail the change.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_RECHECK_MS": "200"
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "check": "echo \"couldn't judge: no network here\"; false"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-22-done-unpublished-with-its-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.c.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "pushed": null,
+            "round": 1,
+            "reason": "Not published: the check couldn't judge this change, so nothing counts as checked. Oby ran it again by itself for 24 hours and none of its runs judged it: Publish it from its page once you've read its change.\nno network here"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-22"
+        ]
+      }
+    },
+    {
+      "id": "m",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "check": "echo 'curl: (6) Could not resolve host: example.invalid'; false"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-17-it-judged-nothing",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "job",
+        "seconds": 60,
+        "expect": {
+          "paths": {
+            "id": "${state.m.body.id}",
+            "status": "running",
+            "step": {
+              "$matches": "^Its check judged nothing: "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-17"
+        ]
+      }
+    },
+    {
+      "id": "publishing-17-no-fix-round-then-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.m.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "pushed": null,
+            "round": 1
+          },
+          "paths": {
+            "reason": {
+              "$matches": "^Not published: .*, so nothing counts as checked\\. Oby ran it again by itself for 24 hours"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-17"
+        ]
+      }
+    },
+    {
+      "id": "d",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "check": "echo '+curl: (6) Could not resolve host: example.invalid'; false"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-17-a-diff-line-is-the-changes-failure",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.d.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "interrupted",
+            "nextStep": "One more round",
+            "round": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-17"
+        ]
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "t",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_RECHECK_MS": "200",
+          "OBID_CHECK_LIMIT_SECONDS": "2"
+        }
+      }
+    },
+    {
+      "id": "evt",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.t}"
+      }
+    },
+    {
+      "id": "s",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: a.txt",
+            "check": "sleep 30"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "publishing-16-29-stopped-at-its-limit-judged-nothing",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.t}",
+        "event": "job",
+        "seconds": 90,
+        "expect": {
+          "paths": {
+            "id": "${state.s.body.id}",
+            "status": "running",
+            "step": {
+              "$matches": "^Its check judged nothing: the check ran past its limit of "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-16",
+          "PUBLISHING-29"
+        ]
+      }
+    },
+    {
+      "id": "publishing-16-no-fix-round-nothing-pushed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.s.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "running",
+            "round": 1,
+            "pushed": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-16"
+        ]
+      }
+    },
+    {
+      "id": "s-stop",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.t}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.s.body.id}/stop",
+        "expect": {
+          "status": 200
+        }
+      }
+    }
+  ]
+}

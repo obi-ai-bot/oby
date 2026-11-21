@@ -24,7 +24,8 @@
             "SPHERE-21",
             "SPHERE-22",
             "SPHERE-23",
-            "SPHERE-24"
+            "SPHERE-24",
+            "SPHERE-25"
           ],
           "elsewhere": {
             "SPHERE-3": "the Electron side panel showing the joined Obysphere (apps/electron sphere.test.ts)",
@@ -205,9 +206,9 @@
     },
     "obi": {
       "routes": [
+        "/v1/inbox",
         "/v1/obid/decisions",
-        "/v1/obid/sharing",
-        "/v1/inbox"
+        "/v1/obid/sharing"
       ],
       "contracts": {
         "home.md": {
@@ -227,23 +228,23 @@
             "HOME-13"
           ],
           "elsewhere": {
+            "HOME-14": "— Electron Settings › General \"Files Oby couldn't read\".",
             "WAITING-1": "— Electron \"Waiting for you\" list (obid only supplies `triage`/merge cards).",
             "WAITING-2": "— Electron row actions (main signs).",
             "WAITING-3": "— Electron count row.",
-            "WAITING-4": "— Electron list keeps a task's put-off item.",
-            "HOME-14": "— Electron Settings › General \"Files Oby couldn't read\"."
+            "WAITING-4": "— Electron list keeps a task's put-off item."
           }
         }
       }
     },
     "conversations": {
       "routes": [
+        "/v1/attachments",
+        "/v1/brain",
+        "/v1/clear",
         "/v1/conversation",
         "/v1/conversations",
-        "/v1/brain",
-        "/v1/attachments",
         "/v1/plans",
-        "/v1/clear",
         "/v1/skills"
       ],
       "contracts": {
@@ -517,7 +518,8 @@
             "DELIVERY-8",
             "DELIVERY-9",
             "DELIVERY-10",
-            "DELIVERY-11"
+            "DELIVERY-11",
+            "DELIVERY-12"
           ],
           "elsewhere": {
             "DELIVERY-6": "delivery.rs state machine unit (no route asks an arbitrary move)."
@@ -544,10 +546,10 @@
     },
     "jobs": {
       "routes": [
+        "/v1/failures",
         "/v1/jobs",
         "/v1/limit-decisions",
-        "/v1/stop-all",
-        "/v1/failures"
+        "/v1/stop-all"
       ],
       "contracts": {
         "task-servers.md": {
@@ -598,7 +600,8 @@
             "LIVETASK-34",
             "LIVETASK-35",
             "LIVETASK-36",
-            "LIVETASK-37"
+            "LIVETASK-37",
+            "LIVETASK-38"
           ],
           "elsewhere": {
             "LIVETASK-1": "Electron card/drawer/side-panel rendering (liveTask.test.tsx etc.). (7, 8, 18 retired.)",
@@ -959,7 +962,8 @@
             "CHANGES-10",
             "CHANGES-11",
             "CHANGES-12",
-            "CHANGES-13"
+            "CHANGES-13",
+            "CHANGES-15"
           ],
           "elsewhere": {
             "CHANGES-4": "Electron panel / main's open-in-editor.",
@@ -974,9 +978,9 @@
     "accounts": {
       "routes": [
         "/v1/accounts",
+        "/v1/agent",
         "/v1/profiles",
-        "/v1/settings",
-        "/v1/agent"
+        "/v1/settings"
       ],
       "contracts": {
         "accounts.md": {
@@ -1046,6 +1050,7 @@
         },
         "profiles.md": {
           "obid": [
+            "PROF-1",
             "PROFILES-1",
             "PROFILES-13",
             "PROFILES-14",
@@ -1069,10 +1074,10 @@
             "PROFILES-40",
             "PROFILES-43",
             "PROFILES-44",
-            "PROFILES-45",
-            "PROF-1"
+            "PROFILES-45"
           ],
           "elsewhere": {
+            "PROF-2": "an internal refactor (one owner of profile state), not observable through obid's API",
             "PROFILES-12": "internal `mac_home` ≠ `home` (not configurable black-box).",
             "PROFILES-19": "Electron menu.",
             "PROFILES-20": ".",
@@ -1088,8 +1093,7 @@
             "PROFILES-47": "unit (harness prestart; OBID_PRESTART off in tests).",
             "PROFILES-48": "Electron.",
             "PROFILES-49": "Electron.",
-            "PROFILES-50": "Electron.",
-            "PROF-2": "an internal refactor (one owner of profile state), not observable through obid's API"
+            "PROFILES-50": "Electron."
           }
         },
         "agents.md": {
@@ -1209,7 +1213,8 @@
             "LANES-20": "real network/listen behaviour.",
             "LANES-22": "unit (process::tests).",
             "LANES-25": "unit test (jobs::lanes): what a job's launch fixes is its own; nothing black-box to see.",
-            "LANES-26": "unit test (jobs::lanes::tests::lanes_26_an_own_run_reaches_obid_on_loopback) and LANES-12's harness tests on Linux; on a real Linux obid, the lab workflow workflows/lab/lanes/own-conversation-linux.json, which coverage doesn't count (OBIDSPEC-16)."
+            "LANES-26": "unit test (jobs::lanes::tests::lanes_26_an_own_run_reaches_obid_on_loopback) and LANES-12's harness tests on Linux; on a real Linux obid, the lab workflow workflows/lab/lanes/own-conversation-linux.json, which coverage doesn't count (OBIDSPEC-16).",
+            "LANES-27": "unit tests (codex::own::tests, jobs::lanes::tests) and tests/adapters.rs, tests/conversation_codex.rs; on a real Linux obid with the real codex-cli sandbox, the lab workflow workflows/lab/lanes/own-codex-vault-linux.json, which coverage doesn't count (OBIDSPEC-16)."
           }
         },
         "agent-mcp.md": {
@@ -1230,8 +1235,8 @@
     "github": {
       "routes": [
         "/v1/github",
-        "/v1/repos",
-        "/v1/projects"
+        "/v1/projects",
+        "/v1/repos"
       ],
       "contracts": {
         "github-work.md": {
@@ -1313,13 +1318,13 @@
             "WORKSPACE-6"
           ],
           "elsewhere": {
-            "FOLDERS-11": "Electron folders gate (obid half: status folders-v1).",
             "FOLDERS-1": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-2": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-3": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-4": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-5": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-8": "not built: proposed (folders for jobs, trust, failures).",
+            "FOLDERS-11": "Electron folders gate (obid half: status folders-v1).",
             "FOLDERS-12": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-13": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-14": "not built: proposed (folders for jobs, trust, failures).",
@@ -1363,8 +1368,8 @@
     "devices": {
       "routes": [
         "/v1/devices",
-        "/v1/pairing",
-        "/v1/notifications"
+        "/v1/notifications",
+        "/v1/pairing"
       ],
       "contracts": {
         "phone-pairing.md": {
@@ -1430,16 +1435,16 @@
     },
     "everything-else": {
       "routes": [
-        "/v1/status",
-        "/v1/events",
         "/v1/alerts",
         "/v1/artifacts",
         "/v1/connectors",
+        "/v1/events",
         "/v1/helpers",
         "/v1/memory",
         "/v1/obid/vault",
         "/v1/permissions",
         "/v1/routines",
+        "/v1/status",
         "/v1/tetrix"
       ],
       "contracts": {
@@ -1716,6 +1721,99 @@
         "factory.md": {
           "obid": [],
           "elsewhere": {
+            "FEEDALIVE-1": "the factory's scripts.",
+            "FEEDALIVE-2": "the factory's scripts.",
+            "FEEDALIVE-3": "the factory's scripts.",
+            "FEEDALIVE-4": "the factory's scripts.",
+            "FEEDALIVE-5": "the factory's scripts.",
+            "FEEDALIVE-6": "the factory's scripts.",
+            "FEEDAPPROVE-1": "the factory's scripts.",
+            "FEEDAPPROVE-2": "the factory's scripts.",
+            "FEEDAPPROVE-3": "the factory's scripts.",
+            "FEEDAPPROVE-4": "the factory's scripts.",
+            "FEEDAPPROVE-5": "the factory's scripts.",
+            "FEEDAPPROVE-6": "the factory's scripts.",
+            "FEEDAPPROVE-7": "the factory's scripts.",
+            "FEEDAPPROVE-8": "the factory's scripts.",
+            "FEEDGATE-1": "the factory's scripts.",
+            "FEEDGATE-2": "the factory's scripts.",
+            "FEEDGATE-3": "the factory's scripts.",
+            "FEEDGATE-4": "the factory's scripts.",
+            "FEEDGATE-5": "the factory's scripts.",
+            "FEEDGATE-6": "the factory's scripts.",
+            "FEEDGATE-7": "the factory's scripts.",
+            "FEEDKANI-1": "the factory's scripts.",
+            "FEEDKANI-2": "the factory's scripts.",
+            "FEEDKANI-3": "the factory's scripts.",
+            "FEEDKANI-4": "the factory's scripts.",
+            "FEEDKANI-5": "the factory's scripts.",
+            "FEEDKANI-6": "the factory's scripts.",
+            "FEEDKANI-7": "the factory's scripts.",
+            "FEEDKANI-8": "the factory's scripts.",
+            "FEEDKANI-9": "the factory's scripts.",
+            "FEEDLENS-1": "the factory's scripts.",
+            "FEEDLENS-2": "the factory's scripts.",
+            "FEEDLENS-3": "the factory's scripts.",
+            "FEEDLENS-4": "the factory's scripts.",
+            "FEEDLENS-5": "the factory's scripts.",
+            "FEEDLENS-6": "the factory's scripts.",
+            "FEEDLENS-7": "the factory's scripts.",
+            "FEEDLENS-8": "the factory's scripts.",
+            "FEEDLENS-9": "the factory's scripts.",
+            "FEEDLOOP-1": "the factory's scripts.",
+            "FEEDLOOP-2": "the factory's scripts.",
+            "FEEDLOOP-3": "the factory's scripts.",
+            "FEEDLOOP-4": "the factory's scripts.",
+            "FEEDLOOP-5": "the factory's scripts.",
+            "FEEDLOOP-6": "the factory's scripts.",
+            "FEEDLOOP-7": "the factory's scripts.",
+            "FEEDMODEL-1": "the factory's scripts.",
+            "FEEDMODEL-2": "the factory's scripts.",
+            "FEEDMODEL-3": "the factory's scripts.",
+            "FEEDMODEL-4": "the factory's scripts.",
+            "FEEDMODEL-5": "the factory's scripts.",
+            "FEEDSPEC-1": "the factory's scripts.",
+            "FEEDSPEC-2": "the factory's scripts.",
+            "FEEDSPEC-3": "the factory's scripts.",
+            "FEEDSPEC-4": "the factory's scripts.",
+            "FEEDSPEC-5": "the factory's scripts.",
+            "FEEDSPEC-6": "the factory's scripts.",
+            "FEEDSPEC-7": "the factory's scripts.",
+            "FEEDSPEC-8": "the factory's scripts.",
+            "FEEDSPEC-9": "the factory's scripts.",
+            "FEEDSTOP-1": "the factory's scripts.",
+            "FEEDSTOP-2": "the factory's scripts.",
+            "FEEDSTOP-3": "the factory's scripts.",
+            "FEEDSTOP-4": "the factory's scripts.",
+            "FEEDSTOP-5": "the factory's scripts.",
+            "FEEDSTOP-6": "the factory's scripts.",
+            "FEEDSTOP-7": "the factory's scripts.",
+            "JOBREJECT-1": "the factory's scripts.",
+            "JOBREJECT-2": "the factory's scripts.",
+            "JOBREJECT-3": "the factory's scripts.",
+            "JOBREJECT-4": "the factory's scripts.",
+            "JOBREJECT-5": "the factory's scripts.",
+            "MUTANTS-1": "the factory's scripts.",
+            "MUTANTS-2": "the factory's scripts.",
+            "MUTANTS-3": "the factory's scripts.",
+            "MUTANTS-4": "the factory's scripts.",
+            "MUTANTS-5": "the factory's scripts.",
+            "MUTANTS-6": "the factory's scripts.",
+            "MUTANTS-7": "the factory's scripts.",
+            "MUTANTS-8": "the factory's scripts.",
+            "MUTANTS-9": "the factory's scripts.",
+            "MUTANTS-10": "the factory's scripts.",
+            "MUTANTS-11": "the factory's scripts.",
+            "MUTANTS-12": "the factory's scripts.",
+            "MUTANTS-13": "the factory's scripts.",
+            "MUTANTS-14": "the factory's scripts.",
+            "MUTANTS-15": "the factory's scripts.",
+            "MUTANTS-16": "the factory's scripts.",
+            "MUTANTS-17": "the factory's scripts.",
+            "NOTHARNESS-1": "the factory's scripts.",
+            "NOTHARNESS-2": "the factory's scripts.",
+            "NOTHARNESS-3": "the factory's scripts.",
+            "NOTHARNESS-4": "the factory's scripts.",
             "PROVE-1": "the factory's scripts.",
             "PROVE-2": "the factory's scripts.",
             "PROVE-3": "the factory's scripts.",
@@ -1735,100 +1833,7 @@
             "PROVE-17": "the factory's scripts.",
             "PROVE-18": "the factory's scripts.",
             "PROVE-19": "the factory's scripts.",
-            "PROVE-20": "the factory's scripts.",
-            "MUTANTS-1": "the factory's scripts.",
-            "MUTANTS-2": "the factory's scripts.",
-            "MUTANTS-3": "the factory's scripts.",
-            "MUTANTS-4": "the factory's scripts.",
-            "MUTANTS-5": "the factory's scripts.",
-            "MUTANTS-6": "the factory's scripts.",
-            "MUTANTS-7": "the factory's scripts.",
-            "MUTANTS-8": "the factory's scripts.",
-            "MUTANTS-9": "the factory's scripts.",
-            "MUTANTS-10": "the factory's scripts.",
-            "MUTANTS-11": "the factory's scripts.",
-            "MUTANTS-12": "the factory's scripts.",
-            "MUTANTS-13": "the factory's scripts.",
-            "MUTANTS-14": "the factory's scripts.",
-            "MUTANTS-15": "the factory's scripts.",
-            "MUTANTS-16": "the factory's scripts.",
-            "MUTANTS-17": "the factory's scripts.",
-            "FEEDMODEL-1": "the factory's scripts.",
-            "FEEDMODEL-2": "the factory's scripts.",
-            "FEEDMODEL-3": "the factory's scripts.",
-            "FEEDMODEL-4": "the factory's scripts.",
-            "FEEDMODEL-5": "the factory's scripts.",
-            "FEEDKANI-1": "the factory's scripts.",
-            "FEEDKANI-2": "the factory's scripts.",
-            "FEEDKANI-3": "the factory's scripts.",
-            "FEEDKANI-4": "the factory's scripts.",
-            "FEEDKANI-5": "the factory's scripts.",
-            "FEEDKANI-6": "the factory's scripts.",
-            "FEEDKANI-7": "the factory's scripts.",
-            "FEEDKANI-8": "the factory's scripts.",
-            "FEEDKANI-9": "the factory's scripts.",
-            "FEEDALIVE-1": "the factory's scripts.",
-            "FEEDALIVE-2": "the factory's scripts.",
-            "FEEDALIVE-3": "the factory's scripts.",
-            "FEEDALIVE-4": "the factory's scripts.",
-            "FEEDALIVE-5": "the factory's scripts.",
-            "FEEDALIVE-6": "the factory's scripts.",
-            "FEEDGATE-1": "the factory's scripts.",
-            "FEEDGATE-2": "the factory's scripts.",
-            "FEEDGATE-3": "the factory's scripts.",
-            "FEEDGATE-4": "the factory's scripts.",
-            "FEEDGATE-5": "the factory's scripts.",
-            "FEEDGATE-6": "the factory's scripts.",
-            "FEEDGATE-7": "the factory's scripts.",
-            "FEEDSPEC-1": "the factory's scripts.",
-            "FEEDSPEC-2": "the factory's scripts.",
-            "FEEDSPEC-3": "the factory's scripts.",
-            "FEEDSPEC-4": "the factory's scripts.",
-            "FEEDSPEC-5": "the factory's scripts.",
-            "FEEDSPEC-6": "the factory's scripts.",
-            "FEEDSPEC-7": "the factory's scripts.",
-            "FEEDSPEC-8": "the factory's scripts.",
-            "FEEDSPEC-9": "the factory's scripts.",
-            "FEEDLOOP-1": "the factory's scripts.",
-            "FEEDLOOP-2": "the factory's scripts.",
-            "FEEDLOOP-3": "the factory's scripts.",
-            "FEEDLOOP-4": "the factory's scripts.",
-            "FEEDLOOP-5": "the factory's scripts.",
-            "FEEDLOOP-6": "the factory's scripts.",
-            "FEEDLOOP-7": "the factory's scripts.",
-            "FEEDAPPROVE-1": "the factory's scripts.",
-            "FEEDAPPROVE-2": "the factory's scripts.",
-            "FEEDAPPROVE-3": "the factory's scripts.",
-            "FEEDAPPROVE-4": "the factory's scripts.",
-            "FEEDAPPROVE-5": "the factory's scripts.",
-            "FEEDAPPROVE-6": "the factory's scripts.",
-            "FEEDAPPROVE-7": "the factory's scripts.",
-            "FEEDAPPROVE-8": "the factory's scripts.",
-            "FEEDLENS-1": "the factory's scripts.",
-            "FEEDLENS-2": "the factory's scripts.",
-            "FEEDLENS-3": "the factory's scripts.",
-            "FEEDLENS-4": "the factory's scripts.",
-            "FEEDLENS-5": "the factory's scripts.",
-            "FEEDLENS-6": "the factory's scripts.",
-            "FEEDLENS-7": "the factory's scripts.",
-            "FEEDLENS-8": "the factory's scripts.",
-            "FEEDLENS-9": "the factory's scripts.",
-            "FEEDSTOP-1": "the factory's scripts.",
-            "FEEDSTOP-2": "the factory's scripts.",
-            "FEEDSTOP-3": "the factory's scripts.",
-            "FEEDSTOP-4": "the factory's scripts.",
-            "FEEDSTOP-5": "the factory's scripts.",
-            "FEEDSTOP-6": "the factory's scripts.",
-            "FEEDSTOP-7": "the factory's scripts.",
-            "NOTHARNESS-1": "the factory's scripts.",
-            "NOTHARNESS-2": "the factory's scripts.",
-            "NOTHARNESS-3": "the factory's scripts.",
-            "NOTHARNESS-4": "the factory's scripts.",
-            "JOBREJECT-1": "the factory's scripts.",
-            "JOBREJECT-2": "the factory's scripts.",
-            "JOBREJECT-3": "the factory's scripts.",
-            "JOBREJECT-4": "the factory's scripts.",
-            "JOBREJECT-5": "the factory's scripts."
+            "PROVE-20": "the factory's scripts."
           }
         },
         "first-run.md": {
@@ -2242,17 +2247,17 @@
     "the Sphere long-poll and its deliveries": {
       "area": "sphere",
       "workflows": [
+        "sphere-accept-needs-the-owner.json",
         "sphere-deliveries.json",
-        "sphere-revoked.json",
-        "sphere-accept-needs-the-owner.json"
+        "sphere-revoked.json"
       ]
     },
     "the Sphere directory read (pinned owner keys)": {
       "area": "sphere",
       "workflows": [
-        "sphere-pinning.json",
         "sphere-pinning-cancel.json",
-        "sphere-pinning-closes.json"
+        "sphere-pinning-closes.json",
+        "sphere-pinning.json"
       ]
     },
     "the GitHub feed": {
@@ -2270,8 +2275,8 @@
     "account-limit moves and waits": {
       "area": "jobs",
       "workflows": [
-        "account-limits.json",
-        "account-limits-move.json"
+        "account-limits-move.json",
+        "account-limits.json"
       ]
     },
     "restart recovery of conversations and jobs": {

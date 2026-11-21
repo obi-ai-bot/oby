@@ -71,6 +71,7 @@ The business behavior contract for seeing everything a task changed, opening its
 - **CHANGES-12** An Undo puts what was undone at the head of the job's summary (`The owner undid one of its rounds: its branch is back at <sha>, …`, one line however many rounds, the agent's report under it), so words to the task after it start a follow-up whose agent hears it with the report. (`jobs::changes::rounds::undo::tests::changes_12_a_follow_up_after_an_undo_hears_of_it`)
 - **CHANGES-13** A round that went out to a branch the owner named, not an `oby/` one, isn't force-pushed back: `409` saying why, and the remote branch stays. (`task_changes::changes_13_a_round_pushed_to_a_branch_oby_didnt_make_isnt_force_pushed`)
 - **CHANGES-14** The menu offers **Undo this round…** only while obid has a sentence for it; the click asks main with that sentence, and main signs only on **Undo** in its own dialog, after an input it saw, for the sentence it read from obid itself. (`taskChanges.test.tsx`, `CHANGES-14`; `device.test.ts`, `CHANGES-14`)
+- **CHANGES-15** A file whose name isn't ASCII (`café.txt`) is named in the diff's header as `files` names it (`diff --git a/café.txt b/café.txt`), not in git's octal escapes, so a click on it in the list reaches its diff: every git call of obid's runs with `core.quotePath=false`. (`task_changes::changes_15_a_name_outside_ascii_is_named_in_the_diff_as_in_the_list`)
 
 ### Test it when it's done (a real Mac)
 

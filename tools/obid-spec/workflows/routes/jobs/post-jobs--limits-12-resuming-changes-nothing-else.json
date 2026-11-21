@@ -1,0 +1,154 @@
+{
+  "schemaVersion": "2",
+  "name": "A job resumed after its limit's wait changes nothing else (LIMITS-12)",
+  "version": "1.0.0",
+  "description": "A build at its account's five-hour limit waits, then resumes by itself in the same session and the same round, counted no further, and ends as that round would: nothing committed, nothing published; a limit takes none of RECOVERY-1's tries.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600"
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "LIMITED ONCE: 1",
+            "rounds": 3
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "queued"
+          },
+          "paths": {
+            "resumesAt": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "limits-12-resumed-the-same-round",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 240,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "round": 1,
+            "rounds": 3,
+            "nothingDone": true,
+            "reason": "Nothing committed, so nothing was published."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-12"
+        ]
+      }
+    },
+    {
+      "id": "limits-12-in-its-same-session",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "summary": {
+              "$matches": "went on: resume=00000000-0000-4000-8000-000000000001 "
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-12"
+        ]
+      }
+    },
+    {
+      "id": "limits-12-no-try-taken",
+      "use": "runtime.rust:home-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "path": "jobs/${state.t.body.id}.json",
+        "expect": {
+          "json": {
+            "paths": {
+              "recovery.errors": {
+                "$oneOf": [
+                  0,
+                  null
+                ]
+              },
+              "recovery.tries": {
+                "$oneOf": [
+                  0,
+                  null
+                ]
+              },
+              "recovery.limitResumes": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "LIMITS-12"
+        ]
+      }
+    }
+  ]
+}
