@@ -890,6 +890,12 @@ pub struct Job {
     /// API's job.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub foreign_by_api: bool,
+    /// Its subject is someone else's code, found before its agent ran: the owner's review of a
+    /// pull request whose head has commits obid didn't record (MERGING-36). Its `foreign` mark
+    /// says so too, but so does a page an own job's agent read, which this doesn't: Oby's browser
+    /// reads this one (BROWSER-18). Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub someone_elses_code: bool,
     /// Why its own check gets none of the declared secrets though the job stays the owner's own:
     /// it reached chatgpt.com (MERGING-30). This job's only: no follow-up inherits it, and nothing
     /// a conversation reads of the job sees it. Never in the API's job.

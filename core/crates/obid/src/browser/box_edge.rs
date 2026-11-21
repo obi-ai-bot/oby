@@ -35,13 +35,14 @@ pub const EXCHANGES_LOOKED: usize = 500;
 
 /// Who `job` works for, from obid's records only: the incoming exchange that brought it (its peer
 /// and the peer's owner, from the Sphere's directory: `exchanges` as `Link::exchanges_json` gives
-/// them), or the Obi-to-Obi request it serves (`Job::obi`), else its `untrusted` mark or Oby's own
-/// review. A follow-up is read the same way back along the jobs it follows up (`earlier` finds
-/// each), so one of another Oby's job or review, or of Oby's own review, is never the owner's; a
-/// line it can't read to its start (an earlier job deleted, or more of them than the walk reads)
-/// is foreign too, never the owner's. Its
-/// `foreign` mark isn't read: a page an own job's agent read sets it too. Nothing its request says
-/// (its goal, its summary) is read here.
+/// them), or the Obi-to-Obi request it serves (`Job::obi`), else its `untrusted` mark, Oby's own
+/// review, or a mark it had from its start: made on someone else's code (`Job::apart`), or the
+/// owner's review of commits obid didn't record (`Job::someone_elses_code`). A follow-up is read
+/// the same way back along the jobs it follows up (`earlier` finds each), so one of another Oby's
+/// job or review, or of Oby's own review, is never the owner's; a line it can't read to its start
+/// (an earlier job deleted, or more of them than the walk reads) is foreign too, never the
+/// owner's. Its `foreign` mark isn't read: a page an own job's agent read sets it too. Nothing its
+/// request says (its goal, its summary) is read here.
 pub fn origin_of(
     job: &crate::job::Job,
     exchanges: &serde_json::Value,
@@ -72,7 +73,7 @@ pub fn origin_of(
                 peer_owner: obi.from_owner.clone(),
             };
         }
-        untrusted |= j.untrusted || j.review_of.is_some();
+        untrusted |= j.untrusted || j.review_of.is_some() || j.apart || j.someone_elses_code;
         let Some(of) = &j.follow_up_of else {
             return if untrusted {
                 Origin::Untrusted
@@ -185,6 +186,36 @@ mod tests {
             origin_of(&follow("j0"), &serde_json::Value::Null, get),
             Origin::Own
         );
+    }
+
+    /// A job foreign from its start is foreign for the browser, and so is its follow-up: the owner's
+    /// review of someone else's commits (`someone_elses_code`), a job made untrusted or on someone
+    /// else's code (`apart`). An own job whose agent read a page (only `foreign`) stays the
+    /// owner's (BROWSER-18).
+    #[test]
+    fn browser_18_a_job_foreign_from_its_start_is_foreign_and_a_page_read_isnt() {
+        let mut theirs = job("r1", "review");
+        theirs.pr = Some(91);
+        theirs.someone_elses_code = true;
+        theirs.foreign = Some("pull request #91's head has commits obid didn't record".into());
+        let mut apart = job("a1", "build");
+        apart.apart = true;
+        let mut read = job("o1", "build");
+        read.foreign = Some("its agent read a page in Oby's browser".into());
+        let earlier = [theirs.clone(), read.clone()];
+        let get = |id: &str| earlier.iter().find(|j| j.id == id).cloned();
+        let none = serde_json::Value::Null;
+        assert_eq!(origin_of(&theirs, &none, get), Origin::Untrusted);
+        assert_eq!(origin_of(&apart, &none, get), Origin::Untrusted);
+        let mut follow = job("f1", "build");
+        follow.follow_up_of = Some("r1".into());
+        follow.foreign = Some("it follows up a job whose check got none of them".into());
+        assert_eq!(origin_of(&follow, &none, get), Origin::Untrusted);
+        assert_eq!(origin_of(&read, &none, get), Origin::Own);
+        let mut after_read = job("f2", "build");
+        after_read.follow_up_of = Some("o1".into());
+        after_read.foreign = Some("it follows up a job whose check got none of them".into());
+        assert_eq!(origin_of(&after_read, &none, get), Origin::Own);
     }
 
     /// A line whose earlier job is gone, or longer than the walk reads, can't show it's the

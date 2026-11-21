@@ -4772,6 +4772,25 @@ fn merging_36_a_review_of_someone_elses_commits_asks_for_its_reads() {
     assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
 }
 
+/// BROWSER-18: the owner's review of a pull request whose head has a commit obid didn't record
+/// reads someone else's code from its start: its agent is given no browser server, as another
+/// Oby's task isn't, until the window's side of the box's edge lands.
+#[test]
+fn browser_18_a_review_of_someone_elses_commits_gets_no_browser() {
+    let folder = Folder::new("review-theirs-browser");
+    let remote = fixture(&folder.0.join("fixture"));
+    authors_commit(&folder.0, &remote, "refs/pull/91/head");
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 91, "task": "REPORT"});
+    let id = post_job(&obid, task).body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let loaded = loaded(&obid, &id);
+    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
+}
+
 /// MERGING-36: a review the owner dispatched (signed, so obid asks GitHub who wrote the pull
 /// request) on a pull request a member of the owner's organization wrote is someone else's code
 /// (`foreign`, not only `reached` as a fix on it would be: ISSUETASK-5), so it runs in Oby's box.
