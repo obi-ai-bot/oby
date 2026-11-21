@@ -85,6 +85,8 @@ pub struct Shared {
     pub receipts: Option<Arc<crate::receipts::Receipts>>,
     /// True once obid is stopping: streams end.
     pub stopping: tokio::sync::watch::Receiver<bool>,
+    /// The computers this Mac works on, for the window (crate::remote::computers).
+    pub computers: crate::remote::computers::Computers,
 }
 
 /// What `status.cleanup` says: the job worktrees' folder and the disk space it took when last
@@ -440,6 +442,24 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/obid/sharing/limits",
             axum::routing::put(crate::sphere::routes::limits),
         )
+        .route(
+            "/v1/computers",
+            get(crate::remote::window::list).post(crate::remote::window::add),
+        )
+        .route("/v1/computers/link", post(crate::remote::window::read_link))
+        .route(
+            "/v1/computers/current",
+            axum::routing::put(crate::remote::window::use_computer),
+        )
+        .route(
+            "/v1/computers/{id}",
+            axum::routing::patch(crate::remote::window::rename)
+                .delete(crate::remote::window::remove),
+        )
+        .route(
+            "/v1/computers/{id}/retry",
+            post(crate::remote::window::retry),
+        )
         .route("/v1/pairing/invite", post(crate::gateway::invite))
         .route("/v1/pairing/devices", get(crate::gateway::devices))
         .route(
@@ -454,6 +474,13 @@ pub fn router(shared: Arc<Shared>) -> Router {
         ))
         .layer(middleware::from_fn(crate::vault::answers))
         .layer(middleware::from_fn_with_state(shared.clone(), gate))
+        // A request naming another computer (COMPUTERS-22) is decided first, by its own check of
+        // obid's token: sent there, or refused here, never run on this Mac; outside the profile's
+        // scope and the vault's answers too, which are that computer's own.
+        .layer(middleware::from_fn_with_state(
+            shared.clone(),
+            crate::remote::forward::layer,
+        ))
         .with_state(shared)
 }
 
@@ -860,6 +887,17 @@ pub struct RunnerJson {
     /// The commit obid was built from (`OBY_BUILD_COMMIT` when it was compiled, as
     /// scripts/run-dev.sh and the app's packaging set it), or null for a build that wasn't told.
     pub commit: Option<&'static str>,
+    /// `mac` or `linux` (or the system's own name elsewhere): what another Mac shows this computer
+    /// as (docs/contracts/remote.md, COMPUTERS-19).
+    pub os: &'static str,
+}
+
+/// [`RunnerJson::os`].
+pub fn os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "mac",
+        other => other,
+    }
 }
 
 /// [`RunnerJson::commit`]: what the build was given, empty counting as none.
@@ -1161,6 +1199,7 @@ async fn status(
             host: shared.host.clone(),
             engine: "obid",
             commit: build_commit(),
+            os: os(),
         },
         accounts,
         available_logins: shared

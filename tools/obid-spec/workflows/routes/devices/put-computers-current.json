@@ -1,0 +1,194 @@
+{
+  "schemaVersion": "2",
+  "name": "PUT /v1/computers/current",
+  "version": "1.0.0",
+  "description": "Which computer the window is on, kept for the window: Studio, then This Mac; one the Mac doesn't keep is 404 (COMPUTERS-21).",
+  "trigger": {
+    "http": {
+      "method": "PUT",
+      "path": "/v1/computers/current"
+    }
+  },
+  "steps": [
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0",
+          "direct": [
+            "127.0.0.1:0"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mac",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "mac",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "at-studio",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.studio}",
+        "in": "home",
+        "path": "invite-computer",
+        "content": "workflow-presence-0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "computerLink": {
+              "$matches": "^oby-computer:"
+            }
+          }
+        },
+        "body": {
+          "url": "https://studio.example.invalid",
+          "name": "Studio",
+          "computer": true,
+          "presence": "workflow-presence-0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "add",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$type": "string"
+            },
+            "state": "connected"
+          }
+        },
+        "body": {
+          "link": "${state.invite.body.computerLink}",
+          "code": "${state.invite.body.code}"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "on-studio",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "PUT",
+        "path": "/v1/computers/current",
+        "expect": {
+          "status": 200,
+          "body": {
+            "current": "${state.add.body.id}"
+          }
+        },
+        "body": {
+          "id": "${state.add.body.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-21"
+        ]
+      }
+    },
+    {
+      "id": "kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 200,
+          "body": {
+            "current": "${state.add.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-21"
+        ]
+      }
+    },
+    {
+      "id": "not-one-of-the-macs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "PUT",
+        "path": "/v1/computers/current",
+        "expect": {
+          "status": 404,
+          "body": {
+            "reason": "no_such_computer"
+          }
+        },
+        "body": {
+          "id": "nope"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-21"
+        ]
+      }
+    },
+    {
+      "id": "back-to-this-mac",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "PUT",
+        "path": "/v1/computers/current",
+        "expect": {
+          "status": 200,
+          "body": {
+            "current": "this"
+          }
+        },
+        "body": {
+          "id": "this"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-21"
+        ]
+      }
+    }
+  ]
+}

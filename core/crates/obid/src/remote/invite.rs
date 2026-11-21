@@ -230,11 +230,16 @@ mod tests {
         assert_ne!(nonce, nonce2);
         assert!(presence_check(&home, &nonce2, now));
         assert!(!presence_check(&home, &nonce2, now), "once");
+        // Two minutes after it was written, whenever that was.
         let late = presence_write(&home).unwrap();
+        let written = std::fs::metadata(home.join(PRESENCE))
+            .unwrap()
+            .modified()
+            .unwrap();
         assert!(!presence_check(
             &home,
             &late,
-            now + Duration::from_secs(121)
+            written + Duration::from_secs(121)
         ));
         std::fs::remove_dir_all(&home).unwrap();
     }

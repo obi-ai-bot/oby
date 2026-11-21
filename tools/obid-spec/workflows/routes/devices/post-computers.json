@@ -1,0 +1,467 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/computers",
+  "version": "1.0.0",
+  "description": "Two obids, the Mac and Studio: Studio's owner makes a code there; the Mac adds Studio with it only as its owner's signed act, a wrong code adding nothing (COMPUTERS-19); then the window's requests naming Studio are Studio's, its owner's words signed on the Mac count there, and a request naming none stays the Mac's (COMPUTERS-22); a computer's route answers there and the vault doesn't (COMPUTERS-14).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/computers"
+    }
+  },
+  "steps": [
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0",
+          "direct": [
+            "127.0.0.1:0"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mac",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "mac",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "at-studio",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.studio}",
+        "in": "home",
+        "path": "invite-computer",
+        "content": "workflow-presence-0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "computerLink": {
+              "$matches": "^oby-computer:"
+            }
+          }
+        },
+        "body": {
+          "url": "https://studio.example.invalid",
+          "name": "Studio",
+          "computer": true,
+          "presence": "workflow-presence-0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "unsigned-adds-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 403
+        },
+        "body": {
+          "link": "${state.invite.body.computerLink}",
+          "code": "${state.invite.body.code}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-19"
+        ]
+      }
+    },
+    {
+      "id": "a-wrong-code-adds-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "wrong_code"
+          }
+        },
+        "body": {
+          "link": "${state.invite.body.computerLink}",
+          "code": "000000"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-19"
+        ]
+      }
+    },
+    {
+      "id": "add",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$type": "string"
+            },
+            "name": "Studio",
+            "state": "connected"
+          }
+        },
+        "body": {
+          "link": "${state.invite.body.computerLink}",
+          "code": "${state.invite.body.code}"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-19"
+        ]
+      }
+    },
+    {
+      "id": "studio-lists-a-computer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "GET",
+        "path": "/v1/pairing/devices",
+        "expect": {
+          "status": 200,
+          "body": [
+            {
+              "computer": true
+            }
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-19"
+        ]
+      }
+    },
+    {
+      "id": "its-status-through-the-mac",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "gateway": {
+              "direct": {
+                "$len": 1
+              }
+            }
+          }
+        },
+        "headers": {
+          "Oby-Computer": "${state.add.body.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "the-macs-own-status",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "body": {
+            "gateway": {
+              "direct": {
+                "$exists": false
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "mac-starts-in-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "studio-starts-in-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "body": {
+          "mode": "ask"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "ask"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "words-signed-on-the-mac-count-there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "PUT",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200
+        },
+        "body": {
+          "mode": "bypass"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "headers": {
+          "Oby-Computer": "${state.add.body.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "studio-is-in-bypass",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": "bypass"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "the-mac-is-not",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/settings/permissions",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mode": {
+              "$ne": "bypass"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "a-computers-route",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/skills",
+        "expect": {
+          "status": 200
+        },
+        "headers": {
+          "Oby-Computer": "${state.add.body.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-14"
+        ]
+      }
+    },
+    {
+      "id": "not-the-vault",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/obid/vault",
+        "expect": {
+          "status": 404,
+          "body": {
+            "reason": "not_for_a_computer"
+          }
+        },
+        "headers": {
+          "Oby-Computer": "${state.add.body.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-14"
+        ]
+      }
+    },
+    {
+      "id": "an-agents-token-names-none",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.mac.base}",
+          "token": "an-agents-broker-token"
+        },
+        "method": "POST",
+        "path": "/v1/agent/mcp/job-1",
+        "as": "token",
+        "token": "an-agents-broker-token",
+        "body": {},
+        "headers": {
+          "Oby-Computer": "${state.add.body.id}"
+        },
+        "expect": {
+          "status": 400,
+          "body": {
+            "reason": "not_the_window"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "nor-one-through-the-gateway",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.mac.gatewayBase}",
+          "token": "a-device-token"
+        },
+        "method": "GET",
+        "path": "/v1/status",
+        "as": "token",
+        "token": "a-device-token",
+        "headers": {
+          "Oby-Computer": "${state.add.body.id}"
+        },
+        "expect": {
+          "status": 400
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    },
+    {
+      "id": "an-unknown-computer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 404,
+          "body": {
+            "reason": "no_such_computer"
+          }
+        },
+        "headers": {
+          "Oby-Computer": "nope"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-22"
+        ]
+      }
+    }
+  ]
+}
