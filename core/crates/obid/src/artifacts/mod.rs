@@ -38,6 +38,7 @@ use crate::store::{make_private_dir, write_private};
 
 mod blobs;
 mod design;
+pub mod edit;
 pub mod export;
 mod limits;
 
@@ -132,6 +133,9 @@ pub struct Version {
     /// The job that published it, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
+    /// `owner` when the owner's own edit made it (ARTIFACTS-16, [`edit`]); none for an agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 impl Artifact {
@@ -158,6 +162,16 @@ pub struct Publish<'a> {
     /// files as that version make no new one, whatever version came after it, so a job publishing
     /// its `.obi/artifacts/` again never lays its files over its conversation's (ARTIFACTS-7).
     pub kept: Option<u32>,
+}
+
+/// Who made a version, past what [`Publish`] says: the owner's edit, the uploads its files
+/// already hold (a design's, kept under `assets/` by the version it was made from), and, for a
+/// new artifact no agent made, how it came to be (an import, crate::artifacts::export).
+#[derive(Default)]
+struct Made {
+    by: Option<&'static str>,
+    blobs: Option<BTreeMap<String, String>>,
+    origin: Option<Origin>,
 }
 
 /// Every artifact obid keeps.
@@ -211,18 +225,18 @@ impl Artifacts {
         what: Publish<'_>,
         origin: Option<Origin>,
     ) -> Result<(String, u32), String> {
-        match self.publish_unsaid(what, origin).await {
+        let made = Made {
+            origin,
+            ..Made::default()
+        };
+        match self.publish_unsaid(what, made).await {
             Ok(made) => Ok(made),
             // A refusal may name what it refused: never a name that looks like a secret.
             Err(why) => Err(self.speakable(why).await),
         }
     }
 
-    async fn publish_unsaid(
-        &self,
-        what: Publish<'_>,
-        origin: Option<Origin>,
-    ) -> Result<(String, u32), String> {
+    async fn publish_unsaid(&self, what: Publish<'_>, made: Made) -> Result<(String, u32), String> {
         let title = clean_title(what.title)
             .ok_or("Not published: the title is one line of 1 to 100 characters.")?;
         let before = match what.artifact {
@@ -257,7 +271,7 @@ impl Artifacts {
                 .map_err(|e| format!("Not published: the copy stopped ({e})."))?
         };
         let result = self
-            .finish(&what, &title, before, &staging, copied, origin)
+            .finish(&what, &title, before, &staging, copied, made)
             .await;
         let _ = std::fs::remove_dir_all(&staging);
         result
@@ -270,7 +284,7 @@ impl Artifacts {
         before: Option<Artifact>,
         staging: &Path,
         copied: Result<Copied, String>,
-        origin: Option<Origin>,
+        made: Made,
     ) -> Result<(String, u32), String> {
         let mut copied = copied.map_err(|why| format!("Not published: {why}"))?;
         let kind = check_kind(
@@ -279,7 +293,9 @@ impl Artifacts {
             what.kind.or(before.as_ref().map(|a| a.kind)),
         )
         .map_err(|why| format!("Not published: {why}"))?;
-        let blobs = if kind == Kind::Design {
+        let blobs = if let Some(kept) = made.blobs {
+            kept
+        } else if kind == Kind::Design {
             blobs::ingest(staging, &mut copied.files)
                 .map_err(|why| format!("Not published: {why}"))?
         } else {
@@ -335,7 +351,7 @@ impl Artifacts {
                 job: what.job.map(str::to_owned),
                 created: now.clone(),
                 versions: Vec::new(),
-                origin,
+                origin: made.origin,
             },
         };
         if artifact.versions.len() >= MAX_VERSIONS as usize {
@@ -377,6 +393,7 @@ impl Artifacts {
             bytes: copied.bytes,
             blobs,
             job: what.job.map(str::to_owned),
+            by: made.by.map(str::to_owned),
         });
         self.save(&artifact)
             .map_err(|e| format!("Not published: obid couldn't keep it ({e})."))?;
@@ -517,6 +534,28 @@ impl Artifacts {
         self.events.send(
             "artifact",
             json!({"id": artifact.id, "renamed": true, "title": artifact.title,
+                   "kind": artifact.kind, "conversation": artifact.conversation, "job": artifact.job}),
+        );
+        Ok(Some(artifact))
+    }
+
+    /// Gives `id` the conversation `to`, only while it still has `had` (none, or one that's gone):
+    /// words said while it was open are in `to` from now on (ARTIFACTS-12, TASKCONV-4's rule), and
+    /// any of `to`'s jobs may version it. Says so (`artifact` with `joined`). The artifact as it is
+    /// now, whether it took `to` or kept another; none when there's no such one.
+    pub fn join(&self, id: &str, had: Option<&str>, to: &str) -> std::io::Result<Option<Artifact>> {
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut artifact) = self.get(id) else {
+            return Ok(None);
+        };
+        if artifact.conversation.as_deref() != had {
+            return Ok(Some(artifact));
+        }
+        artifact.conversation = Some(to.to_owned());
+        self.save(&artifact)?;
+        self.events.send(
+            "artifact",
+            json!({"id": artifact.id, "joined": true, "title": artifact.title,
                    "kind": artifact.kind, "conversation": artifact.conversation, "job": artifact.job}),
         );
         Ok(Some(artifact))
@@ -935,7 +974,7 @@ pub async fn list(State(shared): State<Arc<Shared>>, Query(filter): Query<Filter
     axum::Json(json!(all)).into_response()
 }
 
-fn no_artifact() -> ApiError {
+pub(crate) fn no_artifact() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "There's no such artifact.")
 }
 

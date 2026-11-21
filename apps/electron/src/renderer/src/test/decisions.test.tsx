@@ -41,7 +41,8 @@ const merge = item('merge-j1', 'merge', 'j1', {
   // as obid writes it (merge.rs, MERGING-21): what it asks, then each hold on a line of its own
   text: 'Merge oby-scratch #4 into main?\nNo check ran on its head (this repository has none).\nIts base is main, which Oby merges into only on your word.',
 });
-const permission = item('j2-permission-p1', 'permission', 'j2', { title: 'Run npm test', text: 'It wants to run the tests.', options: ['Allow once', 'Deny'] });
+// as obid writes it (sphere/inbox.rs, permission_item; docs/api/inbox.md): its title the task's, its text the permission's own
+const permission = item('j2-permission-p1', 'permission', 'j2', { title: 'Run the tests', text: 'Run npm test', options: ['Allow once', 'Deny'] });
 
 let root: Root | undefined;
 let host: HTMLElement;

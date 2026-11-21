@@ -1,6 +1,7 @@
 # Oby Artifacts: the port from the lab into obid and the app
 
-A plan, not built (2026-11-20), checked against `origin/dev` at `fa19c191`. It turns the port step
+A plan, checked against `origin/dev` at `fa19c191` (2026-11-20); P1 is built (#2776), and the
+order changed on 2026-11-21: the local loop, below, comes first. It turns the port step
 of the Oby Artifacts backend plan (its §7.6) into small pull requests, each with its contract's
 scenarios, the files it owns, its place in the order, and the lab workflow that becomes its Blok
 proof (OBIDSPEC-16). Nothing here is code. Each PR below can become a task file
@@ -12,6 +13,269 @@ the viewer, sharing and the public link all work there, each proven red before g
 moves it into the house piece by piece: a few walls at a time, the lights staying on, each piece
 proven in place by the same test that proved it on the bench, now pointed at the real obid or the
 real app.
+
+## First: the local loop, as LibreChat does it (2026-11-21)
+
+The owner, 2026-11-21: "Yes, do it like LibreChat and Sandpack and then we try to make some
+changes to be able to achieve what we wanted to oby but first make it work!!!!!!"
+
+So the next PRs build the loop LibreChat has, and nothing else, until it works in the owner's
+daily drive:
+
+1. an agent makes an artifact in a conversation;
+2. the owner sees it in a side panel, with Code and Preview, and edits it;
+3. each change is a version, and the owner can go back to any version;
+4. export and import.
+
+Preview is drawn by Sandpack (CodeSandbox's in-browser runner), in a sandboxed frame inside
+Sangam's artifact screens. The rest of this plan comes after that loop works: sharing, encryption,
+public links, the invite, and Claude Design boards drawn by Oby's runtime.
+
+Think of LibreChat's artifacts as a recipe that is already proven. We cook it as written, in our
+own kitchen and with our own ingredients: P1's store is the pantry, and nothing comes from a
+shop outside. Only once the dish comes out right do we change the recipe.
+
+### What LibreChat and Sandpack do
+
+Read from `danny-avila/LibreChat` `main` and `codesandbox/sandpack` `main`, 2026-11-21.
+
+- **LibreChat's panel** (`client/src/components/Artifacts/`):
+  - The panel is `Artifacts.tsx`. Its tabs are `ArtifactTabs.tsx`: Code is `ArtifactCodeEditor.tsx`
+    and Preview is `ArtifactPreview.tsx`.
+  - Versions are `ArtifactVersion.tsx`, a menu of the same artifact's versions, shown only when
+    there are two or more.
+  - Downloading is `DownloadArtifact.tsx`. The card in a message, which opens the panel, is
+    `ArtifactButton.tsx`.
+- **The message tags.** A model writes `:::artifact{identifier type title}` in its message, and
+  LibreChat parses it as a directive. Oby needs no tags: an agent already publishes through its
+  room's `.obi/artifacts/` or `oby_artifact`, P1's store keeps every version, and the conversation
+  shows a card per artifact.
+- **How LibreChat drives Sandpack** (`client/src/utils/artifacts.ts`):
+  - Each type maps to a Sandpack template. `text/html`, markdown, code, SVG and plain text use
+    `static`; `application/vnd.react` uses `react-ts`.
+  - A React artifact gets a fixed set of dependencies (React, `lucide-react`, Radix, `recharts`,
+    shadcn's files).
+  - The preview is `SandpackProvider` plus `SandpackPreview`, with "Open in CodeSandbox" and
+    refresh hidden.
+  - `buildSandpackOptions` sets `bundlerURL` from `SANDPACK_BUNDLER_URL`, or
+    `SANDPACK_STATIC_BUNDLER_URL` for `static`.
+  - Edits are saved by `useEditArtifact`, debounced, into the message that made the artifact.
+- **LibreChat isn't local.** It still uses hosted services even with its own bundler:
+  - With no bundler URL set, it uses CodeSandbox's hosted bundler.
+  - It always loads Tailwind from `https://cdn.tailwindcss.com/3.4.17` (`externalResources`).
+  - The `react-ts` bundler fetches npm packages from a hosted CDN.
+  - Its editor, `@monaco-editor/react`, loads Monaco from jsDelivr unless told otherwise.
+- **Sandpack's clients** (`sandpack-client/src/clients/`):
+  - `static` serves a template's files through `static-browser-server`. A hidden relay frame at
+    `<random id>-<bundler host>/__csb_relay/` registers a service worker, which answers the preview
+    frame's requests from the files in memory. The bundler host defaults to
+    `preview.sandpack-static-server.codesandbox.io`, and `bundlerURL` changes it.
+  - `runtime` (the React templates) is the bundler that runs in the browser. Both bundlers fetch
+    every npm package from a CDN of CodeSandbox's: the classic one from
+    `prod-packager-packages.codesandbox.io`, the newer `sandpack-bundler` from
+    `sandpack-cdn-staging.blazingly.io`.
+  - `node` runs on Nodebox.
+
+### Licences, from their own files
+
+| What | Licence | What we may do with it |
+|---|---|---|
+| LibreChat | MIT (`LICENSE`) | Read it and follow its design. Any code copied keeps its MIT notice in the file. |
+| `@codesandbox/sandpack-react` 2.20.0, `sandpack-client` 2.19.8 | Apache-2.0 (`LICENSE`) | Use as packages. The app's notices carry their licence. |
+| `static-browser-server` 1.0.3 (the relay) | Apache-2.0, said in its `package.json`. Neither the repository nor the package has a `LICENSE` file. | Ship its built relay, changed (see below), with the Apache-2.0 text beside it. |
+| `codesandbox/sandpack-bundler` | Apache-2.0 | Allowed, but not used: it fetches npm packages from a hosted CDN and hasn't changed since 2024-11. |
+| `codesandbox/codesandbox-client`, the classic bundler, and LibreChat's self-hosting fork `LibreChat-AI/codesandbox-client` | GPLv3, except `packages/common`, `packages/sandpack-core` and `packages/app/src/sandbox` (Apache-2.0) | **Not copied or shipped.** Its build mixes GPLv3 code into the bundler. |
+| `@codesandbox/nodebox` 0.1.8 | **Sustainable Use License**, not open source: "only for your own internal business purposes or for non-commercial or personal use" | **Never in Oby's build.** `sandpack-client` depends on it for its `node` client, so the app replaces it with an empty stub of our own through npm's `overrides`. A check fails the build if any of it is in `out/`. |
+| `sucrase` 3.35.1, `@tailwindcss/browser` 4.3.5, React | MIT | Vendored for React artifacts (L5). |
+
+### How Sandpack runs fully local in Oby
+
+**Yes, it can**, with one change from LibreChat: every template is `static`, and React artifacts
+are compiled in the app, not by a hosted bundler.
+
+- **The relay is ours, served by the app.**
+  - `static-browser-server`'s package already holds the built relay: `out/preview/`, four files,
+    about 38 KB, with no address outside itself.
+  - The app vendors it under `apps/electron/resources/sandpack-relay/` and adds a CSP: nothing
+    from outside, `connect-src 'self'`, no `frame-ancestors` but the app.
+  - Electron's main serves it on 127.0.0.1, on a port it picks, for any host
+    `<id>-preview.localhost`. Chromium sends `*.localhost` to loopback by itself, and treats it as
+    a secure context, so the service worker can register.
+  - `bundlerURL` is always that address, so Sandpack never reaches `codesandbox.io`.
+- **Nodebox never ships.** See the table.
+- **React artifacts with no CDN** (L5): this is the change from LibreChat.
+  - The app compiles `App.tsx` and its files with `sucrase`.
+  - It writes an `index.html` with an import map onto vendored ESM builds of `react`, `react-dom`,
+    `lucide-react` and `@tailwindcss/browser`, served by the same relay server.
+  - It hands those files to Sandpack's `static` template.
+  - An import outside the vendored set shows a plain error in the preview and fetches nothing.
+    The set grows by vendoring, one package and its licence at a time.
+- **The editor** is Sandpack's own `SandpackCodeEditor` (CodeMirror 6, MIT), which loads nothing.
+  We don't take Monaco's CDN loader.
+- **Proof** in each app PR: a network log of the preview shows every request on loopback, and the
+  build check finds no `codesandbox.io`, `blazingly.io`, `cdn.tailwindcss.com`, jsDelivr, unpkg or
+  Nodebox code in the built app.
+
+### The loop's PRs, in order
+
+L1 to L6 come next, before P4 to P13. Each app PR has its scenarios in a new
+`docs/contracts/artifacts-app.md` (ARTIFACTSAPP-n), each a test named after it: vitest for the
+renderer, and an `app.*` workflow under `tools/obid-spec/workflows/app/`. Only the `app.*`
+workflows run on the Mac, alone; everything else runs on Azure. Each obid PR's Blok proof is a
+route workflow, red before green. Sangam's artifact screens (the Oby Artifacts canvas, boards 1a to
+1c) are what the app draws; the words come from his boards, never from a contract.
+
+#### L1. Sandpack, local: the relay, the card, and Preview beside the conversation
+
+- **Lane:** dispatcher (the app shows what was made). **Depends:** P1 (merged).
+- **Built** (2026-11-21): the card and the pane came into L1 from L2, so a real artifact shows in
+  the real window now. The preview is in a view of main's own, not the page's frame.
+- **What:**
+  - `@codesandbox/sandpack-client` 2.19.8, pinned exactly: its static client's chunk alone is built
+    in, never the hosted `runtime` bundler or the Nodebox `node` client. `sandpack-react` comes
+    with Code (L2).
+  - `@codesandbox/nodebox` replaced by `apps/electron/stubs/nodebox/`, a dependency the override
+    points at.
+  - The relay, vendored, and main's relay server (`*-preview.localhost`, 127.0.0.1 only), its worker
+    sending other origins to the network and putting the preview's CSP on every answer.
+  - The preview in a `WebContentsView` of its own partition (`oby-artifact-preview`), sandboxed,
+    with no preload; its session lets go only its host page and the relay. It is laid over the pane's
+    box, and main reads the version's files from obid.
+  - The card under the task that made it (board 1b's words), and the pane in the browser's place.
+  - A `page` (HTML), `markdown` (drawn by `marked`, as LibreChat does), `image` and `canvas` show;
+    a `design` shows its files until P4.
+- **Scenarios:**
+  - ARTIFACTSAPP-1: a page artifact's version draws in Sandpack's preview, and every request the
+    preview makes is to loopback.
+  - ARTIFACTSAPP-2: the built app holds no Nodebox code and no hosted bundler or CDN address.
+  - ARTIFACTSAPP-3: the preview can't reach off its origin, and is sandboxed in its own partition
+    with no preload, no Node and no bridge.
+  - ARTIFACTSAPP-4: the card under its task opens the pane on the latest version.
+- **Files:** `apps/electron/package.json`, `package-lock.json`, `electron.vite.config.ts`,
+  `vite.config.ts`, `stubs/nodebox/`, `resources/sandpack-relay/`, `scripts/local-only.mjs`,
+  `scripts/test-artifacts.mjs`, `src/main/{artifactPreview,previewRules,sandpackRelay}.ts`,
+  `src/main/index.ts`, `src/preload/index.ts`, `src/renderer/preview.html`,
+  `src/renderer/src/artifacts/`, `ChatView.tsx`, `Home.tsx`, `obid.ts`;
+  `docs/contracts/{artifacts-app,ipc}.md`.
+
+#### L2. The panel's Code, following the agent
+
+- **Lane:** dispatcher. **Depends:** L1, P3 (merged).
+- **What:**
+  - **Code.** Code and Preview tabs in the pane. Code is `SandpackCodeEditor` (`sandpack-react`
+    2.20.0, CodeMirror 6), read-only here, with a tab per file.
+  - **Following the agent.** An `artifact` event for the open conversation opens or moves the
+    pane to the new version. LibreChat's panel follows the latest the same way.
+  - **Asking for a change.** Words said while the pane is open carry `artifact: {id, version}`,
+    P3's key, so the agent changes this artifact.
+- **Scenarios:**
+  - ARTIFACTSAPP-5: Code shows each of the version's files.
+  - ARTIFACTSAPP-6: a new version from the agent moves the open pane to it.
+  - ARTIFACTSAPP-7: words said with the pane open reach the artifact's conversation with its
+    `artifact`.
+- **Files:** `src/renderer/src/artifacts/` (`Code.tsx`, `Pane.tsx`, `store.ts`), `Composer.tsx`'s
+  send (the key), `shared/words.ts`.
+
+#### L3a. obid: the owner's edit is a new version
+
+- **Lane:** dispatcher. **Depends:** P1. **Can run beside:** L1, L2.
+- **What:** `POST /v1/artifacts/{id}/versions` with `{base, files: {path: text}}`, signed in the
+  app's new `Edit` shape (signed-words).
+  - The files are the base version's, with the changes laid over them.
+  - They go through the same checks as any publish: kind, limits, names, and the secret scan. The
+    new version is the next one.
+  - It records `by: "owner"` (add-only, a version's `by`) and sends the `artifact` event.
+  - The answer is `409` when `base` isn't the latest, so two edits never pass each other silently.
+    It is `404` for no such artifact, and `401` unsigned.
+- **Scenarios** (`artifacts.md`):
+  - ARTIFACTS-16: an edit makes the next version, holding the base's files with the changes, and
+    `by: "owner"`.
+  - ARTIFACTS-17: an edit on an old base is `409`, and an unsigned one `401`.
+  - ARTIFACTS-18: an edit with a secret, or over a limit, is refused saying why, and nothing is
+    kept.
+- **Files:** `core/crates/obid/src/artifacts/edit.rs` (new), `api.rs` (one route),
+  `docs/contracts/{artifacts,signed-words}.md`, `docs/api/{artifacts.md,routes.txt}`,
+  `tools/obid-spec/workflows/routes/artifacts/post-artifacts-id-versions--*.json`.
+
+#### L3b. The app: edit, save, and versions
+
+- **Lane:** dispatcher. **Depends:** L2, L3a.
+- **What:**
+  - **Editing.** Code becomes editable. Preview redraws from the edited files as the owner types,
+    which is Sandpack's own live update.
+  - **Saving.** Save sends L3a's edit, and the result shows as the new version. LibreChat saves
+    edits automatically after a pause; Oby takes Sangam's control here.
+  - **Versions.** A version menu sits in the panel, shown from two versions on, as LibreChat's
+    `ArtifactVersion` is. An older version opens read-only, and saving from it is an edit on that
+    base, which obid answers `409` until the owner reloads the latest.
+- **Scenarios:**
+  - ARTIFACTSAPP-8: an edit shows in Preview before it's saved, and Save makes version n+1.
+  - ARTIFACTSAPP-9: the version menu opens any version, and the latest is marked.
+  - ARTIFACTSAPP-10: an edit that obid refuses shows why, and the edit stays in Code.
+- **Files:** `src/renderer/src/artifacts/` (`Code.tsx`, `Versions.tsx`, `store.ts`),
+  `shared/words.ts` (`Edit`).
+
+#### L4. Export and import
+
+- **Lane:** dispatcher. **Depends:** L2, P2 (export and import in obid, built, opens next).
+- **What:**
+  - **Export.** The panel's menu has Download, as a zip or an HTML file, saved where the owner
+    picks, and Copy, for one file's text.
+  - **Import.** A project zip or an HTML file dropped into a conversation becomes an artifact of
+    that conversation (P2's import), and its panel opens.
+- **Scenarios:**
+  - ARTIFACTSAPP-11: Download saves the version's zip, which equals obid's export byte for byte,
+    or its single HTML.
+  - ARTIFACTSAPP-12: a dropped zip becomes an imported artifact with its panel open, and its export
+    equals the zip.
+- **Files:** `src/renderer/src/artifacts/` (`Menu.tsx`, the drop), `src/main/` (the save dialog),
+  `shared/words.ts` (`Import`, as P2 signs it).
+
+#### L5. React artifacts, still local
+
+- **Lane:** dispatcher. **Depends:** L1.
+- **What:**
+  - `sucrase` compiles `.tsx`/`.jsx` in the renderer, and the import map points at the vendored
+    `react`, `react-dom`, `lucide-react` and `@tailwindcss/browser`. Those are served by L1's relay
+    server, from `resources/sandpack-vendor/`, with each licence beside it.
+  - An artifact whose entry is `App.tsx` with no `index.html` gets one written by the app.
+  - obid's side is checked first: whether `check_kind` keeps such a folder as a `page`. If it
+    doesn't, an add-only change in its own small obid PR, with its Blok proof.
+- **Scenarios:**
+  - ARTIFACTSAPP-13: a React artifact using `lucide-react` and Tailwind classes draws, every
+    request on loopback.
+  - ARTIFACTSAPP-14: an import outside the vendored set shows its error in the preview and fetches
+    nothing.
+- **Files:** `resources/sandpack-vendor/`, `src/renderer/src/artifacts/react.ts` (new),
+  `package.json` (`sucrase`).
+
+#### L6. The real drive
+
+- On the owner's Mac, with their own agents, through the `human-drive` skill:
+  - asking for a page in a conversation opens its panel;
+  - asking for a change moves the panel to v2;
+  - an edit is saved as v3, and v1 opens from the version menu;
+  - a download, then an import of that zip;
+  - a React artifact draws;
+  - the network log of the whole drive shows the preview on loopback only.
+- Each finding is a bug issue the same day, checked against boards 1a to 1c.
+
+### What waits until the loop works
+
+- **P2** (export and import in obid) and **P3** (the turn's artifact, #2799) are part of the loop:
+  they land as planned.
+- **P4** (Oby's runtime for Claude Design boards), **P5** (agent tools), **P6** and **P7** (the
+  artifact tab in obid's browser API, and the `oby-artifact://` view) and **P9** to **P13**
+  (sharing, the Sphere, public links, Share in the app, Settings) wait, as the owner said.
+  - P4 and P9 are built and held (P9 is #2796, disarmed).
+  - P7's `oby-artifact://` protocol stays the plan for designs. Sandpack's per-preview origin
+    already gives each preview its own origin.
+- **P8**'s pieces moved into the loop: the card (L2), Export and Import (L4) and the `artifact` on
+  the owner's words (L2). What's left of it, the artifact under its conversation in the sidebar,
+  waits with P7.
+- Once the loop works in the owner's daily drive, a new plan says what to change to reach the rest
+  of Oby's design. That covers designs on Oby's runtime, sharing, and moving the panel from
+  Sandpack's frame to the `oby-artifact://` view if that is still wanted.
 
 ## What the lab proved
 
@@ -38,7 +302,7 @@ Four lab PRs, all in `tools/obid-spec`, each scenario a workflow red with its ru
   server, its assertions the lab's. The lab workflow stays, as the lab's own proof.
 - **Add-only, as obid's API always is.** Every key and route here is new; none is renamed.
 
-## The PRs, in order
+## The port's PRs, P1 to P13
 
 Each says its lane ("Dispatcher, not harness"), what it depends on, its scenarios (new ids, with
 the lab scenario each comes from), the files it owns, and its Blok proof.
@@ -291,29 +555,40 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 
 ## The order
 
-| PR | Depends on | Can run beside |
-|---|---|---|
-| P1 Store v2 | none | P6 |
-| P2 Export and import | P1 | P3, P4, P9 |
-| P3 The turn's artifact | P1 | P2, P4, P9 |
-| P4 Oby's runtime | P1 | P2, P3, P9 |
-| P5 Agent tools | P4 | P9, P10 |
-| P6 The artifact tab (obid) | the browser's own ports | P1 to P5 |
-| P7 The artifact tab (app) | P4, P6 | P5, P9 |
-| P8 Conversation, Export, Import (app) | P2, P3, P7 | P9, P10 |
-| P9 Sharing: format and checks | P1 | P2 to P8 |
-| P10 Sharing over the Sphere | P9, the Sphere's server (merged, `d2ed70bf`) | P5 to P8 |
-| P11 Public links | P10, the Sphere's public links (merged, `d2ed70bf`) | P8 |
-| P12 Share, Shared (app) | P7, P10, P11 | none |
-| P13 Settings › Artifacts | P5 | P7 to P12 |
+| PR | Depends on | Can run beside | State |
+|---|---|---|---|
+| P1 Store v2 | none | | merged (#2776) |
+| P2 Export and import | P1 | L1, L2, L3a | built, opens next |
+| P3 The turn’s artifact | P1 | L1, L3a | merged (#2799) |
+| **L1** Sandpack, local, the card and Preview | P1 | P2, L3a | in review |
+| **L2** Code, following the agent | L1, P3 | L3a | |
+| **L3a** The owner's edit (obid) | P1 | L1, L2 | next |
+| **L3b** Edit, save, versions (app) | L2, L3a | L5 | |
+| **L4** Export and import (app) | L2, P2 | L5 | |
+| **L5** React artifacts, local | L1 | L3b, L4 | |
+| **L6** The real drive | L1 to L5 | none | |
+| P4 Oby's runtime | P1 | | after the loop (built, held) |
+| P5 Agent tools | P4 | | after the loop |
+| P6 The artifact tab (obid) | the browser's own ports | | after the loop |
+| P7 The artifact tab (app) | P4, P6 | | after the loop |
+| P8 What's left: under its conversation | P7 | | after the loop |
+| P9 Sharing: format and checks | P1 | | after the loop (#2796, disarmed) |
+| P10 Sharing over the Sphere | P9, the Sphere's server (merged, `d2ed70bf`) | | after the loop |
+| P11 Public links | P10, the Sphere's public links (merged, `d2ed70bf`) | | after the loop |
+| P12 Share, Shared (app) | P7, P10, P11 | | after the loop |
+| P13 Settings › Artifacts | P5 | | after the loop |
 
-- P1 first; then P2, P3, P4 and P9 side by side, each owning its files; P6 whenever the browser's
-  own ports allow (the orchestrator sequences it). `api.rs` is touched by P2, P10, P11 and P13, and
-  `shared/words.ts` by P7, P8 and P12: those land one after another, never at once.
+- Now: P2 and P3 land as planned; L1 and L3a side by side, each owning its files; then L2, L3b, L4
+  and L5; L6 last. `api.rs` is touched by P2 and L3a, and `shared/words.ts` by L2, L3b and L4:
+  those land one after another, never at once.
 - Every PR runs `scripts/preflight.sh` before its push and carries `full-suite`; each obid PR's Blok
   proof runs in its own PR, red before its code and green after.
 
 ## Decided
+
+- **The local loop first, like LibreChat, with Sandpack** (the owner, 2026-11-21): L1 to L6 before
+  P4 to P13. Sandpack runs local only: our relay, the `static` template, React compiled in the app,
+  no Nodebox, no hosted bundler or CDN.
 
 - **`age`, the crate** (the orchestrator, 2026-11-20): obid takes `age` 0.11, not its own writing of
   the format: hand-written cryptography is the riskier way to save crates. The cost: `age` 0.11
@@ -338,6 +613,11 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
   scenarios name the board, never the words.
 
 ## Sources
+
+- LibreChat (`danny-avila/LibreChat`, MIT): `client/src/components/Artifacts/`,
+  `client/src/utils/artifacts.ts`; Sandpack (`codesandbox/sandpack`, Apache-2.0):
+  `sandpack-client/src/clients/static/`; `codesandbox/static-browser-server` 1.0.3; the licences of
+  `codesandbox-client`, `sandpack-bundler`, `@codesandbox/nodebox` 0.1.8; all read 2026-11-21.
 
 - The Oby Artifacts backend plan (§3, §6, §7, §8) and its design canvas (boards 1a to 2c).
 - The lab: #2682, #2689, #2709, #2713 (`tools/obid-spec/src/lab/artifacts*.rs`, `artifactview.rs`,

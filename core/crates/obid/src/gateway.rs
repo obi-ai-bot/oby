@@ -149,6 +149,31 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/notifications"),
 ];
 
+/// The routes another computer's token reaches past [`ROUTES`] (docs/contracts/remote.md,
+/// COMPUTERS-14), each with the screen of the window that needs it there. Each is added on its own,
+/// reviewed, and only where no doc of obid's keeps it on its loopback API.
+pub const COMPUTER_ROUTES: &[(&str, &str, &str)] = &[
+    (
+        "GET",
+        "/v1/skills",
+        "the message box's `/` list, of the computer in use (COMPOSER-25)",
+    ),
+    (
+        "GET",
+        "/v1/connectors",
+        "Settings › Connectors, of the computer in use",
+    ),
+];
+
+/// Whether another computer's token may `method` `path` through the gateway: a phone's
+/// [`ROUTES`], and [`COMPUTER_ROUTES`].
+pub fn allows_computer(method: &Method, path: &str) -> bool {
+    allows(method, path)
+        || COMPUTER_ROUTES
+            .iter()
+            .any(|(m, p, _)| *m == method.as_str() && *p == path)
+}
+
 /// Whether a phone may `method` `path` through the gateway: `*` is one path segment.
 pub fn allows(method: &Method, path: &str) -> bool {
     let actual: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -1000,21 +1025,40 @@ async fn unpair(State(through): State<Through>, request: Request) -> Response {
 /// its content type.
 async fn forward(State(through): State<Through>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
+    // Only the window on a computer's own Mac names a computer (COMPUTERS-22): a request through
+    // the gateway that does is refused, never sent on from here.
+    if parts.headers.contains_key(crate::remote::computers::HEADER) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Only Oby's window on its own Mac works on another computer.",
+        );
+    }
     // A phone's and a computer's token reach the same list (COMPUTERS-14): a route off it is one
     // obid's docs keep on its loopback API, until the owner adds it by name.
-    let Some(path) = plain_path(parts.uri.path()).filter(|path| allows(&parts.method, path)) else {
+    let Some(path) =
+        plain_path(parts.uri.path()).filter(|path| allows_computer(&parts.method, path))
+    else {
         return error(
             StatusCode::NOT_FOUND,
             "That route isn't available through the gateway.",
         );
     };
     let token = bearer(&parts.headers);
+    // A route on a phone's list, or only on a computer's; without a device token that works here,
+    // one off a phone's list is `404`, as it always was.
+    let listed = allows(&parts.method, &path);
     // A phone paired through the Obysphere is reached only sealed, by its own relay token's
     // socket; any other only here, on the listener.
     let via = parts.extensions.get::<Relayed>().map(|r| r.0.as_str());
     let device =
         match token.and_then(|t| through.shared.gateway.device_via(t, SystemTime::now(), via)) {
             Some(Ok(device)) => device,
+            _ if !listed => {
+                return error(
+                    StatusCode::NOT_FOUND,
+                    "That route isn't available through the gateway.",
+                );
+            }
             Some(Err(())) if via.is_none() => {
                 return error(
                     StatusCode::UNAUTHORIZED,
@@ -1048,6 +1092,12 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
                 "Those words aren't signed by this computer's own key. Add this computer again.",
             );
         }
+    } else if !listed {
+        // A route only a computer's token reaches.
+        return error(
+            StatusCode::NOT_FOUND,
+            "That route isn't available through the gateway.",
+        );
     }
     let Ok(body) = axum::body::to_bytes(body, BODY).await else {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "That request is too large.");
@@ -1968,6 +2018,20 @@ mod tests {
         assert!(!allows(&Method::PUT, "/v1/obid/vault/github"));
         assert!(!allows(&Method::GET, "/v1/pairing/devices"));
         assert!(!allows(&Method::POST, "/v1/repos/setup"));
+    }
+
+    #[test]
+    fn computers_14_a_computers_own_routes_are_named_each_with_its_screen() {
+        for (method, path, screen) in COMPUTER_ROUTES {
+            let method = Method::from_bytes(method.as_bytes()).unwrap();
+            assert!(allows_computer(&method, path), "{method} {path}");
+            assert!(!allows(&method, path), "{path} isn't a phone's too");
+            assert!(!screen.is_empty(), "{path} names its screen");
+        }
+        assert!(allows_computer(&Method::GET, "/v1/skills"));
+        assert!(!allows_computer(&Method::POST, "/v1/skills"));
+        assert!(!allows_computer(&Method::GET, "/v1/obid/vault"));
+        assert!(allows_computer(&Method::GET, "/v1/status"), "a phone's too");
     }
 
     #[test]

@@ -1,0 +1,262 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-14: a 503 keeps the credentials and goes back to Codex, which backs off itself",
+  "version": "1.0.0",
+  "description": "OpenAI answering 503 on every try: Codex's own six tries reach OpenAI and obid adds none; the job ends interrupted with OpenAI's words and Try again, no time to resume, the login kept and no limit held.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unavailable",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "responses": [
+          {
+            "status": 503,
+            "json": {
+              "detail": "Direct routing is unavailable"
+            }
+          },
+          {
+            "status": 503,
+            "json": {
+              "detail": "Direct routing is unavailable"
+            }
+          },
+          {
+            "status": 503,
+            "json": {
+              "detail": "Direct routing is unavailable"
+            }
+          },
+          {
+            "status": 503,
+            "json": {
+              "detail": "Direct routing is unavailable"
+            }
+          },
+          {
+            "status": 503,
+            "json": {
+              "detail": "Direct routing is unavailable"
+            }
+          },
+          {
+            "status": 503,
+            "json": {
+              "detail": "Direct routing is unavailable"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-14-the-job-ends-saying-try-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "interrupted",
+            "nextStep": "Try again",
+            "resumesAt": {
+              "$exists": false
+            },
+            "reason": {
+              "$matches": "^ChatGPT is unavailable for now \\(503\\)\\."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-14-codexs-own-tries-only",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "posts": 6
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-14-credentials-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": true,
+                "fullUntil": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-14"
+        ]
+      }
+    }
+  ]
+}

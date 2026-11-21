@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/computers/{id}/retry",
+  "version": "1.0.0",
+  "description": "Trying again probes a computer's routes now: connected while Studio answers; once it's stopped, lost with every route tried, and the window's request there says so in words (COMPUTERS-24).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/computers/{id}/retry"
+    }
+  },
+  "steps": [
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0",
+          "direct": [
+            "127.0.0.1:0"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mac",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "mac",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "at-studio",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.studio}",
+        "in": "home",
+        "path": "invite-computer",
+        "content": "workflow-presence-0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "computerLink": {
+              "$matches": "^oby-computer:"
+            }
+          }
+        },
+        "body": {
+          "url": "https://studio.example.invalid",
+          "name": "Studio",
+          "computer": true,
+          "presence": "workflow-presence-0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "add",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$type": "string"
+            },
+            "state": "connected"
+          }
+        },
+        "body": {
+          "link": "${state.invite.body.computerLink}",
+          "code": "${state.invite.body.code}"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "answers",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/${state.add.body.id}/retry",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "connected"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-24"
+        ]
+      }
+    },
+    {
+      "id": "studio-stops",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.studio}"
+      }
+    },
+    {
+      "id": "lost",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/${state.add.body.id}/retry",
+        "expect": {
+          "status": 200,
+          "body": {
+            "state": "lost",
+            "tried": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-24"
+        ]
+      }
+    },
+    {
+      "id": "the-window-hears-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "GET",
+        "path": "/v1/status",
+        "expect": {
+          "status": 502,
+          "body": {
+            "reason": "unreachable",
+            "error": {
+              "$matches": "Studio"
+            }
+          }
+        },
+        "headers": {
+          "Oby-Computer": "${state.add.body.id}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-24"
+        ]
+      }
+    }
+  ]
+}

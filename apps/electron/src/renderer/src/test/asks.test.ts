@@ -54,6 +54,18 @@ describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
     expect(ask.detail).toBe('npm install');
   });
 
+  // obid's permission item: its title the task's, its text the permission's own title (docs/api/inbox.md)
+  it('LIVETASK-24: a permission\'s headline is what it asks, in obid\'s words, never its task\'s title (#2788)', () => {
+    const write = item('permission', { title: 'Create docs/hello.md word', text: 'Edit hello.md', options: ['Allow', 'Always allow', 'Deny'] });
+    const run = item('permission', { id: 'j1-permission-p2', title: 'Create docs/hello.md word', text: 'Run git add docs/hello.md && git commit -m "Add hello"', options: ['Allow', 'Deny'] });
+    expect(live.itemAsk(write, 'docs/hello.md')).toMatchObject({ kind: 'permission', headline: 'Edit hello.md', detail: 'docs/hello.md' });
+    expect(live.itemAsk(run).headline).toBe('Run git add docs/hello.md && git commit -m "Add hello"');
+    // on Home the same, its words not again under it
+    expect(live.homeAsk(write)).toMatchObject({ headline: 'Edit hello.md', text: '' });
+    // a headline of obid's own still leads
+    expect(live.itemAsk({ ...run, headline: 'Commit the new file' }).headline).toBe('Commit the new file');
+  });
+
   it('bypass_5_answers_by_the_inbox_item_never_the_jobs_lagging_permission', async () => {
     // the job's permission is still the call's first question; the inbox already has the second
     const s = live.liveState();

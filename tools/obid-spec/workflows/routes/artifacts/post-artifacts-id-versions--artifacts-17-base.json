@@ -1,0 +1,266 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/artifacts/{id}/versions: an edit on an old base, unsigned, or of another file is refused",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-17 (the port plan's L3a). An unsigned edit is 401; once the owner's edit made version 2, one made on version 1 is 409, one of a file the version doesn't have 422, one of no such artifact 404, a body that isn't an edit 400; the artifact still has two versions.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/artifacts/{id}/versions"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "dev",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ARTIFACTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "conversation": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "job-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "done",
+                "failed"
+              ]
+            }
+          },
+          "paths": {
+            "artifacts": {
+              "$len": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "title": "page",
+            "kind": "html"
+          },
+          "paths": {
+            "versions": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "17-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}/versions",
+        "body": {
+          "base": 1,
+          "files": {
+            "style.css": "h1 { color: red }"
+          }
+        },
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-17"
+        ]
+      }
+    },
+    {
+      "id": "17-the-owners-edit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}/versions",
+        "body": {
+          "base": 1,
+          "files": {
+            "style.css": "h1 { color: crimson }"
+          }
+        },
+        "device": "${state.dev}",
+        "as": "device",
+        "expect": {
+          "status": 201,
+          "body": {
+            "version": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "17-on-an-old-base",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}/versions",
+        "body": {
+          "base": 1,
+          "files": {
+            "style.css": "h1 { color: navy }"
+          }
+        },
+        "device": "${state.dev}",
+        "as": "device",
+        "expect": {
+          "status": 409,
+          "body": {
+            "error": {
+              "$contains": "Version 2 came after the one this edit was made on"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-17"
+        ]
+      }
+    },
+    {
+      "id": "17-another-file",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}/versions",
+        "body": {
+          "base": 2,
+          "files": {
+            "other.html": "<p>new</p>"
+          }
+        },
+        "device": "${state.dev}",
+        "as": "device",
+        "expect": {
+          "status": 422,
+          "body": {
+            "error": {
+              "$contains": "Not saved: other.html isn't a file of version 2."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-17"
+        ]
+      }
+    },
+    {
+      "id": "17-no-such-artifact",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/3f0c2a1e-1111-4222-8333-944455556666/versions",
+        "body": {
+          "base": 1,
+          "files": {
+            "index.html": "x"
+          }
+        },
+        "device": "${state.dev}",
+        "as": "device",
+        "expect": {
+          "status": 404
+        }
+      }
+    },
+    {
+      "id": "17-not-an-edit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}/versions",
+        "body": {
+          "base": 2
+        },
+        "device": "${state.dev}",
+        "as": "device",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "17-still-two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "versions": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-17"
+        ]
+      }
+    }
+  ]
+}

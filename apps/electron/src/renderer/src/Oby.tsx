@@ -18,6 +18,8 @@ declare global {
       onShortcut?(fn: (command: string) => void): () => void;
       help?(what: 'reveal-log' | 'copy-diagnostics'): Promise<string | null>;  // the Help menu's items (main/help.ts)
       openExternal(url: string): void;
+      // an artifact's version shown by Sandpack over a box of the page, in main's own view (main/artifactPreview.ts); null hides it
+      artifactPreview?(ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number } } | null): Promise<{ shown: true } | { error: string } | null>;
       renderError?(name: string, message: string, componentStack: string): void;  // a render error the root caught (preload, main/runMarker.ts)
       pickFolders?(from?: string): Promise<string[]>;  // the Mac's folder picker (main), several at once, opening in from
       openLoginItems(): void;

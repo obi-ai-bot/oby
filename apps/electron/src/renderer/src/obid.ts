@@ -37,6 +37,8 @@ import type {
 export * from '../../shared/obid-wire';
 
 // POST /v1/pairing/invite (docs/runner-api.md, "LAN gateway"): link is JSON text
+/** An artifact as obid keeps it (docs/api/artifacts.md): its versions oldest first. */
+export type Artifact = { id: string; title: string; kind: string; conversation: string | null; job: string | null; created: string; versions: { version: number; created: string; files: string[]; bytes: number; job?: string }[] };
 export type Invitation = { url: string; link: string; secret: string; code: string; expiresAt: string };
 export type PairedDevice = { id: string; name: string; created: string; expiresAt: string };
 // What the QR code carries, as the Swift Mac app made it (PairingView's qrText): the iPhone reads
@@ -285,6 +287,8 @@ export const api = {
   conversations: (opts: { after?: string; limit?: number; q?: string } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
   editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null; project?: string | null; seen?: boolean; archived?: boolean }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
+  // a conversation's artifacts, newest first (docs/api/artifacts.md; the app's: docs/contracts/artifacts-app.md)
+  artifacts: (opts: { conversation?: string; job?: string } = {}) => call<Artifact[]>('GET', `/v1/artifacts${q(opts)}`),
   // Stop: the turn under way in this conversation ends at once, its answer what Oby said until then
   stopConversation: (c: string) => call<{ stopped: true }>('POST', '/v1/conversation/stop', { conversation: c }),
 };

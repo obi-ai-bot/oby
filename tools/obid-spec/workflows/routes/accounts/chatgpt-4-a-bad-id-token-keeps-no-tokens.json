@@ -1,0 +1,499 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-4: a forged or misaddressed id token, a refused consent or no issued client keep no tokens and the row says why",
+  "version": "1.0.0",
+  "description": "An id token signed by a key OpenAI doesn't publish, or for another audience, ends the sign-in: 400, nothing kept, what was issued revoked, and the row says it couldn't be verified within one poll. Consent denied ends it with nothing asked of the token endpoint, the row saying so. A first registration that comes back with no issued client is never the entry point.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/accounts/{id}/sign-in"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "forge",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "forged": true
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-a-forged-id-token-says-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signedIn": false,
+                "login": {
+                  "$exists": false
+                },
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "verified"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-the-forged-sign-ins-token-revoked",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "revoked": {
+              "$len": 1
+            },
+            "tokens": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "unforge",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "forged": false,
+        "wrongAud": true
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "b-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.b.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "b-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.b-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "b-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.b-consent.location}",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-another-audience-says-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.b.body.id}",
+                "signedIn": false,
+                "login": {
+                  "$exists": false
+                },
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "verified"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-the-other-audiences-token-revoked",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "within": 10,
+        "expect": {
+          "paths": {
+            "revoked": {
+              "$len": 2
+            },
+            "tokens": {
+              "$len": 4
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-no-file-holds-their-tokens",
+      "use": "runtime.rust:accounts.tokens",
+      "inputs": {
+        "obid": "${state.o}",
+        "openai": "${state.openai}",
+        "expect": {
+          "body": {
+            "files": [],
+            "tokens": 4
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "deny",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "wrongAud": false,
+        "deny": true
+      }
+    },
+    {
+      "id": "c",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "c-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.c.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.c-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "c-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.c-consent.location}",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-consent-denied-says-so",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.c.body.id}",
+                "signedIn": false,
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$contains": "wasn't allowed"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-4-nothing-asked-of-the-token-endpoint",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "tokens": {
+              "$len": 4
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    },
+    {
+      "id": "no-client",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "deny": false,
+        "callbackClient": "dynamic_agent_client"
+      }
+    },
+    {
+      "id": "d",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "d-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.d.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "d-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.d-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "d-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.d-consent.location}",
+        "expect": {
+          "status": 400
+        }
+      }
+    },
+    {
+      "id": "chatgpt-4-no-issued-client-isnt-a-login",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 5,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.d.body.id}",
+                "signedIn": false,
+                "login": {
+                  "$exists": false
+                },
+                "signingIn": {
+                  "$exists": false
+                },
+                "label": {
+                  "$type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-4"
+        ]
+      }
+    }
+  ]
+}

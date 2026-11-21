@@ -1,0 +1,462 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-20: with no yes, background work passes the ChatGPT login by, or waits and says why",
+  "version": "1.0.0",
+  "description": "A routine on Auto passes a ChatGPT login with no yes by for Claude Code's account even when it's the owner's default, sending OpenAI nothing. With only the ChatGPT login it waits (queued, waiting.kind limit, reserved, its step saying why), isn't a failure, Start now can't say yes, and on the owner's signed yes it runs there. An unsigned job and a routine naming the login wait too.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts/{id}/background"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "default",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PUT",
+        "path": "/v1/settings/jobs",
+        "body": {
+          "defaultAccount": "${state.a.body.id}"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "auto",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "On Auto",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "research",
+          "task": "Nothing to do",
+          "agent": "auto",
+          "account": "auto",
+          "schedule": {
+            "every": "weekdays",
+            "at": "09:00"
+          },
+          "zone": "America/Sao_Paulo",
+          "createdBy": "mac"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.auto.body.id}/run",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "job.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-20-auto-passes-the-login-by",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.ran.body.job.id}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "account": "stand-in",
+            "waiting": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-20-nothing-to-openai",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "posts": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "agent": "codex",
+            "task": "RELAY"
+          }
+        },
+        "within": 10,
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "chatgpt-20-an-unsigned-job-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.unsigned.body.id}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "queued",
+            "waiting.reserved": {
+              "$type": "array"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "named",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines",
+        "body": {
+          "name": "Named",
+          "repo": "obi-e2e/fixture-app",
+          "kind": "research",
+          "task": "RELAY",
+          "agent": "codex",
+          "account": "${state.a.body.id}",
+          "schedule": {
+            "every": "weekdays",
+            "at": "09:00"
+          },
+          "zone": "America/Sao_Paulo",
+          "createdBy": "mac"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "named-ran",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/routines/${state.named.body.id}/run",
+        "within": 10,
+        "expect": {
+          "status": 201,
+          "paths": {
+            "job.id": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-20-a-routine-naming-the-login-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named-ran.body.job.id}",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "queued",
+            "account": "${state.a.body.id}",
+            "waiting.kind": "limit",
+            "waiting.reserved": {
+              "$type": "array"
+            },
+            "step": {
+              "$contains": "work I run by myself"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-20-not-a-failure",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/routines/${state.named.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "failuresInARow": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-20-start-now-cant-say-yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs/${state.named-ran.body.job.id}/start",
+        "expect": {
+          "paths": {
+            "$": {
+              "$exists": true
+            }
+          },
+          "status": [
+            400,
+            403,
+            409,
+            422
+          ]
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-20-still-nothing-to-openai",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "posts": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "yes",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts/${state.a.body.id}/background",
+        "body": {
+          "given": true
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "backgroundConsent": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-20-on-the-yes-it-runs-there",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.named-ran.body.job.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "done",
+            "account": "${state.a.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-20-it-ran-on-the-plan",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "posts": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-20"
+        ]
+      }
+    }
+  ]
+}

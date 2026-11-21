@@ -20,14 +20,14 @@ tools/obid-spec/target/debug/obid-spec coverage
   workflow's folder (its obids' homes and logs, `report.json` with every step's output) is kept and
   named; `--keep` keeps them all.
 - `obid-spec run --tag launch` runs only the workflows tagged `launch` (`"tags": ["launch"]`):
-  the Obysphere's and the launch flows', the merge queue's set (OBIDSPEC-12).
+  the Obysphere's and the launch flows' (OBIDSPEC-12), a quick run of what launches.
 - `obid-spec coverage [--only <area>]` prints, per area, routes with a workflow, triggers with a
   workflow and obid's scenarios with an assertion, and exits 1 when anything is missing.
   `--gate` is the check's: it fails only on a route or trigger without a workflow, an unclassified
   scenario or an unknown one, and reports the scenarios still waiting for an assertion as the
   backlog (OBIDSPEC-11).
-- The check runs it (docs/contracts/ci.md, CI-66 and 67): GitHub's merge queue the `launch`
-  workflows, nightly and on demand all of them, a pull request all of them only when it changes
+- The check runs it (docs/contracts/ci.md, CI-66 and 67): GitHub's merge queue, nightly and on
+  demand all of them, a pull request all of them only when it changes
   `tools/obid-spec/` or carries `full-suite`; the Mac's `scripts/oby-check.sh` all of them for a
   change to the suite.
 - `obid-spec list`, `obid-spec nodes`.
@@ -112,6 +112,13 @@ nodes, `src/coverage_accounts.rs`, only act or read: `accounts.exec` (an executa
 with another version, one that fails or hangs, a `cursor-agent` with a known model list),
 `accounts.link` (a login file that is a link) and `accounts.log` (the scratch obid's own log, so a
 `check` proves a login's secret never reached it, or counts the lines that say something).
+Continue with ChatGPT runs against a stand-in OpenAI on loopback, as obid's own tests do
+(`src/coverage_accounts_openai.rs`): `accounts.openai` starts it (its origin is what a scratch obid
+is given as `OBID_TEST_CHATGPT_ORIGIN`, which only a debug build reads), `accounts.openai-set`
+scripts it (who signs in, a forged id token, a refused consent, token and revoke errors, what
+`/v1/responses` answers), `accounts.openai-saw` reads what it was asked, `accounts.visit` is the
+person's browser (consent, obid's callback) and `accounts.tokens` says where its tokens ended up.
+Its tokens and its RSA keys are made at run time; none is real.
 
 ## How it runs
 
