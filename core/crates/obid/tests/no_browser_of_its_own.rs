@@ -54,6 +54,17 @@ fn browser_23_obid_carries_no_browser_of_its_own() {
         "obid's sources weren't found: {}",
         files.len()
     );
+    // What Oby ships of the app, not the developer scripts beside it.
+    let apps = crate_dir.join("../../../apps");
+    let before = files.len();
+    for shipped in ["electron/src", "shared"] {
+        sources(&apps.join(shipped), &mut files);
+    }
+    assert!(
+        files.len() > before + 50,
+        "the app's sources weren't found under {}",
+        apps.display()
+    );
     let mut found = vec![];
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap_or_default();
