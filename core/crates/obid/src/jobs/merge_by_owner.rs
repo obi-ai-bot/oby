@@ -19,10 +19,17 @@ impl Jobs {
             link.and_then(|l| l.item(&c.id))
                 .is_some_and(|i| i.done.is_some() && i.answer.is_some())
         });
+        // Merged for good, nothing waits on the owner about merging it: a card made from a read
+        // that started before the merge (the follower's, while the owner's Merge went) doesn't
+        // come back, here or in the inbox (MERGING-20). Decided under the lock that writes it.
+        let mut merged = false;
         self.update(id, |job| {
-            job.merge_needs_you = card.is_some() && !answered;
-            job.merge_error = card.as_ref().filter(|_| !answered).map(|c| c.text.clone());
+            merged = crate::merge::merged_for_good(job);
+            let open = card.is_some() && !answered && !merged;
+            job.merge_needs_you = open;
+            job.merge_error = card.as_ref().filter(|_| open).map(|c| c.text.clone());
         });
+        let card = card.filter(|_| !merged);
         // MERGING-24: the jobs before it on its pull request ask nothing about merging from now
         // on, as their card settles with this one (TASKS-27), not on their own next read.
         let superseded: Vec<String> = {
@@ -367,4 +374,90 @@ struct OwnersMerge {
     learned: Option<crate::memory::Workflow>,
     workflow: crate::memory::Workflow,
     number: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MERGING-20: the owner's Merge lands while the follower is still carrying a read of the pull
+    /// request from before it (open, its card "Merge … into main?"): when that read ends, its card
+    /// doesn't come back on the merged job, so nothing waits on the owner about merging it.
+    #[tokio::test]
+    async fn merging_20_a_read_from_before_the_owners_merge_brings_no_card_back() {
+        let root = std::env::temp_dir().join(format!("obid-merged-read-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let head = "a".repeat(40);
+        let mut job = Job::new(
+            "aaaa0017".into(),
+            "o/r".into(),
+            "build".into(),
+            "Do it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        job.branch = "oby/build-aaaa0017".into();
+        job.base = Some("main".into());
+        job.published = Some("https://github.com/o/r/pull/7".into());
+        job.pull_request = Some(crate::github::PullRequest {
+            state: "OPEN".into(),
+            review_decision: None,
+            base: "main".into(),
+            merged_at: None,
+            checked_at: 0,
+            head: Some(head.clone()),
+        });
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        std::fs::write(
+            home.join("jobs/aaaa0017.json"),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let events = crate::events::Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = tokio::sync::watch::channel(false);
+        let link = crate::sphere::Link::open(config, Arc::clone(&jobs), events, stopping);
+        let id = "aaaa0017";
+        // The follower's read, while the pull request was still open: its card, in the inbox.
+        let card = crate::merge::stopped_card(
+            &jobs.get(id).unwrap(),
+            &head,
+            "Its base is main, which Oby merges into only on your word.",
+        );
+        jobs.offer_merge_card(id, Some(&link), Some(card.clone()));
+        assert!(link.item(&card.id).is_some_and(|i| i.done.is_none()));
+        // Meanwhile the owner's Merge went through, and obid noted it.
+        let by = crate::job::MergedBy {
+            by: "owner".into(),
+            memory: None,
+            at: 1,
+        };
+        let merged = Ok(crate::merge::Merged {
+            method: crate::memory::Method::Squash,
+            outgoing: vec![],
+        });
+        jobs.note_merge(id, &merged, by);
+        // Then the read that started before it ends.
+        jobs.offer_merge_card(id, Some(&link), Some(card.clone()));
+        let job = jobs.get(id).unwrap();
+        assert_eq!(job.merged_by.as_ref().map(|b| b.by.as_str()), Some("owner"));
+        assert!(
+            !job.merge_needs_you,
+            "the merged job waits on the owner again"
+        );
+        assert_eq!(job.merge_error, None);
+        let item = link.item(&card.id).unwrap();
+        assert!(
+            item.done.is_some() && item.answer.is_none(),
+            "its inbox item stays open"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
