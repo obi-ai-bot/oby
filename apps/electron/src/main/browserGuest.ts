@@ -18,8 +18,8 @@ export const PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', '
 export const BUSY_PAGE_PROBE_MS = 1_000;
 /** the owner's Back, Forward, Reload and Stop loading on a tab's own page */
 export type NavOp = 'back' | 'forward' | 'reload' | 'stop';
-/** what main tells the page of a tab's own page: its address, is there one behind, one ahead, is it loading */
-export type NavState = { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean };
+/** what main tells the page of a tab's own page: its address, is there one behind, one ahead, is it loading, and the address its last load failed at (null: none) */
+export type NavState = { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null };
 
 // The webview's preferences, whatever the page asked for: sandboxed, no Node anywhere, no preload,
 // its partition checked (T3: DesktopWindow.ts:620-645)
@@ -86,12 +86,15 @@ async function leaveBusyPage(wc: WebContents) {
  * `report` hears each tab's page state.
  */
 export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) => string | undefined, report: (s: NavState) => void) {
+  // the address each webview's last main-frame load failed at, or its page crashed at, until a load
+  // starts again: did-stop-loading after did-fail-load proves no page (T3: Manager.ts:1226-1231)
+  const failedLoad = new Map<number, string>();
   // a keyed tab's page state, from its own webContents (T3: Manager.ts:1185-1192, 1214-1257): its
   // address too, as obid's tab keeps the address of obid's own last command
   const told = (wc: WebContents) => {
     const k = keyed.get(wc.id);
     if (!k || wc.isDestroyed()) return;
-    report({ threadId: k.threadId, tabId: k.tabId, url: wc.getURL(), canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame() });
+    report({ threadId: k.threadId, tabId: k.tabId, url: wc.getURL(), canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame(), failed: failedLoad.get(wc.id) ?? null });
   };
   win.webContents.on('will-attach-webview', (e, prefs, params) => {
     if (!harden(prefs as Record<string, unknown>, params)) e.preventDefault();
@@ -102,21 +105,24 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     wc.setWindowOpenHandler(({ url }) => { if (pageOk(url)) void wc.loadURL(url); return { action: 'deny' }; });
     wc.on('will-navigate', (ev, url) => { if (!pageOk(url)) ev.preventDefault(); });
     wc.on('did-fail-load', (_ev, code, description, url, isMainFrame) => {
+      if (!isMainFrame || code === -3) return;
+      failedLoad.set(wc.id, url);
       const k = keyed.get(wc.id);
-      if (k && isMainFrame && code !== -3) host.loadFailed(k, url, code, description);
+      if (k) host.loadFailed(k, url, code, description);
     });
     // the page state, each time it may have changed (T3: Manager.ts:1662-1670)
     const tell = () => told(wc);
     wc.on('did-navigate', tell);
     wc.on('did-navigate-in-page', tell);
-    wc.on('did-start-loading', tell);
+    wc.on('did-start-loading', () => { failedLoad.delete(wc.id); tell(); });
     wc.on('did-stop-loading', tell);
     wc.on('did-fail-load', tell);
-    wc.on('render-process-gone', () => { const k = keyed.get(wc.id); if (k) host.detach(k); });
+    wc.on('render-process-gone', () => { failedLoad.set(wc.id, wc.getURL()); tell(); const k = keyed.get(wc.id); if (k) host.detach(k); });
     wc.once('destroyed', () => {
       const k = keyed.get(wc.id);
       keyed.delete(wc.id);
       folders.delete(wc.id);
+      failedLoad.delete(wc.id);
       if (k) { host.detach(k); host.forget(k); }
     });
     // DevTools takes the debugger: the tab is detached until they close (T3: Manager.ts:2252-2267)

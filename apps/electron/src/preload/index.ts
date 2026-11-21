@@ -264,9 +264,9 @@ contextBridge.exposeInMainWorld('app', {
     // the owner's Back, Forward, Reload or Stop loading on a tab's own page: main moves it, unsigned
     // and with no obid call (BROWSERAPP-30 to 35); null once done, else why not
     nav: (threadId: string, tabId: string, op: 'back' | 'forward' | 'reload' | 'stop') => ipcRenderer.invoke('browser-nav', threadId, tabId, op) as Promise<string | null>,
-    // a tab's own page: its address, whether it has one behind, one ahead, and is loading; a function that stops listening
-    navState(fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean }) => void) {
-      const listener = (_: unknown, s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean }) => fn(s);
+    // a tab's own page: its address, whether it has one behind, one ahead, is loading, and where its last load failed; a function that stops listening
+    navState(fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => void) {
+      const listener = (_: unknown, s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => fn(s);
       ipcRenderer.on('browser-nav-state', listener);
       return () => { ipcRenderer.off('browser-nav-state', listener); };
     },

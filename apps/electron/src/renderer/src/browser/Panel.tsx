@@ -9,7 +9,8 @@ import {
 import { Logo, Sheen, Status, agentName } from './pieces';
 import { useBrowser } from './store';
 import { Slot } from './Webviews';
-import type { NavOp, Tab } from './view';
+import { STOPPED, type NavOp, type Tab } from './view';
+import { shown } from './live';
 
 export const YouMark = ({ label }: { label?: string }) => <span className="you-mark" aria-label={label} aria-hidden={label ? undefined : true}>Y</span>;
 
@@ -136,7 +137,9 @@ export function Control({ tab, takeIcon = true, idle }: { tab: Tab; takeIcon?: b
 /** A page that didn't simply load (board 10's words), in the panel's middle; its way out. */
 export function PageState({ tab }: { tab: Tab }) {
   const { api, mode } = useBrowser();
-  const host = tab.url.split('/')[0];
+  // the address that didn't load, as main heard it (obid's own is its last good page's), not the
+  // address field's, which follows the tab's own page
+  const host = shown(tab.failedAt ?? tab.src ?? tab.url).split('/')[0];
   const who = tab.owner.kind === 'agent' ? agentName(tab.owner.agent) : '';
   // Try again, the crashed page's Reload and the certificate page's Go back show in both modes: on
   // obid main moves the tab's own page (BROWSERAPP-14, 34), Go back disabled with nothing behind. Go on
@@ -170,8 +173,6 @@ export function PageState({ tab }: { tab: Tab }) {
     default: return null;
   }
 }
-
-const STOPPED = ['failed', 'timedOut', 'certificate', 'crashed'];
 
 /** The page: the demo's site, or on obid the tab's own webview (its slot: Webviews.tsx), and the page's own states. */
 export function View({ tab, label, page, children, className = '', style }: { tab: Tab; label: string; page: ReactNode; children?: ReactNode; className?: string; style?: CSSProperties }) {

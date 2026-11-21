@@ -46,7 +46,12 @@ export type Tab = {
   canGoForward?: boolean;
   /** on obid: main's, from the tab's own webview: its page is loading */
   pageLoading?: boolean;
+  /** on obid: main's, from the tab's own webview: the address its last load failed at (obid's `url` is its last good one) */
+  failedAt?: string;
 };
+
+/** The states a page didn't simply load in: board 10's box over the panel's middle, the page under it. */
+export const STOPPED: BrowserTabState[] = ['failed', 'timedOut', 'certificate', 'crashed'];
 
 /** The owner's Back, Forward, Reload and Stop loading on a tab's own page. */
 export type NavOp = 'back' | 'forward' | 'reload' | 'stop';

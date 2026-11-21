@@ -79,7 +79,7 @@ const NO_PAGE = 'This tab has no page in this window.';
 
 // --- the page: the panel on obid, main stood in for
 
-type NavState = { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean };
+type NavState = { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null };
 const tabOf = (id: string, state: string, extra: object = {}) => ({ id, owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: id, url: 'http://localhost:3000/dashboard', state, heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null, ...extra });
 
 let root: Root, host: HTMLDivElement;
@@ -107,7 +107,7 @@ async function onObid(tabs: object[]) {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
 }
-const tell = (s: Partial<NavState>) => act(() => say!({ threadId: 'j1', tabId: 't1', url: 'http://localhost:3000/dashboard', canGoBack: false, canGoForward: false, loading: false, ...s }));
+const tell = (s: Partial<NavState>) => act(() => say!({ threadId: 'j1', tabId: 't1', url: 'http://localhost:3000/dashboard', canGoBack: false, canGoForward: false, loading: false, failed: null, ...s }));
 const button = (label: string) => host.querySelector(`.br-nav [aria-label="${label}"]`) as HTMLButtonElement | null;
 const named = (words: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === words) as HTMLButtonElement | undefined;
 const click = (b: HTMLButtonElement | null | undefined) => act(() => b!.click());
@@ -171,7 +171,7 @@ describe('BROWSERAPP-31: Back is disabled on a tab\'s first page, and Forward wi
     for (const e of ['did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading', 'did-fail-load']) loose.emit(e, {});
     expect(w.report).not.toHaveBeenCalled();
     const g = w.guest('t31');
-    expect(w.report.mock.calls).toEqual([[{ threadId: 'j1', tabId: 't31', url: 'http://127.0.0.1:5123/', canGoBack: false, canGoForward: false, loading: false }]]);
+    expect(w.report.mock.calls).toEqual([[{ threadId: 'j1', tabId: 't31', url: 'http://127.0.0.1:5123/', canGoBack: false, canGoForward: false, loading: false, failed: null }]]);
     g.back = true; g.loading = true; g.url = 'http://127.0.0.1:5123/second';
     for (const e of ['did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading', 'did-fail-load']) g.emit(e, {});
     expect(w.report).toHaveBeenCalledTimes(6);
@@ -284,12 +284,62 @@ describe('BROWSERAPP-34: board 10\'s ways out that are these calls work on obid'
     pick(3);
     expect(named('Go back')!.disabled).toBe(true);
     expect(named('Go on anyway')).toBeUndefined();
-    tell({ tabId: 't4', canGoBack: true });
+    tell({ tabId: 't4', canGoBack: true, failed: 'http://localhost:3000/dashboard' });
     expect(named('Go back')!.disabled).toBe(false);
     click(named('Go back'));
     pick(4);
     for (const w of ['Leave', 'Stay', 'Take control to answer']) expect(named(w), w).toBeUndefined();
     expect(nav.mock.calls).toEqual([['j1', 't1', 'reload'], ['j1', 't2', 'reload'], ['j1', 't3', 'reload'], ['j1', 't4', 'back']]);
+  });
+
+  it('browserapp_34: once main says the tab\'s own page loaded since, obid\'s stopped state gives way to the page', async () => {
+    await onObid([tabOf('t1', 'failed'), tabOf('t2', 'timedOut'), tabOf('t3', 'crashed'), tabOf('t4', 'certificate')]);
+    const box = (state: string) => host.querySelector(`[data-browser="page-${state}"]`);
+    // main has said nothing yet, then that the load failed, then that a load runs: the box stays
+    expect(box('failed')).not.toBeNull();
+    tell({ failed: 'http://localhost:3000/dashboard' });
+    expect(box('failed')).not.toBeNull();
+    tell({ loading: true });
+    expect(box('failed')).not.toBeNull();
+    // Try again (or Back) landed on a page
+    tell({});
+    expect(box('failed')).toBeNull();
+    for (const [i, id, state] of [[1, 't2', 'timedOut'], [2, 't3', 'crashed'], [3, 't4', 'certificate']] as const) {
+      pick(i);
+      tell({ tabId: id, failed: 'http://localhost:3000/dashboard' });
+      expect(box(state), state).not.toBeNull();
+      tell({ tabId: id });
+      expect(box(state), state).toBeNull();
+    }
+  });
+
+  it('browserapp_34: board 10\'s box names the address that failed, while the address field follows the tab\'s own page', async () => {
+    await onObid([tabOf('t1', 'failed')]);
+    // before main says where: obid's address
+    expect(host.querySelector('[data-browser="page-failed"] .br-state-text')?.textContent).toBe('localhost:3000 refused to connect. Is the app running?');
+    // the page stayed on /second, its load of another address failed
+    tell({ url: 'http://127.0.0.1:5123/second', failed: 'http://127.0.0.1:2/' });
+    expect(host.querySelector('[data-browser="page-failed"] .br-state-text')?.textContent).toBe('127.0.0.1:2 refused to connect. Is the app running?');
+    expect(host.querySelector('.br-address')?.textContent).toBe('127.0.0.1:5123/second');
+  });
+
+  it('browserapp_34: main marks a tab\'s page failed from a main-frame load failure or a crash until a load starts again', () => {
+    const w = aWindow();
+    const g = w.guest('t34');
+    const last = () => w.report.mock.calls.at(-1)![0];
+    g.emit('did-fail-load', {}, -102, 'ERR_CONNECTION_REFUSED', 'http://127.0.0.1:2/', true);
+    expect(last().failed).toBe('http://127.0.0.1:2/');
+    g.emit('did-stop-loading', {});
+    expect(last().failed).toBe('http://127.0.0.1:2/');
+    g.emit('did-start-loading', {});
+    expect(last().failed).toBeNull();
+    // an aborted load (Stop loading) and a frame's failure aren't the page's
+    g.emit('did-fail-load', {}, -3, 'ERR_ABORTED', 'http://127.0.0.1:9/', true);
+    g.emit('did-fail-load', {}, -102, 'ERR_CONNECTION_REFUSED', 'http://127.0.0.1:9/ad', false);
+    g.emit('did-stop-loading', {});
+    expect(last().failed).toBeNull();
+    g.emit('render-process-gone', {}, { reason: 'oom' });
+    expect(last().failed).toBe('http://127.0.0.1:5123/');
   });
 
   it('browserapp_34: on the demo data at board 10, each state\'s way out shows as the board draws it', () => {
@@ -308,7 +358,7 @@ describe('BROWSERAPP-35: none of these acts calls obid or is signed', () => {
   it('browserapp_35: on obid, every one of these clicks reaches main\'s nav only; obid hears no call but the panel\'s reads', async () => {
     await onObid([tabOf('t1', 'ready'), tabOf('t2', 'failed'), tabOf('t3', 'crashed'), tabOf('t4', 'certificate')]);
     tell({ canGoBack: true, canGoForward: true });
-    tell({ tabId: 't4', canGoBack: true });
+    tell({ tabId: 't4', canGoBack: true, failed: 'http://localhost:3000/dashboard' });
     click(button('Back')); click(button('Forward')); click(button('Reload'));
     tell({ loading: true, canGoBack: true });
     click(button('Stop loading'));
