@@ -2133,9 +2133,23 @@ async fn attempts(
     });
     let heard = session.control.asked_mentioned();
     let goes_to = super::briefing::default_account_line(shared, &control.conversation);
-    // The artifact open where the owner said the words (ARTIFACTS-12): what they're about.
-    let open = (session.control.artifact())
-        .map(|open| super::open_artifact::told_line(&open, &session.nonce));
+    // The artifact open where the owner said the words (ARTIFACTS-12): what they're about, its
+    // files in the room (ARTIFACTS-21). An imported one's are text from outside: the turn read it.
+    let open = session.control.artifact().map(|open| {
+        if (shared.artifacts.get(&open.id)).is_some_and(|a| a.origin.is_some()) {
+            session.taint();
+        }
+        let laid = super::open_artifact::into_room(shared, &place.room, &open)
+            .inspect_err(|why| {
+                tracing::warn!(
+                    "conversation {}: artifact {} isn't in its room: {why}",
+                    control.conversation,
+                    open.id
+                )
+            })
+            .ok();
+        super::open_artifact::told_line(&open, &session.nonce, laid.as_deref())
+    });
     let working = super::folder_writes::note(&place.writable);
     let with = |prompt: String| {
         let prompt = match &open {

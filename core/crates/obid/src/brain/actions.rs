@@ -73,6 +73,8 @@ pub struct Asked<'a> {
     pub signed: bool,
     /// The message box's chips sent with them (super::defaults, COMPOSER-4 and 5).
     pub defaults: Option<&'a super::defaults::Defaults>,
+    /// The artifact open where the words were said (`Control::artifact`): its jobs change it.
+    pub artifact: Option<super::open_artifact::OpenArtifact>,
 }
 
 /// A plan that answers rather than acts: a reply, a question, or jobs it starts (#269). `live` is
@@ -200,6 +202,7 @@ fn planned_job(
             .map(|m| m.as_str().to_owned()),
         brief: d.brief(),
         complex: d.complexity == super::plan::Complexity::Complex,
+        artifacts: open_artifact(shared, asked),
         ..NewJob::default()
     };
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the
@@ -216,6 +219,27 @@ fn planned_job(
         asked,
         researched,
     )
+}
+
+/// The artifact open where `asked`'s words were said, as the job it plans starts with it
+/// (ARTIFACTS-19): the version open, under the entry obid names it by. None when it's gone or no
+/// longer of `asked`'s conversation.
+fn open_artifact(shared: &Shared, asked: &Asked<'_>) -> Vec<crate::job::JobArtifact> {
+    let Some(open) = &asked.artifact else {
+        return Vec::new();
+    };
+    shared
+        .artifacts
+        .get(&open.id)
+        .filter(|a| a.conversation.as_deref() == Some(asked.conversation))
+        .and_then(|a| crate::artifacts::seed::entry_for(&a, open.version))
+        .map(|entry| crate::job::JobArtifact {
+            id: open.id.clone(),
+            version: open.version,
+            entry,
+        })
+        .into_iter()
+        .collect()
 }
 
 /// The marks a job planned on `asked` gets: untrusted after research, and the owner's own
@@ -1360,6 +1384,7 @@ mod tests {
             turn: "t",
             signed,
             defaults: None,
+            artifact: None,
         };
         let other = asked("Fix the docs", true);
         assert_eq!(named_branch(&d, false, &other).as_deref(), Some("gh-pages"));
@@ -1407,6 +1432,7 @@ mod tests {
                 turn: "t",
                 signed,
                 defaults: None,
+                artifact: None,
             };
             let new = marked(NewJob::default(), &asked, researched);
             assert_eq!(new.own_conversation, signed, "{signed} {researched}");

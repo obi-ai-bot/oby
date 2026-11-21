@@ -1017,6 +1017,8 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         // Set by [`dispatch`] from how the request came, never from its body.
         unsigned: false,
         client_request_id: None,
+        // Never the body's: a job starts with an artifact only as obid planned it (ARTIFACTS-23).
+        artifacts: Vec::new(),
     })
 }
 

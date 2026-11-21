@@ -2,7 +2,9 @@
 //! ATTACH-6, 13, 21 to 23): at its start, and to a job already at work, with the words they came
 //! with. It owns the copy (text with every secret obid knows taken out; a binary file holding one
 //! refused) and the words that name them; it never reads a path outside obid's attachments folder,
-//! writes nothing in the worktree but `.obi/inputs`, and saves only the job's `attachments`.
+//! writes nothing in the worktree but `.obi/inputs`, and saves only the job's `attachments`. It
+//! also lays the artifacts a job starts with into `.obi/artifacts` (docs/contracts/artifacts.md,
+//! ARTIFACTS-19, 20), from obid's artifacts store only, saving only the job's `artifacts`.
 
 use super::*;
 
@@ -74,7 +76,58 @@ impl Jobs {
         });
         Ok(Some(told_with_files(text, &copied, &gone)))
     }
+
+    /// The artifacts job `id` starts with, laid into its worktree's `.obi/artifacts/<entry>`
+    /// before its agent runs (ARTIFACTS-19, 20), so what the agent changes there publishes as
+    /// their next version: the version each names, or a follow-up's the latest. One gone, or of
+    /// another conversation than the job's, is dropped from the job; an entry already there (its
+    /// own work of an earlier run) is left as it is. An imported one marks the job, as an
+    /// attachment does. One that can't be laid out is said in the log and left out.
+    pub(super) fn seed_artifacts(&self, id: &str, worktree: &Path) {
+        let (Some(store), Some(job)) = (self.artifacts.get(), self.get(id)) else {
+            return;
+        };
+        let mut seeded = Vec::new();
+        let mut imported = false;
+        for mut one in job.artifacts.clone() {
+            let Some(artifact) = store
+                .get(&one.id)
+                .filter(|a| a.conversation.is_some() && a.conversation == job.conversation)
+            else {
+                continue;
+            };
+            let at = worktree.join(crate::obi_dir::OBI).join("artifacts");
+            if std::fs::symlink_metadata(at.join(&one.entry)).is_ok() {
+                seeded.push(one);
+                continue;
+            }
+            let version = match (&job.follow_up_of, artifact.versions.last()) {
+                (Some(_), Some(latest)) => latest.version,
+                _ => one.version,
+            };
+            let laid = crate::obi_dir::folder(worktree, "artifacts")
+                .map_err(|e| e.to_string())
+                .and_then(|into| store.lay_out(&one.id, version, &into, &one.entry));
+            match laid {
+                Ok(()) => {
+                    imported |= artifact.origin.is_some();
+                    one.version = version;
+                    seeded.push(one);
+                }
+                Err(why) => tracing::warn!("job {id}: artifact {} isn't laid out: {why}", one.id),
+            }
+        }
+        if imported {
+            self.mark(id, IMPORTED.into(), false);
+        }
+        if seeded != job.artifacts {
+            self.update(id, |job| job.artifacts = seeded);
+        }
+    }
 }
+
+/// What marks a job an imported artifact's files reached (crate::secretspec).
+const IMPORTED: &str = "an imported artifact's files, which may hold anyone's words";
 
 /// Why files can't go to a job now (ATTACH-23).
 pub const BUSY: &str = "It can't take files now: it's getting ready, waiting for your answer or wrapping up. Send them again once it's at work.";
