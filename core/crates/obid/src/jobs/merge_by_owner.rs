@@ -23,6 +23,22 @@ impl Jobs {
             job.merge_needs_you = card.is_some() && !answered;
             job.merge_error = card.as_ref().filter(|_| !answered).map(|c| c.text.clone());
         });
+        // MERGING-24: the jobs before it on its pull request ask nothing about merging from now
+        // on, as their card settles with this one (TASKS-27), not on their own next read.
+        let superseded: Vec<String> = {
+            let state = self.lock();
+            (state.jobs.values())
+                .filter(|j| j.id != id && (j.merge_needs_you || j.merge_error.is_some()))
+                .filter(|j| carrier_of(&state.jobs, j).id == id)
+                .map(|j| j.id.clone())
+                .collect()
+        };
+        for earlier in superseded {
+            self.update(&earlier, |job| {
+                job.merge_needs_you = false;
+                job.merge_error = None;
+            });
+        }
         if let Some(link) = link {
             link.merge_items(id, card);
         }
