@@ -23,6 +23,7 @@ import { ownFolder } from './appFolder';
 import { browsing, hostBrowser } from './browser';
 import { macPill } from './macPill';
 import { previewing } from './artifactPreview';
+import { exporting } from './artifactExport';
 import { sawInput } from './browserInput';
 import { terminals } from './terminal';
 import { sawKey, sawMouse } from './terminalInput';
@@ -104,6 +105,8 @@ helping(trusted);
 const stopBrowsing = browsing(trusted, () => win);
 // an artifact's preview, drawn by Sandpack in a view of its own (artifactPreview.ts, ARTIFACTSAPP-1)
 const stopPreview = previewing(trusted, () => win);
+// an artifact's version saved where the owner picks, from its Export (artifactExport.ts, ARTIFACTSAPP-11)
+exporting(trusted, () => win);
 // an agent using the Mac: Oby's pill and frame over the screen (macPill.ts, BROWSERAPP-19)
 const stopPill = macPill(trusted, () => win, join(__dirname, '../preload/index.cjs'), process.env.ELECTRON_RENDERER_URL);
 const channels = ipc(trusted);
