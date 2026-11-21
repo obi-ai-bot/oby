@@ -1027,38 +1027,59 @@ fn computers_22_its_token_is_in_no_answer_event_log_or_error() {
     }
 }
 
-/// A stand-in for the person's `ssh`, first on the Mac obid's `PATH`: it writes each call's
-/// arguments to `ssh-calls`. With `-L` it holds the forward as ssh does (perl relays this Mac's
-/// port to the other obid's own, its pid in `tunnel-<port>.pid`). Otherwise it runs what that
-/// destination's computer would: `studio` and `studio-b` their own `obid pair-computer`, stdin as
-/// it came; `unknown-host`, `no-ssh` and `no-obid` what ssh and a shell say then.
+/// The person's `ssh`, as tests/fakes/ssh stands in for it, first on the Mac obid's `PATH`: each
+/// call's arguments in `ssh-bin/calls`, its tunnels relayed on this machine. `studios` are the
+/// destinations whose computer runs its own `obid pair-computer`; `unknown-host`, `no-ssh` and
+/// `no-obid` say what ssh and a shell say then.
 fn stand_in_ssh(folder: &Path, studios: &[(&str, &Obid)]) -> PathBuf {
     let bin = folder.join("ssh-bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    let calls = folder.join("ssh-calls");
-    let relay = "use IO::Socket::INET; use IO::Select; my ($l, $r) = @ARGV; \
-        my $s = IO::Socket::INET->new(LocalAddr => \"127.0.0.1\", LocalPort => $l, Listen => 16, ReuseAddr => 1) \
-        or die \"bind [127.0.0.1]:$l: Address already in use\\n\"; $SIG{CHLD} = \"IGNORE\"; \
-        while (my $c = $s->accept) { if (fork() == 0) { close $s; \
-        my $u = IO::Socket::INET->new(PeerAddr => \"127.0.0.1\", PeerPort => $r) or exit 1; \
-        my $sel = IO::Select->new($c, $u); while (my @ready = $sel->can_read) { for my $h (@ready) { \
-        my $n = sysread($h, my $b, 65536); exit 0 unless $n; syswrite($h == $c ? $u : $c, $b); } } exit 0; } close $c; }";
-    let mut cases = String::new();
-    for (name, obid) in studios {
-        cases.push_str(&format!(
-            "  {name}) exec '{OBID}' pair-computer --config '{}' ;;\n",
-            obid.folder.join("config.json").display()
-        ));
-    }
-    let script = format!(
-        "#!/bin/sh\necho \"$*\" >> '{calls}'\nspec=; dest=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -L) spec=$2; shift ;;\n    --) dest=$2; break ;;\n  esac\n  shift\ndone\nif [ -n \"$spec\" ]; then\n  local=$(echo \"$spec\" | cut -d: -f2); remote=$(echo \"$spec\" | cut -d: -f4)\n  echo $$ > '{dir}/tunnel-'$local'.pid'\n  exec perl -e '{relay}' \"$local\" \"$remote\"\nfi\ncase \"$dest\" in\n{cases}  unknown-host) echo 'Host key verification failed.' >&2; exit 255 ;;\n  no-ssh) echo \"ssh: connect to host $dest port 22: Connection refused\" >&2; exit 255 ;;\n  no-obid) echo 'sh: obid: command not found' >&2; exit 127 ;;\nesac\necho \"ssh: Could not resolve hostname $dest\" >&2; exit 255\n",
-        calls = calls.display(),
-        dir = folder.display(),
-    );
-    let program = bin.join("ssh");
-    std::fs::write(&program, script).unwrap();
+    let hosts = bin.join("hosts");
+    std::fs::create_dir_all(&hosts).unwrap();
+    std::os::unix::fs::symlink(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/ssh"),
+        bin.join("ssh"),
+    )
+    .unwrap();
+    let mut said: Vec<(String, String)> = studios
+        .iter()
+        .map(|(name, obid)| {
+            (
+                name.to_string(),
+                format!(
+                    "exec '{OBID}' pair-computer --config '{}'",
+                    obid.folder.join("config.json").display()
+                ),
+            )
+        })
+        .collect();
+    said.extend([
+        (
+            "unknown-host".into(),
+            "echo 'Host key verification failed.' >&2; exit 255".into(),
+        ),
+        (
+            "no-ssh".into(),
+            "echo 'ssh: connect to host no-ssh port 22: Connection refused' >&2; exit 255".into(),
+        ),
+        (
+            "no-obid".into(),
+            "echo 'sh: obid: command not found' >&2; exit 127".into(),
+        ),
+    ]);
     use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (name, script) in said {
+        let host = hosts.join(name);
+        std::fs::write(
+            &host,
+            format!(
+                "#!/bin/sh
+{script}
+"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     bin
 }
 
@@ -1096,7 +1117,7 @@ fn computers_25_the_mac_adds_studio_over_ssh_and_works_there_through_its_tunnel(
         &config(&mac_folder.0, &remote, &agent()),
         Some(&bin),
     );
-    let calls = || std::fs::read_to_string(mac_folder.0.join("ssh-calls")).unwrap_or_default();
+    let calls = || std::fs::read_to_string(bin.join("calls")).unwrap_or_default();
     let events = follow_events(&mac);
 
     // The owner's act, and a host that can't be an option: refused before ssh runs.
@@ -1200,12 +1221,12 @@ fn computers_25_the_mac_adds_studio_over_ssh_and_works_there_through_its_tunnel(
     assert_eq!(retried.body["state"], "connected", "{}", retried.text);
 
     // Removing it ends its pairing there and its tunnel here.
-    let pids: Vec<i32> = std::fs::read_dir(&mac_folder.0)
+    let pids: Vec<i32> = std::fs::read_dir(&bin)
         .unwrap()
         .filter_map(|e| {
             let name = e.ok()?.file_name().into_string().ok()?;
             name.starts_with("tunnel-").then(|| {
-                std::fs::read_to_string(mac_folder.0.join(&name))
+                std::fs::read_to_string(bin.join(&name))
                     .ok()?
                     .trim()
                     .parse()
