@@ -5,7 +5,7 @@ The business behavior contract for the requests the owner's Oby sends another Ob
 ## Feature and status
 
 - **Outcome:** When the owner's work ends, the teammate's Oby stops reviewing or approving it. No teammate review or GitHub approval of a stale commit runs for up to the request's 2 hours after the job stopped or the pull request moved on.
-- **Status:** **Implemented** (OBIREQ-1 to 6).
+- **Status:** **Implemented**: every scenario unless it says it's proposed.
 - **Scope:** obid sends the protocol's `cancel` (spec `protocol.md` section 5.17, an empty body, `in_reply_to` the request) for its own open `review_request` and `question` exchanges. Outside it: any change to the `cancel` action, its schema or the Sphere server; an app button for calling a request off (no Sangam screen yet); `handoff` and `introduction`, which obid doesn't send on its own; what the receiving Oby does with a `cancel`, which is unchanged (it stops the review job and dismisses an approval it posted).
 
 ## Behavior

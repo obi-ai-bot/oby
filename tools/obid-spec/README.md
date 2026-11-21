@@ -247,7 +247,10 @@ silently. A contract not yet in scope.json is counted as unread.
 2. Write `workflows/routes/<area>/<method>-<what>.json`: start a scratch obid, its refusals (401,
    403, 404, 409, 422 as the contract says), its happy path, and what it writes or emits
    (`home-file`, `events-wait`), each asserting step named after its scenario.
-3. Add the contract to scope.json with every scenario classified.
+3. Add the contract to scope.json with every scenario classified. scope.json has one written form, which
+   `coverage` refuses to read otherwise: one entry per line, each list of ids and each `elsewhere`
+   map in natural order (`X-2` before `X-10`), so pull requests adding scenarios add different lines.
+   `obid-spec fmt-scope` rewrites it in that form after a hand edit; nothing it means changes.
 4. `obid-spec run --workflow <name>`, then `obid-spec coverage --only <area>`.
 5. A workflow that finds a real bug: don't fix product code here. File the issue (What / Why /
    How) and mark the step `expectedRed` with it.

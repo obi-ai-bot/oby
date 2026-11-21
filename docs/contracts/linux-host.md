@@ -5,7 +5,7 @@ The business behavior contract for how a Linux obid keeps running when what it s
 ## Feature and status
 
 - **Outcome:** On a small Linux box, a runaway build is killed before obid is, and one killed agent doesn't stop the service, so the other jobs, the Sphere link and the phone relay go on.
-- **Status:** **Implemented**, LINUX-1 and LINUX-2 ([why](../decisions/2026-11-13-roadmap-answers.md#r09-12-q040)).
+- **Status:** **Implemented**, every scenario unless it says it's proposed ([why](../decisions/2026-11-13-roadmap-answers.md#r09-12-q040)).
 - **Scope:** What obid owns: the `oom_score_adj` of what it starts through `obid __session`, and the systemd user unit `install/install.sh` writes. **Out of scope:** any memory admission or wait: nothing waits for memory (`docs/runner-api.md`, "Whatever the machine's memory"). The score of what obid starts without `__session` (sign-ins, `security`, the login-shell read, git, gh), and of obid itself at runtime. The Mac's launch agent and macOS's memory behaviour.
 
 ## Behavior
