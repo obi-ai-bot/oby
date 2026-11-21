@@ -40,6 +40,9 @@ export const VAULT_REMOVE = 'Remove Secret';
 // button's click can stand for it; never the text, which sits in the Code tab's editor. The signature
 // still covers the exact body, the text included.
 export const saveAs = (base: number) => `Save as v${base + 1}`;
+// An artifact imported from a file dropped into a conversation (ARTIFACTSAPP-12, WORDS-21): its Import
+// button's own label, the bytes signed as they are
+export const IMPORT = 'Import';
 const ARTIFACT_EDIT = /^\/v1\/artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/versions$/;
 
 // The owner's hold on a browser tab (docs/contracts/browser-app.md, BROWSERAPP-9): Take control and
@@ -100,6 +103,8 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
     if (method === 'PUT') return isBody(body) && text(body.value) && shaped(body, { value: text }) ? [VAULT_ADD] : null;
   }
   if (method === 'DELETE' && COMPUTER.test(path.split('?')[0]) && path.split('?')[0] !== '/v1/computers/current') return body === undefined ? [REMOVE_COMPUTER] : null;
+  // an artifact imported from a dropped file: its bytes as they are, by its own Import button (WORDS-21)
+  if (method === 'POST' && path === '/v1/artifacts/import') return body instanceof Uint8Array && body.byteLength > 0 ? [IMPORT] : null;
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
   // the owner's edit: the version it's made on, and some of its files' new text, nothing else
