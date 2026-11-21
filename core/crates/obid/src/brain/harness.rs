@@ -1421,6 +1421,9 @@ pub(super) struct Place {
     pub(super) cursor: PathBuf,
     /// Its session id and account, never shown to it.
     session: PathBuf,
+    /// The folders an own session may write besides its room this turn (WORKSPACE-1): none but
+    /// once a turn has found them ([`super::folder_writes::of`]).
+    pub(super) writable: Vec<super::folder_writes::Writable>,
 }
 
 impl Place {
@@ -1434,6 +1437,7 @@ impl Place {
             config: folder.join("config"),
             cursor: crate::conversation::cursor_folder(home, conversation),
             session: folder.join("session.json"),
+            writable: Vec::new(),
             room,
             folder,
         }
@@ -2043,6 +2047,10 @@ async fn attempts(
         _ => None,
     };
     let own = own_lane(shared, tool, account, &control.conversation);
+    // The folders it may write this turn, checked again now (WORKSPACE-1): an own session's only.
+    let mut place = place.clone();
+    place.writable = super::folder_writes::of(shared, &control.conversation, own).await;
+    let place = &place;
     // The mode an own Codex run starts in, whose settings it's held to (LANES-13).
     let mode = shared.jobs.default_mode();
     // The budget is the turn's, both runs together.
@@ -2128,9 +2136,14 @@ async fn attempts(
     // The artifact open where the owner said the words (ARTIFACTS-12): what they're about.
     let open = (session.control.artifact())
         .map(|open| super::open_artifact::told_line(&open, &session.nonce));
+    let working = super::folder_writes::note(&place.writable);
     let with = |prompt: String| {
         let prompt = match &open {
             Some(open) => format!("{open}\n\n{prompt}"),
+            None => prompt,
+        };
+        let prompt = match &working {
+            Some(working) => format!("{working}\n\n{prompt}"),
             None => prompt,
         };
         let prompt = match &heard {
@@ -2257,7 +2270,7 @@ async fn attempts(
                     &url,
                     tetrix.as_deref(),
                     &resume,
-                    own.then_some(place.room.as_path()),
+                    own.then_some(place),
                     helper,
                 )
                 .await;
@@ -3135,6 +3148,10 @@ async fn one(
         if own
             && (quiet || crate::jobs::claude_place(tool, input, &place.room, None, &folders, false))
         {
+            return Ruling::Now(Answer::Allow);
+        }
+        // The folders it works in (WORKSPACE-1): obid's rule is the limit there for its file tools.
+        if own && super::folder_writes::allows(&place.writable, tool, input, &place.room) {
             return Ruling::Now(Answer::Allow);
         }
         Ruling::Now(rule(tool, input, &bounds, &place.repos, own, &|| {

@@ -23,6 +23,8 @@
 //   ESCAPE <file>  tries to write outside its room, into repos/ and the account's own folder, to
 //                  read obid's token, the account's login, the test's folder and <file>, and reads
 //                  repos/; says what held
+//   WRITES <path>…  asks to write each path (Write), writes it when allowed, and says
+//                  "writes: <allow|deny|…> …" in order (WORKSPACE-1)
 //   PERMS          asks obid's permission for writes inside, outside and in repos/, the web, a
 //                  secret, a command that sends a file from outside the room, another MCP tool
 //   SAY <words>    streams <words> in three deltas and says them
@@ -435,6 +437,23 @@ async function act(words, prompt = "", before = resumed) {
       { tool: "mcp__elsewhere__run", input: {} },
     );
     askNext();
+  } else if (words.startsWith("WRITES ")) {
+    // Asks to write each path in turn (Write), writes it when allowed, and says what came back of
+    // each: "writes: allow deny …" (WORKSPACE-1).
+    const paths = words.slice(7).trim().split(/\s+/);
+    const said = [];
+    const next = () => {
+      const path = paths.shift();
+      if (!path) return result(`writes: ${said.join(" ")}`);
+      const input = { file_path: path, content: "written by the stand-in\n" };
+      emit({ type: "control_request", request_id: `w${said.length + 1}`, request: { subtype: "can_use_tool", tool_name: "Write", input } });
+      then = (answer) => {
+        if (answer.behavior !== "allow") said.push(answer.behavior);
+        else said.push(tries(() => writeFileSync(path, input.content)) === "ok" ? "allow" : "allow-unwritten");
+        next();
+      };
+    };
+    next();
   } else if (words.startsWith("PAUSE ")) {
     const [, ms, ...rest] = words.split(" ");
     await new Promise((done) => setTimeout(done, Number(ms)));

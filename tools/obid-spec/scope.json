@@ -1336,7 +1336,9 @@
             "FOLDERS-20": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-21": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-23": "not built: proposed (folders for jobs, trust, failures).",
-            "WORKSPACE-1": "not built: proposed (the lanes wire the write list; its builder is proved by Kani in workspace/writes.rs)."
+            "WORKSPACE-1": "tests/workspace.rs (obid's rule for Claude Code's file tools through obid's API) and brain::folder_writes::tests; its builder proved by Kani in workspace/writes.rs.",
+            "WORKSPACE-7": "tests/workspace.rs (a worktree and unsigned words through obid's API).",
+            "WORKSPACE-8": "tests/conversation_codex.rs (the profile obid gives Codex); Codex's own sandbox measured on macOS and Ubuntu (docs/contracts/folders.md)."
           }
         },
         "setup.md": {

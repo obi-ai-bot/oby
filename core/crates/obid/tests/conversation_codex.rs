@@ -66,7 +66,18 @@ fn obid_kept(
     env: &[(&str, &str)],
     kept: Option<(&str, Value)>,
 ) -> (Folder, Obid) {
-    let folder = Folder::new(name);
+    obid_in(Folder::new(name), signed_in, bin, login, env, kept)
+}
+
+/// [`obid_kept`] in `folder`, made by the caller.
+fn obid_in(
+    folder: Folder,
+    signed_in: bool,
+    bin: &str,
+    login: Option<Value>,
+    env: &[(&str, &str)],
+    kept: Option<(&str, Value)>,
+) -> (Folder, Obid) {
     if let Some((id, thread)) = kept {
         let dir = folder.0.join("home/conversations");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1394,4 +1405,61 @@ fn lanes_13_a_narrower_mode_ends_an_own_codex_turn() {
     assert!(recorded[1]["sandbox"].is_null(), "{recorded:?}");
     assert_eq!(recorded[1]["approvalPolicy"], "on-request");
     assert_eq!(recorded[1]["permissions"], "oby");
+}
+
+/// WORKSPACE-8 (docs/contracts/folders.md, WORKSPACE-1): an own Codex conversation started with
+/// "This folder", its words signed by the owner's app, gets the folder in its profile `oby`: in
+/// Sandbox (`:workspace`, where Codex writes without asking) the folder `write`, its `.git/hooks`
+/// and `.git/config` `read`, so Codex's own sandbox refuses a command writing outside it or there;
+/// in Ask (`:read-only`) no write at all, a write still asked about. Words no app signed: none.
+#[test]
+fn workspace_8_an_own_codex_conversation_writes_its_folder_in_its_sandbox() {
+    let folder = Folder::new("codex-conv-folder");
+    let home = folder.0.join("env-home");
+    let project = home.join("Projects/api");
+    std::fs::create_dir_all(project.join(".git/hooks")).unwrap();
+    let project = project.canonicalize().unwrap();
+    let homes = home.canonicalize().unwrap();
+    let env = [("OBID_PERSON_HOMES", homes.to_str().unwrap())];
+    let (_folder, obid) = obid_in(folder, true, "fake-codex-harness", None, &env, None);
+    let entry = |path: &Path, mode: &str| format!("{} = \"{mode}\"", json!(path.to_str().unwrap()));
+    let start = |words: &str| {
+        let body = json!({"said": words, "new": true, "workspace": "folder",
+            "folders": [project.to_str().unwrap()]});
+        let answer = call_typed(&obid, "POST", "/v1/plans", &body);
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer
+    };
+    let files = |turn: &Value| {
+        settings(turn)
+            .into_iter()
+            .find_map(|s| {
+                s.strip_prefix("permissions.oby.filesystem=")
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default()
+    };
+    mode(&obid, "sandbox");
+    start("SAY Ready.");
+    let sandbox = files(turns(&obid).last().unwrap());
+    assert!(sandbox.contains(&entry(&project, "write")), "{sandbox}");
+    for kept in [".git/hooks", ".git/config"] {
+        assert!(
+            sandbox.contains(&entry(&project.join(kept), "read")),
+            "{kept}: {sandbox}"
+        );
+    }
+    mode(&obid, "ask");
+    start("SAY Ready.");
+    let ask = files(turns(&obid).last().unwrap());
+    assert!(!ask.contains("\"write\""), "{ask}");
+    assert!(!ask.contains(&entry(&project, "write")), "{ask}");
+    // Words no app of the owner's signed: its room only.
+    mode(&obid, "sandbox");
+    let body = json!({"said": "SAY Ready.", "new": true, "workspace": "folder",
+        "folders": [project.to_str().unwrap()]});
+    let answer = call(&obid, "POST", "/v1/plans", Some(&body));
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let unsigned = files(turns(&obid).last().unwrap());
+    assert!(!unsigned.contains(&entry(&project, "write")), "{unsigned}");
 }
