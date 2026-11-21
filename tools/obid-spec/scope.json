@@ -2195,9 +2195,10 @@
             "COMPUTERSAPP-9": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
             "COMPUTERSAPP-10": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
             "COMPUTERSAPP-11": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
-            "COMPUTERSAPP-12": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
+            "COMPUTERSAPP-12": "the Electron app's computer picker, offered once obid answers GET /v1/computers, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_12_…, and the picker on obid's routes)",
             "COMPUTERSAPP-13": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
-            "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)"
+            "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
+            "COMPUTERSAPP-15": "the Electron app's main process naming the computer in use with Oby-Computer, proven by apps/electron/src/renderer/src/test/engine.test.ts (computersapp_15_…); obid forwards what it names (docs/contracts/remote.md)"
           }
         }
       }
