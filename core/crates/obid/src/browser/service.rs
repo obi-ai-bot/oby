@@ -147,16 +147,15 @@ impl Service {
     /// obid's records now find it foreign (BROWSER-18): read on every call, never only the first,
     /// and never back to the owner's.
     pub fn ensure_job(&self, job: &str, agent: &str, origin: c::Origin) {
-        let added = self.api(|a| {
-            let new = a.job(job).is_none();
-            if new {
+        let changed = self.api(|a| {
+            if a.job(job).is_none() {
                 a.add_job_for(job, agent, origin);
+                true
             } else {
-                a.found_foreign(job, origin);
+                a.found_foreign(job, origin)
             }
-            new
         });
-        if added {
+        if changed {
             self.flush();
         }
     }

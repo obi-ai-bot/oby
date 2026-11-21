@@ -169,49 +169,78 @@ fn browser_16_no_token_a_made_up_one_the_owners_or_an_ended_jobs_is_refused() {
     stop_with_no_browser_left(&mut obid);
 }
 
-/// A job marked `untrusted` gets no browser until the window's side of the box's edge lands
-/// (box_edge::FOREIGN_BROWSER, BROWSER-18): its agent, which holds its broker token, has every tool
-/// refused, its navigate to obid's own API on loopback too. Written before obid starts, as a
-/// foreign job is.
-#[test]
-fn browser_18_a_foreign_jobs_browser_tools_are_refused_until_the_windows_edge() {
-    let folder = Folder::new("browser-18");
-    let config = browser_config(&folder);
-    let mut foreign = obid::job::Job::new(
-        "bbbb1818".into(),
+/// A Codex job that stays running, its file written before obid starts as `mark` leaves it, and
+/// its broker token.
+fn seeded_job(folder: &Folder, id: &str, mark: impl FnOnce(&mut obid::job::Job)) -> (Obid, String) {
+    let config = browser_config(folder);
+    let mut job = obid::job::Job::new(
+        id.into(),
         "obi-e2e/fixture-app".into(),
         "build".into(),
         "SLEEP TOKEN FILE".into(),
         "codex".into(),
         "codex".into(),
     );
-    foreign.branch = "oby/build-bbbb1818".into();
-    foreign.untrusted = true;
+    job.branch = format!("oby/build-{id}");
+    mark(&mut job);
     let jobs = folder.0.join("home/jobs");
     std::fs::create_dir_all(&jobs).unwrap();
     std::fs::write(
-        jobs.join("bbbb1818.json"),
-        serde_json::to_vec(&foreign).unwrap(),
+        jobs.join(format!("{id}.json")),
+        serde_json::to_vec(&job).unwrap(),
     )
     .unwrap();
-    let mut obid = start_with(&folder.0, &config, None, &[]);
-    let file = obid.home.join("worktrees/bbbb1818/.obi/mcp-token");
-    let token = within(90, "the untrusted job hands back its token", || {
+    let obid = start_with(&folder.0, &config, None, &[]);
+    let file = obid.home.join(format!("worktrees/{id}/.obi/mcp-token"));
+    let token = within(90, "the job hands back its token", || {
         std::fs::read_to_string(&file)
             .ok()
             .map(|t| t.trim().to_string())
             .filter(|t| t.len() == 64)
     });
+    (obid, token)
+}
+
+/// Every browser tool `token`'s job calls is refused as a foreign job's: no browser on this Oby
+/// yet (BROWSER-18), its navigate to obid's own API on loopback too.
+fn refused_as_foreign(obid: &Obid, token: &str) {
     let url = format!("http://127.0.0.1:{}/v1/jobs", obid.port);
     for (name, args) in [
         ("oby_browser_navigate", json!({"url": url})),
         ("oby_browser_snapshot", json!({})),
     ] {
-        let refused = tool(&obid, &token, name, args);
+        let refused = tool(obid, token, name, args);
         assert_eq!(refused["error"]["code"], "browser_off", "{refused}");
         let message = refused["error"]["message"].as_str().unwrap_or_default();
         assert!(message.contains("no browser on this Oby yet"), "{refused}");
     }
+}
+
+/// A job marked `untrusted` gets no browser until the window's side of the box's edge lands
+/// (box_edge::FOREIGN_BROWSER, BROWSER-18): its agent, which holds its broker token, has every tool
+/// refused. Written before obid starts, as a foreign job is.
+#[test]
+fn browser_18_a_foreign_jobs_browser_tools_are_refused_until_the_windows_edge() {
+    let folder = Folder::new("browser-18");
+    let (mut obid, token) = seeded_job(&folder, "bbbb1818", |job| job.untrusted = true);
+    refused_as_foreign(&obid, &token);
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// A follow-up whose earlier job is gone (a received review the owner deleted, then obid
+/// restarted) can't show where its line came from: it gets no browser, never the owner's
+/// (BROWSER-18). It carries the `foreign` mark obid gives a follow-up of someone else's job.
+#[test]
+fn browser_18_a_follow_up_whose_earlier_job_is_gone_gets_no_browser() {
+    let folder = Folder::new("browser-18-gone");
+    let (mut obid, token) = seeded_job(&folder, "cccc1818", |job| {
+        job.follow_up_of = Some("dddd1818".into());
+        job.foreign = Some(
+            "it follows up a job whose check got none of them (another Oby asked for this job)"
+                .into(),
+        );
+    });
+    refused_as_foreign(&obid, &token);
     stop_with_no_browser_left(&mut obid);
 }
 

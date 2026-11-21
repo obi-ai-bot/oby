@@ -37,7 +37,9 @@ pub const EXCHANGES_LOOKED: usize = 500;
 /// and the peer's owner, from the Sphere's directory: `exchanges` as `Link::exchanges_json` gives
 /// them), or the Obi-to-Obi request it serves (`Job::obi`), else its `untrusted` mark or Oby's own
 /// review. A follow-up is read the same way back along the jobs it follows up (`earlier` finds
-/// each), so one of another Oby's job or review, or of Oby's own review, is never the owner's. Its
+/// each), so one of another Oby's job or review, or of Oby's own review, is never the owner's; a
+/// line it can't read to its start (an earlier job deleted, or more of them than the walk reads)
+/// is foreign too, never the owner's. Its
 /// `foreign` mark isn't read: a page an own job's agent read sets it too. Nothing its request says
 /// (its goal, its summary) is read here.
 pub fn origin_of(
@@ -47,9 +49,12 @@ pub fn origin_of(
 ) -> Origin {
     let mut next = Some(job.clone());
     let mut untrusted = false;
-    // A line of follow-ups is short; this only stops a loop.
+    // A line of follow-ups is short; this only stops a loop, and a line past it is foreign.
     for _ in 0..64 {
-        let Some(j) = next else { break };
+        // An earlier job gone: where the line came from can't be shown.
+        let Some(j) = next else {
+            return Origin::Untrusted;
+        };
         let brought = exchanges
             .as_array()
             .into_iter()
@@ -68,13 +73,16 @@ pub fn origin_of(
             };
         }
         untrusted |= j.untrusted || j.review_of.is_some();
-        next = j.follow_up_of.as_deref().and_then(&earlier);
+        let Some(of) = &j.follow_up_of else {
+            return if untrusted {
+                Origin::Untrusted
+            } else {
+                Origin::Own
+            };
+        };
+        next = earlier(of);
     }
-    if untrusted {
-        Origin::Untrusted
-    } else {
-        Origin::Own
-    }
+    Origin::Untrusted
 }
 
 /// Whether a foreign job's browser may open `url`: a web page that isn't one of the host's own
@@ -177,6 +185,50 @@ mod tests {
             origin_of(&follow("j0"), &serde_json::Value::Null, get),
             Origin::Own
         );
+    }
+
+    /// A line whose earlier job is gone, or longer than the walk reads, can't show it's the
+    /// owner's: it is foreign, never `Own` (BROWSER-18).
+    #[test]
+    fn browser_18_a_line_of_follow_ups_that_cant_be_read_to_its_start_is_foreign() {
+        let mut gone = job("f1", "build");
+        gone.follow_up_of = Some("deleted".into());
+        let none = |_: &str| None;
+        assert_eq!(
+            origin_of(&gone, &serde_json::Value::Null, none),
+            Origin::Untrusted
+        );
+        // 70 own follow-ups, the first of them following up another Oby's review.
+        let mut line: Vec<crate::job::Job> = (0..70)
+            .map(|n| {
+                let mut f = job(&format!("f{n}"), "build");
+                f.follow_up_of = Some(if n == 0 {
+                    "r".into()
+                } else {
+                    format!("f{}", n - 1)
+                });
+                f
+            })
+            .collect();
+        let mut review = job("r", "review");
+        review.obi = Some(crate::job::ObiRef {
+            correlation_id: "c".into(),
+            from: "obi-b".into(),
+            from_owner: "ben".into(),
+            request_id: "q".into(),
+        });
+        line.push(review);
+        let get = |id: &str| line.iter().find(|j| j.id == id).cloned();
+        let last = get("f69").unwrap();
+        assert!(origin_of(&last, &serde_json::Value::Null, get).foreign());
+        // A line of the owner's own that ends where the walk can read it stays the owner's.
+        let mut own = job("o0", "build");
+        own.follow_up_of = None;
+        let mut next = job("o1", "build");
+        next.follow_up_of = Some("o0".into());
+        let owned = [own];
+        let get = |id: &str| owned.iter().find(|j| j.id == id).cloned();
+        assert_eq!(origin_of(&next, &serde_json::Value::Null, get), Origin::Own);
     }
 
     #[test]

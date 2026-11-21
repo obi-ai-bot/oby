@@ -82,15 +82,21 @@ impl Api {
     }
 
     /// Job `id`, known as the owner's, is foreign by `origin`: it works for that one from now on,
-    /// in its box's partition. A foreign job's origin is kept as it was first found.
-    pub fn found_foreign(&mut self, id: &str, origin: c::Origin) {
+    /// in its box's partition, told as a `browser` event. A foreign job's origin is kept as it was
+    /// first found. Answers whether it changed.
+    pub fn found_foreign(&mut self, id: &str, origin: c::Origin) -> bool {
         if !origin.foreign() {
-            return;
+            return false;
         }
-        if let Some(j) = self.jobs.get_mut(id).filter(|j| !j.origin.foreign()) {
-            j.partition = origin.partition(id, &j.agent);
-            j.origin = origin;
+        let Some(j) = self.jobs.get_mut(id).filter(|j| !j.origin.foreign()) else {
+            return false;
+        };
+        j.partition = origin.partition(id, &j.agent);
+        j.origin = origin;
+        if let Some(browser) = self.job_browser(id) {
+            self.push(c::EventBody::Browser { browser });
         }
+        true
     }
 
     /// Every job the API knows.
@@ -706,6 +712,26 @@ mod tests {
             &[json!({"tab": tab, "url": "http://x/", "current": true})],
             &json!({tab: "X"}),
         );
+    }
+
+    /// A job found foreign is told to the stream: one `browser` event with its new origin, after
+    /// the last `seq` (BROWSER-18); found foreign again, nothing new.
+    #[test]
+    fn browser_18_a_job_found_foreign_is_one_browser_event() {
+        let mut a = api();
+        a.add_job("j1", "claude");
+        let before = a.events_after(0).last().map_or(0, |e| e.seq);
+        a.found_foreign("j1", c::Origin::Untrusted);
+        let new = a.events_after(before);
+        assert_eq!(new.len(), 1, "{new:?}");
+        match &new[0].body {
+            c::EventBody::Browser { browser } => {
+                assert_eq!(browser.origin, c::Origin::Untrusted);
+            }
+            other => panic!("{other:?}"),
+        }
+        a.found_foreign("j1", c::Origin::Untrusted);
+        assert_eq!(a.events_after(new[0].seq).len(), 0);
     }
 
     #[test]
