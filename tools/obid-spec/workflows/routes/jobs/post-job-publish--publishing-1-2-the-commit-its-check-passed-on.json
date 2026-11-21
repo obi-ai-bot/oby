@@ -358,7 +358,8 @@
       "ui": {
         "proves": [
           "PUBLISHING-2"
-        ]
+        ],
+        "flaky": "#2831: obid keeps a done job's commits once more after it ends and can move its branch back over the step's move, so Publish by hand doesn't see it moved; what goes out is still the checked commit"
       }
     },
     {
@@ -378,7 +379,29 @@
       "inputs": {
         "value": "${state.remote-after.out}",
         "expect": {
-          "body": "${state.jm-remote-before.out}"
+          "body": {
+            "$oneOf": [
+              "${state.jm-remote-before.out}",
+              "${state.checked-m.out}"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "PUBLISHING-2"
+        ]
+      }
+    },
+    {
+      "id": "publishing-2-never-the-unchecked-commit",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.remote-after.out}",
+        "expect": {
+          "body": {
+            "$ne": "${state.unchecked.out}"
+          }
         }
       },
       "ui": {
