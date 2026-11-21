@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { owners, wordsOf } from '../../../shared/words';
 
-// What went with obid's own Chrome (docs/plans/browser-t3.md, W3): the page is each tab's own
-// <webview>, so the window streams no picture of it, signs none of the owner's mouse and keys for
-// obid, and takes or gives back no tab. This fails if any of it comes back into the app's source.
+// What went with obid's own Chrome (docs/contracts/browser-app.md, BROWSERAPP-10): the page is each
+// tab's own <webview>, so the window streams no picture of it and signs none of the owner's mouse
+// and keys for obid. This fails if any of it comes back into the app's source. Take control and
+// Give back stay signed (BROWSERAPP-9, browserLive.test.ts).
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const sources = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
@@ -18,17 +19,16 @@ const sources = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
 // each retired piece, and the words that would mean it's back
 const RETIRED: [string, RegExp][] = [
   ['the live frame (the streamed picture of the page)', /\bLiveFrame\b|data-browser="frame(-input)?"|\bBrowserFrame\b/],
-  ['main\'s stream followers and their channels', /browser-(watch|unwatch|frame)\b|\/v1\/browser\/tabs\/[^'"`\s]*\/stream|browserTabPath\([^)]*'stream'/],
+  ['main\'s stream followers and their channels', /browser-(watch|unwatch|frame)\b|\/v1\/browser\/tabs\/[^'"`\s]*\/stream|browserTabPath\([^)]*'stream'|tabs\\\/\[\^\/\]\+\\\/stream/],
   ['the owner\'s input signed for obid (browserInput)', /\b(sawInput|mayInput|INPUT_PATH|BrowserInput)\b|browserInput|\/v1\/browser\/tabs\/[^'"`\s]*\/input|browserTabPath\([^)]*'input'/],
-  ['Take control and Give back signed for obid', /\b(TAKE_CONTROL|TAKE_LABELS|GIVE_BACK|BROWSER_TAB)\b|browserTabPath\([^)]*'(take|giveBack)'|\/v1\/browser\/tabs\/[^'"`\s]*\/(take|giveBack)/],
 ];
 
-describe('W3: what went with obid\'s own browser stays gone', () => {
-  it('w3_retired: main/browserInput.ts is gone', () => {
+describe('BROWSERAPP-10: what went with obid\'s own browser stays gone', () => {
+  it('browserapp_10: main/browserInput.ts is gone', () => {
     expect(existsSync(join(SRC, 'main', 'browserInput.ts'))).toBe(false);
   });
 
-  it('w3_retired: no source of the app has the live frame, a stream follower, the owner\'s input for obid, or take and give-back signing', () => {
+  it('browserapp_10: no source of the app has the live frame, a stream follower or the owner\'s input for obid', () => {
     const files = sources(SRC);
     expect(files.length).toBeGreaterThan(100);
     const back = RETIRED.flatMap(([what, words]) => files
@@ -37,8 +37,8 @@ describe('W3: what went with obid\'s own browser stays gone', () => {
     expect(back).toEqual([]);
   });
 
-  it('w3_retired: main signs no take, give back or input, whatever label the owner pressed', () => {
-    for (const verb of ['take', 'giveBack', 'input', 'stream']) {
+  it('browserapp_10: main signs no input or stream, whatever label the owner pressed', () => {
+    for (const verb of ['input', 'stream']) {
       const path = `/v1/browser/tabs/t1/${verb}`;
       expect(wordsOf('POST', path, {})).toBeNull();
       expect(owners('POST', path, {}, ['Take control', 'Give back', 'Take control to answer', 'I’ll choose in the page'], [])).toBeNull();

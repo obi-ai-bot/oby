@@ -324,7 +324,7 @@ describe('BROWSERAPP-12: main fills the page\'s field on the owner\'s own Fill i
     takeInput(); takeInput();
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBe('Filling in takes your own click.');
     expect(the.calls.length).toBe(before);
-    // with both: the secret, then the ask answered, each signed; no take or give back around it (no holds, O1)
+    // with both: the secret, then the ask answered, each signed; no take or give back around it
     input();
     before = the.calls.length;
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBeNull();

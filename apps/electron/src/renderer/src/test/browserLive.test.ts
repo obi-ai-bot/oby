@@ -78,6 +78,18 @@ describe('BROWSERAPP-8: on obid, the panel follows obid\'s browser through main'
     expect(o.following()).toBe(true);
     expect(o.calls.every((c) => c.path.startsWith('/v1/browser'))).toBe(true);
   });
+  it('browserapp_8: the window asks obid for no tab\'s picture stream', async () => {
+    const o = mockObid({ tabs: [tab('t1'), tab('t2')], seq: 1 });
+    // an api that still offers the old picture stream's follower: the window never asks for it
+    const watch = vi.fn(() => () => {});
+    const api = { call: o.api.call, follow: o.api.follow, fill: o.api.fill, watch };
+    connectLive(sinks, api);
+    await settle(); await settle();
+    expect(state?.tabs.map((t) => t.id)).toEqual(['t1', 't2']);
+    o.event({ seq: 2, type: 'tab', tab: tab('t2', { title: 'Sign up · Acme' }) });
+    expect(watch).not.toHaveBeenCalled();
+    expect(o.calls.filter((c) => c.path.endsWith('/stream'))).toEqual([]);
+  });
   it('browserapp_8: an event after the list is applied; one the list already reflects isn\'t; a list older than an event never rolls the screen back', async () => {
     const lists = { tabs: [tab('t1')], seq: 5 };
     const o = mockObid(lists);
