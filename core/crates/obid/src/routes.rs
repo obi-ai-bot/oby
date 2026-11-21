@@ -1405,6 +1405,9 @@ pub async fn message(
         let job = shared.jobs.message_attaching(&id, text, source, &paths);
         let job = job.ok_or_else(|| no_job(&shared, &id))?;
         let job = job.map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why.0))?;
+        // The round the words opened, as they kept it: read again below for its marks (JOBSTATE-6).
+        let opened = job.clone();
+        answer_held().await;
         // Words no app of the owner's signed: the job that heard them (or the follow-up they
         // started) is no longer the owner's own words alone (crate::secretspec).
         let job = if typed {
@@ -1464,9 +1467,23 @@ pub async fn message(
             None => job,
         };
         let status = [StatusCode::OK, StatusCode::CREATED][usize::from(made)];
+        let job = crate::job::as_opened(&opened, job);
         Ok((status, job.to_json(), Some(job.id)))
     })
     .await
+}
+
+/// Holds the words' answer between taking them and reading the job back: none, but in a debug
+/// build's test (`OBID_TEST_MESSAGE_ANSWER_HOLD_MS`, at most 10 s), the window JOBSTATE-6's
+/// answer must survive, a round that ends before its answer is read (#2820).
+async fn answer_held() {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("OBID_TEST_MESSAGE_ANSWER_HOLD_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        tokio::time::sleep(Duration::from_millis(ms.min(10_000))).await;
+    }
 }
 
 /// `GET /v1/jobs/{id}/publish`: what publishing the job by hand would do, in obid's one sentence,

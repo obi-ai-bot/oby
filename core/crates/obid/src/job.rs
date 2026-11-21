@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 pub(crate) mod chain;
 mod lifecycle;
-pub use lifecycle::{Command, EndKind, Ended, Refused, transition};
+pub use lifecycle::{Command, EndKind, Ended, Refused, as_opened, transition};
 pub(crate) use lifecycle::{TAKING_OVER, hands_over};
 
 /// `queued`, `running`, `done`, `failed`, `stopped` or `interrupted`. On obid, `interrupted` is a
