@@ -1367,10 +1367,10 @@
     },
     "devices": {
       "routes": [
+        "/v1/computers",
         "/v1/devices",
         "/v1/notifications",
-        "/v1/pairing",
-        "/v1/computers"
+        "/v1/pairing"
       ],
       "contracts": {
         "phone-pairing.md": {
