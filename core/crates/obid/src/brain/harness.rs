@@ -210,7 +210,7 @@ impl Session {
     /// turn as a question the apps show with its choices, and tells the agent so. The owner's pick,
     /// or their own words, comes back as their next words. What the agent wrote there is data for
     /// the owner to read: the question and its options' labels, cut as a job's question card's.
-    fn put_question(&self, input: &Value) -> Answer {
+    pub(super) fn put_question(&self, input: &Value) -> Answer {
         let call = Call::new(crate::permissions::ASK_USER_QUESTION, input);
         let Some(asked) = call.questions.first() else {
             return Answer::Deny("obid couldn't read that question: ask it in your answer.".into());
@@ -3107,9 +3107,29 @@ async fn one(
         true => shared.jobs.claude_folders(),
         false => Vec::new(),
     };
+    // The owner's own MCP servers in an own Codex session (CONVERSATION-AGENT-18), as T3 Code:
+    // Bypass runs their tools; every other mode asks the owner, whose signed "Allow once" to the
+    // question Oby's last turn asked lets that tool run this turn.
+    let bypass = launched == crate::permissions::Mode::Bypass;
+    let granted = own_codex
+        .then(|| {
+            super::server_asks::granted(
+                shared,
+                &control.conversation,
+                &control.turn,
+                control.signed(),
+            )
+        })
+        .flatten();
     let decide = |tool: &str, input: &Value| {
         if tool == crate::permissions::ASK_USER_QUESTION {
             return Ruling::Now(session.put_question(input));
+        }
+        if own_codex
+            && let Some(answer) =
+                super::server_asks::rule(tool, bypass, granted.as_deref(), session)
+        {
+            return Ruling::Now(answer);
         }
         let quiet = crate::jobs::Jobs::OWN_QUIET.contains(&tool);
         if own

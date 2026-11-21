@@ -1155,10 +1155,10 @@ fn full_access() -> Value {
 }
 
 /// LANES-21 (docs/contracts/lanes.md, #2425): the owner's Codex conversation in Bypass runs Oby's
-/// own tools: Codex asks nobody there, and codex-cli 0.163 refuses any MCP call that would need
-/// approval with nobody to ask, so obid approves Oby's server before the run and no other server.
-/// Words become a task (`oby_dispatch` starts its job), and another server's tool is still Codex's
-/// to refuse.
+/// own tools, approved before the run, and no other server is. Words become a task (`oby_dispatch`
+/// starts its job). CONVERSATION-AGENT-18: another server of the owner's runs too, as in T3 Code's
+/// full access: Codex asks obid about it (T3's `granular` policy keeps `mcp_elicitations`, as
+/// codex-cli 0.163.0 was measured to, #2698) and obid accepts.
 #[test]
 fn lanes_21_an_own_codex_conversation_starts_a_task_with_obys_own_tool() {
     let (_folder, obid) = obid("codex-conv-own-tools", true);
@@ -1180,12 +1180,7 @@ fn lanes_21_an_own_codex_conversation_starts_a_task_with_obys_own_tool() {
         &obid,
         json!({"said": "ELSEWHERE", "conversation": conversation}),
     );
-    assert_eq!(
-        words(&other),
-        "elsewhere: declined (MCP tool call requires approval, but approval policy is never)",
-        "{}",
-        other.text
-    );
+    assert_eq!(words(&other), "elsewhere: ran", "{}", other.text);
     let recorded = turns(&obid);
     assert_eq!(recorded.len(), 2, "{recorded:?}");
     for turn in &recorded {
@@ -1198,6 +1193,72 @@ fn lanes_21_an_own_codex_conversation_starts_a_task_with_obys_own_tool() {
             "{turn}"
         );
     }
+}
+
+/// What obid's `turn/steer` told the stand-in, every conversation's, oldest first.
+fn steered(obid: &Obid) -> Vec<String> {
+    let mut all: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(obid.home.join("conversations"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let text = std::fs::read_to_string(entry.path().join("config/steered.jsonl"));
+        for line in text.unwrap_or_default().lines() {
+            let line: Value = serde_json::from_str(line).unwrap();
+            all.push(line["words"].as_str().unwrap_or("").to_owned());
+        }
+    }
+    all
+}
+
+/// CONVERSATION-AGENT-18 (#2698, as T3 Code): the owner's Codex conversation in Ask doesn't run a
+/// tool of another MCP server of theirs until they allow it. Codex asks obid; obid declines, tells
+/// the turn why (so it ends rather than tries again) and puts the question to the owner as the
+/// turn's answer. Their signed "Allow once" runs it on that next turn only; their words unsigned,
+/// or "Don't allow", leave it declined, asked again.
+#[test]
+fn conversation_agent_18_an_ask_codex_conversation_asks_the_owner_before_another_server() {
+    let (_folder, obid) = obid("codex-conv-ask-servers", true);
+    let question =
+        "Codex wants to run run from your MCP server elsewhere. Allow it for your next message?";
+    let asked = |answer: &Answer| {
+        assert_eq!(answer.body["kind"], "question", "{}", answer.text);
+        assert_eq!(answer.body["question"]["text"], question, "{}", answer.text);
+        assert_eq!(
+            answer.body["question"]["options"],
+            json!(["Allow once", "Don't allow"]),
+            "{}",
+            answer.text
+        );
+    };
+    let first = said(&obid, json!({"said": "ELSEWHERE", "new": true}));
+    asked(&first);
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let told = within(10, "obid to tell the turn why", || {
+        steered(&obid).into_iter().find(|w| w.contains("elsewhere"))
+    });
+    assert_eq!(
+        told,
+        "obid declined that: the owner hasn't allowed run from their MCP server elsewhere, so it didn't run. Oby has asked them, over the message box. Don't call it again: end your turn now. Their answer comes as their next words."
+    );
+    let typed = |words: &str| {
+        let body = json!({"said": words, "conversation": conversation});
+        call_typed(&obid, "POST", "/v1/plans", &body)
+    };
+    // 1. Allowed, signed: it runs, this turn.
+    let allowed = typed("Allow once");
+    assert_eq!(words(&allowed), "elsewhere: ran", "{}", allowed.text);
+    // 2. Once means once: the next call is asked again.
+    asked(&typed("ELSEWHERE"));
+    // 3. The same words unsigned allow nothing.
+    let unsigned = said(
+        &obid,
+        json!({"said": "Allow once", "conversation": conversation}),
+    );
+    asked(&unsigned);
+    // 4. Don't allow: still declined.
+    asked(&typed("Don't allow"));
 }
 
 /// LANES-21: a boxed conversation (another Oby's) asks obid about every MCP call, as before, so
