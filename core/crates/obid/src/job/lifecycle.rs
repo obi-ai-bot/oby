@@ -268,7 +268,7 @@ pub fn as_opened(opened: &Job, mut now: Job) -> Job {
         now.resumes_at = opened.resumes_at;
         now.reason = opened.reason.clone();
         now.asked = opened.asked;
-        now.publish_step = opened.publish_step.clone();
+        now.publish_step = opened.publish_step;
         now.step = opened.step.clone();
         now.finished = opened.finished;
         now.review_result = opened.review_result.clone();
@@ -316,7 +316,10 @@ mod tests {
 
         let mut stopped = now.clone();
         stopped.status = Status::Stopped;
-        assert_eq!(as_opened(&opened, stopped.clone()).to_json(), stopped.to_json());
+        assert_eq!(
+            as_opened(&opened, stopped.clone()).to_json(),
+            stopped.to_json()
+        );
         let mut later = now.clone();
         later.round = Some(opened.current_round() + 1);
         assert_eq!(as_opened(&opened, later.clone()).to_json(), later.to_json());
