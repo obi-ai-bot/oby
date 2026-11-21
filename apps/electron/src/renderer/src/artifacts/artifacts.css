@@ -31,3 +31,9 @@
 .art-br .art-file.is-on { color: var(--ink); background: var(--hover); }
 .art-br .art-code-body { position: relative; flex: 1; min-height: 0; }
 .art-br .art-code-editor { position: absolute; inset: 0; }
+
+/* the version menu, Save, and why a Save was refused */
+.art-br .art-version { flex: none; font: inherit; font-size: var(--text-sm); color: var(--ink); background: rgba(255, 255, 255, 0.05); border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
+.art-br .art-save { flex: none; }
+.art-br .art-file.is-edited::after { content: ' •'; color: var(--ink); }
+.art-br .art-refused { flex: none; margin: 0; padding: 8px 14px; font-size: var(--text-sm); color: var(--ink); background: rgba(255, 159, 10, 0.12); border-bottom: 1px solid var(--divider); }

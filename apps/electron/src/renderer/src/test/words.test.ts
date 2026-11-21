@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -285,6 +285,23 @@ describe('signed words', () => {
     }
     // with new, it isn't a shape the app sends: nothing is signed
     expect(wordsOf('POST', '/v1/plans', plan(artifact, { new: true }))).toBeNull();
+  });
+
+  it('words_23_an_artifacts_edit_signs_by_its_own_save_as_label', () => {
+    const path = '/v1/artifacts/3f0c2a1e-1111-4222-8333-944455556666/versions';
+    const edit = { base: 2, files: { 'style.css': 'h1 { color: crimson }' } };
+    expect(saveAs(2)).toBe('Save as v3');
+    expect(wordsOf('POST', path, edit)).toEqual(['Save as v3']);
+    expect(owners('POST', path, edit, ['Save as v3'], [])).toEqual([0]);
+    // another button's click can't stand for it, nor the text typed in the editor
+    for (const held of ['Save', 'Save as v2', 'h1 { color: crimson }']) expect(owners('POST', path, edit, [held], []), held).toBeNull();
+    for (const body of [{}, { base: 2 }, { files: edit.files }, { base: 0, files: edit.files }, { base: 1.5, files: edit.files }, { base: 2, files: {} }, { base: 2, files: { 'a.css': 1 } }, { ...edit, title: 'x' }, { base: 2, files: ['a'] }]) {
+      expect(wordsOf('POST', path, body), JSON.stringify(body)).toBeNull();
+    }
+    expect(wordsOf('POST', '/v1/artifacts/c1/versions', edit)).toBeNull();
+    expect(wordsOf('PUT', path, edit)).toBeNull();
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    expect(wordsHeader(privateKey, 'd1', 'POST', path, edit)).not.toBeNull();
   });
 
   it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {

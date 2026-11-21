@@ -35,6 +35,13 @@ export const BACKGROUND_YES = 'Yes, it can';
 export const VAULT_ADD = 'Add Secret';
 export const VAULT_REMOVE = 'Remove Secret';
 
+// The owner's edit of an artifact (docs/contracts/artifacts-app.md, ARTIFACTSAPP-8, WORDS-23): its
+// Save button's own label, which names the version it makes (`Save as v3`, `base` + 1), so no other
+// button's click can stand for it; never the text, which sits in the Code tab's editor. The signature
+// still covers the exact body, the text included.
+export const saveAs = (base: number) => `Save as v${base + 1}`;
+const ARTIFACT_EDIT = /^\/v1\/artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/versions$/;
+
 // The owner's hold on a browser tab (docs/contracts/browser-app.md, BROWSERAPP-9): Take control and
 // Give back, each signed by its own button's label, an empty body. A take is also the page dialog's
 // Take control to answer, and a choice's I'll choose in the page.
@@ -95,6 +102,13 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   if (method === 'DELETE' && COMPUTER.test(path.split('?')[0]) && path.split('?')[0] !== '/v1/computers/current') return body === undefined ? [REMOVE_COMPUTER] : null;
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
+  // the owner's edit: the version it's made on, and some of its files' new text, nothing else
+  if (method === 'POST' && ARTIFACT_EDIT.test(p)) {
+    const files = body.files;
+    return Number.isSafeInteger(body.base) && (body.base as number) >= 1 && isBody(files) && Object.keys(files).length > 0
+      && Object.values(files).every(text) && shaped(body, { base: (b) => Number.isSafeInteger(b), files: isBody })
+      ? [saveAs(body.base as number)] : null;
+  }
   // a browser tab's take or give back: an empty body, nothing else
   const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
   if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;

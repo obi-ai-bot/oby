@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { EditorState } from '@codemirror/state';
-import { EditorView, lineNumbers } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers } from '@codemirror/view';
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { HighlightStyle, syntaxHighlighting, type LanguageSupport } from '@codemirror/language';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
@@ -9,10 +10,11 @@ import { markdown } from '@codemirror/lang-markdown';
 import { json } from '@codemirror/lang-json';
 import { tags } from '@lezer/highlight';
 import { api, type Artifact } from '../obid';
+import { edit } from './store';
 
 // The pane's Code tab (docs/contracts/artifacts-app.md, ARTIFACTSAPP-5), as LibreChat's: a tab per
-// file of the version, index.html first, its text in CodeMirror 6, read-only until editing comes
-// (L3b). CodeMirror is the editor Sandpack's own SandpackCodeEditor wraps; sandpack-react itself
+// file of the version, index.html first, its text in CodeMirror 6: the owner's to edit on the latest
+// version (ARTIFACTSAPP-8), read-only on an older one (ARTIFACTSAPP-9). CodeMirror is the editor Sandpack's own SandpackCodeEditor wraps; sandpack-react itself
 // isn't built in, as it names CodeSandbox's hosted services (scripts/local-only.mjs). A file that
 // isn't text (a picture, a font) is named, never shown.
 
@@ -50,25 +52,35 @@ const highlight = HighlightStyle.define([
   { tag: [tags.typeName, tags.className], color: '#acf2e4' },
 ]);
 
-/** CodeMirror over `text`, read-only. */
-function Editor({ path, text }: { path: string; text: string }) {
+/** CodeMirror over `text` (the owner's edit of it, when there's one): editable on the latest
+ * version only, each change handed to `onEdit`. */
+function Editor({ path, text, edited, editable, onEdit }: { path: string; text: string; edited?: string; editable: boolean; onEdit: (text: string) => void }) {
   const host = useRef<HTMLDivElement>(null);
+  const said = useRef(onEdit);
+  said.current = onEdit;
   useEffect(() => {
     if (!host.current) return;
     const lang = language(path);
     const view = new EditorView({
       parent: host.current,
       state: EditorState.create({
-        doc: text,
-        extensions: [lineNumbers(), EditorState.readOnly.of(true), EditorView.editable.of(false), theme, syntaxHighlighting(highlight), ...(lang ? [lang] : [])],
+        doc: edited ?? text,
+        extensions: [
+          lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap]),
+          EditorState.readOnly.of(!editable), EditorView.editable.of(editable),
+          EditorView.updateListener.of((u) => { if (u.docChanged) said.current(u.state.doc.toString()); }),
+          theme, syntaxHighlighting(highlight), ...(lang ? [lang] : []),
+        ],
       }),
     });
     return () => view.destroy();
-  }, [path, text]);
+    // the editor holds the owner's typing itself: it's made again only for another file, text or mode
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, text, editable]);
   return <div ref={host} className="art-code-editor" data-artifact-code={path} />;
 }
 
-export function Code({ artifact, version }: { artifact: Artifact; version: number }) {
+export function Code({ artifact, version, edits, editable }: { artifact: Artifact; version: number; edits: Record<string, string>; editable: boolean }) {
   const files = tabsOf(artifact.versions.find((v) => v.version === version)?.files ?? []);
   const [picked, setPicked] = useState<string | null>(null);
   const path = picked && files.includes(picked) ? picked : files[0];
@@ -88,14 +100,14 @@ export function Code({ artifact, version }: { artifact: Artifact; version: numbe
     <div className="art-code">
       <div className="art-files" role="tablist" aria-label="The artifact’s files">
         {files.map((f) => (
-          <button key={f} role="tab" aria-selected={f === path} className={`art-file${f === path ? ' is-on' : ''}`} onClick={() => setPicked(f)}>{f}</button>
+          <button key={f} role="tab" aria-selected={f === path} className={`art-file${f === path ? ' is-on' : ''}${f in edits ? ' is-edited' : ''}`} onClick={() => setPicked(f)}>{f}</button>
         ))}
       </div>
       <div className="art-code-body" role="tabpanel" aria-label={path}>
         {!path ? <p className="art-view-note">This version has no files.</p>
           : !isText(path) ? <p className="art-view-note">{path} isn’t text: Preview shows it.</p>
           : shown?.error ? <p className="art-view-note" role="alert">{shown.error}</p>
-          : shown?.text !== undefined ? <Editor path={path} text={shown.text} />
+          : shown?.text !== undefined ? <Editor path={path} text={shown.text} edited={edits[path]} editable={editable} onEdit={(text) => edit(path, text, shown.text!)} />
           : null}
       </div>
     </div>
