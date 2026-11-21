@@ -45,6 +45,7 @@ import { useOpenArtifact } from './artifacts/store';
 import { MacSheet, useMacPill } from './browser/Mac';
 import { composing, registerCommands } from './shortcuts';
 import { ComputerLine, ComputerStage, useComputerStage } from './computers/ComputerHome';
+import { computerSays, messageOby, useComputers } from './computers/store';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the Settings tip over the message box: off for now (its bar, SettingsTip.tsx, kept for tips to come)
@@ -107,6 +108,8 @@ export default function Home() {
   const convos = useConvos();
   const threads = useThreads();
   const spheres = useSpheres();
+  // the computer the window works on, for the message box's words (computers/store.ts)
+  const computers = useComputers();
   // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
   const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length;
 
@@ -617,7 +620,8 @@ export default function Home() {
         className={enterIn ? (arriving ? 'is-waiting' : 'is-arrival') : ''}
         // (chat first, the line over it asks already: the canvas's words, Sangam's to change)
         prompts={!chatFirst}
-        placeholder={chatFirst ? 'Message Oby…' : undefined}
+        // on another computer, its name (COMPUTERSAPP-13, Sangam's screen 06)
+        placeholder={chatFirst ? messageOby(computers) : undefined}
         // the tip bar over the box (SettingsTip.tsx, its look kept for tips to come): the Settings tip is
         // off for now (Sangam, 2026-10-28: not needed)
         note={SETTINGS_TIP && tipShown && <SettingsTip onOpen={() => start({ kind: 'settings', id: 'general' })} />}
@@ -677,6 +681,8 @@ export default function Home() {
 // or what last went wrong; nothing while all's well
 function Connection() {
   const { connection, problem } = useLive();
+  // a switch under way, or the computer in use unreachable: the picker's line says it (ComputerLine)
+  if (computerSays(useComputers())) return null;
   if (connection === 'live' && !problem) return null;
   return <p className={`connection is-${connection}`} role="status">{problem ?? 'Connecting to Oby’s engine…'}</p>;
 }

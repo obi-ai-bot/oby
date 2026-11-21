@@ -6,7 +6,7 @@ import { ComputerButton } from '../computers/ComputerButton';
 import { ComputerLine, ComputerStage, QUIET_MS } from '../computers/ComputerHome';
 import { DEMO_CODE, DEMO_LINK, DEVBOX, STUDIO, codeRefused, demoApi } from '../computers/demo';
 import { NOT_YET, Refusal, computersOn, obidComputers, type ComputerEvents, type ComputersApi } from '../computers/obid';
-import { rename as renameKept, resetComputers, startComputers, type Ui } from '../computers/store';
+import { computerSays, messageOby, rename as renameKept, resetComputers, startComputers, type Ui } from '../computers/store';
 import { fingerprintText, type Computer, type ComputerList } from '../computers/view';
 
 // The computer picker in the app (docs/contracts/computers-app.md, COMPUTERSAPP-1 to 12): the
@@ -432,6 +432,31 @@ describe('COMPUTERSAPP-12: on obid, offered once obid answers its list of comput
     await act(async () => root.render(<ComputerButton />));
     expect($('.rail-computer')).toBeNull();
     expect(document.documentElement.dataset.computer).toBeUndefined();
+  });
+});
+
+describe('COMPUTERSAPP-13: the message box says which computer Oby is on', () => {
+  it('computersapp_13: on another computer it’s Message Oby on {name}…, on This Mac Message Oby…, as before', async () => {
+    await startComputers(demoApi(ONLY));
+    expect(messageOby()).toBe('Message Oby…');
+    await startComputers(demoApi(ON_STUDIO()));
+    expect(messageOby()).toBe('Message Oby on Studio…');
+    // an obid with no computers offers none: This Mac's words
+    resetComputers();
+    expect(messageOby()).toBe('Message Oby…');
+  });
+});
+
+describe('COMPUTERSAPP-9: the window’s own connection line waits while the picker says it', () => {
+  it('computersapp_9: with no route answering, or a switch under way, the picker’s words stand for the connection; connected, they don’t', async () => {
+    await startComputers(demoApi(ON_STUDIO({ state: 'lost', route: undefined, tried: [{ route: 'lan', what: '192.168.1.30', why: 'no answer' }] })));
+    expect(computerSays()).toBe(true);
+    await startComputers(demoApi(ON_STUDIO()));
+    expect(computerSays()).toBe(false);
+    await startComputers(demoApi(ON_STUDIO()), { switching: { to: 'This Mac', from: 'Studio' } });
+    expect(computerSays()).toBe(true);
+    resetComputers();
+    expect(computerSays()).toBe(false);
   });
 });
 
