@@ -63,15 +63,13 @@ their unit tests (`merge::tests`, `scan::tests`) still cover them.
   and `Cargo.lock`, `rust-toolchain`, `src/lib.rs`, `src/proofs.rs`), the script,
   `scripts/kani-prove.sh` or `core/.config/kani-slow.txt` requires `all`.
 
-GitHub's `proofs` job (docs/ci.md) compiles every harness, then `scripts/kani-prove.sh` proves the
-ones the change requires, two at a time, each within 20 minutes and 6 GB (a harness past either fails and is named; without the memory ceiling GitHub's runner died with no log), in every run that tests: the
-merge queue, so nothing merges into `dev` with a required proof failing, and pull requests into
-`main` or labelled `full-ci`. A harness too slow for GitHub's runner is on
-`core/.config/kani-slow.txt`, with why: those runs leave it out and say so, and nightly and on
-demand, when the job proves every harness, it proves those too, each within 150 minutes. One there
-now: `job::lifecycle::proofs::jobstate_7_holds_in_every_status`, past 100 minutes on GitHub's
-runner. The factory's own `prove` stage (docs/contracts/factory.md) is unchanged: it still runs the
-harnesses a task names on its gate VM, on top of these.
+GitHub runs no harness (docs/ci.md, "What GitHub runs"). `scripts/kani-prove.sh` proves the
+ones a change requires, two at a time, each within 20 minutes and 6 GB (a harness past either fails
+and is named), when it is run by hand, as below. A harness too slow for that is on
+`core/.config/kani-slow.txt`, with why: the script leaves it out and says so. One there now:
+`job::lifecycle::proofs::jobstate_7_holds_in_every_status`, past 100 minutes on GitHub's runner.
+The factory's own `prove` stage (docs/contracts/factory.md) is unchanged: it still runs the
+harnesses a task names on its gate VM.
 
 ## Run them
 
@@ -80,7 +78,7 @@ cd core
 cargo kani -p obid --tests --harness proofs::     # this folder's
 cargo kani -p obid --tests                        # every harness
 git diff --name-only origin/dev | scripts/kani-required.sh   # what a change requires (from the root)
-scripts/kani-prove.sh "proofs::token:: merge::proofs::"     # as GitHub proves them, after --only-codegen
+scripts/kani-prove.sh "proofs::token:: merge::proofs::"     # as the script proves them, after --only-codegen
 ```
 
 Kani is 0.68.0 (`cargo install --locked kani-verifier --version 0.68.0 && cargo kani setup`). A first

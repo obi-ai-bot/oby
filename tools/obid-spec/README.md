@@ -26,10 +26,9 @@ tools/obid-spec/target/debug/obid-spec coverage
   `--gate` is the check's: it fails only on a route or trigger without a workflow, an unclassified
   scenario or an unknown one, and reports the scenarios still waiting for an assertion as the
   backlog (OBIDSPEC-11).
-- The check runs it (docs/contracts/ci.md, CI-66 and 67): GitHub's merge queue, nightly and on
-  demand all of them, a pull request all of them only when it changes
-  `tools/obid-spec/` or carries `full-suite`; the Mac's `scripts/oby-check.sh` all of them for a
-  change to the suite.
+- The Mac's check runs it (docs/contracts/ci.md, CI-66): `scripts/oby-check.sh` all of them for a
+  change to the suite, and `scripts/preflight.sh` each workflow a change touches (CI-69). GitHub
+  doesn't run it.
 - `obid-spec list`, `obid-spec nodes`.
 
 ## Frozen until launch
@@ -75,9 +74,8 @@ applies to obid gets workflows here, driving the real obid with its stand-in age
 - Workflows live in `workflows/t3/<topic>/` (the area `t3-<topic>`), with a manual trigger and the
   `t3` tag, never `launch`.
 - `obid-spec run --tag t3` (or `--only t3-<topic>`) runs them; any other run leaves them out, and
-  `coverage` doesn't count them. CI asks for them wherever it runs every workflow (the merge queue,
-  nightly, on demand, a `full-suite` pull request): a second `obid-spec run --tag t3` step, so an
-  `expectedRed` whose bug is fixed fails there, never sits unnoticed (docs/contracts/ci.md, CI-67).
+  `coverage` doesn't count them. Run them by hand with `--tag t3`: an `expectedRed` whose bug is
+  fixed fails there.
 - `t3/conversations/`: one turn's events in order and once, Stop with words waiting, a provider's
   errors, an agent that dies mid-turn, restarts with words waiting, the event stream reconnected
   mid-turn, a conversation deleted while it runs, the same words sent twice, two conversations
