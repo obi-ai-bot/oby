@@ -1091,6 +1091,22 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
             format!("Not published: kind is html, markdown, image, pdf or canvas, not {text}.")
         })?),
     };
+    // What could have shaped it, kept on its version (ARTIFACTS-25): this turn read something
+    // untrusted, or its conversation did, or heard something off obid's allowlist.
+    let shaped = session.web.load(Ordering::SeqCst)
+        || shared.conversations.read_untrusted(&session.conversation)
+        || shared
+            .conversations
+            .foreign(&session.conversation)
+            .is_some();
+    // A conversation that had an unproxied version laid in its room: LANE-3a's (ARTIFACTS-24).
+    let marks = crate::artifacts::Marks {
+        foreign: shaped.then(|| {
+            "an artifact's files Oby's turn made after it read something untrusted".into()
+        }),
+        reached: None,
+        unproxied: super::open_artifact::laid_unproxied(shared, &session.conversation),
+    };
     let (id, version) = shared
         .artifacts
         .publish(crate::artifacts::Publish {
@@ -1102,6 +1118,7 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
             job: None,
             artifact: artifact.as_deref(),
             kept: None,
+            marks,
         })
         .await?;
     let mut made = session.artifacts.lock().unwrap_or_else(|e| e.into_inner());
@@ -1967,6 +1984,7 @@ fn asked(session: &Session) -> Asked<'_> {
         turn: &session.control.turn,
         signed: session.control.signed(),
         defaults: session.defaults.as_ref(),
+        artifact: session.control.artifact(),
     }
 }
 

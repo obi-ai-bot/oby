@@ -304,6 +304,7 @@ impl Jobs {
                 job.attachments_gone = (!gone.is_empty()).then_some(gone);
             });
         }
+        self.seed_artifacts(id, &worktree);
         // The issue it works from, as GitHub has it now, read with obid's own gh (the owner's
         // login), quoted as data in `.obi/inputs/`, on every run: its agent has no GitHub login to
         // read it itself (ISSUETASK-1). Who wrote it is read after the quote, so a word anyone

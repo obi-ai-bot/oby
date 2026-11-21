@@ -512,6 +512,7 @@ async fn answer(
         turn: &control.turn,
         signed: words.signed,
         defaults: words.defaults.as_ref(),
+        artifact: control.artifact(),
     };
     // The recap is written while the brain thinks; a background call is bounded and
     // tried once, and when it fails the answer is the same as without it.

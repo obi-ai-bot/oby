@@ -752,6 +752,13 @@ pub struct NewJob {
     pub unsigned: bool,
     #[serde(skip)]
     pub client_request_id: Option<String>,
+    /// The artifacts it starts with (ARTIFACTS-19, 20): obid sets them, the API never does.
+    #[serde(skip)]
+    pub artifacts: Vec<crate::job::JobArtifact>,
+    /// Planned in a conversation that had an unproxied version laid in its room
+    /// ([`Job::ran_unproxied`], ARTIFACTS-24). Kept in a Start or a Confirm item; never the API's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ran_unproxied: bool,
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
@@ -2295,6 +2302,7 @@ impl Jobs {
         );
         job.files = files;
         job.attachments = new.attachments;
+        job.artifacts = new.artifacts;
         job.start_in(&self.config.home, new.profile, new.conversation);
         job.turn = new.turn.filter(|_| job.conversation.is_some());
         job.brief = new
@@ -2351,7 +2359,7 @@ impl Jobs {
                 .as_ref()
                 .is_some_and(|of| of.foreign_by_api && of.someone_elses_but_api().is_none());
         job.reached = of.as_ref().and_then(Job::reached_for_follow_up);
-        job.ran_unproxied = of.as_ref().is_some_and(|of| of.ran_unproxied);
+        job.ran_unproxied = new.ran_unproxied || of.as_ref().is_some_and(|of| of.ran_unproxied);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
         job.named = match &of {
@@ -5916,6 +5924,7 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         start_from: unmerged.then(|| job.branch.clone()),
         follow_up_of: Some(job.id.clone()),
         earlier: Some(crate::secrets::known().redact(&did.join("\n"))),
+        artifacts: job.artifacts.clone(),
         ..NewJob::default()
     }
 }

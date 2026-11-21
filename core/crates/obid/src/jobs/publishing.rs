@@ -9,9 +9,11 @@ impl Jobs {
     /// the job, or a new version of the one that entry made before; the same files again change
     /// nothing. What was refused is said in `artifact_problems`, entry by entry.
     pub(super) async fn publish_artifacts(&self, id: &str) {
-        let (Some(artifacts), Some(job)) = (self.artifacts.get(), self.get(id)) else {
+        let (Some(artifacts), Some(mut job)) = (self.artifacts.get(), self.get(id)) else {
             return;
         };
+        // Its run with no proxy of obid's, however it came to be one (LANE-3a).
+        job.ran_unproxied |= self.ran_unproxied(id);
         let worktree = self.worktree_path(id);
         let mut listed = job.artifacts.clone();
         let mut problems = Vec::new();
@@ -37,6 +39,7 @@ impl Jobs {
                     job: Some(id),
                     artifact: before.map(|i| listed[i].id.as_str()),
                     kept: before.map(|i| listed[i].version),
+                    marks: shaped_by(&job),
                 })
                 .await;
             match (published, before) {
@@ -548,5 +551,18 @@ impl crate::publish::Hooks for PublishHooks {
         }
         self.jobs
             .update(&self.id, |job| job.outgoing.push(outgoing));
+    }
+}
+
+/// What a version `job` publishes keeps of it (ARTIFACTS-24, 25): its someone-else's mark, its
+/// owner's words unsigned or a memory from others included ([`Job::untrusted_why`]), its reach
+/// past the registries, and its run with no egress proxy (LANE-3a), as they are when it
+/// publishes.
+pub(super) fn shaped_by(job: &Job) -> crate::artifacts::Marks {
+    let why = |why: String| format!("an artifact's files a job made: {why}");
+    crate::artifacts::Marks {
+        foreign: job.untrusted_why().map(why),
+        reached: job.reached.clone().map(why),
+        unproxied: job.ran_unproxied,
     }
 }
