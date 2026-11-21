@@ -1,0 +1,234 @@
+{
+  "schemaVersion": "2",
+  "name": "Try again twice with one key is one round (RECEIPTS-10, 13)",
+  "version": "1.0.0",
+  "description": "An inbox item answered Try again, then the same answer again with the same key: the second answer equals the first, and the review runs again once, not twice.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "review-failed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "reviewNeedsYou": true
+          }
+        }
+      }
+    },
+    {
+      "id": "item",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "pick": {
+          "where": {
+            "job": "${state.t.body.id}",
+            "kind": "failed"
+          }
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "first",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.item.picked.id}/answer",
+        "body": {
+          "answer": "Try again"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "headers": {
+          "Idempotency-Key": "try-again-10"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "receipts-10-the-same-answer-again",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/inbox/${state.item.picked.id}/answer",
+        "body": {
+          "answer": "Try again"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "headers": {
+          "Idempotency-Key": "try-again-10"
+        },
+        "expect": {
+          "status": 200,
+          "text": "${state.first.text}"
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-10",
+          "RECEIPTS-13"
+        ]
+      }
+    },
+    {
+      "id": "again-reviewing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 60,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "reviewOf": "${state.t.body.id}"
+                },
+                2
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-settles",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "reviewNeedsYou": true
+          }
+        }
+      }
+    },
+    {
+      "id": "receipts-10-one-more-review-not-two",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$count": [
+                {
+                  "reviewOf": "${state.t.body.id}"
+                },
+                2
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "RECEIPTS-10",
+          "RECEIPTS-13"
+        ]
+      }
+    }
+  ]
+}
