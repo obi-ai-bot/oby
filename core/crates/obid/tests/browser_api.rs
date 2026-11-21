@@ -169,6 +169,43 @@ fn browser_16_no_token_a_made_up_one_the_owners_or_an_ended_jobs_is_refused() {
     stop_with_no_browser_left(&mut obid);
 }
 
+/// A job marked `untrusted` browses at the box's edge: its navigate to obid's own API on loopback
+/// is refused `outside_box` (BROWSER-18). Written before obid starts, as a foreign job is.
+#[test]
+fn browser_18_an_untrusted_jobs_navigate_to_obids_own_api_is_refused_outside_box() {
+    let folder = Folder::new("browser-18");
+    let config = browser_config(&folder);
+    let mut foreign = obid::job::Job::new(
+        "bbbb1818".into(),
+        "obi-e2e/fixture-app".into(),
+        "build".into(),
+        "SLEEP TOKEN FILE".into(),
+        "codex".into(),
+        "codex".into(),
+    );
+    foreign.branch = "oby/build-bbbb1818".into();
+    foreign.untrusted = true;
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(
+        jobs.join("bbbb1818.json"),
+        serde_json::to_vec(&foreign).unwrap(),
+    )
+    .unwrap();
+    let mut obid = start_with(&folder.0, &config, None, &[]);
+    let file = obid.home.join("worktrees/bbbb1818/.obi/mcp-token");
+    let token = within(90, "the untrusted job hands back its token", || {
+        std::fs::read_to_string(&file)
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| t.len() == 64)
+    });
+    let url = format!("http://127.0.0.1:{}/v1/jobs", obid.port);
+    let refused = tool(&obid, &token, "oby_browser_navigate", json!({"url": url}));
+    assert_eq!(refused["error"]["code"], "outside_box", "{refused}");
+    stop_with_no_browser_left(&mut obid);
+}
+
 /// One request as obid-spec's client sends it: its head, then its body in a write of its own,
 /// then everything obid answers until it closes. A reset, while writing or reading, is an error.
 fn refused_whole(

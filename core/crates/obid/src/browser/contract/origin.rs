@@ -67,5 +67,10 @@ mod tests {
             Origin::Own.partition("j1", "codex"),
             "persist:oby-agent-codex"
         );
+        // A browser obid wrote before `origin` existed still reads, as the owner's own.
+        let old =
+            serde_json::json!({"job": "j1", "agent": "codex", "state": "ready", "reason": null});
+        let old: crate::browser::contract::JobBrowser = serde_json::from_value(old).unwrap();
+        assert_eq!(old.origin, Origin::Own);
     }
 }
