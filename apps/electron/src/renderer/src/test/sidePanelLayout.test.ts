@@ -57,4 +57,31 @@ describe('the side panel, laid out', () => {
       }
     }, 120_000);
   }
+
+  // The drawn key is CSS content, which a browser counts in a control's accessible name unless it has alt
+  // text of its own (#2789): the key is told once, by aria-keyshortcuts, and the name is the row's words.
+  it('SHORTCUTS-6: the drawn ⌘N and ⌘, are no part of New conversation\'s and Settings\' names', async (t) => {
+    if (typeof browser === 'string') {
+      if (ci) throw new Error(browser);
+      console.warn(`skipped: ${browser}`);
+      return t.skip();
+    }
+    let mock: Mock | undefined;
+    try {
+      mock = await openMock(browser, { width: 1280 });
+      const { page } = mock;
+      const row = page.locator('.sidebar .sidebar-new.chat-new').first();
+      await row.hover();
+      expect(await row.evaluate((e) => getComputedStyle(e, '::after').opacity)).toBe('1');
+      expect(await page.getByRole('button', { name: 'New conversation', exact: true }).count()).toBe(1);
+      expect(await row.getAttribute('aria-keyshortcuts')).toBeTruthy();
+      await page.locator('.rail-account').click();
+      const settings = page.locator('[role="menuitem"].has-kbd');
+      await settings.waitFor();
+      expect(await settings.evaluate((e) => getComputedStyle(e, '::after').content)).toMatch(/,/);
+      expect(await page.getByRole('menuitem', { name: 'Settings', exact: true }).count()).toBe(1);
+    } finally {
+      await mock?.close();
+    }
+  }, 120_000);
 });
