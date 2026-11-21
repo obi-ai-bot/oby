@@ -16,6 +16,7 @@ A contract states what is true now, and its numbered scenarios.
 
 - **Outcome:** What can the person accomplish, and why does it matter?
 - **Status:** Proposed, accepted, implemented, or superseded. Link the owner's decision, design, related issue and any superseded contract. Distinguish current behavior from proposed behavior.
+  - Mark each scenario `(implemented)` or `(proposed)` on its own line, and don't list ranges of scenario ids here ("X-1 to 16 are implemented"): a sentence such as "Each scenario says whether it's implemented." stays true as scenarios are added, so a pull request that adds or implements a scenario changes only that scenario's line, and parallel pull requests don't conflict on this one.
 - **Scope:** What is included and explicitly outside this feature?
 
 ## Behavior
