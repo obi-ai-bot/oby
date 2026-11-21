@@ -45,6 +45,7 @@ mod input_answer;
 mod job_browser;
 mod mcp_annotations;
 mod mcp_tool;
+mod origin;
 mod outcome;
 mod outside;
 mod owner;
@@ -82,6 +83,7 @@ pub use input_answer::InputAnswer;
 pub use job_browser::JobBrowser;
 pub use mcp_annotations::McpAnnotations;
 pub use mcp_tool::McpTool;
+pub use origin::Origin;
 pub use outcome::Outcome;
 pub use outside::Outside;
 pub use owner::Owner;
@@ -253,6 +255,8 @@ pub const REASONS: &[&str] = &[
     "no_window",
     // A route retired with obid's own browser: the window's browser does it now (410).
     "retired",
+    // The box's edge (BROWSER-18).
+    "outside_box",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────

@@ -59,11 +59,12 @@ impl Api {
     /// A job starts. Who it is comes from obid's broker token (`crate::connections`), not from
     /// here.
     pub fn add_job(&mut self, id: &str, agent: &str) {
-        self.add_job_in(id, agent, &format!("persist:oby-agent-{agent}"));
+        self.add_job_for(id, agent, c::Origin::Own);
     }
 
-    /// A job the API hears of, its tabs opening in `partition`.
-    pub fn add_job_in(&mut self, id: &str, agent: &str, partition: &str) {
+    /// A job the API hears of, working for `origin` (BROWSER-18): its tabs open in the partition
+    /// that follows from it (`Origin::partition`).
+    pub fn add_job_for(&mut self, id: &str, agent: &str, origin: c::Origin) {
         self.jobs.insert(
             id.into(),
             Job {
@@ -74,7 +75,8 @@ impl Api {
                 seen_downloads: BTreeSet::new(),
                 browser: c::BrowserState::NotStarted,
                 browser_reason: None,
-                partition: partition.into(),
+                partition: origin.partition(id, agent),
+                origin,
             },
         );
     }
@@ -432,6 +434,7 @@ impl Api {
             agent: j.agent.clone(),
             state: j.browser,
             reason: j.browser_reason.clone(),
+            origin: j.origin.clone(),
         })
     }
 

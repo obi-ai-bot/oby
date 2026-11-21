@@ -53,6 +53,16 @@ impl Refused {
     }
 }
 
+/// "Agents can use the browser" is off, for another Oby's task (BROWSER-15, 18): it finishes without
+/// a browser, since its own owner can't turn the switch on.
+pub fn browser_off_for_another_oby() -> Refused {
+    Refused::new(
+        403,
+        "browser_off",
+        "The owner of the Oby running this task turned off \"Agents can use the browser\" in Settings › General, so no browser tool runs for it. Finish without a browser, and say so in your summary.",
+    )
+}
+
 /// "Agents can use the browser" is off (BROWSER-15): every tool refuses with this.
 pub fn browser_off() -> Refused {
     Refused::new(

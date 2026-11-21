@@ -1,0 +1,373 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: another Oby's task asks to sign in: the ask is on the host's own browser, only the host's device answers it, and nothing of it reaches the other owner",
+  "version": "1.0.0",
+  "description": "BROWSER-19 (the lab's LAB-BROWSERSPHERE-2, on the window's browser): owner B's task, accepted on owner A's Oby, opens the fixture's sign-in form and asks the person to sign in. The ask is on A's browser; B's device's signed words (even with A's obid's token) can't answer it (`unknown_device`); A's device answers it and the task sees it answered. The password itself is typed by Oby's window into its webview (Fill in), never through obid; nothing of the ask reaches B's obid.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/mcp"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "a-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.b}"
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-sphere-site",
+      "inputs": {}
+    },
+    {
+      "id": "handoff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "BROWSE: ${state.site.url}/form ASK COMMIT: notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.handoff.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.handoff.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "handoff-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.handoff.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "job": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "job": "${state.handoff-job.body.job}",
+        "until": "calls.then.1"
+      }
+    },
+    {
+      "id": "it-asks-to-sign-in",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.0.result.structuredContent.ok": true,
+            "browsed.calls.then.1.result.structuredContent.result.asks": {
+              "$len": 1
+            },
+            "browsed.calls.then.1.result.structuredContent.result.asks.0.kind": "signIn"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-19"
+        ]
+      }
+    },
+    {
+      "id": "the-ask-is-on-a-s-browser",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$any": {
+                "id": "${state.boxed.browsed.calls.then.1.result.structuredContent.result.asks.0.tabId}",
+                "ask": {
+                  "id": "${state.boxed.browsed.calls.then.1.result.structuredContent.result.asks.0.id}",
+                  "kind": "signIn",
+                  "reason": "Sign in to the lab site, please.",
+                  "answered": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-19"
+        ]
+      }
+    },
+    {
+      "id": "b-s-device-cant-answer-the-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/browser/asks/${state.boxed.browsed.calls.then.1.result.structuredContent.result.asks.0.id}/answer",
+        "body": {},
+        "as": "device",
+        "device": "${state.b-device}",
+        "expect": {
+          "status": 401,
+          "paths": {
+            "reason": "unknown_device"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-19"
+        ]
+      }
+    },
+    {
+      "id": "a-answers-the-ask",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/browser/asks/${state.boxed.browsed.calls.then.1.result.structuredContent.result.asks.0.id}/answer",
+        "body": {},
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-19"
+        ]
+      }
+    },
+    {
+      "id": "boxedDone",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "job": "${state.handoff-job.body.job}",
+        "until": "calls.filled"
+      }
+    },
+    {
+      "id": "its-agent-sees-it-answered",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxedDone}",
+        "expect": {
+          "paths": {
+            "browsed.calls.answered.result.structuredContent.result.asks.0.answered": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-19"
+        ]
+      }
+    },
+    {
+      "id": "nothing-of-the-ask-reaches-b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.handoff.body.correlationId}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "result": {
+              "$exists": true
+            }
+          },
+          "text": {
+            "$not": {
+              "$contains": "lab-password-of-anas"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-19"
+        ]
+      }
+    },
+    {
+      "id": "nor-the-ask-s-words",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "Sign in to the lab site"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-19"
+        ]
+      }
+    }
+  ]
+}

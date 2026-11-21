@@ -19,10 +19,12 @@
 //! [`Service`] serves them, created at obid's start and told when a job ends; its [`routes`] are
 //! the contract's paths under `/v1/browser` and the agents' MCP server (`POST /v1/browser/mcp`).
 //! [`AgentServer`] is that server as each agent's configuration names it, with its permission
-//! rules (BROWSER-17).
+//! rules (BROWSER-17), given to every job; [`box_edge`] says who a job's browser works for and
+//! keeps another Oby's task's browser inside the box's edge (BROWSER-18).
 
 pub mod agent_server;
 pub mod api;
+pub mod box_edge;
 pub mod contract;
 pub mod engine;
 pub mod relay;

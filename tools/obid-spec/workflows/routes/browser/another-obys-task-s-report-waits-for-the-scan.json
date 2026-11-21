@@ -1,0 +1,264 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: another Oby's task's report goes back through the Sphere only after a scan that ran: with the host's scanner unable to run, nothing of it is sent",
+  "version": "1.0.0",
+  "description": "BROWSER-22's second half: owner A's obid starts with a gitleaks that can't run first on its PATH (obid's tests' bin-broken-gitleaks). Owner B's task, accepted on A's Oby, reads a page and writes it into its summary; A's exchange says the scan didn't run, and nothing of the page is in what B's obid holds.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/mcp"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs",
+        "browser": true,
+        "brokenScanner": true,
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        },
+        "env": {
+          "OBID_FOLLOW_SECONDS": "1"
+        }
+      }
+    },
+    {
+      "id": "a-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-sphere-site",
+      "inputs": {}
+    },
+    {
+      "id": "clean",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "BROWSE: ${state.site.url}/ REPORT-PAGE COMMIT: notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "clean-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.clean.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "clean-accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.clean.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "clean-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.clean.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "job": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "job": "${state.clean-job.body.job}"
+      }
+    },
+    {
+      "id": "it-read-the-page",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.snapshot.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Opening hours"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "the-scan-cant-run-and-nothing-is-sent",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.clean.body.correlationId}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "publishScan.ran": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ]
+      }
+    },
+    {
+      "id": "b-holds-nothing-of-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "Opening hours"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-22"
+        ]
+      }
+    }
+  ]
+}
