@@ -387,7 +387,37 @@ impl Conn {
                 continue;
             }
             let steer = self.steer.clone();
+            // In this order when several are ready at once: a stop and the turn's limit first,
+            // then the owner's words, then a line before any quiet verdict. obid's own task held
+            // up (a slow disk, a busy machine) past the quiet window finds the agent's lines
+            // waiting and the window passed at once, and the lines win (RECOVERY-6, #2760).
             tokio::select! {
+                biased;
+                changed = self.stop.changed() => {
+                    if changed.is_err() || *self.stop.borrow() != process::Signal::Run {
+                        self.stopped = true;
+                    }
+                }
+                () = &mut self.give_up_at => {
+                    self.timed_out = true;
+                }
+                // The owner's words to it, written as they come (crate::steer).
+                () = async { if let Some(steer) = &steer { steer.came().await } }, if steer.is_some() && self.steer_into != SteerInto::Held => {
+                    for text in steer.as_ref().map(|s| s.to_write()).unwrap_or_default() {
+                        match self.steer_into.clone() {
+                            SteerInto::Turn(thread, turn) => {
+                                let id = self
+                                    .request("turn/steer", crate::codex::steer_params(&thread, &turn, &text))
+                                    .await;
+                                self.steering.push_back(id);
+                            }
+                            // Never held here: this branch waits while it is.
+                            SteerInto::Lines | SteerInto::Held => {
+                                self.send(&crate::agent::user_message(&text)).await
+                            }
+                        }
+                    }
+                }
                 read = self.lines.read_until(b'\n', &mut self.buffer) => {
                     match read {
                         Ok(0) | Err(_) => return Err(Cut::Closed),
@@ -401,14 +431,20 @@ impl Conn {
                         return Ok(message);
                     }
                 }
-                () = &mut self.give_up_at => {
-                    self.timed_out = true;
-                }
                 () = &mut self.cpu_at, if self.cpu_due && self.quiet.is_some() => {
                     self.cpu_due = false;
                     self.cpu = crate::meter::group_cpu(self.pgid).await;
                 }
                 () = &mut self.quiet_at, if self.quiet.is_some() => {
+                    // What the agent wrote and obid hasn't read yet is heard: the window is judged
+                    // on what came, not on how soon obid got to it (#2760).
+                    if matches!(
+                        tokio::time::timeout(Duration::ZERO, self.lines.fill_buf()).await,
+                        Ok(Ok(waiting)) if !waiting.is_empty()
+                    ) {
+                        self.heard();
+                        continue;
+                    }
                     let since = self.heard_at;
                     let counts = self.file_windows < FILE_WINDOWS;
                     // Both read past the cap too: a spinning agent, or one writing, isn't idle.
@@ -432,28 +468,6 @@ impl Conn {
                         // Idle, or spinning past the cap (RECOVERY-16); CPU that couldn't be read
                         // is neither.
                         self.idle_out = !changed && !self.holding && busy.is_some();
-                    }
-                }
-                changed = self.stop.changed() => {
-                    if changed.is_err() || *self.stop.borrow() != process::Signal::Run {
-                        self.stopped = true;
-                    }
-                }
-                // The owner's words to it, written as they come (crate::steer).
-                () = async { if let Some(steer) = &steer { steer.came().await } }, if steer.is_some() && self.steer_into != SteerInto::Held => {
-                    for text in steer.as_ref().map(|s| s.to_write()).unwrap_or_default() {
-                        match self.steer_into.clone() {
-                            SteerInto::Turn(thread, turn) => {
-                                let id = self
-                                    .request("turn/steer", crate::codex::steer_params(&thread, &turn, &text))
-                                    .await;
-                                self.steering.push_back(id);
-                            }
-                            // Never held here: this branch waits while it is.
-                            SteerInto::Lines | SteerInto::Held => {
-                                self.send(&crate::agent::user_message(&text)).await
-                            }
-                        }
                     }
                 }
             }
@@ -732,6 +746,46 @@ mod tests {
             .unwrap();
         assert!(!changed_since(&dir, since));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RECOVERY-6: obid's own task held up past the quiet window (a slow disk, a busy machine)
+    /// finds the agent's line waiting unread and the window passed at once: the line is heard and
+    /// read, never judged quiet (#2760). Twenty rounds: a random pick between the two loses one.
+    #[tokio::test]
+    async fn recovery_6_a_line_waiting_when_the_quiet_window_passed_is_heard() {
+        for round in 0..20 {
+            let dir =
+                std::env::temp_dir().join(format!("obid-heard-{}-{round}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let launch = crate::agent::Launch {
+                argv: ["/bin/sh", "-c", r#"printf '{"n":1}\n'; exec sleep 30"#]
+                    .map(Into::into)
+                    .into(),
+                env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+                cwd: dir.clone(),
+                stderr: dir.join("stderr"),
+                own_sandbox: false,
+                group: None,
+            };
+            let limit = Limit {
+                quiet: Some(Duration::from_secs(60)),
+                ..Duration::from_secs(30).into()
+            };
+            let (_stop, stop) = watch::channel(process::Signal::Run);
+            let mut conn = Conn::spawn(&launch, limit, stop, false).await.unwrap();
+            // The line waits in the reader, unread, and the window has passed meanwhile.
+            while conn.lines.fill_buf().await.unwrap().is_empty() {}
+            conn.quiet_at.as_mut().reset(tokio::time::Instant::now());
+            // The window's own timer, fired: both are ready when `next` looks.
+            (&mut conn.quiet_at).await;
+            assert_eq!(
+                conn.next().await.ok(),
+                Some(json!({"n": 1})),
+                "round {round}"
+            );
+            drop(conn);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// RECOVERY-12: a message the agent writes in pieces, with the CPU read firing between them,
