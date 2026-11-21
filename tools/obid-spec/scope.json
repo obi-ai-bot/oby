@@ -1369,7 +1369,8 @@
       "routes": [
         "/v1/devices",
         "/v1/notifications",
-        "/v1/pairing"
+        "/v1/pairing",
+        "/v1/computers"
       ],
       "contracts": {
         "phone-pairing.md": {
@@ -1423,7 +1424,8 @@
         "remote.md": {
           "obid": [
             "COMPUTERS-14",
-            "COMPUTERS-16"
+            "COMPUTERS-16",
+            "COMPUTERS-19..24"
           ],
           "elsewhere": {
             "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",

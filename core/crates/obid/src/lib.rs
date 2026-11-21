@@ -586,6 +586,11 @@ pub async fn serve(
     if let Some(receipts) = &receipts {
         link.use_receipts(receipts.clone());
     }
+    // The computers the window works on (crate::remote::computers, COMPUTERS-19).
+    let computers = remote::computers::Computers::open(
+        &config.home,
+        vault::shared().expect("the vault is installed first"),
+    );
     let shared = Arc::new(api::Shared {
         config,
         token,
@@ -618,6 +623,7 @@ pub async fn serve(
         push: pushes,
         receipts,
         stopping: stopping_rx.clone(),
+        computers,
     });
     let app = api::router(shared.clone());
     stopwatch.lap("the rest");

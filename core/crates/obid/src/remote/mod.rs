@@ -29,7 +29,9 @@
 pub mod addresses;
 pub mod certificate;
 pub mod code;
+pub mod computers;
 pub mod direct;
+pub mod forward;
 pub mod invite;
 pub mod link;
 pub mod pair;
@@ -40,3 +42,4 @@ pub mod ssh;
 pub mod supervisor;
 pub mod trouble;
 pub mod tunnel;
+pub mod window;
