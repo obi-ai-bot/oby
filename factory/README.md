@@ -93,8 +93,9 @@ own rule, imported); `skipped`, `neutral`, `cancelled` and the rest are FAIL. ch
 `HOST: github-actions`, `PR` and `RUNS` (the Actions run ids), so `bin/job advance` and `bin/job merge` read it as
 the gate's; on FAIL checks.log holds each failed run's last 300 lines of `gh run view <run> --log-failed`, fenced
 as quoted data from GitHub. Exit 0 is PASS, 1 FAIL, and 2 couldn't judge: a refusal above, or a run that didn't
-appear or finish in time, which writes no checks.md (no `Check` at all usually means CI didn't start for that
-head: push again). It never calls az, ssh, checks.sh, cargo or npm.
+appear or finish in time, or a `gh` that can't run, fails, hangs or prints something that isn't JSON, none of which
+writes a checks.md (no `Check` at all usually means CI didn't start for that head: push again); a failed poll is
+tried again until the deadline. It never calls az, ssh, checks.sh, cargo or npm.
 
 Gates run on the Mac until the owner adds `remote_gate` to `config.json` (`docs/factory-remote-gate.md`, "The
 owner's steps"). With it, `bin/gate` reads the check's plan, starts the gate VM `oby-gate` when it is stopped

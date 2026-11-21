@@ -21,13 +21,16 @@ PR = 7
 JOB = "001-w01-01-something"
 
 STAND_IN_GH = r'''#!/usr/bin/env python3
-import os, sys
+import os, sys, time
 from pathlib import Path
 d = Path(os.environ["GH_STATE"])
 args = sys.argv[1:]
 with open(d / "gh.log", "a") as f:
     f.write(" ".join(args) + "\n")
-if args[:2] == ["pr", "view"] and args[3:] == ["--json", "headRefOid"]:
+mode = os.environ.get("GH_MODE", "")
+if mode == "garbage":
+    print("<html>502 Bad Gateway</html>")
+elif args[:2] == ["pr", "view"] and args[3:] == ["--json", "headRefOid"]:
     print('{"headRefOid": "%s"}' % (d / "pr_head").read_text().strip())
 elif args[:2] == ["pr", "view"] and args[3:] == ["--json", "isDraft,autoMergeRequest"]:
     print('{"isDraft": true, "autoMergeRequest": null}')
@@ -35,6 +38,11 @@ elif args[0] == "api" and "--paginate" in args and args[2].endswith("/check-runs
     count = d / "polls"
     n = int(count.read_text()) + 1 if count.exists() else 1
     count.write_text(str(n))
+    if mode == "hang":
+        time.sleep(30)
+    if n <= int(os.environ.get("GH_FAILED_POLLS") or 0):
+        sys.stderr.write("HTTP 502: Bad Gateway\n")
+        sys.exit(1)
     polls = sorted(d.glob("runs-*.jsonl"))
     sys.stdout.write(polls[min(n, len(polls)) - 1].read_text() if polls else "")
 elif args[:2] == ["run", "view"] and "--log-failed" in args:
@@ -124,9 +132,9 @@ class GateCi(unittest.TestCase):
         for i, runs in enumerate(polls):
             (self.state / f"runs-{i:02}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in runs))
 
-    def gate_ci(self, *args):
+    def gate_ci(self, *args, **env):
         res = subprocess.run([str(self.repo / "factory" / "bin" / "gate-ci"), JOB, *args], cwd=self.repo,
-                             env=self.env, capture_output=True, text=True, timeout=60)
+                             env={**self.env, **env}, capture_output=True, text=True, timeout=60)
         self.assertNotIn("stand-in gh: unexpected", res.stderr)
         return res
 
@@ -195,8 +203,9 @@ class GateCi(unittest.TestCase):
         self.assertIn("- app-mac: failure", self.checks())
 
     def test_the_newest_check_run_is_the_one_judged(self):
-        self.polls([run("Check", "failure", run_id=1, started="2026-01-01T00:00:00Z"),
-                    run("Check", run_id=2, started="2026-01-01T01:00:00Z"),
+        # The newest is the highest id: a queued run's started_at can be null.
+        self.polls([run("Check", "failure", run_id=1, started="2026-01-01T03:00:00Z"),
+                    run("Check", run_id=2, started=None),
                     run("Check", "failure", run_id=3, started="2026-01-01T02:00:00Z", slug="someone-else")])
         res = self.gate_ci()
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
@@ -243,6 +252,32 @@ class GateCi(unittest.TestCase):
         self.assertIn("CI may not have started for this head", res.stderr)
         self.assertIn("push again", res.stderr)
         self.assertFalse((self.job_dir / "round-1" / "checks.md").exists())
+
+    def assert_couldnt_judge(self, res, says):
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn(says, res.stderr)
+        self.assertNotIn("Traceback", res.stderr)
+        self.assertFalse((self.job_dir / "round-1" / "checks.md").exists())
+
+    def test_no_gh_on_path_exits_2(self):
+        bare = self.dir / "bare-path"
+        bare.mkdir()
+        for tool in ("git", "python3"):
+            (bare / tool).symlink_to(shutil.which(tool))
+        self.assert_couldnt_judge(self.gate_ci(PATH=str(bare)), "couldn't run gh")
+
+    def test_gh_printing_something_that_isnt_json_exits_2(self):
+        self.assert_couldnt_judge(self.gate_ci(GH_MODE="garbage"), "isn't JSON")
+
+    def test_a_gh_call_that_hangs_exits_2(self):
+        self.polls([run("Check")])
+        self.assert_couldnt_judge(self.gate_ci("--timeout", "0.2", GH_MODE="hang"), "didn't answer")
+
+    def test_a_failed_poll_is_retried(self):
+        self.polls([run("Check")])
+        res = self.gate_ci(GH_FAILED_POLLS="2")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(int((self.state / "polls").read_text()), 3)
 
     def test_job_advances_to_review_on_what_gate_ci_wrote_after_a_pass(self):
         self.polls([run("Check")])
