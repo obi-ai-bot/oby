@@ -11,7 +11,11 @@
 .art-card-title { font-size: var(--text-md); font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .art-card-meta { font-size: var(--text-sm); color: var(--muted); }
 .msg-end .art-card + .msg-time { margin-top: 6px; }
-.art-cards { display: flex; flex-direction: column; }
+.msg-end .art-card + .msg-foot { margin-top: 6px; }
+
+/* an artifact's row under its conversation in the side panel (board 1a), lit while it's open (board 1b) */
+.art-kid-icon { width: 14px; height: 14px; flex: none; display: grid; place-items: center; color: var(--text); }
+.convo-kid.art-kid.is-on { background: var(--active); color: var(--ink); }
 
 /* the artifact beside its conversation: the browser panel's frame, its strip, and the preview */
 .art-br .art-strip { height: 40px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--divider); }
