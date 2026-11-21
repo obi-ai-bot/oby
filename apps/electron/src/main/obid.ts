@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { anything, flag, method, v1Path } from '../shared/decode';
 import { ipc, type Trusted } from './ipc';
 import { SCRATCH } from '../shared/build';
+import { importType } from '../shared/artifactImport';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
 // answering on this Mac, adopted. Its token stays here in main: the renderer asks main for each
@@ -185,7 +186,8 @@ export async function send(method: string, path: string, body: unknown, signal?:
       headers: {
         Authorization: `Bearer ${t}`,
         Accept: path.split('?')[0] === '/v1/events' || /^\/v1\/browser\/(events|tabs\/[^/]+\/stream)$/.test(path.split('?')[0]) || (method === 'GET' && path === '/v1/browser/relay') ? 'text/event-stream' : 'application/json',
-        ...(body === undefined ? {} : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json' }),
+        // an artifact's import is sent as what its bytes are (shared/artifactImport.ts); other bytes as bytes
+        ...(body === undefined ? {} : { 'Content-Type': raw ? (path === '/v1/artifacts/import' ? importType(body) : 'application/octet-stream') : 'application/json' }),
         ...(words ? { 'X-Oby-Words': words } : {}),
         ...(there ? { 'Oby-Computer': there } : profile ? { 'Oby-Profile': profile } : {}),
       },

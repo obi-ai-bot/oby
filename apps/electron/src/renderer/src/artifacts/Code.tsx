@@ -11,6 +11,7 @@ import { json } from '@codemirror/lang-json';
 import { tags } from '@lezer/highlight';
 import { api, type Artifact } from '../obid';
 import { edit } from './store';
+import { CopyButton } from '../Reply';
 
 // The pane's Code tab (docs/contracts/artifacts-app.md, ARTIFACTSAPP-5), as LibreChat's: a tab per
 // file of the version, index.html first, its text in CodeMirror 6: the owner's to edit on the latest
@@ -102,6 +103,8 @@ export function Code({ artifact, version, edits, editable }: { artifact: Artifac
         {files.map((f) => (
           <button key={f} role="tab" aria-selected={f === path} className={`art-file${f === path ? ' is-on' : ''}${f in edits ? ' is-edited' : ''}`} onClick={() => setPicked(f)}>{f}</button>
         ))}
+        {/* Copy: the file on view, as it reads in the editor (its edit too), as LibreChat's Copy has it */}
+        {path && shown?.text !== undefined && <CopyButton text={edits[path] ?? shown.text} label={`Copy ${path}`} className="art-copy" />}
       </div>
       <div className="art-code-body" role="tabpanel" aria-label={path}>
         {!path ? <p className="art-view-note">This version has no files.</p>

@@ -105,6 +105,10 @@ contextBridge.exposeInMainWorld('app', {
   // (main/artifactPreview.ts, ARTIFACTSAPP-1); null hides it. Only the id, the version and the box go
   artifactPreview: (ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number }; edits?: Record<string, string> } | null) =>
     ipcRenderer.invoke('artifact-preview', ask) as Promise<{ shown: true } | { error: string } | null>,
+  // an artifact's version, as a project archive (.zip) or standalone HTML, saved where the owner picks
+  // in main's own dialog (main/artifactExport.ts, ARTIFACTSAPP-11): only the id, the version and which go
+  artifactExport: (id: string, version: number, as: 'zip' | 'html') =>
+    ipcRenderer.invoke('artifact-export', id, version, as) as Promise<{ saved: string } | { cancelled: true } | { error: string } | null>,
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
   // a render error the page's root boundary caught (RenderError.tsx): kept by main, which reloads once

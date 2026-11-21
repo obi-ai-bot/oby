@@ -293,6 +293,8 @@ export const api = {
   // a conversation's artifacts, newest first (docs/api/artifacts.md; the app's: docs/contracts/artifacts-app.md)
   artifacts: (opts: { conversation?: string; job?: string } = {}) => call<Artifact[]>('GET', `/v1/artifacts${q(opts)}`),
   artifact: (a: string) => call<Artifact>('GET', `/v1/artifacts/${id(a)}`),
+  // an artifact from a dropped file's bytes, signed by main on Import's own click (WORDS-21, ARTIFACTS-11)
+  importArtifact: (bytes: Uint8Array) => call<Artifact>('POST', '/v1/artifacts/import', bytes),
   // the owner's edit: a new version, signed by main on Save's own click (WORDS-23, ARTIFACTS-16)
   saveArtifact: (a: string, base: number, files: Record<string, string>) => call<{ id: string; version: number }>('POST', `/v1/artifacts/${id(a)}/versions`, { base, files }),
   // one file of a version, as text (the Code tab; docs/contracts/artifacts-app.md, ARTIFACTSAPP-5)

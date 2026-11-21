@@ -11,6 +11,8 @@
 //   ARTIFACTSAPP-8 to 10: an edit typed in Code shows in Preview unsaved; Save makes the next version
 //                   (on an obid with the edit route; an older one's refusal shows, the edit kept);
 //                   the version menu opens any version, an older one read-only.
+//   ARTIFACTSAPP-11: Download saves the zip and the HTML, each byte for byte as obid exports it.
+//   ARTIFACTSAPP-12: a page dropped on the thread is imported on the owner's Import, and opens.
 //   ARTIFACTSAPP-3: the preview reaches nothing off its origin (another site, obid, the relay by
 //                   127.0.0.1), by fetch, image, script or navigation, while its own files load; and
 //                   it is sandboxed in its own partition, with no preload, no Node and no bridge.
@@ -384,6 +386,37 @@ async function main() {
   await page.getByRole('tab', { name: 'Preview' }).click();
   await until('version 1 drawn again', async () => (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value === 'One', 60_000);
   console.log('ok artifactsapp_9: the version menu opens any version, an older one read-only');
+
+  // ARTIFACTSAPP-11: Download saves obid's export of the version on view, byte for byte, where main's
+  // own dialog answers (the test answers it for the owner, as no one can click a hidden window's sheet)
+  const exportOf = async (as) => new Uint8Array(await (await fetch(`http://127.0.0.1:${s.port}/v1/artifacts/${site}/export/1?as=${as}`, { headers: { Authorization: `Bearer ${token}` } })).arrayBuffer());
+  for (const [as, item] of [['zip', 'Project archive (.zip)'], ['html', 'Standalone HTML']]) {
+    const to = join(s.root, `saved.${as}`);
+    await app.evaluate(({ dialog }, to) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: to }); }, to);
+    await page.getByRole('button', { name: 'Export' }).click();
+    await page.getByRole('menuitem', { name: item }).click();
+    await until(`the ${as} saved`, async () => (await page.locator('.art-saved').innerText().catch(() => '')) === `Saved to ${to}`);
+    assert.deepEqual([...readFileSync(to)], [...await exportOf(as)], `artifactsapp_11: the ${as} saved is obid's export, byte for byte`);
+  }
+  console.log('ok artifactsapp_11: Download saves the version as obid exports it, zip and HTML');
+
+  // ARTIFACTSAPP-12: a page dropped on the thread is offered; the owner's click on Import sends it,
+  // signed by main (obid refuses an unsigned import), and it opens beside the conversation, drawn
+  await page.evaluate((html) => {
+    const data = new DataTransfer();
+    data.items.add(new File([html], 'mine.html', { type: 'text/html' }));
+    const thread = document.querySelector('.chat-scroll');
+    for (const type of ['dragover', 'drop']) thread.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }));
+  }, '<!doctype html><h1>Mine</h1>');
+  await until('the import offered', async () => (await page.locator('[data-artifact-import]').innerText().catch(() => '')).includes('mine.html'));
+  await page.getByRole('button', { name: 'Import', exact: true }).click();
+  await until('the import open', async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === 'Imported', 60_000);
+  assert.equal(await until('the import drawn', async () => { const v = (await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value; return v === 'Mine' && v; }, 60_000), 'Mine');
+  const imported = (await s.call('GET', '/v1/artifacts')).find((a) => a.origin?.kind === 'import');
+  assert.ok(imported, 'artifactsapp_12: obid keeps it as an import');
+  assert.equal(imported.origin.from, 'page');
+  await shot(page, '7-imported');
+  console.log('ok artifactsapp_12: a page dropped and imported on Import opens beside the conversation');
 
 
   // Close takes it away

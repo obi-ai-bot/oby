@@ -1,7 +1,9 @@
-import type { Decoder } from '../shared/decode';
+import { join } from 'node:path';
+import { safeInteger, type Decoder } from '../shared/decode';
 
-// The artifact preview's two rules that need no Electron (main/artifactPreview.ts; docs/contracts/
-// artifacts-app.md, ARTIFACTSAPP-3): what the page may ask for, and what the preview's session lets go.
+// The artifact pane's rules in main that need no Electron (docs/contracts/artifacts-app.md): what the
+// page may ask the preview for and what its session lets go (main/artifactPreview.ts, ARTIFACTSAPP-3
+// and 8), and how an export is saved (main/artifactExport.ts, ARTIFACTSAPP-11).
 
 export type Bounds = { x: number; y: number; width: number; height: number };
 export type Ask = { id: string; version: number; bounds: Bounds; edits?: Record<string, string> } | null;
@@ -66,3 +68,37 @@ export function overlay(files: Files, edits?: Record<string, string>): Files {
  * the object's prototype, and that file would go missing). */
 export const shownAs = (what: unknown) => `window.obyShow(JSON.parse(${JSON.stringify(JSON.stringify(what))}))`;
 
+// --- an export saved (main/artifactExport.ts)
+
+export type Exported = { saved: string } | { cancelled: true } | { error: string };
+export const artifactId: Decoder<string> = (v) => (typeof v === 'string' && UUID.test(v) ? { value: v } : undefined);
+export const fromOne: Decoder<number> = (v) => { const n = safeInteger(v); return n && n.value >= 1 ? n : undefined; };
+
+/** The file name obid gives (`Content-Disposition`), or one made the same way. */
+export function nameOf(disposition: string | null, as: 'zip' | 'html', version: number): string {
+  const m = /filename="([A-Za-z0-9._-]{1,200})"/.exec(disposition ?? '');
+  return m && !m[1].startsWith('.') ? m[1] : `artifact-v${version}.${as}`;
+}
+
+type Deps = {
+  fetch: (path: string) => Promise<Response | { status: number; text: string }>;
+  ask: (defaultPath: string) => Promise<string | null>;
+  write: (path: string, bytes: Uint8Array) => Promise<void>;
+  downloads: string;
+};
+
+/** One export saved: obid's bytes, to the path the owner picked; nothing written when they cancel. */
+export async function exportArtifact(id: string, version: number, as: 'zip' | 'html', d: Deps): Promise<Exported> {
+  const r = await d.fetch(`/v1/artifacts/${id}/export/${version}?as=${as}`);
+  if (!(r instanceof Response)) return { error: r.text || 'obid isn’t answering.' };
+  if (!r.ok) return { error: r.status === 404 ? 'That version isn’t there any more.' : `obid answered ${r.status}.` };
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  const path = await d.ask(join(d.downloads, nameOf(r.headers.get('content-disposition'), as, version)));
+  if (!path) return { cancelled: true };
+  try {
+    await d.write(path, bytes);
+  } catch (e) {
+    return { error: `Oby couldn’t save it: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  return { saved: path };
+}

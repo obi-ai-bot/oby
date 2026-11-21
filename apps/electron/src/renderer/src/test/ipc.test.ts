@@ -162,6 +162,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
   'artifact-preview': { args: [null], refusal: null },
+  'artifact-export': { args: ['3f0c2a1e-1111-4222-8333-944455556666', 1, 'zip'], refusal: null },
   'mac-pill': { args: [null], refusal: null },
   'mac-pill-stop': { args: [], refusal: undefined },
   'mac-pill-now': { args: [], refusal: null },
