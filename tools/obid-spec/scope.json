@@ -1926,7 +1926,8 @@
             "WORDS-17": "the Electron main's signing.",
             "WORDS-18": "the Electron main's signing.",
             "WORDS-19": "the Electron main's signing.",
-            "WORDS-20": "the Electron main's signing."
+            "WORDS-20": "the Electron main's signing.",
+            "WORDS-22": "the Electron main's signing."
           }
         },
         "sphere-app.md": {
@@ -2179,7 +2180,11 @@
             "BROWSERAPP-17": "the Electron app's browser on another computer (browser/BrowserPane.tsx): in the real app workflows/app/browser-14-another-computer.json; no obid API of its own",
             "BROWSERAPP-18": "the Electron app's Settings › General Browser group (browser/Settings.tsx), switches signed by their labels (shared/words.ts, the preload's switch label): browserLive.test.ts, preload.test.ts; in the real app workflows/app/browser-13-settings.json; no obid API of its own",
             "BROWSERAPP-19": "the Electron app's Mac pill and frame (main/macPill.ts, its own windows) and the card in Oby (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx, ipc.test.ts; in the real app workflows/app/browser-15-the-mac.json; no obid API yet",
-            "BROWSERAPP-20": "the Electron app's first-time sheet (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx; in the real app workflows/app/browser-16-first-time-mac.json; no obid API yet"
+            "BROWSERAPP-20": "the Electron app's first-time sheet (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx; in the real app workflows/app/browser-16-first-time-mac.json; no obid API yet",
+            "BROWSERAPP-22": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-23": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-24": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-25": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2"
           }
         },
         "computers-app.md": {
@@ -2196,9 +2201,10 @@
             "COMPUTERSAPP-9": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
             "COMPUTERSAPP-10": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
             "COMPUTERSAPP-11": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
-            "COMPUTERSAPP-12": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
-            "COMPUTERSAPP-13": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
-            "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)"
+            "COMPUTERSAPP-12": "the Electron app's computer picker, offered once obid answers GET /v1/computers, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_12_…, and the picker on obid's routes)",
+            "COMPUTERSAPP-13": "the Electron app's message box on Home, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_13_…); its draft kept while no route answers is proposed",
+            "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
+            "COMPUTERSAPP-15": "the Electron app's main process naming the computer in use with Oby-Computer, proven by apps/electron/src/renderer/src/test/engine.test.ts (computersapp_15_…); obid forwards what it names (docs/contracts/remote.md)"
           }
         }
       }

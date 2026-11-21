@@ -6,8 +6,8 @@ The business behavior contract for artifacts in the Electron app, from [the temp
 
 - **Outcome:** An agent makes an artifact in a conversation, such as a page, a document or a picture. The owner sees its card under the task that made it, clicks it, and sees the artifact beside the conversation, drawn as it is. Nothing about it leaves the Mac: no hosted bundler, no CDN, no CodeSandbox server.
 - **Status:**
-  - **Implemented:** the card, the pane beside the conversation, and Preview of a version (ARTIFACTSAPP-1 to 4).
-  - **Proposed:** Code, following the agent's new versions, editing, versions, export and import, and React artifacts. Each comes with its own scenarios, in the order of [the port plan](../plans/artifacts-port.md) (L2 to L5).
+  - **Implemented:** the card, the pane beside the conversation, Preview of a version (ARTIFACTSAPP-1 to 4), and Code, following the agent's new versions, and the open artifact sent with the owner's words (ARTIFACTSAPP-5 to 7).
+  - **Proposed:** editing, versions, export and import, and React artifacts. Each comes with its own scenarios, in the order of [the port plan](../plans/artifacts-port.md) (L3b to L5).
 - **Design:** Sangam's board 1b, "Beside its conversation", on the Oby Artifacts canvas (`tools/obid-spec/lab-ui/artifacts/design/project/Viewer.dc.html`). The words are his.
 - **Scope:** the Electron app: `src/renderer/src/artifacts/`, its mount in `Home.tsx` and `ChatView.tsx`, `src/main/artifactPreview.ts`, `src/main/sandpackRelay.ts`, `src/main/previewRules.ts`, `resources/sandpack-relay/`, `stubs/nodebox/` and `scripts/local-only.mjs`.
 - **Out of scope:**
@@ -31,6 +31,16 @@ The business behavior contract for artifacts in the Electron app, from [the temp
 - **The pane.** A click on a card opens the pane in the browser panel's place, at its width, on the artifact's latest version.
   - One artifact is open at a time.
   - Close takes the pane and its preview away, and so does leaving the conversation.
+- **Preview and Code.** The pane's strip has Preview and Code, as LibreChat's panel has them; it opens on Preview.
+  - Code lists the version's files as tabs, `index.html` first, then by name, and shows the one picked in CodeMirror 6, read-only, with its language's colours. A file that isn't text (a picture, a font) is named, never read.
+  - While Code shows, main's preview view is hidden; back on Preview, it shows again.
+  - CodeMirror is the editor Sandpack's own `SandpackCodeEditor` wraps. `sandpack-react` isn't built in: it names CodeSandbox's hosted services, which the build refuses.
+- **Following the agent** (`artifact` on `/v1/events`, read again from obid, never taken from the event):
+  - a new version of the artifact open moves the pane to it when it was on the latest; on an older version it stays;
+  - a rename retitles it;
+  - an artifact made in the conversation on view (its version 1) opens by itself when none is open;
+  - the conversation's cards are read again.
+- **The owner's words.** Words said in a conversation while its artifact is open carry `artifact: {id, version}`, the version on view, once obid announces `artifact-turn-v1` (ARTIFACTS-12). They go signed, as the owner's words do ([signed-words.md](signed-words.md), WORDS-22). An answer to Oby's question carries none, nor do words to another conversation than the artifact's.
 - **The preview.** While the pane shows, the page tells main which artifact, which version and the preview's box, and tells it again whenever the box moves or changes size. Main reads that version once and moves its view with the box.
 
 ### What each kind shows
@@ -76,8 +86,9 @@ As LibreChat does, the `static` template always opens `index.html`:
 ## Interfaces and dependencies
 
 - **obid:** `GET /v1/artifacts?conversation=`, `GET /v1/artifacts/{id}`, `GET /v1/artifacts/{id}/{version}/{*path}` ([docs/api/artifacts.md](../api/artifacts.md)), unchanged.
+- **obid's events:** `artifact` (`shared/obid-wire.ts`, `{id, version, conversation, renamed, title}`), passed on by main as every event is; `POST /v1/plans`' `artifact` (`artifact-turn-v1`).
 - **The page into main:** `artifact-preview` ([ipc.md](ipc.md)), with `{ id, version, bounds }` or `null`. It answers `{ shown: true }`, or `{ error }` saying why nothing shows.
-- **Packages:** `@codesandbox/sandpack-client` 2.19.8, and through it `static-browser-server` 1.0.3 (both Apache-2.0); `marked` (MIT), already the app's.
+- **Packages:** `@codesandbox/sandpack-client` 2.19.8, and through it `static-browser-server` 1.0.3 (both Apache-2.0); CodeMirror 6 (`@codemirror/state`, `view`, `language`, `lang-html`, `lang-css`, `lang-javascript`, `lang-markdown`, `lang-json`, `@lezer/highlight`, all MIT, pinned exactly); `marked` (MIT), already the app's.
 
 ## Acceptance scenarios
 
@@ -106,3 +117,21 @@ As LibreChat does, the `static` template always opens `index.html`:
   - Close takes the pane and the preview away, and an error from main shows in the pane.
 
   Unit tests: `artifactsapp_4_the_card_says_what_it_is_and_a_click_opens_it_beside_the_conversation_on_its_latest_version`, `artifactsapp_4_an_error_from_main_shows_in_the_pane`. Mac: `artifactsapp_4: the card under its task opens the pane`.
+- **ARTIFACTSAPP-5** Given the pane open on a version of a page (`index.html`, `style.css`, `logo.png`), when the owner picks Code:
+  - Preview's view goes;
+  - the files show as tabs, `index.html` first, and `index.html`'s text shows in CodeMirror, read-only;
+  - another tab shows its file's text, and a picture is named ("logo.png isn’t text: Preview shows it.") and never read;
+  - back on Preview, its view comes back.
+
+  Unit test: `artifactsapp_5_code_shows_each_file_of_the_version_index_first_and_preview_stops` (`artifactsFollow.test.tsx`). Mac: `artifactsapp_5: Code shows each file of the version`.
+- **ARTIFACTSAPP-6** Given the pane open on an artifact's latest version:
+  - when obid says it has a new version, the pane moves there and Preview draws it;
+  - a rename retitles it;
+  - on an older version, the pane stays, and another artifact's version moves nothing;
+  - with none open, an artifact made in the conversation on view opens by itself, and one of another conversation, or with none on view, doesn't.
+
+  Unit tests: `artifactsapp_6_a_new_version_from_the_agent_moves_the_open_pane_to_it`, `artifactsapp_6_an_older_version_on_view_stays_and_another_artifact_moves_nothing`, `artifactsapp_6_an_artifact_the_agent_makes_in_the_conversation_on_view_opens`. Mac: `artifactsapp_6: a new version from the agent moves the open pane to it`.
+- **ARTIFACTSAPP-7** Given the pane open on version 1 of a conversation's artifact, when the owner says words in that conversation, then `POST /v1/plans` carries `artifact: {id, version: 1}`. Closed, the words go without it, and so they do to an obid that doesn't announce `artifact-turn-v1`, or to another conversation than the artifact's.
+
+  Unit tests: `artifactsapp_7_words_said_with_the_pane_open_carry_its_artifact_and_version`, `artifactsapp_7_not_to_an_obid_without_it_nor_to_another_conversation`; signed: `words_22_the_artifact_open_signs_with_its_words`.
+

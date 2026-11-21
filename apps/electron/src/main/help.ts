@@ -65,7 +65,7 @@ export function diagnosticsText(f: Facts): string {
 // obid's version and commit, as GET /v1/status's runner says them, waiting at most 3 seconds
 async function obidFacts(): Promise<Facts['obid']> {
   const late = new Promise<Facts['obid']>((r) => setTimeout(() => r({ why: 'didn’t answer within 3 seconds' }), 3000).unref?.());
-  const asked = obid('GET', '/v1/status').then((r): Facts['obid'] => {
+  const asked = obid('GET', '/v1/status', undefined, undefined, true).then((r): Facts['obid'] => {
     if (r.status !== 200) return { why: r.status ? `answered ${r.status}` : 'isn’t running' };
     try {
       const runner = (JSON.parse(r.text) as { runner?: { version?: unknown; commit?: unknown } }).runner;

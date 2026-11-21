@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "POST /v1/plans: a Codex conversation's MCP servers",
   "version": "1.0.0",
-  "description": "A Codex conversation calls obid's own oby server and its tools answer; a call of any other MCP server ends the turn, saying why, in Bypass and in Ask (CONVERSATION-AGENT-18; expected red with #2698 since the owner's Codex conversation runs in the own lane).",
+  "description": "A Codex conversation calls obid's own oby server and its tools answer; another MCP server of the owner's runs in Bypass, as in T3 Code's full access, and in Ask is asked about first: the turn ends on a question, the owner's signed Allow once runs it that next turn only, and unsigned words allow nothing (CONVERSATION-AGENT-18, #2698).",
   "trigger": {
     "http": {
       "method": "POST",
@@ -85,7 +85,7 @@
       }
     },
     {
-      "id": "conversation-agent-18-another-server-ends-the-turn",
+      "id": "conversation-agent-18-bypass-runs-another-server",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
@@ -98,17 +98,14 @@
         "expect": {
           "status": 200,
           "body": {
-            "text": {
-              "$matches": "I couldn't answer: Codex called elsewhere's run, which a conversation never does, so obid stopped it\\.$"
-            }
+            "text": "elsewhere: ran"
           }
         }
       },
       "ui": {
         "proves": [
           "CONVERSATION-AGENT-18"
-        ],
-        "expectedRed": "#2698: since #2683 the owner's own Codex conversation runs another MCP server's tool: in Bypass Codex declines it and the turn goes on, in Ask obid approves it and it runs; the contract says it ends the turn"
+        ]
       }
     },
     {
@@ -139,7 +136,7 @@
       }
     },
     {
-      "id": "conversation-agent-18-in-ask-too",
+      "id": "conversation-agent-18-ask-asks-the-owner",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
@@ -149,11 +146,20 @@
           "said": "ELSEWHERE",
           "new": true
         },
+        "as": "device",
+        "device": "${state.device}",
         "expect": {
           "status": 200,
           "body": {
-            "text": {
-              "$matches": "I couldn't answer: Codex called elsewhere's run, which a conversation never does, so obid stopped it\\.$"
+            "kind": "question",
+            "question": {
+              "text": {
+                "$matches": "^Codex wants to run run from your MCP server elsewhere\\. Allow it for your next message\\?$"
+              },
+              "options": [
+                "Allow once",
+                "Don't allow"
+              ]
             }
           }
         }
@@ -161,8 +167,101 @@
       "ui": {
         "proves": [
           "CONVERSATION-AGENT-18"
-        ],
-        "expectedRed": "#2698: since #2683 the owner's own Codex conversation runs another MCP server's tool: in Bypass Codex declines it and the turn goes on, in Ask obid approves it and it runs; the contract says it ends the turn"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-18-allow-once-runs-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "Allow once",
+          "conversation": "${state.conversation-agent-18-ask-asks-the-owner.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "elsewhere: ran"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-18"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-18-once-means-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "ELSEWHERE",
+          "conversation": "${state.conversation-agent-18-ask-asks-the-owner.body.conversation}"
+        },
+        "as": "device",
+        "device": "${state.device}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "question",
+            "question": {
+              "text": {
+                "$matches": "^Codex wants to run run from your MCP server elsewhere\\. Allow it for your next message\\?$"
+              },
+              "options": [
+                "Allow once",
+                "Don't allow"
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-18"
+        ]
+      }
+    },
+    {
+      "id": "conversation-agent-18-unsigned-allows-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "Allow once",
+          "conversation": "${state.conversation-agent-18-ask-asks-the-owner.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "kind": "question",
+            "question": {
+              "text": {
+                "$matches": "^Codex wants to run run from your MCP server elsewhere\\. Allow it for your next message\\?$"
+              },
+              "options": [
+                "Allow once",
+                "Don't allow"
+              ]
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CONVERSATION-AGENT-18"
+        ]
       }
     }
   ]

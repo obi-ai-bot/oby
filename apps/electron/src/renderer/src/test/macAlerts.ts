@@ -150,7 +150,7 @@ export async function launch() {
       return new Response(new ReadableStream<Uint8Array>({ start: (c) => { stream = c; } }));
     },
     takesKeys: async () => mac.receipts,
-    chooseProfile: () => false,
+    chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
     openedProfile: () => null,
     streamEnded: () => {},
     reason: (e: unknown) => ({ status: 0, text: String(e) }),

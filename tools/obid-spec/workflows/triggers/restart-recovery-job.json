@@ -139,7 +139,8 @@
       "ui": {
         "proves": [
           "RECOVERY-2"
-        ]
+        ],
+        "flaky": "#2821: after obid is killed, the restarted run's prompt sometimes lacks \"Your run was cut\""
       }
     },
     {

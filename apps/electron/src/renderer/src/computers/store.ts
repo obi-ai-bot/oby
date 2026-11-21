@@ -90,7 +90,8 @@ function startOnce() {
     const { list, ui } = demoScreen(new URLSearchParams(location.search).get('computers'));
     void startComputers(demoApi(list), ui);
   } else if (onObid) {
-    void obidComputers().then((on) => startComputers(on));
+    // whatever obid answers, or doesn't: nothing offered (This Mac only), never an error unhandled
+    void obidComputers().then((on) => startComputers(on)).catch(() => startComputers(null));
   }
 }
 
@@ -106,6 +107,13 @@ export function current(s: Computers = state): Computer | undefined {
   return s.list.current === 'this' ? undefined : s.list.computers.find((c) => c.id === s.list.current);
 }
 export const currentName = (s: Computers = state) => current(s)?.name ?? THIS_MAC;
+/** The message box's words to Oby (COMPUTERSAPP-13, screen 06): on another computer, its name; This Mac's as before. */
+export function messageOby(s: Computers = state) {
+  const on = s.offered ? current(s) : undefined;
+  return on ? `Message Oby on ${on.name}…` : 'Message Oby…';
+}
+/** Whether the picker's own words stand for the window's connection now (screens 08, 09): a switch under way, or the computer in use unreachable. Then the engine's line waits: obid's stream to it fails while it's lost, and the window says so once, in the design's words. */
+export const computerSays = (s: Computers = state) => s.offered && (!!s.ui.switching || current(s)?.state === 'lost');
 export const nameOf = (id: 'this' | string, s: Computers = state) => (id === 'this' ? THIS_MAC : s.list.computers.find((c) => c.id === id)?.name ?? id);
 
 // ---- the owner's clicks ----

@@ -42,7 +42,7 @@ const NOT_A_LINK = 'It isn’t an Obysphere invite link.';
 
 // obid's owner id now: who a join would act for, or null when obid can't say
 async function ownerNow() {
-  const a = await obid('GET', '/v1/obid/sphere').catch(() => null);
+  const a = await obid('GET', '/v1/obid/sphere', undefined, undefined, true).catch(() => null);
   try { return a?.status === 200 ? String((JSON.parse(a.text) as { owner?: unknown }).owner ?? '') || null : null; } catch { return null; }
 }
 

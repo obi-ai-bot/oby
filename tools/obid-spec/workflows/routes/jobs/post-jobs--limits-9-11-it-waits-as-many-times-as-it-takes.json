@@ -33,7 +33,7 @@
           "job": {
             "repo": "obi-e2e/fixture-app",
             "kind": "investigate",
-            "task": "LIMITED AGAIN: 1"
+            "task": "LIMITED AGAIN: 5"
           }
         },
         "expect": {

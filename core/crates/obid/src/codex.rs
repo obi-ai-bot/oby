@@ -1039,7 +1039,8 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     .and_then(|calls| calls.iter().rfind(|(tool, _)| Some(tool.as_str()) == named));
                 let answer = match call.cloned() {
                     // Only Oby's own server: another's (ChatGPT's apps, the person's) is never
-                    // run, as before Codex asked. An own run's are the owner's (LANE-12).
+                    // run, as before Codex asked. An own run's go to its rules: Bypass runs them,
+                    // every other mode asks the owner (CONVERSATION-AGENT-18).
                     Some(_) if !JOB_SERVERS.contains(&server) && !self.own => {
                         Answer::Deny(format!("Only Oby's own tools run here, not {server}'s."))
                     }
@@ -1056,18 +1057,13 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     }
                     None => Answer::Deny("obid couldn't see which tool this runs.".into()),
                 };
-                if let Answer::Deny(why) = &answer {
-                    (self.on_event)(Event::Denied(why.clone()));
-                }
-                let action = if matches!(answer, Answer::Allow | Answer::AllowWith(_)) {
-                    "accept"
-                } else {
-                    "decline"
+                return match answer {
+                    Answer::Deny(why) => self.decline_call(&id, params, why).await,
+                    Answer::Allow | Answer::AllowWith(_) => {
+                        let accept = json!({"action": "accept", "content": {}});
+                        self.conn.reply(&id, accept).await
+                    }
                 };
-                return self
-                    .conn
-                    .reply(&id, json!({"action": action, "content": {}}))
-                    .await;
             }
             Some("item/tool/requestUserInput") => return self.ask_owner(&id, params).await,
             _ => return self.conn.refuse(&id).await,
@@ -1137,6 +1133,18 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     /// Declines, and since the decision has no room for a reason, tells the turn why.
     async fn decline(&mut self, id: &Value, params: &Value, why: String) {
         self.conn.reply(id, json!({"decision": "decline"})).await;
+        self.tell_why(params, why).await;
+    }
+
+    /// Declines an MCP tool's call: Codex tells the model only that it was rejected
+    /// (CONVERSATION-AGENT-18), so the turn hears why, as a declined command's does.
+    async fn decline_call(&mut self, id: &Value, params: &Value, why: String) {
+        let decline = json!({"action": "decline", "content": {}});
+        self.conn.reply(id, decline).await;
+        self.tell_why(params, why).await;
+    }
+
+    async fn tell_why(&mut self, params: &Value, why: String) {
         (self.on_event)(Event::Denied(why.clone()));
         if let (Some(thread), Some(turn)) = (params["threadId"].as_str(), params["turnId"].as_str())
         {

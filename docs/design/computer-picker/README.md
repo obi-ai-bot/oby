@@ -127,7 +127,7 @@ The fingerprint shows the first 16 bytes of the certificate's SHA-256, in groups
 |---|---|
 | Title | `Remove {name}?` |
 | Under it | `This Mac stops reaching {name}, and {name} forgets this Mac's key. Its tasks and folders stay on {name}.` |
-| Buttons | `Cancel` · `Remove` |
+| Buttons | `Cancel` · `Remove computer` (changed by the owner on 2026-11-21 from `Remove`, their choice "Remove computer (Recommended)": the button signs the removal, and a bare Remove would let any other Remove button's click sign it, as Settings › Vault's `Remove Secret` avoids; Sangam's to see) |
 | Rename | the row's name becomes a field in place, as a conversation's name does in the side panel |
 
 ## What obid provides, state by state

@@ -12,6 +12,7 @@ import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { ALLOW_ONCE, TRY_AGAIN } from '../../shared/words';
 import { has } from '../../shared/capabilities';
+import { artifactChanged, openArtifactOf } from './artifacts/store';
 import { answer, answerStatus, answerTurns, apply as applyToObid, type ObidState } from '../../shared/live-state';
 import { unwired, type LiveMessage, type LiveSnapshot } from '../../shared/live-wire';
 import { onObid } from './lean';
@@ -77,12 +78,23 @@ const set = (patch: Partial<Live>) => {
   state = { ...state, ...patch }; publish(); listeners.forEach((l) => l());
   if (!pacing && Object.keys(state.pace).length) { ticked = performance.now(); pacing = setInterval(tick, WORD_MS); }
 };
+// obid's word on the window's computers, from main's stream of this Mac's (computers/obid.ts follows
+// it); a function that stops following
+type ComputerEvent = Extract<Event, { kind: 'computers' | 'computerRoute' }>;
+const computerFollowers = new Set<(e: ComputerEvent) => void>();
+export function onComputerEvent(f: (e: ComputerEvent) => void) {
+  computerFollowers.add(f);
+  return () => { computerFollowers.delete(f); };
+}
+
 // An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
 // state read before the call's await, which would undo what came meanwhile (a Confirm's answer
 // putting back the job its own `deleted` event took away)
 // (main brings an event's item's job itself; an answer's the page asks it for)
 const takeEvent = (e: Event) => {
   if (e.kind === 'transcript' || e.kind === 'transcriptLine' || e.kind === 'transcriptTail' || e.kind === 'transcriptOutput') return heard(e);
+  // the window's computers are the picker's (computers/obid.ts), never this store's
+  if (e.kind === 'computers' || e.kind === 'computerRoute') { computerFollowers.forEach((f) => f(e)); return; }
   if (e.kind === 'jobGone') sessions.delete(e.id);
   set({ ...apply(state, e), ...(e.kind === 'inbox' ? closing(state, e.item) : {}) });
 };
@@ -671,7 +683,7 @@ export function lookAtUsage() {
 
 // --- events
 
-export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' }>): Live {
+export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' | 'computers' | 'computerRoute' }>): Live {
   switch (e.kind) {
     // A question's card on a turn changes only the card, and nothing about a turn under way; so
     // does its words' delivery, which only moves them between the waiting row and the conversation
@@ -727,6 +739,10 @@ export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcr
       return s;
     case 'peerThread':
       threadChanged(e.owner);
+      return s;
+    // the artifacts keep their own (artifacts/store.ts): the pane and the cards read it again
+    case 'artifact':
+      artifactChanged(e.artifact);
       return s;
   }
 }
@@ -925,7 +941,10 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
           // the skill picked in the box, beside the words (COMPOSER-27); an answer to Oby's question is only the answer
           ...(skill && !q ? { skill } : {}),
           // where the conversation it starts works, once obid takes it (WORKSPACE-3)
-          ...(has(state.status, 'workspace-v1') && !c && att?.workspace ? { workspace: att.workspace } : {}) }));
+          ...(has(state.status, 'workspace-v1') && !c && att?.workspace ? { workspace: att.workspace } : {}),
+          // the artifact open beside this conversation, once obid takes it (ARTIFACTS-12,
+          // ARTIFACTSAPP-7); an answer to Oby's question is only the answer
+          ...(has(state.status, 'artifact-turn-v1') && c && !q && openArtifactOf(c) ? { artifact: openArtifactOf(c)! } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card

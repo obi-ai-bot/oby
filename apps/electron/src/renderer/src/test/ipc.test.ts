@@ -85,7 +85,7 @@ vi.mock('../../../main/obid', async (original) => ({
   obid: async (...a: unknown[]) => { the.calls.push(a); return { status: 200, text: '[]' }; },
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
-  chooseProfile: () => false,
+  chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
   openedProfile: () => null,
 }));
 vi.mock('../../../shared/sphere', async (original) => ({
@@ -157,6 +157,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'browser-follow': { args: [], refusal: null },
   'browser-watch': { args: ['t1'], refusal: null },
   'browser-unwatch': { args: ['t1'], refusal: null },
+  'browser-register': { args: ['j1', 't1', 5], refusal: 'Not this app’s page.' },
+  'browser-shown': { args: ['j1', 't1', true], refusal: null },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
   'artifact-preview': { args: [null], refusal: null },

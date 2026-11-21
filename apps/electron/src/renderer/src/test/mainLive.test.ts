@@ -35,7 +35,7 @@ vi.mock('../../../main/obid', () => ({
   takesKeys: async () => false,
   streamEnded: () => {},
   reason: (e: unknown) => ({ status: 0, text: String(e) }),
-  chooseProfile: () => false,
+  chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
   openedProfile: () => null,
 }));
 
