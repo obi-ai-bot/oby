@@ -1,6 +1,6 @@
 # Oby Artifacts: the port from the lab into obid and the app
 
-A plan, checked against `origin/dev` at `fa19c191` (2026-11-20); P1 is built (#2776), and the
+A plan, checked against `origin/dev` at `820d33c4` (2026-11-21); P1 (#2776), P2 (#2798), P3 (#2799) and L1 to L4 are merged, and the
 order changed on 2026-11-21: the local loop, below, comes first. It turns the port step
 of the Oby Artifacts backend plan (its §7.6) into small pull requests, each with its contract's
 scenarios, the files it owns, its place in the order, and the lab workflow that becomes its Blok
@@ -549,7 +549,7 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
   `openFullWidth`), signed by its control's label; `claude` refused `claude_unavailable` while
   `lab.artifacts.claude_headless` says Claude Code offers no Artifact tool headless, and the app says
   why; board 2b.
-- **Scenarios** (`artifacts.md`): ARTIFACTS-16, the settings read and change signed; ARTIFACTS-17, `claude` is refused `claude_unavailable` in words.
+- **Scenarios** (`artifacts.md`): new ids (ARTIFACTS-16 to 18 are L3a's, built): the settings read and change signed, and `claude` refused `claude_unavailable` in words.
 - **Files:** `core/crates/obid/src/artifacts/settings.rs` (new); `api.rs`; the app's Settings
   section; `docs/api/artifacts.md`.
 - **Blok proof:** new: the lab never built settings, so its workflow is written with this PR, red
@@ -560,13 +560,13 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 | PR | Depends on | Can run beside | State |
 |---|---|---|---|
 | P1 Store v2 | none | | merged (#2776) |
-| P2 Export and import | P1 | L1, L2, L3a | built, opens next |
+| P2 Export and import | P1 | L1, L2, L3a | merged (#2798) |
 | P3 The turn’s artifact | P1 | L1, L3a | merged (#2799) |
 | **L1** Sandpack, local, the card and Preview | P1 | P2, L3a | merged (#2807) |
-| **L2** Code, following the agent | L1, P3 | L3a | in review |
+| **L2** Code, following the agent | L1, P3 | L3a | merged (#2827) |
 | **L3a** The owner's edit (obid) | P1 | L1, L2 | merged (#2809) |
-| **L3b** Edit, save, versions (app) | L2, L3a | L5 | in review |
-| **L4** Export and import (app) | L2, P2 | L5 | |
+| **L3b** Edit, save, versions (app) | L2, L3a | L5 | merged (#2836) |
+| **L4** Export and import (app) | L2, P2 | L5 | merged (#2847) |
 | **L5** React artifacts, local | L1 | L3b, L4 | |
 | **L6** The real drive | L1 to L5 | none | |
 | P4 Oby's runtime | P1 | | after the loop (built, held) |
@@ -580,6 +580,7 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 | P12 Share, Shared (app) | P7, P10, P11 | | after the loop |
 | P13 Settings › Artifacts | P5 | | after the loop |
 
+- In review, no promise: #2845 (a change asked with an artifact open becomes its next version, ARTIFACTS-19) and the artifact card task.
 - Now: P2 and P3 land as planned; L1 and L3a side by side, each owning its files; then L2, L3b, L4
   and L5; L6 last. `api.rs` is touched by P2 and L3a, and `shared/words.ts` by L2, L3b and L4:
   those land one after another, never at once.
@@ -624,7 +625,7 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 - The Oby Artifacts backend plan (§3, §6, §7, §8) and its design canvas (boards 1a to 2c).
 - The lab: #2682, #2689, #2709, #2713 (`tools/obid-spec/src/lab/artifacts*.rs`, `artifactview.rs`,
   `artifactsphere.rs`, `lab-ui/artifacts/`, `workflows/lab/artifacts*/`).
-- `origin/dev` at `fa19c191`: `core/crates/obid/src/{artifacts.rs, api.rs, gateway.rs, brain/{mod,tools,harness}.rs, mcp.rs, connections.rs, jobs.rs, browser/**, sphere/**}`,
+- `origin/dev` at `820d33c4`: `core/crates/obid/src/{artifacts.rs, api.rs, gateway.rs, brain/{mod,tools,harness}.rs, mcp.rs, connections.rs, jobs.rs, browser/**, sphere/**}`,
   `core/crates/obi-protocol/src/types.rs`, `apps/electron/src/{main,renderer/src/browser,shared}/`,
   `docs/contracts/{browser,browser-app,agent-mcp,signed-words,obid-spec,task-conversations}.md`,
   `docs/api/{artifacts.md,routes.txt}`, `tools/obid-spec/scope.json`, `core/crates/obid/src/jobs/owner_run.rs`.
