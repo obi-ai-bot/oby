@@ -11940,6 +11940,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// PUBLISHING-2 (#2831): obid moves a job's branch only from where it last put it. A move
+    /// someone else made since stays, and keeping the job's commits says why; once the branch is
+    /// back where obid put it, it moves, and obid remembers where.
+    #[tokio::test]
+    async fn publishing_2_keep_commits_leaves_a_branch_someone_else_moved() {
+        let (root, clone, base, jobs) = cleanup_home("kept-move", true);
+        let (mut job, tree) = ended(&jobs, &clone, &base, "kept0001", obi_protocol::time::now());
+        job.status = Status::Running;
+        let branch = format!("refs/heads/{}", job.branch);
+        cleanup_git(&clone, &["branch", &job.branch, &base]);
+        job.kept = Some(base.clone());
+        jobs.lock().jobs.insert(job.id.clone(), job);
+        let tree_of = format!("{base}^{{tree}}");
+        let theirs = cleanup_git(
+            &clone,
+            &["commit-tree", &tree_of, "-p", &base, "-m", "Someone else's"],
+        );
+        cleanup_git(&clone, &["update-ref", &branch, &theirs]);
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "The job's"]);
+        let mine = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+
+        let kept = jobs.keep_commits("kept0001").await;
+        assert!(
+            kept.as_ref()
+                .is_err_and(|e| e.contains("moved since Oby put it")),
+            "{kept:?}"
+        );
+        assert_eq!(cleanup_git(&clone, &["rev-parse", &branch]), theirs);
+        assert_eq!(jobs.get("kept0001").unwrap().kept, Some(base.clone()));
+
+        cleanup_git(&clone, &["update-ref", &branch, &base]);
+        assert_eq!(jobs.keep_commits("kept0001").await, Ok(mine.clone()));
+        assert_eq!(cleanup_git(&clone, &["rev-parse", &branch]), mine);
+        assert_eq!(jobs.get("kept0001").unwrap().kept, Some(mine));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PUBLISHING-2, RECOVERY-2 (#2831): obid went down between moving a job's branch and noting
+    /// where. The branch is on a commit of the job's own, one its worktree's head descends from,
+    /// so the next keep still moves it; someone else's commit there it still leaves.
+    #[tokio::test]
+    async fn publishing_2_keep_commits_moves_a_branch_obid_moved_before_it_went_down() {
+        let (root, clone, base, jobs) = cleanup_home("kept-crash", true);
+        let (mut job, tree) = ended(&jobs, &clone, &base, "kept0002", obi_protocol::time::now());
+        job.status = Status::Running;
+        let branch = format!("refs/heads/{}", job.branch);
+        job.kept = Some(base.clone());
+        jobs.lock().jobs.insert(job.id.clone(), job);
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "First"]);
+        let first = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "Second"]);
+        let second = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+        // The branch on its first commit, as obid left it, its file still naming the base.
+        cleanup_git(&clone, &["branch", "-f", "oby/kept0002", &first]);
+
+        assert_eq!(jobs.keep_commits("kept0002").await, Ok(second.clone()));
+        assert_eq!(cleanup_git(&clone, &["rev-parse", &branch]), second);
+        assert_eq!(jobs.get("kept0002").unwrap().kept, Some(second));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The cleanup pass (docs/runner-api.md, `cleanup`), in a home of its own, git in the job
     /// sandbox. A settled job's worktree goes, and so do a pushed one's, an empty folder, and the
     /// worktrees of jobs put away (dismissed, archived) or of a review, however young. A dirty one,

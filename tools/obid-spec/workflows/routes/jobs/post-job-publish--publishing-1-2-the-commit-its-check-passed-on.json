@@ -358,8 +358,7 @@
       "ui": {
         "proves": [
           "PUBLISHING-2"
-        ],
-        "flaky": "#2831: obid keeps a done job's commits once more after it ends and can move its branch back over the step's move, so Publish by hand doesn't see it moved; what goes out is still the checked commit"
+        ]
       }
     },
     {

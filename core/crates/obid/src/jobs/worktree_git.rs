@@ -139,9 +139,58 @@ impl Jobs {
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        git::move_branch(&clone, &job.branch, &head)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Only from where obid last put it, or from a commit of the job's own (PUBLISHING-2,
+        // #2831): a move anyone else made since (the owner's terminal, another tool) stays, and
+        // this job's commits stay in its worktree.
+        // No `kept`: a worktree an earlier obid made, or a review at its pull request's head, which
+        // has no branch of its own; the branch then moves as it always did.
+        match job.kept.as_deref() {
+            Some(from) if from != head => {
+                let branch = format!("refs/heads/{}", job.branch);
+                if !git::is_branch_name(&job.branch) || !git::is_sha(&head) || !git::is_sha(from) {
+                    return Err(format!(
+                        "{} at {head} isn't a branch and commit obid moves",
+                        job.branch
+                    ));
+                }
+                if let Err(e) = git::git(&clone, &["update-ref", &branch, &head, from]).await {
+                    let now = git::git(&clone, &["rev-parse", "--verify", "--quiet", &branch])
+                        .await
+                        .unwrap_or_default();
+                    // On a commit of the job's own (its head descends from it): obid moved it
+                    // there and went down before noting where (RECOVERY-2). From there it moves.
+                    let own = git::is_sha(&now)
+                        && git::git(&clone, &["merge-base", "--is-ancestor", &now, &head])
+                            .await
+                            .is_ok();
+                    let moved = own
+                        && git::git(&clone, &["update-ref", &branch, &head, &now])
+                            .await
+                            .is_ok();
+                    if !moved {
+                        let why = format!(
+                            "{} moved since Oby put it at {from} (it's at {} now), so Oby left it there: {e}",
+                            job.branch,
+                            if now.is_empty() {
+                                "no commit"
+                            } else {
+                                now.as_str()
+                            }
+                        );
+                        tracing::info!("job {id}: {why}");
+                        return Err(why);
+                    }
+                }
+            }
+            Some(_) => {}
+            None => git::move_branch(&clone, &job.branch, &head)
+                .await
+                .map_err(|e| e.to_string())?,
+        }
+        // Noted only when it changes: a keep that moved nothing writes the job no more than before.
+        if job.kept.as_deref() != Some(head.as_str()) {
+            self.update(id, |j| j.kept = Some(head.clone()));
+        }
         // PUBLISHING-2: others checked on another commit can't publish it; this one checks again.
         let moved: Vec<String> = self
             .lock()

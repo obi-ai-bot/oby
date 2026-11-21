@@ -1921,6 +1921,91 @@ fn publishing_1_2_only_the_commit_its_check_passed_on_goes_out() {
     );
 }
 
+/// PUBLISHING-2 (#2831): a branch moved right as its job ends `done`, after the job reads done
+/// and before obid keeps its commits one last time, stays moved: Publish by hand is `409` saying
+/// so, and nothing reaches the remote. A debug build's `OBID_TEST_END_GATE` holds the job's end in
+/// that window.
+#[test]
+fn publishing_2_a_branch_moved_as_its_job_ends_stays_moved_and_is_refused() {
+    let folder = Folder::new("publish-moved-at-end");
+    let bin = fake_gh(&folder.0);
+    let broken = broken_scanner(&folder, &bin);
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agent());
+    sign_in(&folder, "stub");
+    let gate = folder.0.join("end-gate");
+    std::fs::create_dir_all(&gate).unwrap();
+    let env = [("OBID_TEST_END_GATE", gate.to_str().unwrap())];
+    let obid = start_with(&folder.0, &config, Some(&broken), &env);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt"}),
+    );
+    support::within(60, "the job's end waits at the gate", || {
+        gate.join(format!("{id}.reached")).exists().then_some(())
+    });
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(job["publishError"].is_string(), "{job}");
+    let branch = format!("oby/fix-{id}");
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let checked = git(&clone, &["rev-parse", &format!("refs/heads/{branch}")]);
+    let tree = git(&clone, &["rev-parse", &format!("{checked}^{{tree}}")]);
+    let other = git(
+        &clone,
+        &[
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@x",
+            "commit-tree",
+            &tree,
+            "-p",
+            &checked,
+            "-m",
+            "unchecked",
+        ],
+    );
+    git(
+        &clone,
+        &["update-ref", &format!("refs/heads/{branch}"), &other],
+    );
+    std::fs::write(gate.join(format!("{id}.open")), "").unwrap();
+    ended(&obid, &id);
+    assert_eq!(
+        git(&clone, &["rev-parse", &format!("refs/heads/{branch}")]),
+        other,
+        "obid moved the branch back:\n{}",
+        obid.log()
+    );
+    let (key, device_id) = registered(&obid, 11);
+    let sentence = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None).body["action"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/publish"),
+        Some(&approval(
+            &key,
+            &device_id,
+            &id,
+            &sentence,
+            obi_protocol::time::now(),
+        )),
+    );
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert_eq!(
+        refused.body["error"],
+        format!(
+            "Not published: {branch} moved since this job's check passed on it, so its commits now aren't the ones checked."
+        )
+    );
+    assert_eq!(remote_branch(&remote, &branch), None);
+}
+
 /// PUBLISHING-3, the core audit's first trigger (#1635): a published job's next run passes its
 /// check and its publish fails; a follow-up on its branch then fails its check. Publish on the
 /// first job is refused while the follow-up carries its branch on, and once the follow-up's
