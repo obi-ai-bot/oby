@@ -4,7 +4,8 @@
 //
 // Chrome: the one installed (`channel: 'chrome'`, GitHub's ubuntu runner has it), or OBY_CHROME. Without
 // one the layout tests say so and are skipped on a person's Mac; in CI they fail, never pass on nothing.
-import { createServer as listen } from 'node:net';
+import { createServer as httpServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { createServer, type ViteDevServer } from 'vite';
@@ -13,17 +14,22 @@ const appRoot = resolve(__dirname, '../../../../..');
 
 export interface Mock { page: Page; close: () => Promise<void> }
 
-const freePort = () => new Promise<number>((done, fail) => {
-  const s = listen();
-  s.once('error', fail);
-  s.listen(0, '127.0.0.1', () => { const { port } = s.address() as { port: number }; s.close(() => done(port)); });
-});
+// How long Chrome may take to start: it's waited for until it says it's ready (its DevTools endpoint,
+// as Playwright reads it), never cut at vitest's 30 s hook default. The pinned headless shell starts in
+// under 1 s at load ~215 on the build VM; GitHub's full Chrome, six at once on 4 cores, took past 30 s
+// (run 44766966178). A layout file's beforeAll waits this long, and a bit more
+export const CHROME_START_MS = 120_000;
+export const CHROME_HOOK_MS = CHROME_START_MS + 10_000;
 
-// Chrome, or why there is none
+// Chrome, or why there is none. A slow start says how slow, so the next one is measured
 export async function chrome(): Promise<Browser | string> {
+  const t = Date.now();
   try {
     const executablePath = process.env.OBY_CHROME;
-    return await chromium.launch(executablePath ? { executablePath } : { channel: 'chrome' });
+    const browser = await chromium.launch({ ...(executablePath ? { executablePath } : { channel: 'chrome' as const }), timeout: CHROME_START_MS });
+    const ms = Date.now() - t;
+    if (ms > 5_000) process.stderr.write(`layout tests: Chrome took ${ms} ms to start\n`);
+    return browser;
   } catch (e) {
     return `no Chrome to lay the screens out (${(e as Error).message.split('\n')[0]}); set OBY_CHROME to one`;
   }
@@ -32,13 +38,20 @@ export async function chrome(): Promise<Browser | string> {
 // The mock at `query` (`?everything&chat` by default), first run and its welcome done, in a window of
 // `width` × `height`
 export async function openMock(browser: Browser, { query = '?everything&chat', width = 1280, height = 820 } = {}): Promise<Mock> {
-  const port = await freePort();
-  const server: ViteDevServer = await createServer({
+  // the mock's own server, on a port the system gives it as it binds and it keeps: a port picked first
+  // and freed for Vite could be taken in between by another layout file's ("Port … is already in use"),
+  // and Vite reads port 0 as its default 5173. Vite runs inside it, as middleware, its client's
+  // websocket on the same server, as it was on Vite's own
+  const server = httpServer();
+  await new Promise<void>((done, fail) => { server.once('error', fail); server.listen(0, '127.0.0.1', () => done()); });
+  const { port } = server.address() as AddressInfo;
+  const vite: ViteDevServer = await createServer({
     configFile: resolve(appRoot, 'vite.config.ts'),
     logLevel: 'error',
-    server: { port, strictPort: true, hmr: false, host: '127.0.0.1' },
+    appType: 'spa',
+    server: { middlewareMode: true, hmr: { server } },
   });
-  await server.listen();
+  server.on('request', vite.middlewares);
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2 });
   const page = await context.newPage();
   const errors: string[] = [];
@@ -54,7 +67,7 @@ export async function openMock(browser: Browser, { query = '?everything&chat', w
   await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
   await page.waitForTimeout(400);
   if (errors.length) throw new Error(`the mock threw: ${errors.join('; ')}`);
-  return { page, close: async () => { await context.close(); await server.close(); } };
+  return { page, close: async () => { await context.close(); await vite.close(); await new Promise<void>((done) => server.close(() => done())); } };
 }
 
 // A conversation of the side panel, opened by its title
