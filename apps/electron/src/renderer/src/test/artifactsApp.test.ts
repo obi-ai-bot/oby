@@ -5,6 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PREVIEW_CSP, RELAY_CSP, servedHost, servedWorker, startRelay, type Relay } from '../../../main/sandpackRelay';
 import { allowed, noFiles, overlay, previewAsk, shownAs } from '../../../main/previewRules';
 import { showable } from '../artifacts/showable';
+import { importType } from '../../../shared/artifactImport';
+import { exportArtifact, nameOf } from '../../../main/previewRules';
 // @ts-expect-error a plain script
 import { FORBIDDEN, forbiddenIn, localOnly } from '../../../../scripts/local-only.mjs';
 
@@ -142,6 +144,39 @@ describe('ARTIFACTSAPP-8, the edits laid over', () => {
     new Function('window', shownAs({ files: named }))({ obyShow: (v: { files: Record<string, unknown> }) => { got = v.files; } });
     expect(Object.keys(got!).sort()).toEqual(['__proto__', 'index.html']);
     expect(Object.getPrototypeOf(got)).toBe(Object.prototype);
+  });
+});
+
+describe('ARTIFACTSAPP-11 and 12, main', () => {
+  it('artifactsapp_11_main_saves_obids_export_byte_for_byte_where_the_owner_picked_and_nothing_when_cancelled', async () => {
+    const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 255]);
+    const written: [string, Uint8Array][] = [];
+    const asked: string[] = [];
+    const deps = (answer: string | null, r: Response | { status: number; text: string }) => ({
+      fetch: async (path: string) => { asked.push(path); return r; },
+      ask: async (defaultPath: string) => { asked.push(defaultPath); return answer; },
+      write: async (path: string, bytes: Uint8Array) => { written.push([path, bytes]); },
+      downloads: '/Users/me/Downloads',
+    });
+    const ok = () => new Response(zip, { headers: { 'Content-Disposition': 'attachment; filename="Landing-page-v2.zip"' } });
+    expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 2, 'zip', deps('/tmp/x.zip', ok()))).toEqual({ saved: '/tmp/x.zip' });
+    expect(asked).toEqual(['/v1/artifacts/3f0c2a1e-1111-4222-8333-944455556666/export/2?as=zip', '/Users/me/Downloads/Landing-page-v2.zip']);
+    expect([...written[0][1]]).toEqual([...zip]);
+    expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 2, 'zip', deps(null, ok()))).toEqual({ cancelled: true });
+    expect(written).toHaveLength(1);
+    expect(await exportArtifact('3f0c2a1e-1111-4222-8333-944455556666', 9, 'html', deps('/tmp/y', new Response('{}', { status: 404 })))).toEqual({ error: 'That version isn’t there any more.' });
+    expect(written).toHaveLength(1);
+    // obid's file name, or one made the same way; never a path
+    for (const bad of ['attachment; filename="../../.ssh/x"', 'attachment; filename=".hidden"', null]) expect(nameOf(bad, 'html', 3)).toBe('artifact-v3.html');
+  });
+
+  it('artifactsapp_12_an_import_is_sent_as_what_its_bytes_are', () => {
+    const enc = (s: string) => new TextEncoder().encode(s);
+    expect(importType(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0]))).toBe('application/zip');
+    expect(importType(enc('<!doctype html><h1>x</h1>'))).toBe('text/html');
+    expect(importType(enc('\ufeff\n  <html>'))).toBe('text/html');
+    expect(importType(enc('# Notes\n<b>bold</b>'))).toBe('text/markdown');
+    expect(importType(enc('PK but text'))).toBe('text/markdown');
   });
 });
 

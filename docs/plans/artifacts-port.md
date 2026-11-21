@@ -565,8 +565,8 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 | **L1** Sandpack, local, the card and Preview | P1 | P2, L3a | merged (#2807) |
 | **L2** Code, following the agent | L1, P3 | L3a | in review |
 | **L3a** The owner's edit (obid) | P1 | L1, L2 | merged (#2809) |
-| **L3b** Edit, save, versions (app) | L2, L3a | L5 | in review |
-| **L4** Export and import (app) | L2, P2 | L5 | |
+| **L3b** Edit, save, versions (app) | L2, L3a | L5 | merged (#2836) |
+| **L4** Export and import (app) | L2, P2 | L5 | in review |
 | **L5** React artifacts, local | L1 | L3b, L4 | |
 | **L6** The real drive | L1 to L5 | none | |
 | P4 Oby's runtime | P1 | | after the loop (built, held) |

@@ -38,6 +38,7 @@ import { FINISH_WORDS } from '../../shared/finish';
 import { onObid } from './lean';
 import { ArtifactCard } from './artifacts/Card';
 import { closeArtifact, useConversationArtifacts, viewing } from './artifacts/store';
+import { useImportDrop } from './artifacts/Import';
 import { box as draftBox } from './drafts';
 import { useHelpers } from './helpers';
 import FindBar from './FindBar';
@@ -152,6 +153,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const artifacts = useConversationArtifacts(kind === 'oby' && ofObid(id) ? realId(id) : null, `${thread.length}:${tasks.map((t) => `${t.id}${t.status}`).join()}`);
   const ownArtifacts = artifacts.filter((a) => !a.job || !thread.some((m) => 'jobs' in m && m.jobs?.includes(a.job!)));
   useEffect(() => () => closeArtifact(), [id]);
+  // a file dropped on the thread: offered as an artifact (ARTIFACTSAPP-12)
+  const dropped = useImportDrop(kind === 'oby' && ofObid(id));
   // on view, an artifact its agent makes opens beside it (ARTIFACTSAPP-6)
   useEffect(() => {
     if (kind !== 'oby' || !ofObid(id) || covered || leaving) return;
@@ -276,7 +279,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   return (
     <ReplyPlace.Provider value={place}>
     <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
-      <div className="chat-scroll">
+      <div className={`chat-scroll${dropped.over ? ' is-import-over' : ''}`} {...dropped.handlers}>
+        {dropped.bar}
         {/* ⌘F: find in this conversation (SHORTCUTS-3) */}
         <FindBar root={list} shown={thread.length} off={covered} />
         <section ref={list} className="chat" aria-label={task ? `Conversation about ${task.title}` : name} onScroll={(e) => { onScroll(); const el = e.currentTarget; atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>

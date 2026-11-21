@@ -10,7 +10,7 @@ import type { Artifact } from '../obid';
 // (liveBridge) and a stand-in obid: its Code tab shows each file of the version, a new version from
 // the agent moves the pane to it, and words said with it open carry it to obid.
 
-const C = 'c1', ID = '3f0c2a1e-1111-4222-8333-944455556666', OTHER = '9b1d2c3e-2222-4333-8444-a55566667777';
+const C = 'c1', ID = '3f0c2a1e-1111-4222-8333-944455556666', OTHER = '9b1d2c3e-2222-4333-8444-a55566667777', IMPORTED = '7e2a9c4d-3333-4444-8555-b66677778888';
 const at = '2026-11-21T09:00:00Z';
 const version = (n: number) => ({ version: n, created: at, files: ['style.css', 'index.html', 'logo.png'], bytes: 80, job: 'j1' });
 const page = (latest: number, id = ID, title = 'page'): Artifact => ({ id, title, kind: 'html', conversation: C, job: 'j1', created: at, versions: Array.from({ length: latest }, (_, i) => version(i + 1)) });
@@ -32,8 +32,15 @@ async function app(capabilities = ['artifact-turn-v1'], kept: Record<string, Art
   vi.resetModules();
   const calls: { method: string; path: string; body?: unknown }[] = [];
   const preview = vi.fn(async () => ({ shown: true as const }));
+  const exported = vi.fn(async (_id: string, _v: number, as: string) => ({ saved: `/Users/me/Downloads/page-v1.${as}` }));
   const call = vi.fn(async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
+    if (method === 'POST' && path === '/v1/artifacts/import') {
+      if (refuse) return refuse;
+      const made = { ...page(1, IMPORTED, 'Imported'), conversation: null, job: null };
+      kept[IMPORTED] = made;
+      return { status: 201, text: JSON.stringify(made) };
+    }
     const saved = /^\/v1\/artifacts\/([^/]+)\/versions$/.exec(path);
     if (method === 'POST' && saved) {
       if (refuse) return refuse;
@@ -51,7 +58,7 @@ async function app(capabilities = ['artifact-turn-v1'], kept: Record<string, Art
     return { status: 404, text: '{"error":"Not found."}' };
   });
   const bridge = liveBridge(call);
-  (window as { app?: unknown }).app = { obid: { call, ...bridge.obid }, artifactPreview: preview, onFullScreen: () => () => {}, onSphere: () => () => {} };
+  (window as { app?: unknown }).app = { obid: { call, ...bridge.obid }, artifactPreview: preview, artifactExport: exported, onFullScreen: () => () => {}, onSphere: () => () => {} };
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('location', { search: '' });
   const live = await import('../live');
@@ -63,7 +70,7 @@ async function app(capabilities = ['artifact-turn-v1'], kept: Record<string, Art
   document.body.append(host);
   root = createRoot(host);
   await act(async () => root!.render(<ArtifactPane width={480} />));
-  return { calls, preview, kept, bridge, live, store, host };
+  return { calls, preview, exported, kept, bridge, live, store, host };
 }
 const saves = (calls: { method: string; path: string; body?: unknown }[]) => calls.filter((c) => c.method === 'POST' && c.path.endsWith('/versions')).map((c) => c.body);
 const tabNamed = (host: HTMLElement, name: string) => [...host.querySelectorAll('[role="tab"]')].find((b) => b.textContent?.replace(' •', '') === name) as HTMLButtonElement;
@@ -258,6 +265,93 @@ describe('ARTIFACTSAPP-10', () => {
     await waitFor(() => expect(host.querySelector('.art-refused')?.textContent).toBe('Version 3 came after the one this edit was made on: open it, then edit.'));
     expect(saves(calls)).toHaveLength(2);
     expect(host.querySelector('.art-strip-title span')!.textContent).toBe('Oby artifact · Page · v2');
+  });
+});
+
+describe('ARTIFACTSAPP-11', () => {
+  it('artifactsapp_11_download_saves_the_versions_zip_or_html_where_the_owner_picks_and_copy_takes_the_file', async () => {
+    const { store, host, preview, exported } = await app(undefined, { [ID]: page(2) });
+    await act(async () => store.openArtifact(page(2), 1));
+    const exportButton = host.querySelector('[aria-label="Export"]') as HTMLButtonElement;
+    await act(async () => exportButton.click());
+    // Download, as board 1c has it; Preview's view steps aside while the menu is open
+    expect([...host.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Project archive (.zip)', 'Standalone HTML']);
+    expect(host.querySelector('.art-export-head')!.textContent).toBe('Download');
+    expect(preview).toHaveBeenLastCalledWith(null);
+    await act(async () => (host.querySelector('[role="menuitem"]') as HTMLButtonElement).click());
+    // main gets the artifact, the version on view and which: nothing else
+    expect(exported).toHaveBeenLastCalledWith(ID, 1, 'zip');
+    await waitFor(() => expect(host.querySelector('.art-saved')?.textContent).toBe('Saved to /Users/me/Downloads/page-v1.zip'));
+    expect(host.querySelector('[role="menu"]')).toBeNull();
+    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ id: ID, version: 1 }));
+    await act(async () => exportButton.click());
+    await act(async () => ([...host.querySelectorAll('[role="menuitem"]')][1] as HTMLButtonElement).click());
+    expect(exported).toHaveBeenLastCalledWith(ID, 1, 'html');
+    // a cancelled save says nothing; one main couldn't make says why
+    exported.mockImplementationOnce(async () => ({ cancelled: true }) as never);
+    await act(async () => exportButton.click());
+    await act(async () => (host.querySelector('[role="menuitem"]') as HTMLButtonElement).click());
+    await waitFor(() => expect(host.querySelector('.art-saved')).toBeNull());
+    // Copy, in Code: the file on view
+    await act(async () => tabNamed(host, 'Code').click());
+    await waitFor(() => expect(host.querySelector('[aria-label="Copy index.html"]')).not.toBeNull());
+  });
+});
+
+describe('ARTIFACTSAPP-12', () => {
+  // a file dropped on the conversation's thread, as the owner's drag delivers it
+  async function drop(target: Element, file: File) {
+    const data = { items: [{ kind: 'file' }], files: [file], dropEffect: 'none' };
+    for (const type of ['dragover', 'drop']) {
+      const e = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(e, 'dataTransfer', { value: data });
+      await act(async () => { target.dispatchEvent(e); });
+    }
+  }
+  async function thread() {
+    const { useImportDrop } = await import('../artifacts/Import');
+    return function Thread() {
+      const { handlers, bar } = useImportDrop(true);
+      return <div className="chat-scroll" data-thread {...handlers}>{bar}</div>;
+    };
+  }
+
+  it('artifactsapp_12_a_dropped_page_is_imported_on_import_and_opens_beside_the_conversation', async () => {
+    const { host, calls } = await app(undefined, {});
+    const Thread = await thread();
+    const where = document.createElement('div');
+    document.body.append(where);
+    const other = createRoot(where);
+    await act(async () => other.render(<Thread />));
+    const bytes = new TextEncoder().encode('<!doctype html><h1>Mine</h1>');
+    await drop(where.querySelector('[data-thread]')!, new File([bytes], 'mine.html', { type: 'text/html' }));
+    expect(where.querySelector('[data-artifact-import]')!.textContent).toBe('Import mine.html as an artifact?Import');
+    // nothing goes before the owner's click on Import
+    expect(calls.some((c) => c.path === '/v1/artifacts/import')).toBe(false);
+    await act(async () => button(where, 'Import')!.click());
+    await waitFor(() => expect(host.querySelector('.art-strip-title b')?.textContent).toBe('Imported'));
+    const sent = calls.find((c) => c.path === '/v1/artifacts/import')!;
+    expect(sent.method).toBe('POST');
+    expect([...(sent.body as Uint8Array)]).toEqual([...bytes]);
+    expect(where.querySelector('[data-artifact-import]')).toBeNull();
+    await act(async () => other.unmount());
+  });
+
+  it('artifactsapp_12_only_an_archive_a_page_or_a_document_is_offered_and_a_refusal_says_why', async () => {
+    const { calls } = await app(undefined, {});
+    const Thread = await thread();
+    const where = document.createElement('div');
+    document.body.append(where);
+    const other = createRoot(where);
+    await act(async () => other.render(<Thread />));
+    await drop(where.querySelector('[data-thread]')!, new File([new Uint8Array([0x89, 0x50])], 'chart.png'));
+    expect(where.querySelector('[data-artifact-import]')).toBeNull();
+    refuse = { status: 422, text: JSON.stringify({ error: 'Not published: a file holds what looks like a secret.' }) };
+    await drop(where.querySelector('[data-thread]')!, new File(['# Notes'], 'notes.md'));
+    await act(async () => button(where, 'Import')!.click());
+    await waitFor(() => expect(where.querySelector('[data-artifact-import]')!.textContent).toBe('Not published: a file holds what looks like a secret.'));
+    expect(calls.filter((c) => c.path === '/v1/artifacts/import')).toHaveLength(1);
+    await act(async () => other.unmount());
   });
 });
 
