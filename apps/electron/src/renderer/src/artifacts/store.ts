@@ -28,6 +28,16 @@ export const openArtifact = (artifact: Artifact, version = latestOf(artifact)) =
   open = { artifact, version, tab: same ? open!.tab : 'preview', edits: same && open!.version === version ? open!.edits : {}, refused: null };
   changed();
 };
+/** An artifact from a dropped file's bytes (ARTIFACTSAPP-12): open beside the conversation once
+ * obid keeps it; why not, when it doesn't. */
+export async function importFrom(bytes: Uint8Array): Promise<string | null> {
+  try {
+    openArtifact(await api.importArtifact(bytes));
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
 /** Another version on view (the version menu): the edits on the one before go. */
 export const showVersion = (version: number) => { if (open && open.version !== version) { open = { ...open, version, edits: {}, refused: null }; changed(); } };
 /** Whether the version on view is the latest: only the latest is edited (ARTIFACTSAPP-9). */
