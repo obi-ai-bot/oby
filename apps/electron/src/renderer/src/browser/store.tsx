@@ -43,8 +43,6 @@ export type Browser = {
   /** the demo's words for the conversation folded to one line, while the page is full width */
   peek: { agent: Tab['owner']; title: string; line: string } | null;
   active: Tab | undefined;
-  /** on obid: the stream's latest frame for a tab, as an image URL, and its size in the page's px */
-  frame: (tab: string) => { url: string; width: number; height: number } | null;
 };
 
 /** The panel's width the first time, and its narrowest (BROWSERAPP-3). */
@@ -56,7 +54,7 @@ const EMPTY: BrowserState = { tabs: [], active: null, asks: [], downloads: [], s
 
 // outside a BrowserProvider (a screen drawn on its own, in a test): no browser offered
 const OFF: Browser = {
-  offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined, frame: () => null,
+  offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined,
   api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE },
 };
 const Ctx = createContext<Browser>(OFF);
@@ -72,7 +70,6 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
   const [ui, setUiState] = useState<Ui>({ ...UI0, ...(demo ? demo.ui : { open: false }) });
   const setUi = (u: Partial<Ui>) => setUiState((o) => ({ ...o, ...u }));
   const [offered, setOffered] = useState(false);
-  const [frames, setFrames] = useState<Record<string, { url: string; width: number; height: number }>>({});
   const conn = useRef<Live | null>(null);
   // the latest state, for calls made from the api below (made once per mode)
   const latest = useRef(s);
@@ -91,9 +88,8 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       offered: setOffered,
       // the tab shown stays the one you chose while it's there
       state: (next) => setS((o) => ({ ...next, active: o.active && next.tabs.some((t) => t.id === o.active) ? o.active : next.active })),
-      frame: (tab, url, size) => setFrames((f) => ({ ...f, [tab]: { url, ...size } })),
       problem: (why) => { if (why) console.warn(`The browser: ${why}`); },
-    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), watch: (tab, fn) => browser.watch(tab, fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask) });
+    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask) });
     conn.current = c;
     return () => { c.close(); conn.current = null; };
   }, [onLive]);
@@ -113,7 +109,6 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
         // desktop control's state and Stop come with its own contract (agent-desktop): nothing on obid yet
         stopMac: NONE, answerMac: NONE,
         select: async (t) => setS((o) => ({ ...o, active: t })),
-        input: (t, e) => conn.current?.input(t, e) ?? Promise.resolve(),
       };
     }
     const tab = (id: string, f: (t: Tab) => Tab) => setS((o) => ({ ...o, tabs: o.tabs.map((t) => (t.id === id ? f(t) : t)) }));
@@ -138,7 +133,6 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
   const browser: Browser = {
     offered: !!demo || (onLive && offered), mode: onLive ? 'obid' : 'demo', s, ui, setUi, api, peek: demo?.peek ?? null,
     active: s.tabs.find((t) => t.id === s.active),
-    frame: (t) => frames[t] ?? null,
   };
   return <Ctx.Provider value={browser}>{children}</Ctx.Provider>;
 }

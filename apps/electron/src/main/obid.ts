@@ -185,7 +185,7 @@ export async function send(method: string, path: string, body: unknown, signal?:
       method, signal, cache: 'no-store',
       headers: {
         Authorization: `Bearer ${t}`,
-        Accept: path.split('?')[0] === '/v1/events' || /^\/v1\/browser\/(events|tabs\/[^/]+\/stream)$/.test(path.split('?')[0]) || (method === 'GET' && path === '/v1/browser/relay') ? 'text/event-stream' : 'application/json',
+        Accept: path.split('?')[0] === '/v1/events' || path.split('?')[0] === '/v1/browser/events' || (method === 'GET' && path === '/v1/browser/relay') ? 'text/event-stream' : 'application/json',
         // an artifact's import is sent as what its bytes are (shared/artifactImport.ts); other bytes as bytes
         ...(body === undefined ? {} : { 'Content-Type': raw ? (path === '/v1/artifacts/import' ? importType(body) : 'application/octet-stream') : 'application/json' }),
         ...(words ? { 'X-Oby-Words': words } : {}),

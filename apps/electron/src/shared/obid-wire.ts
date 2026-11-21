@@ -690,7 +690,7 @@ export const BROWSER_SETTINGS = '/v1/browser/settings';
 export const BROWSER_DOWNLOADS = '/v1/browser/downloads';
 /** the window's half of the relay: its webviews' events, in order (docs/plans/browser-t3.md) */
 export const BROWSER_RELAY = '/v1/browser/relay';
-export const browserTabPath = (tab: string, verb: 'stream' | 'input' | 'take' | 'giveBack' | 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
+export const browserTabPath = (tab: string, verb: 'take' | 'giveBack' | 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
 export const browserAskPath = (ask: string) => `/v1/browser/asks/${encodeURIComponent(ask)}/answer`;
 export const browserSaveCopyPath = (download: string) => `/v1/browser/downloads/${encodeURIComponent(download)}/saveCopy`;
 
@@ -754,10 +754,3 @@ export type BrowserEvent = { seq: number } & (
   | { type: 'settings'; settings: BrowserSettings }
 );
 
-/** `event: frame` on a tab's stream: the newest frame only */
-export interface BrowserFrame { tabId: string; seq: number; data: string; mime: string; width: number; height: number; dropped: number }
-
-/** POST …/input: the person's mouse and keys on a tab they hold, in the page's CSS pixels (the lab's contract) */
-export type BrowserInput =
-  | { type: 'mouse'; eventType: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel'; x: number; y: number; button?: string | null; clickCount?: number | null; deltaX?: number | null; deltaY?: number | null }
-  | { type: 'key'; eventType: 'keyDown' | 'keyUp' | 'char'; key: string; text?: string | null; code?: string | null };

@@ -24,7 +24,6 @@ import { browsing, hostBrowser } from './browser';
 import { macPill } from './macPill';
 import { previewing } from './artifactPreview';
 import { exporting } from './artifactExport';
-import { sawInput } from './browserInput';
 import { terminals } from './terminal';
 import { sawKey, sawMouse } from './terminalInput';
 
@@ -218,8 +217,6 @@ function createWindow() {
   // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign
   // one request of the owner's words right after it (words.ts, device.ts)
   win.webContents.on('before-input-event', (_, i) => {
-    // every real key, for the owner's keys on a browser tab they hold (browser.ts)
-    if (i.type === 'keyDown' || i.type === 'keyUp') sawInput(i.type, i.key);
     // every real key, auto-repeat too, for what the owner types into a terminal (terminalInput.ts)
     if (i.type === 'keyDown') sawKey({ key: i.key, control: i.control, alt: i.alt, meta: i.meta, shift: i.shift, composing: !!i.isComposing });
     if (i.type !== 'keyDown' || i.isAutoRepeat) return;
@@ -228,7 +225,7 @@ function createWindow() {
   });
   win.webContents.on('before-mouse-event', (_, m) => {
     if (m.type === 'mouseDown') input();
-    if (m.type === 'mouseDown' || m.type === 'mouseUp' || m.type === 'mouseMove' || m.type === 'mouseWheel') { sawInput(m.type); sawMouse(); }
+    if (m.type === 'mouseDown' || m.type === 'mouseUp' || m.type === 'mouseMove' || m.type === 'mouseWheel') sawMouse();
   });
   // full screen hides the traffic lights: the page moves its title bar over.
   // Besides entering and leaving, re-check whenever the window comes back
