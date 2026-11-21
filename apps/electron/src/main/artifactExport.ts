@@ -1,9 +1,8 @@
 import { app, dialog, type BrowserWindow } from 'electron';
-import { writeFile } from 'node:fs/promises';
 import { send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { oneOf } from '../shared/decode';
-import { artifactId, exportArtifact, fromOne } from './previewRules';
+import { artifactId, exportArtifact, fromOne, saveFile } from './previewRules';
 
 // Download, from the artifact pane's Export (docs/contracts/artifacts-app.md, ARTIFACTSAPP-11;
 // Sangam's board 1c): a version as obid exports it (`GET /v1/artifacts/{id}/export/{version}?as=`,
@@ -22,7 +21,7 @@ export function exporting(trusted: Trusted, window: () => BrowserWindow | null) 
         : await dialog.showSaveDialog({ defaultPath });
       return r.canceled || !r.filePath ? null : r.filePath;
     },
-    write: (path, bytes) => writeFile(path, bytes),
+    write: saveFile,
     downloads: app.getPath('downloads'),
   }), null);
 }

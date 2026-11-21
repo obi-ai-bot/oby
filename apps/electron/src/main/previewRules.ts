@@ -1,4 +1,7 @@
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { constants } from 'node:fs';
+import { lstat, open, rename, unlink } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { safeInteger, type Decoder } from '../shared/decode';
 
 // The artifact pane's rules in main that need no Electron (docs/contracts/artifacts-app.md): what the
@@ -101,4 +104,24 @@ export async function exportArtifact(id: string, version: number, as: 'zip' | 'h
     return { error: `Oby couldn’t save it: ${e instanceof Error ? e.message : String(e)}` };
   }
   return { saved: path };
+}
+
+/** The bytes saved at `path` whole or not at all: written to a new file of their own beside it (never
+ * following a link), then renamed over it. A link at `path` is refused, never written through; one
+ * swapped in after that look is replaced by the rename, not followed. */
+export async function saveFile(path: string, bytes: Uint8Array) {
+  if ((await lstat(path).catch(() => null))?.isSymbolicLink()) throw new Error(`${basename(path)} is a link.`);
+  const temp = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString('hex')}.part`);
+  const file = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
+  try {
+    try {
+      await file.writeFile(bytes);
+    } finally {
+      await file.close();
+    }
+    await rename(temp, path);
+  } catch (e) {
+    await unlink(temp).catch(() => {});
+    throw e;
+  }
 }
