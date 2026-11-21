@@ -19,9 +19,10 @@ import { hosting } from './browserGuest';
 
 // The relay (docs/plans/browser-t3.md): obid's agents drive the page in the window's own <webview>,
 // main running their CDP on its debugger (browserRelay.ts, browserGuest.ts). obid's commands come on
-// the events stream main follows for the window; the webviews' events go back on POST /v1/browser/relay,
-// in order, on the same token. With the window closed nothing follows the stream: obid's agents are
-// told `no_window`, never given another browser.
+// a stream of their own, GET /v1/browser/relay, with no ids and no replay: a stream that drops and
+// comes back never runs an earlier command again, it only announces the live tabs again. The
+// webviews' events go back on POST /v1/browser/relay, in order, on the same token. With the window
+// closed nothing follows the relay: obid's agents are told `no_window`, never given another browser.
 
 // the partition obid named for each agent tab, from its `tab` events: the only one its webview may use
 const partitions = new Map<string, string>();
@@ -95,17 +96,15 @@ export function browsing(trusted: Trusted, page: Page) {
   // obid's home is read only when obid names a download folder
   relay = relayHost(post, { get home() { return HOME; }, pointer: (c) => to('browser-pointer', { threadId: c.threadId, tabId: c.tabId, phase: c.phase, x: c.x, y: c.y }) });
   let events: (() => void) | null = null;
+  let commands: (() => void) | null = null;
   const streams = new Map<string, () => void>();
   // the browser's events from now on, once per window; `open` each time the stream (re)connects, so
   // the page reads the lists again for what it missed
   channels.handle('browser-follow', [], () => {
-    events ??= follow(BROWSER_EVENTS, (name, data) => {
-      // obid's relay commands are main's alone: the page never sees the CDP its agents send
-      const command = relayCommand(name, data);
-      if (command) { relay?.command(command); return; }
-      heard(name, data);
-      to('browser-event', { name, data });
-    }, () => { relay?.reconnected(); to('browser-event', { name: 'open', data: '' }); });
+    events ??= follow(BROWSER_EVENTS, (name, data) => { heard(name, data); to('browser-event', { name, data }); }, () => to('browser-event', { name: 'open', data: '' }));
+    // obid's commands for the window's webviews: main's alone, the page never sees the CDP its agents
+    // send; each time the relay (re)connects, every live tab is announced again, nothing run again
+    commands ??= follow(BROWSER_RELAY, (name, data) => { const c = relayCommand(name, data); if (c) relay?.command(c); }, () => relay?.reconnected());
     return true;
   }, null);
   // a webview the page mounted for obid's tab: main checks it and relays it (browserGuest.ts); null once it's relayed
@@ -135,5 +134,5 @@ export function browsing(trusted: Trusted, page: Page) {
     return true;
   }, false);
   // the window gone: nothing followed for it
-  return () => { events?.(); events = null; for (const stop of streams.values()) stop(); streams.clear(); };
+  return () => { events?.(); events = null; commands?.(); commands = null; for (const stop of streams.values()) stop(); streams.clear(); };
 }

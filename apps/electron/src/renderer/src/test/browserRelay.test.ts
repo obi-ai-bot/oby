@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DOMAINS, KEPT, MAX_MESSAGE, insideDownloads, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
+import { sseReader } from '../../../shared/obid-wire';
 
 vi.mock('electron', () => ({ session: { fromPartition: () => ({}) }, webContents: { fromId: () => null } }));
 const { harden, partitionOk, pageOk } = await import('../../../main/browserGuest');
@@ -76,6 +77,27 @@ describe('BROWSERAPP-22: the relay carries the window\'s webviews to obid in ord
     host.reconnected();
     for (let i = 0; i < 6; i++) await settle();
     expect(o.all().map((e) => e.type)).toEqual(['attached', 'shown', 'loadFailed', 'detached', 'attached', 'shown', 'attached', 'shown']);
+  });
+
+  it('browserapp_22: obid\'s commands come on their own stream, each run once; when it reconnects every live tab is announced again and no earlier command runs again', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    // GET /v1/browser/relay as main reads it: `event:` the type, `data:` the command's own JSON, no ids
+    const read = sseReader((name, data) => { const c = relayCommand(name, data); if (c) host.command(c); });
+    read(`event: cdp\ndata: ${JSON.stringify({ type: 'cdp', ...K, message: JSON.stringify({ id: 1, method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 5, y: 5 } }) })}\n\n`);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(g.sent).toHaveLength(1);
+    // the stream drops and comes back: the tab is announced again, the click is never run again
+    host.reconnected();
+    read(': keep-alive\n\n');
+    for (let i = 0; i < 6; i++) await settle();
+    expect(g.sent).toHaveLength(1);
+    expect(o.all().map((e) => e.type)).toEqual(['attached', 'cdp', 'attached']);
+    expect(replies(o.all())).toEqual([{ id: 1, result: { from: 'Input.dispatchMouseEvent' } }]);
+    // a command whose own type isn't its event's is no command
+    expect(relayCommand('cdp', JSON.stringify({ type: 'release', ...K, message: '{}' }))).toBeNull();
   });
 
   it('browserapp_22: obid\'s commands are read only in their shapes; pointer draws, never inputs; a turn keeps its tabs\' focus emulated', async () => {

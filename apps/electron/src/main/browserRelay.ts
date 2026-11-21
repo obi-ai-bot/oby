@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 
 // The relay between obid's agents and the page in the window (docs/plans/browser-t3.md, as T3 Code
 // does it: packages/contracts/src/desktopBrowser.ts). obid sends page-level CDP for a tab on its
-// events stream (`cdp`, `release`, `pointer`, `turn`); main runs each command on that tab's
+// relay stream, GET /v1/browser/relay (`cdp`, `release`, `pointer`, `turn`; no ids, no replay); main runs each command on that tab's
 // `<webview>` debugger and sends the replies and the page's events back, in order, with what
 // happened to the tab (`attached`, `detached`, `loadFailed`, `shown`), on POST /v1/browser/relay.
 // No Electron here: main/browserGuest.ts hands each webview in as a Guest, so this is all tested
@@ -172,7 +172,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       t.shown = shown;
       if (t.attached) emit({ ...k, type: 'shown', shown });
     },
-    /** one of obid's commands from its events stream */
+    /** one of obid's commands from its relay stream */
     command(c: RelayCommand) {
       if (c.type === 'turn') {
         if (c.active) turns.add(c.threadId); else turns.delete(c.threadId);
@@ -191,7 +191,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       }
       void run(t, c.message);
     },
-    /** obid's events stream (re)connected: every live tab is announced again (T3's announceAll) */
+    /** obid's relay stream (re)connected: every live tab is announced again (T3's announceAll); no command runs again */
     reconnected() {
       for (const t of tabs.values()) {
         if (!t.attached) continue;
@@ -210,12 +210,13 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
 
 export type RelayHost = ReturnType<typeof relayHost>;
 
-/** obid's relay command from its events stream (`cdp`, `release`, `pointer`, `turn`), or null for another shape */
+/** obid's relay command from GET /v1/browser/relay (`event:` its type, `data:` its JSON), or null for another shape */
 export function relayCommand(name: string, data: string): RelayCommand | null {
   if (!['cdp', 'release', 'pointer', 'turn'].includes(name)) return null;
   let e: Record<string, unknown>;
   try { e = JSON.parse(data); } catch { return null; }
   const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 256;
+  if (e.type !== undefined && e.type !== name) return null;
   if (!str(e.threadId)) return null;
   if (name === 'turn') return typeof e.active === 'boolean' ? { type: 'turn', threadId: e.threadId, active: e.active } : null;
   if (!str(e.tabId)) return null;
