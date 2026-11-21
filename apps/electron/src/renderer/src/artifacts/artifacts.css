@@ -46,10 +46,10 @@
 
 /* Export's Download (board 1c), where it went, and Code's Copy */
 .art-br .art-export-wrap { position: relative; }
-.art-br .art-export { position: absolute; right: 0; top: 34px; z-index: 30; width: 260px; padding: 6px; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 12px; box-shadow: var(--shadow-menu, 0 10px 28px rgba(0, 0, 0, 0.45)); }
-.art-br .art-export-head { margin: 4px 8px 6px; font-size: var(--text-sm); color: var(--label, var(--muted)); }
+.art-br .art-export { position: absolute; right: 0; top: 34px; z-index: 30; width: 260px; display: flex; flex-direction: column; gap: 2px; padding: 8px 18px 16px; background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 12px; box-shadow: var(--shadow-menu, 0 10px 28px rgba(0, 0, 0, 0.45)); }
+.art-br .art-export-head { margin: 8px 8px 4px; font-size: var(--text-sm); color: var(--label, var(--muted)); }
 .art-br .art-export-item { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 0; border-radius: 6px; background: none; font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
 .art-br .art-export-item:hover { background: var(--hover); }
 .art-br .art-export-item small { font-size: var(--text-sm); color: var(--muted); }
 .art-br .art-saved { flex: none; margin: 0; padding: 8px 14px; font-size: var(--text-sm); color: var(--muted); border-bottom: 1px solid var(--divider); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.art-br .art-copy { margin-left: auto; }
+.art-br .art-copy { margin-left: auto; opacity: 1; }

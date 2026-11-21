@@ -278,6 +278,22 @@ describe('ARTIFACTSAPP-11', () => {
     expect([...host.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Project archive (.zip)', 'Standalone HTML']);
     expect(host.querySelector('.art-export-head')!.textContent).toBe('Download');
     expect(preview).toHaveBeenLastCalledWith(null);
+    // Esc closes it, Preview comes back and focus goes back to Export; a click inside it keeps it open
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(host.querySelector('[role="menu"]')).toBeNull();
+    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ id: ID, version: 1 }));
+    expect(document.activeElement).toBe(exportButton);
+    await act(async () => exportButton.click());
+    await act(async () => { host.querySelector('[role="menuitem"]')!.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+    expect(host.querySelector('[role="menu"]')).not.toBeNull();
+    // a click outside it closes it, as the window changing size does
+    for (const away of [() => document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })), () => window.dispatchEvent(new Event('resize'))]) {
+      if (!host.querySelector('[role="menu"]')) await act(async () => exportButton.click());
+      await act(async () => { away(); });
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ id: ID, version: 1 }));
+    }
+    await act(async () => exportButton.click());
     await act(async () => (host.querySelector('[role="menuitem"]') as HTMLButtonElement).click());
     // main gets the artifact, the version on view and which: nothing else
     expect(exported).toHaveBeenLastCalledWith(ID, 1, 'zip');

@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Download, X } from 'lucide-react';
 import { Panel } from '../browser/Panel';
+import { useClicksEverywhere } from '../Menu';
 import { closeArtifact, kindName, onLatest, save, showTab, showVersion, useOpenArtifact, type Tab } from './store';
 import { saveAs } from '../../../shared/words';
 // Code loads with its first use: CodeMirror reads the page as it loads, and needn't on every start
@@ -23,6 +24,20 @@ export function ArtifactPane({ width }: { width: number }) {
   const [saved, setSaved] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
   useEffect(() => { setMenu(false); setSaved(null); }, [open?.artifact.id, open?.version]);
+  // Export's menu closes as the app's other menus do (Menu.tsx): Esc (focus back on Export), a click
+  // outside it and its button, or the window changing size
+  const exportWrap = useRef<HTMLSpanElement>(null), exportButton = useRef<HTMLButtonElement>(null);
+  useClicksEverywhere(menu);
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(false);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); exportButton.current?.focus(); } };
+    const onDown = (e: Event) => { if (!exportWrap.current?.contains(e.target as Node)) close(); };
+    addEventListener('keydown', onKey, true);
+    addEventListener('pointerdown', onDown, true);
+    addEventListener('resize', close);
+    return () => { removeEventListener('keydown', onKey, true); removeEventListener('pointerdown', onDown, true); removeEventListener('resize', close); };
+  }, [menu]);
   // obid's export of the version on view, saved where the owner picks in main's dialog
   const download = async (as: 'zip' | 'html') => {
     setMenu(false);
@@ -79,8 +94,8 @@ export function ArtifactPane({ width }: { width: number }) {
               <button key={tab} role="tab" aria-selected={open.tab === tab} className={`art-tab${open.tab === tab ? ' is-on' : ''}`} onClick={() => showTab(tab)}>{label}</button>
             ))}
           </span>
-          <span className="art-export-wrap">
-            <button className="icon-button is-28" aria-label="Export" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}><Download size={14} strokeWidth={1.8} /></button>
+          <span className="art-export-wrap" ref={exportWrap}>
+            <button ref={exportButton} className="icon-button is-28" aria-label="Export" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}><Download size={14} strokeWidth={1.8} /></button>
             {menu && (
               // Download, as Sangam's board 1c has it: obid's own export of the version on view (ARTIFACTSAPP-11)
               <div className="art-export" role="menu" aria-label="Download">
