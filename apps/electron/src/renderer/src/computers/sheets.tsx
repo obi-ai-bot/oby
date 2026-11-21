@@ -201,7 +201,9 @@ function RemoveComputer({ id }: { id: string }) {
       <p className="modal-lede">This Mac stops reaching {name}, and {name} forgets this Mac’s key. Its tasks and folders stay on {name}.</p>
       <div className="modal-actions">
         <button type="button" className="set-button" onClick={closeSheet}>Cancel</button>
-        <button type="submit" className="modal-primary is-danger">Remove</button>
+        {/* "Remove computer", not his bare "Remove": the owner's choice of 2026-11-21, so no other Remove
+            button's click can sign a computer's removal (shared/words.ts, REMOVE_COMPUTER) */}
+        <button type="submit" className="modal-primary is-danger">Remove computer</button>
       </div>
     </ComputerSheet>
   );

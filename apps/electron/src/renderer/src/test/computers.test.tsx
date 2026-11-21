@@ -373,7 +373,7 @@ describe('COMPUTERSAPP-11: Remove…', () => {
     await click(button('Remove…'));
     expect(text('.computer-sheet h2')).toBe('Remove Studio?');
     expect(text('.modal-lede')).toBe('This Mac stops reaching Studio, and Studio forgets this Mac’s key. Its tasks and folders stay on Studio.');
-    expect($$('.modal-actions button').map((b) => `${b.textContent}${b.classList.contains('is-danger') ? ' (danger)' : ''}`)).toEqual(['Cancel', 'Remove (danger)']);
+    expect($$('.modal-actions button').map((b) => `${b.textContent}${b.classList.contains('is-danger') ? ' (danger)' : ''}`)).toEqual(['Cancel', 'Remove computer (danger)']);
     await act(async () => { $<HTMLFormElement>('form')!.requestSubmit(); });
     await until(() => expect(order).toEqual(['use this', 'remove studio']));
     expect($('.computer-sheet')).toBeNull();

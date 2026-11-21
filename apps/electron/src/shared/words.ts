@@ -61,6 +61,10 @@ const BROWSER_SAVE = /^\/v1\/browser\/downloads\/[^/]+\/saveCopy$/;
 // Confirm card's is (SPHERE-9), so it signs exactly `{fingerprint}` by this button's label.
 export const PIN_VERIFY = 'Verify';
 
+// A computer removed (COMPUTERSAPP-11): no body, by its dialog's own Remove computer, never a bare
+// Remove, so a click on any other Remove can't stand for it (the owner's word of 2026-11-21)
+export const REMOVE_COMPUTER = 'Remove computer';
+const COMPUTER = /^\/v1\/computers\/[^/]+$/;
 // A computer added with a code (docs/contracts/computers-app.md, COMPUTERSAPP-6): exactly `{link,
 // code}`, signed by the code the owner typed in its sheet, which Enter in its box and the sheet's
 // Add computer (a click holds its form's boxes) both hold. The sheet sends its six digits alone, so
@@ -83,11 +87,12 @@ const PIN = /^\/v1\/obid\/sphere\/pins\/[^/]+$/;
 // them; null for any other request, or any other shape (main never signs it). A key the app
 // doesn't send (a job's check, mode or repository, say) is never signed along with the words.
 export function wordsOf(method: string, path: string, body: unknown): string[] | null {
-  // the vault's removal, the one request signed with no body
+  // the vault's removal and a computer's, the two requests signed with no body
   if (VAULT.test(path.split('?')[0])) {
     if (method === 'DELETE') return body === undefined ? [VAULT_REMOVE] : null;
     if (method === 'PUT') return isBody(body) && text(body.value) && shaped(body, { value: text }) ? [VAULT_ADD] : null;
   }
+  if (method === 'DELETE' && COMPUTER.test(path.split('?')[0]) && path.split('?')[0] !== '/v1/computers/current') return body === undefined ? [REMOVE_COMPUTER] : null;
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
   // a browser tab's take or give back: an empty body, nothing else

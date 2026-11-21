@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -315,6 +315,23 @@ describe('signed words', () => {
     expect(wordsOf('POST', '/v1/computers/link', { link })).toBeNull();
     // a code stands for nothing else: a message with those digits needs its own words
     expect(owners('POST', '/v1/jobs/j1/messages', { text: '482913' }, ['482 913'], [])).toBeNull();
+  });
+
+  it('COMPUTERSAPP-11: a computer’s removal signs with no body, by Remove computer alone, never a bare Remove', () => {
+    const path = '/v1/computers/studio';
+    expect(REMOVE_COMPUTER).toBe('Remove computer');
+    expect(wordsOf('DELETE', path, undefined)).toEqual([REMOVE_COMPUTER]);
+    expect(owners('DELETE', path, undefined, ['Remove computer'], [])).toEqual([0]);
+    // a click on any other Remove (an account's, a rule's), or the vault's, can't stand for it
+    for (const other of ['Remove', 'Remove Secret', 'Remove…']) expect(owners('DELETE', path, undefined, [other], [])).toBeNull();
+    // and its label signs no other removal
+    expect(owners('DELETE', '/v1/obid/vault/staging-key', undefined, ['Remove computer'], [])).toBeNull();
+    // only with no body; never the list, the switch, or another verb on it
+    for (const body of [{}, { id: 'studio' }, null, '']) expect(wordsOf('DELETE', path, body)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers', undefined)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers/current', undefined)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers/studio/retry', undefined)).toBeNull();
+    expect(wordsOf('PATCH', path, { name: 'Remove computer' })).toBeNull();
   });
 
   it('WORDS-7: main signs once per real keystroke or click it saw, and only right after it', () => {
