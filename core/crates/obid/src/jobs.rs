@@ -3133,7 +3133,7 @@ impl Jobs {
         self.heard_from_owner(id, text, source);
         self.changed.notify_waiters();
         self.schedule();
-        self.get(id).map(Ok)
+        self.get(id).map(|now| Ok(crate::job::as_opened(&resumed, now)))
     }
 
     /// A round obid opens after the agent's last turn (a rebase, the commit, the decision check,
