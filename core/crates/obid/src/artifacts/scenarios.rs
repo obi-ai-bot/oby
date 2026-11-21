@@ -1,4 +1,4 @@
-//! docs/contracts/artifacts.md, ARTIFACTS-1 to 8: each scenario a test named after it, on the
+//! docs/contracts/artifacts.md, ARTIFACTS-1 to 8 and 16 to 18: each scenario a test named after it, on the
 //! store itself. The same scenarios run against a running obid in the Blok suite
 //! (tools/obid-spec/workflows/routes/artifacts/).
 
@@ -411,4 +411,159 @@ async fn artifacts_8_a_version_holds_claudes_limits() {
     }
     assert!(store.publish(what(&room, "fits")).await.is_ok());
     assert_eq!(store.list(None, None).len(), 1);
+}
+
+/// One change: `path`'s new text.
+fn change(path: &str, text: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([(path.to_owned(), text.to_owned())])
+}
+
+#[tokio::test]
+async fn artifacts_16_an_edit_makes_the_next_version_by_the_owner() {
+    let t = Temp::new("a16");
+    t.write(
+        "page/index.html",
+        "<link rel=\"stylesheet\" href=\"style.css\"><h1>Hello</h1>",
+    );
+    t.write("page/style.css", "h1 { color: teal }");
+    let (store, mut events) = t.store();
+    let room = t.room();
+    let job = Publish {
+        job: Some("j1"),
+        conversation: Some("c1"),
+        ..what(&room, "page")
+    };
+    let (id, _) = store.publish(job).await.unwrap();
+    while events.try_recv().is_ok() {}
+    let made = store
+        .edit(&id, 1, &change("style.css", "h1 { color: crimson }"))
+        .await
+        .unwrap();
+    assert_eq!(made, (id.clone(), 2));
+    let artifact = store.get(&id).unwrap();
+    let v2 = &artifact.versions[1];
+    assert_eq!(v2.by.as_deref(), Some("owner"));
+    assert_eq!(v2.job, None);
+    assert_eq!(v2.files, ["index.html", "style.css"]);
+    assert_eq!(artifact.versions[0].by, None);
+    // the base's other files as they were, the change laid over them; the base kept as it was
+    let (_, css) = store.file(&id, "2", "style.css").unwrap();
+    assert_eq!(css, b"h1 { color: crimson }");
+    let (_, page) = store.file(&id, "2", "index.html").unwrap();
+    assert_eq!(
+        page,
+        b"<link rel=\"stylesheet\" href=\"style.css\"><h1>Hello</h1>"
+    );
+    let (_, old) = store.file(&id, "1", "style.css").unwrap();
+    assert_eq!(old, b"h1 { color: teal }");
+    assert_eq!(v2.bytes, artifact.versions[0].bytes + 3);
+    let said = events.try_recv().unwrap();
+    assert_eq!(said.data["id"], id.as_str());
+    assert_eq!(said.data["version"], 2);
+    // the same text again makes nothing new
+    let again = store
+        .edit(&id, 2, &change("style.css", "h1 { color: crimson }"))
+        .await
+        .unwrap();
+    assert_eq!(again, (id.clone(), 2));
+    assert_eq!(store.get(&id).unwrap().versions.len(), 2);
+    // a document stays a document
+    t.write("notes.md", "# Notes\n");
+    let (doc, _) = store.publish(what(&t.room(), "notes.md")).await.unwrap();
+    assert_eq!(
+        store
+            .edit(&doc, 1, &change("notes.md", "# Notes\n\nMore.\n"))
+            .await
+            .unwrap(),
+        (doc.clone(), 2)
+    );
+    assert_eq!(store.get(&doc).unwrap().kind, Kind::Markdown);
+}
+
+#[tokio::test]
+async fn artifacts_17_an_edit_on_an_old_base_or_another_file_is_refused() {
+    let t = Temp::new("a17");
+    t.write("page/index.html", "<p>one</p>");
+    let (store, _) = t.store();
+    let (id, _) = store.publish(what(&t.room(), "page")).await.unwrap();
+    store
+        .edit(&id, 1, &change("index.html", "<p>two</p>"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .edit(&id, 1, &change("index.html", "<p>mine</p>"))
+            .await,
+        Err(edit::Refusal::NotLatest(2))
+    );
+    assert_eq!(
+        store
+            .edit(&id, 7, &change("index.html", "<p>mine</p>"))
+            .await,
+        Err(edit::Refusal::NotThere)
+    );
+    assert_eq!(
+        store
+            .edit(
+                "3f0c2a1e-1111-4222-8333-944455556666",
+                1,
+                &change("index.html", "x")
+            )
+            .await,
+        Err(edit::Refusal::NotThere)
+    );
+    for (changes, said) in [
+        (
+            change("other.html", "<p>new</p>"),
+            "other.html isn't a file of version 2",
+        ),
+        (
+            change("../index.html", "x"),
+            "../index.html isn't a file of version 2",
+        ),
+        (BTreeMap::new(), "the edit changes no file"),
+    ] {
+        let Err(edit::Refusal::Refused(why)) = store.edit(&id, 2, &changes).await else {
+            panic!("{said}: refused");
+        };
+        assert!(
+            why.starts_with("Not saved: ") && why.contains(said),
+            "{why}"
+        );
+    }
+    assert_eq!(store.get(&id).unwrap().versions.len(), 2);
+}
+
+#[tokio::test]
+async fn artifacts_18_an_edit_with_a_secret_or_over_a_limit_keeps_nothing() {
+    let t = Temp::new("a18");
+    t.write("page/index.html", "<p>one</p>");
+    let (store, _) = t.store();
+    let (id, _) = store.publish(what(&t.room(), "page")).await.unwrap();
+    let key = format!("{}{}", "AKIA", "QWERTYUIOPASDFGH");
+    let Err(edit::Refusal::Refused(why)) = store
+        .edit(&id, 1, &change("index.html", &format!("<p>{key}</p>")))
+        .await
+    else {
+        panic!("a secret is refused");
+    };
+    assert!(why.starts_with("Not saved: "), "{why}");
+    assert!(!why.contains(&key), "the secret is never said: {why}");
+    let over = "x".repeat((16 * 1024 * 1024) + 1);
+    let Err(edit::Refusal::Refused(why)) = store.edit(&id, 1, &change("index.html", &over)).await
+    else {
+        panic!("a file over its limit is refused");
+    };
+    assert_eq!(
+        why,
+        "Not saved: index.html is 16 MB and 1 byte, and a text file may be 16 MB at most."
+    );
+    assert_eq!(store.get(&id).unwrap().versions.len(), 1);
+    // nothing of either attempt is left in the store's folder
+    let left: Vec<_> = std::fs::read_dir(t.0.join("home/artifacts"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".staging-"))
+        .collect();
+    assert!(left.is_empty());
 }

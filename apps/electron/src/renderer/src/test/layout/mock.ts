@@ -49,7 +49,10 @@ export async function openMock(browser: Browser, { query = '?everything&chat', w
     configFile: resolve(appRoot, 'vite.config.ts'),
     logLevel: 'error',
     appType: 'spa',
-    server: { middlewareMode: true, hmr: { server } },
+    // nothing watched: a test reads the mock once and never edits it, and the watcher's inotify
+    // watches are the machine user's to share (the build VM ran out: EMFILE on watch). Every path
+    // ignored, as `watch: null` is dropped by Vite's merge of the config (341 entries watched either way)
+    server: { middlewareMode: true, hmr: { server }, watch: { ignored: ['**'] } },
   });
   server.on('request', vite.middlewares);
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2 });

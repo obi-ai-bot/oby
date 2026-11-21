@@ -190,6 +190,12 @@ pub struct StartInput {
     /// `calls.jsonl`; the fixture's pushes then get pull requests (`pullRequests`). Never the real
     /// GitHub.
     pub github: Option<serde_json::Map<String, Value>>,
+    /// The person's ssh as core/crates/obid/tests/fakes/ssh stands in for it, put first on its
+    /// `PATH`, by destination: `{"pairs": <another scratch obid>}` runs that obid's own
+    /// `obid pair-computer` (COMPUTERS-25), `{"says": "<stderr>", "exit": <n>}` says what ssh or a
+    /// shell says there and exits so. Its tunnels are relayed on this machine; every call is in
+    /// `ssh-bin/calls` in its folder. Never the real ssh.
+    pub ssh: Option<serde_json::Map<String, Value>>,
     /// A Codex stand-in account for the browser's workflows, whose jobs act as a job's agent.
     /// obid has no browser engine to put in place: its tabs are Oby's window's (the stand-in
     /// window, `browser-window`, in these workflows).
@@ -302,6 +308,9 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         anyhow::ensure!(fake.is_file(), "no recording gh at {}", fake.display());
         std::os::unix::fs::symlink(&fake, bin.join("gh"))?;
         path_first.push(bin);
+    }
+    if let Some(hosts) = &input.ssh {
+        path_first.push(stand_in_ssh(run, &folder, hosts)?);
     }
     for (base, files) in [
         (&home, &files),
@@ -459,4 +468,46 @@ pub fn mode_of(path: &Path) -> Option<String> {
     std::fs::metadata(path)
         .ok()
         .map(|m| format!("{:04o}", m.permissions().mode() & 0o7777))
+}
+
+/// The fake ssh's folder for one scratch obid (StartInput's `ssh`): a link to
+/// core/crates/obid/tests/fakes/ssh and what each destination runs there.
+fn stand_in_ssh(
+    run: &Run,
+    folder: &Path,
+    hosts: &serde_json::Map<String, Value>,
+) -> Result<PathBuf> {
+    let bin = folder.join("ssh-bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    private_dir(&bin.join("hosts"))?;
+    let fake = run.agents().with_file_name("fakes").join("ssh");
+    anyhow::ensure!(fake.is_file(), "no stand-in ssh at {}", fake.display());
+    std::os::unix::fs::symlink(&fake, bin.join("ssh"))?;
+    for (destination, host) in hosts {
+        anyhow::ensure!(
+            !destination.is_empty()
+                && destination
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)),
+            "ssh: {destination:?} isn't a plain destination"
+        );
+        let script = if let Some(obid) = host.get("pairs") {
+            let other = obid["folder"]
+                .as_str()
+                .context("ssh: `pairs` takes a scratch obid (obid-start's answer)")?;
+            format!(
+                "exec '{}' pair-computer --config '{}'",
+                run.obid.display(),
+                Path::new(other).join("config.json").display()
+            )
+        } else {
+            let says = host["says"].as_str().unwrap_or_default().replace('\'', "");
+            let exit = host["exit"].as_u64().unwrap_or(255);
+            format!("echo '{says}' >&2; exit {exit}")
+        };
+        let path = bin.join("hosts").join(destination);
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n"))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(bin)
 }
