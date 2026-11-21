@@ -320,6 +320,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/artifacts/{id}/{version}/{*path}",
             get(crate::artifacts::file),
         )
+        .route(
+            "/v1/artifacts/{id}/versions",
+            post(crate::artifacts::edit::edit).layer(crate::artifacts::edit::body_limit()),
+        )
         .route("/v1/plans", post(crate::brain::plan))
         .route(
             "/v1/attachments",

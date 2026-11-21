@@ -21,6 +21,7 @@ GET /v1/artifacts
 DELETE /v1/artifacts/{id}
 GET /v1/artifacts/{id}
 PATCH /v1/artifacts/{id}
+POST /v1/artifacts/{id}/versions
 GET /v1/artifacts/{id}/{version}/{*path}
 DELETE /v1/attachments
 POST /v1/attachments
