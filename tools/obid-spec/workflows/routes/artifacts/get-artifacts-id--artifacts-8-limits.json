@@ -1,0 +1,444 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}: Claude's limits, each at its value and one over",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-8 (lab: LAB-ARTIFACTS-23, workflows/lab/artifacts/limits.json). Sparse files of each limit's size publish; one byte over refuses saying which file, what it is and the limit (a text file 16 MB, an SVG 2 MB, a binary 15 MB, a version 256 MB), and 512 files fit where 513 are refused.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "fx-text",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "over-text",
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 16777217
+          }
+        ]
+      }
+    },
+    {
+      "id": "8-text-one-over-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"over-text\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: index.html is 16 MB and 1 byte, and a text file may be 16 MB at most."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    },
+    {
+      "id": "fx-svg",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "over-svg",
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 10
+          },
+          {
+            "path": "logo.svg",
+            "bytes": 2097153
+          }
+        ]
+      }
+    },
+    {
+      "id": "8-svg-one-over-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"over-svg\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: logo.svg is 2 MB and 1 byte, and an SVG may be 2 MB at most."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    },
+    {
+      "id": "fx-binary",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "over-binary",
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 10
+          },
+          {
+            "path": "clip.mp4",
+            "bytes": 15728641
+          }
+        ]
+      }
+    },
+    {
+      "id": "8-binary-one-over-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"over-binary\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: clip.mp4 is 15 MB and 1 byte, and a binary file (an image, a font, a video, a PDF) may be 15 MB at most."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    },
+    {
+      "id": "fx-version",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "over-version",
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 10
+          },
+          {
+            "path": "part-00.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-01.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-02.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-03.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-04.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-05.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-06.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-07.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-08.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-09.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-10.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-11.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-12.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-13.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-14.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-15.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-16.bin",
+            "bytes": 15728640
+          },
+          {
+            "path": "part-17.bin",
+            "bytes": 15728640
+          }
+        ]
+      }
+    },
+    {
+      "id": "8-version-one-over-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"over-version\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: this version is more than 256 MB, the most a version may be."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    },
+    {
+      "id": "fx-fits",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "fits",
+        "name": "sized",
+        "files": [
+          {
+            "path": "index.html",
+            "bytes": 16777216
+          },
+          {
+            "path": "logo.svg",
+            "bytes": 2097152
+          },
+          {
+            "path": "clip.mp4",
+            "bytes": 15728640
+          }
+        ]
+      }
+    },
+    {
+      "id": "8-each-at-its-limit-fits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"At the limits\", \"path\": \"fits\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    },
+    {
+      "id": "fx-many",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "many",
+        "name": "many",
+        "count": 511
+      }
+    },
+    {
+      "id": "8-512-files-fit",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Many\", \"path\": \"many\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    },
+    {
+      "id": "fx-too-many",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "too-many",
+        "name": "many",
+        "count": 512
+      }
+    },
+    {
+      "id": "8-513-files-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Refused\", \"path\": \"too-many\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: a version holds at most 512 files, and this holds 513."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    },
+    {
+      "id": "8-only-what-fits-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts?conversation=${state.said.body.conversation}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 2
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-8"
+        ]
+      }
+    }
+  ]
+}

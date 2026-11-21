@@ -1436,7 +1436,6 @@
     "everything-else": {
       "routes": [
         "/v1/alerts",
-        "/v1/artifacts",
         "/v1/connectors",
         "/v1/events",
         "/v1/helpers",
@@ -2236,6 +2235,26 @@
             "BROWSER-26",
             "BROWSER-27",
             "BROWSER-28"
+          ],
+          "elsewhere": {}
+        }
+      }
+    },
+    "artifacts": {
+      "routes": [
+        "/v1/artifacts"
+      ],
+      "contracts": {
+        "artifacts.md": {
+          "obid": [
+            "ARTIFACTS-1",
+            "ARTIFACTS-2",
+            "ARTIFACTS-3",
+            "ARTIFACTS-4",
+            "ARTIFACTS-5",
+            "ARTIFACTS-6",
+            "ARTIFACTS-7",
+            "ARTIFACTS-8"
           ],
           "elsewhere": {}
         }

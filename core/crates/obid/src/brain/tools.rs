@@ -1101,6 +1101,7 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
             conversation: Some(&session.conversation),
             job: None,
             artifact: artifact.as_deref(),
+            kept: None,
         })
         .await?;
     let mut made = session.artifacts.lock().unwrap_or_else(|e| e.into_inner());

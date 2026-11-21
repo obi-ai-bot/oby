@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "2",
+  "name": "PATCH /v1/artifacts/{id}: a rename is said on /v1/events",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-6 (lab: LAB-ARTIFACTS-5, workflows/lab/artifacts/rename.json). Renaming an artifact sends artifact with renamed, its new title and what it belongs to, so every open view retitles it.",
+  "trigger": {
+    "http": {
+      "method": "PATCH",
+      "path": "/v1/artifacts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MAKEPAGE OBY oby_artifact {\"title\": \"Fixture functions\", \"path\": \"page\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "ev",
+      "use": "runtime.rust:events-follow",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "renamed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "PATCH",
+        "path": "/v1/artifacts/${state.page.body.artifacts.0.id}",
+        "body": {
+          "title": "Pricing"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "title": "Pricing"
+          }
+        }
+      }
+    },
+    {
+      "id": "6-a-renamed-event",
+      "use": "runtime.rust:events-wait",
+      "inputs": {
+        "obid": "${state.o}",
+        "event": "artifact",
+        "expect": {
+          "body": {
+            "id": "${state.page.body.artifacts.0.id}",
+            "renamed": true,
+            "title": "Pricing",
+            "kind": "html",
+            "conversation": "${state.said.body.conversation}",
+            "job": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-6"
+        ]
+      }
+    }
+  ]
+}

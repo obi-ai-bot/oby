@@ -1,0 +1,217 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}: a conversation gives its job's artifact a new version; another conversation can't",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-7 (lab: LAB-ARTIFACTS-6, workflows/lab/artifacts/versions.json). A job publishes its .obi/artifacts/ when it ends (chart.png, notes.md and page, by name; the stand-in's other entries are refused), an artifact of that job and of the job's conversation. The conversation's own oby_artifact (no job) then gives it version 2, as any of the conversation's jobs could; another conversation's publish is refused, and the artifact still has two versions.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "ARTIFACTS"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "conversation": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "job-done",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.job.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "done",
+                "failed"
+              ]
+            }
+          },
+          "paths": {
+            "artifacts": {
+              "$len": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "made-by-the-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "title": "page",
+            "job": "${state.job.body.id}",
+            "conversation": "${state.job.body.conversation}",
+            "kind": "html"
+          }
+        }
+      }
+    },
+    {
+      "id": "7-the-conversation-versions-it",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MAKEPAGE OBY oby_artifact {\"title\": \"page\", \"path\": \"page\", \"artifact\": \"${state.job-done.body.artifacts.2.id}\"}",
+          "conversation": "${state.job.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "id": "${state.job-done.body.artifacts.2.id}",
+                "version": 2
+              }
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "7-two-versions-the-first-the-jobs",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "versions": {
+              "$len": 2
+            },
+            "versions.0.job": "${state.job.body.id}",
+            "versions.1.job": {
+              "$exists": false
+            },
+            "job": "${state.job.body.id}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "7-another-conversation-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "MAKEPAGE OBY oby_artifact {\"title\": \"page\", \"path\": \"page\", \"artifact\": \"${state.job-done.body.artifacts.2.id}\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "belongs to another conversation, so only there can it get a new version."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-7"
+        ]
+      }
+    },
+    {
+      "id": "7-still-two-versions",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.job-done.body.artifacts.2.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "versions": {
+              "$len": 2
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-7"
+        ]
+      }
+    }
+  ]
+}

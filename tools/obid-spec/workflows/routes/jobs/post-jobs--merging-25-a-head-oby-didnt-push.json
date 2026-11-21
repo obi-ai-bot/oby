@@ -1,0 +1,170 @@
+{
+  "schemaVersion": "2",
+  "name": "A head no job of Oby's pushed isn't Oby's (MERGING-25)",
+  "version": "1.0.0",
+  "description": "Once the pull request's head is a commit someone else pushed, nothing merges by itself and the carrying job's one card says its head is a commit Oby didn't push.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/jobs"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "publishing-claude",
+        "env": {
+          "OBID_TEST_CLEAN_FIRST_SECONDS": "3600",
+          "OBID_FOLLOW_SECONDS": "1"
+        },
+        "github": {
+          "routes.json": {
+            "fixture": "github/routes.json"
+          },
+          "pull-request.js": {
+            "fixture": "github/pull-request.js"
+          }
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "build",
+            "task": "COMMIT: hello.txt"
+          }
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "status": {
+              "$oneOf": [
+                "queued",
+                "running"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t-published",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "body": {
+            "status": "done",
+            "published": "https://github.com/obi-e2e/fixture-app/pull/7"
+          }
+        }
+      }
+    },
+    {
+      "id": "tree",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "rev-parse",
+          "refs/heads/${state.t-published.body.branch}^{tree}"
+        ]
+      }
+    },
+    {
+      "id": "theirs",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "-c",
+          "user.name=Someone",
+          "-c",
+          "user.email=someone@example.invalid",
+          "commit-tree",
+          "${state.tree.out}",
+          "-p",
+          "refs/heads/${state.t-published.body.branch}",
+          "-m",
+          "Someone else's commit"
+        ]
+      }
+    },
+    {
+      "id": "pushed-by-someone",
+      "use": "runtime.rust:fixture-git",
+      "inputs": {
+        "obid": "${state.o}",
+        "args": [
+          "update-ref",
+          "refs/heads/${state.t-published.body.branch}",
+          "${state.theirs.out}"
+        ]
+      }
+    },
+    {
+      "id": "merging-25-its-card-says-why",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 120,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "kind": "merge",
+                "job": "${state.t.body.id}",
+                "text": {
+                  "$contains": "\nIts head is a commit Oby didn't push."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-25"
+        ]
+      }
+    },
+    {
+      "id": "merging-25-nothing-merged",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.t.body.id}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "mergedBy": null
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "MERGING-25"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,207 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}/{version}/{*path}: a Claude Design canvas publishes as design, byte for byte",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-1 and 5 (lab: LAB-ARTIFACTS-1, workflows/lab/artifacts/design.json). The lab's own Claude Design project (canvas.json v3, three .dc.html boards, a design system, fonts, video, three uploads under _blob/, one whose id looks like a token) is written into a conversation's room and published by its oby_artifact: it is a design, every file served back as written (each upload through its version's _blob/<id>), each upload kept under assets/ with the version's map, the token-like id under a hashed name rather than refused.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}/{version}/{*path}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "design",
+        "name": "claude-design"
+      }
+    },
+    {
+      "id": "pub",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Lab design\", \"path\": \"design\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "1-it-is-a-design",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "kind": "design",
+            "conversation": "${state.said.body.conversation}",
+            "versions.0.blobs.font-7c1e": "assets/font-7c1e.woff2",
+            "versions.0.blobs.clip_3": "assets/clip_3.mp4",
+            "versions.0.files": {
+              "$contains": "canvas.json"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-1"
+        ]
+      }
+    },
+    {
+      "id": "1-every-file-byte-for-byte",
+      "use": "runtime.rust:artifacts-same",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "from": "design",
+        "artifact": "${state.pub.body.artifacts.0.id}",
+        "version": 1,
+        "expect": {
+          "paths": {
+            "same": true,
+            "compared": 18,
+            "differ": {
+              "$len": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-1"
+        ]
+      }
+    },
+    {
+      "id": "5-the-token-like-id-kept-hashed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "versions.0.blobs.Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT": {
+              "$matches": "^assets/[0-9a-f]{16}\\.png$"
+            },
+            "versions.0.files": {
+              "$none": "_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "5-and-served-at-its-own-id",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/_blob/Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-5"
+        ]
+      }
+    },
+    {
+      "id": "named",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "named",
+        "name": "document"
+      }
+    },
+    {
+      "id": "5-a-file-of-its-own-named-so-still-refused",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Named Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT\", \"path\": \"named/notes.md\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Not published: a name in it looks like a secret, so obid doesn't say it."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-5"
+        ]
+      }
+    }
+  ]
+}
