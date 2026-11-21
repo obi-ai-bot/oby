@@ -43,13 +43,13 @@ For each board of `apps/electron/scripts/boards/browser.json`, in order:
 
 ### Readiness and the port
 
-- Before anything launches, the build must be there and current: both `out/` files and Electron's binary exist, and the older `out/` file is not older than any file under `src/`. Otherwise it exits 1 saying to run `npm ci` and `npm run build` in `apps/electron`.
+- Before anything launches, the build must be there and current: both `out/` files and Electron's binary exist, and the older `out/` file is not older than any file under `src/` (but `node_modules`, where vitest keeps its cache). Otherwise it exits 1 saying to run `npm ci` and `npm run build` in `apps/electron`.
 - The port the windows are given for obid is a free one of 127.0.0.1, taken as obid-spec's `idle_port()` takes one, or the one `OBY_BOARDS_PORT` names. 7777 is the owner's obid and is refused; so is a port something listens on. Each says to unset `OBY_BOARDS_PORT` or name a free port other than 7777, and nothing launches.
 - The scratch home is a new folder under the system's temporary folder: `no-obid/` (obid's home for every launch) and one `<nn>/` per board with its own `userData/`, so no board inherits another's stored choices.
 
 ### Judging
 
-- Every held piece (in `PIECES`, not in `TODAY`, not in the check's `skip`) both sides draw is compared box by box, within the tolerance, and word for word; a held piece drawn a different number of times on each side is a miss too.
+- Every held piece (in `PIECES`, or in `HELD` for that board alone, not in `TODAY`, not in the check's `skip`) both sides draw is compared box by box, within the tolerance, and word for word; a held piece drawn a different number of times on each side is a miss too.
 - A check where no held piece was compared fails as **nothing compared** (`within: false`, `nothingCompared: true`) instead of passing. obid-spec's `app.compare` shares `judge()` through `drive-app.mjs`, so a workflow's compare that compares nothing fails there too.
 
 ### Failures and recovery
@@ -63,7 +63,7 @@ For each board of `apps/electron/scripts/boards/browser.json`, in order:
 - **Skipped pieces**, by board, each for the reason [browser-app.md](browser-app.md#not-matched-within-4px-and-why) gives: board 3 `.br-tabs-end .icon-button`, `.br-tab`; board 4 `.br-address`; board 5 `.br-tab`; board 7 `.decision-card`, `.tc-ask-line`, `.tc-ask-text`; board 8 `.decision-card`, `.tc-ask-line`, `.secret-row`, `.secret-note`; boards 11, 12 and 14 `.br-tabs-end .icon-button`, `.br-address`, `.br-control-text`, `.br-control .tc-option`. Every run prints them.
 - **Boards with no check**: 9 (Asks) and 10 (PageStates), sheets of pieces side by side; 13 (SettingsBrowser), today's Settings with more groups than the board draws; 15 (Desktop), the Mac's own screen around the pill. Each is pictured, and its words are checked in its obid-spec workflow.
 - **The skip lists exist twice**, in `browser.json` and in `BOARD_SKIPS` of `apps/electron/scripts/browser-workflows.py`, until `browser-workflows.py` reads `browser.json`. BOARDS-1's test holds them equal.
-- **Board 1 (Closed) compares nothing**: every piece it draws that is in `PIECES` is a `TODAY` piece, and the globe's tip (`.tip-under`) isn't in `PIECES`. Its check fails as nothing compared, so a full run exits 1, until the board gets a held piece or a `gap`, the owner's call.
+- **Board 1 (Closed) holds the globe's tip** (`HELD` in `board-compare.mjs`: `.tip-under`, held on that board alone), the one piece it draws that isn't today's app. Its words match the board; its place doesn't yet: the app's tip ends 28px from the window's right edge and the board's 8px (`.tip-under[0]` 20px off), so a full run exits 1 on it until the app's tip moves. obid-spec's `browser-01-closed.json` fails its `matches-board` step the same way.
 
 ### Invariants
 

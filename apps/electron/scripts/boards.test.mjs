@@ -27,7 +27,7 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 const load = async () => (boards ??= await import('./boards.mjs'));
 
 // every piece empty on both sides but the ones given
-const maps = (filled = {}) => Object.fromEntries(compare.PIECES.map((p) => [p, filled[p] ?? []]));
+const maps = (filled = {}) => Object.fromEntries([...compare.PIECES, ...Object.values(compare.HELD).flat()].map((p) => [p, filled[p] ?? []]));
 const freePort = () => new Promise((done) => {
   const s = createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => done(port)); });
 });
@@ -86,16 +86,24 @@ test('BOARDS-4: nothing compared fails, as "nothing compared"', async () => {
   assert.ok(lines.some((l) => l.includes('nothing compared')), lines.join('\n'));
 });
 
+test('BOARDS-4: board 1 holds the globe\'s tip, and no other board does', () => {
+  const tip = { '.tip-under': [{ x: 1120, y: 92, width: 140, height: 26, text: 'Show the browser⇧⌘B' }] };
+  assert.equal(compare.judge('Closed', maps(tip), maps(tip)).compared, 1);
+  assert.equal(compare.judge('Main', maps(tip), maps(tip)).compared, 0);
+});
+
 test('BOARDS-5: no build, a stale build, port 7777 or a busy port each say what to do', async () => {
   const { ready } = await load();
   const root = join(scratch, 'app');
   const binary = join(root, relative(lib.appRoot, lib.electronBinary));
-  const files = ['out/main/index.js', 'out/renderer/index.html', 'src/main/index.ts'].map((f) => join(root, f));
+  const files = ['out/main/index.js', 'out/renderer/index.html', 'src/main/index.ts', 'src/renderer/node_modules/.vite/results.json'].map((f) => join(root, f));
   for (const f of [binary, ...files]) { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, ''); }
   const build = (problems) => problems.some((p) => p.includes('npm ci') && p.includes('npm run build'));
   const port = await freePort();
   const old = new Date(Date.now() - 60_000);
   utimesSync(files[2], old, old);
+  // vitest's cache, written after the build, isn't the app's source
+  utimesSync(files[3], new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
   assert.deepEqual(await ready({ root, port }), []);
 
   rmSync(files[0]);

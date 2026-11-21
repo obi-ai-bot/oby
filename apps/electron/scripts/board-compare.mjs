@@ -68,6 +68,9 @@ export const TODAY = new Set([
   '.group-title',
 ]);
 
+// Pieces held on one board only, by its name: board 1 draws the closed browser as the globe and its tip
+export const HELD = { Closed: ['.tip-under'] };
+
 /** Every piece's boxes and words, in a Playwright page. */
 export const pieces = (p) => p.evaluate((sels) => {
   const out = {};
@@ -78,7 +81,7 @@ export const pieces = (p) => p.evaluate((sels) => {
     });
   }
   return out;
-}, PIECES);
+}, [...PIECES, ...Object.values(HELD).flat()]);
 
 const round = (n) => Math.round(n * 10) / 10;
 const at = (b) => ({ x: round(b.x), y: round(b.y), w: round(b.width), h: round(b.height) });
@@ -88,7 +91,7 @@ export function judge(board, mine, theirs, { tolerance = 4, skip = [] } = {}) {
   const skipped = new Set(skip);
   const off = [], today = [], words = [], counts = [];
   let worst = 0, compared = 0;
-  for (const sel of PIECES) {
+  for (const sel of [...PIECES, ...(HELD[board] ?? [])]) {
     if (skipped.has(sel)) continue;
     const m = mine[sel], t = theirs[sel];
     if (m.length !== t.length) { if (m.length || t.length) (TODAY.has(sel) ? today : counts).push({ piece: sel, app: m.length, board: t.length }); continue; }

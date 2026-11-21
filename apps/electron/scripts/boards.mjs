@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { appRoot, electronBinary, sleep } from './drive-lib.mjs';
@@ -38,7 +38,9 @@ export async function ready({ root = appRoot, port }) {
   if (!problems.length) {
     const built = Math.min(...out.map((f) => statSync(f).mtimeMs));
     const src = join(root, 'src');
-    const newer = readdirSync(src, { recursive: true }).map((f) => join(src, f)).find((f) => statSync(f).isFile() && statSync(f).mtimeMs > built);
+    // vitest keeps its cache in src/renderer/node_modules: not the app's source
+    const newer = readdirSync(src, { recursive: true }).filter((f) => !f.split(sep).includes('node_modules')).map((f) => join(src, f))
+      .find((f) => statSync(f).isFile() && statSync(f).mtimeMs > built);
     if (newer) problems.push(`out/ is older than ${relative(root, newer)}: ${BUILD}`);
   }
   if (Number(port) === 7777) problems.push(`port 7777 is the owner's obid: ${PORT}`);
