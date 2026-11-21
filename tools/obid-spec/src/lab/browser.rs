@@ -31,6 +31,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use super::browser_cert::{self, Seen};
 use crate::obid::{private_dir, Run};
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -107,6 +108,12 @@ pub struct Rules {
     /// On the browser's own certificate error page, the agent neither acts nor runs code: going on
     /// past a certificate is only the person's to decide.
     pub certificate: bool,
+    /// Go on anyway trusts only the exact certificate obid read on that host and the person named:
+    /// another one there is refused `certificate_changed`.
+    pub trust_exact: bool,
+    /// A certificate's key the person trusted on one host isn't trusted on another: Chrome trusts
+    /// the key on every host, so obid stops a page elsewhere that presents it.
+    pub trust_host: bool,
 }
 
 impl Rules {
@@ -120,6 +127,8 @@ impl Rules {
         downloads: true,
         latest_frame: true,
         certificate: true,
+        trust_exact: true,
+        trust_host: true,
     };
 
     /// All rules but the ones named (comma-separated): the lab's red proofs.
@@ -136,6 +145,8 @@ impl Rules {
                 "downloads" => r.downloads = false,
                 "frames" | "latest_frame" => r.latest_frame = false,
                 "certificate" => r.certificate = false,
+                "trustexact" | "trust_exact" => r.trust_exact = false,
+                "trusthost" | "trust_host" => r.trust_host = false,
                 _ => {}
             }
         }
@@ -156,14 +167,25 @@ pub enum Refusal {
     HeldByOther,
     ControlChanged,
     UnknownRef(String),
-    StaleRef { reference: String, why: String },
-    Settling { tool: String },
+    StaleRef {
+        reference: String,
+        why: String,
+    },
+    Settling {
+        tool: String,
+    },
     Expired,
-    TimedOut { ms: u64 },
+    TimedOut {
+        ms: u64,
+    },
     UploadOutsideRoom(String),
     NotGranted,
     Browser(String),
     CertificatePage,
+    /// The page presents a key the person trusted only on another host.
+    TrustedElsewhere(String),
+    NoCertificate,
+    CertificateChanged,
 }
 
 impl Refusal {
@@ -186,7 +208,9 @@ impl Refusal {
             Refusal::UploadOutsideRoom(_) => "upload_outside_room",
             Refusal::NotGranted => "not_granted",
             Refusal::Browser(_) => "browser",
-            Refusal::CertificatePage => "certificate_page",
+            Refusal::CertificatePage | Refusal::TrustedElsewhere(_) => "certificate_page",
+            Refusal::NoCertificate => "no_certificate",
+            Refusal::CertificateChanged => "certificate_changed",
         }
     }
 
@@ -210,6 +234,9 @@ impl Refusal {
             Refusal::NotGranted => "This app isn't one the person let this conversation drive.".into(),
             Refusal::Browser(why) => why.clone(),
             Refusal::CertificatePage => "This page stopped at a certificate problem (or another of the browser's own error pages); only the person can decide to go on. Reads still work, and so does navigating elsewhere.".into(),
+            Refusal::TrustedElsewhere(host) => format!("This site presents a certificate the person trusted only for {host}; only the person can decide to go on here. Reads still work, and so does navigating elsewhere."),
+            Refusal::NoCertificate => "This tab isn't stopped at a certificate Oby read: there is nothing to go on past.".into(),
+            Refusal::CertificateChanged => "The site now presents another certificate than the one shown: look at it again before going on.".into(),
         }
     }
 
@@ -312,6 +339,8 @@ pub struct Tab {
     /// The page stopped at a certificate problem: a navigation Oby ran failed with
     /// `net::ERR_CERT_*`, and nothing has loaded in the tab since.
     pub certificate: bool,
+    /// While `certificate`: the certificate Oby read there and the address the tab was going to.
+    pub seen: Option<(Seen, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -793,6 +822,7 @@ impl Browsers {
                 takeover_asked: None,
                 dialog: None,
                 certificate: false,
+                seen: None,
             },
         );
         self.current.insert(conversation.into(), id.clone());
@@ -846,7 +876,42 @@ impl Browsers {
             t.page_generation += 1;
             t.refs = None;
             t.certificate = true;
+            t.seen = None;
         }
+    }
+
+    /// The certificate Oby read where the tab stopped (`url`, the address it was going to): what
+    /// the person's Go on anyway may trust. The tab stops there as at a certificate problem.
+    pub fn certificate_seen(&mut self, tab: &str, seen: Seen, url: &str) {
+        if let Some(t) = self.tabs.get_mut(tab) {
+            if !t.certificate {
+                t.page_generation += 1;
+                t.refs = None;
+                t.certificate = true;
+            }
+            t.seen = Some((seen, url.into()));
+        }
+    }
+
+    /// The job's browser started again trusting a key (the person's Go on anyway): its other tabs
+    /// are gone, and this one is the browser's `target` now.
+    pub fn restarted(&mut self, tab: &str, target: &str) {
+        let Some(conversation) = self.tabs.get(tab).map(|t| t.conversation.clone()) else {
+            return;
+        };
+        let others: Vec<String> = self
+            .tabs_of(&conversation)
+            .iter()
+            .filter(|t| t.id != tab)
+            .map(|t| t.id.clone())
+            .collect();
+        for o in others {
+            self.closed(&o);
+        }
+        if let Some(t) = self.tabs.get_mut(tab) {
+            t.target = target.into();
+        }
+        self.current.insert(conversation, tab.into());
     }
 
     /// The person moved the page themselves (Reload, Go back, a dialog answered): what it shows
@@ -960,6 +1025,7 @@ impl Browsers {
                     "takeoverAsked": t.takeover_asked,
                     "dialog": t.dialog.is_some(),
                     "certificatePage": t.certificate,
+                    "certificate": t.seen.as_ref().filter(|_| t.certificate).map(|(s, _)| json!({"host": s.host, "fingerprint": s.fingerprint})),
                 })
             })
             .collect();
@@ -1060,7 +1126,7 @@ pub const NODES: &[(&str, &str)] = &[
     ("lab.browser.tools", "The tool surface obid serves: each tool's name, kind and whether it only reads."),
     ("lab.browser.take", "The person takes a tab over; with expect."),
     ("lab.browser.release", "The person gives a tab back; with expect."),
-    ("lab.browser.person", "The person acts on a tab through its live stream (a click on `selector`, then `keys`), only while they hold it; a download it starts is delivered. With `page` instead, the person's way out of a page state, only while they hold it: `reload` (Try again, Reload), `back` (Go back) or `dialog` (`accept`: Leave, else Stay; `promptText`). With expect."),
+    ("lab.browser.person", "The person acts on a tab through its live stream (a click on `selector`, then `keys`), only while they hold it; a download it starts is delivered. With `page` instead, the person's way out of a page state, only while they hold it: `reload` (Try again, Reload), `back` (Go back) or `dialog` (`accept`: Leave, else Stay; `promptText`) or `proceed` (Go on anyway: `fingerprint`, the certificate seen there; the browser restarts trusting its key and opens the address again). With expect."),
     ("lab.browser.read", "Oby's own read of a tab, outside the agent's tools (`value` of a selector, or the URL); with expect."),
     ("lab.browser.settle", "Waits (up to `within` seconds) until a tab that timed out has settled; with expect."),
     ("lab.browser.stream", "Watches a conversation's live stream for `ms`, read by a watcher that takes a frame every `readEveryMs`: frames produced, read, dropped, read stale, most waiting; with expect."),
@@ -1095,6 +1161,9 @@ struct Agent {
     room: PathBuf,
     daemon: Option<u32>,
     chrome_pid: Option<u32>,
+    /// The keys the person's Go on anyway trusted, each with the host it was for: the browser runs
+    /// with them in `--ignore-certificate-errors-spki-list`.
+    trusted: Vec<(String, String)>,
 }
 
 struct Lab {
@@ -1485,6 +1554,41 @@ enum Call {
 }
 
 /// One agent-browser call for an agent, killed when its limit passes (None: no limit of Oby's).
+/// The launch argument that trusts each key the person's Go on anyway trusted, or None.
+fn spki_list(trusted: &[(String, String)]) -> Option<String> {
+    let mut keys: Vec<&str> = trusted.iter().map(|(_, k)| k.as_str()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    (!keys.is_empty()).then(|| format!("--ignore-certificate-errors-spki-list={}", keys.join(",")))
+}
+
+/// The `trust_host` rule: Chrome trusts a key on every host, so a page on `url` whose server
+/// presents a key the person trusted for another host is stopped as a certificate page. Answers
+/// the host the key was trusted for and the certificate read here. Only on the Mac, where obid
+/// reaches the same addresses as the browser.
+async fn trusted_elsewhere(run: &Run, agent: &Agent, url: &str) -> Option<(String, Seen)> {
+    if agent.trusted.is_empty()
+        || !matches!(agent.place, Place::Mac)
+        || !with_lab(run, |l| l.core.rules.trust_host)
+    {
+        return None;
+    }
+    let (host, port) = browser_cert::https_origin(url)?;
+    let seen = browser_cert::read(&host, port).await.ok()?;
+    if agent
+        .trusted
+        .iter()
+        .any(|(h, k)| *h == host && *k == seen.spki)
+    {
+        return None;
+    }
+    agent
+        .trusted
+        .iter()
+        .find(|(_, k)| *k == seen.spki)
+        .map(|(h, _)| (h.clone(), seen))
+}
+
 async fn ab(agent: &Agent, args: &[String], limit: Option<Duration>) -> Call {
     let mut flags: Vec<String> = vec![
         "--json".into(),
@@ -1500,6 +1604,10 @@ async fn ab(agent: &Agent, args: &[String], limit: Option<Duration>) -> Call {
     ];
     if let Some(c) = &agent.chrome {
         flags.extend(["--executable-path".into(), c.clone()]);
+    }
+    if let Some(list) = spki_list(&agent.trusted) {
+        // agent-browser starts the browser again by itself when its launch arguments change.
+        flags.extend(["--args".into(), list]);
     }
     let mut command = match &agent.place {
         Place::Mac => {
@@ -1717,6 +1825,11 @@ async fn call_tool(run: &Run, conversation: &str, name: &str, args: &Value) -> R
             .as_str()
             .map(str::to_string)
     };
+    if let (Some(u), Some(tab)) = (&url_now, &ticket.tab) {
+        if let Some((_, seen)) = trusted_elsewhere(run, &agent, u).await {
+            with_lab(run, |l| l.core.certificate_seen(tab, seen, u));
+        }
+    }
     if let Err(r) = with_lab(run, |l| {
         l.core.may_start(&ticket, url_now.as_deref(), now_ms())
     }) {
@@ -1772,14 +1885,27 @@ async fn call_tool(run: &Run, conversation: &str, name: &str, args: &Value) -> R
             v
         }
         Call::Failed(e) => {
+            let navigation = matches!(ticket.tool, "oby_browser_open" | "oby_browser_navigate");
             with_lab(run, |l| {
                 l.core.finished(&ticket, false);
-                if matches!(ticket.tool, "oby_browser_open" | "oby_browser_navigate") {
+                if navigation {
                     if let Some(tab) = &ticket.tab {
                         l.core.navigation_failed(tab, &e);
                     }
                 }
             });
+            // Stopped at a certificate problem: Oby reads the certificate itself, what the
+            // person's Go on anyway would trust.
+            if navigation && is_certificate_error(&e) && matches!(agent.place, Place::Mac) {
+                let url = ticket.argv.iter().find(|a| a.starts_with("https://"));
+                if let (Some(tab), Some(url)) = (&ticket.tab, url) {
+                    if let Some((host, port)) = browser_cert::https_origin(url) {
+                        if let Ok(seen) = browser_cert::read(&host, port).await {
+                            with_lab(run, |l| l.core.certificate_seen(tab, seen, url));
+                        }
+                    }
+                }
+            }
             let mut v = refusal_json(Refusal::Browser(e), started);
             v["cmd"] = json!(ticket.cmd);
             v
@@ -1791,9 +1917,26 @@ async fn call_tool(run: &Run, conversation: &str, name: &str, args: &Value) -> R
                 l.core.finished(&ticket, true);
                 l.agents.insert(conversation.into(), agent.clone());
             });
-            let mut v = json!({"ok": true, "result": r, "cmd": ticket.cmd});
-            v["elapsedMs"] = json!(started.elapsed().as_millis() as u64);
-            v
+            let landed = r["url"].as_str().unwrap_or_default().to_string();
+            let tab = r["tab"].as_str().map(str::to_string).or(ticket.tab.clone());
+            let elsewhere = if matches!(ticket.tool, "oby_browser_open" | "oby_browser_navigate") {
+                trusted_elsewhere(run, &agent, &landed).await
+            } else {
+                None
+            };
+            match (elsewhere, tab) {
+                (Some((host, seen)), Some(tab)) => {
+                    with_lab(run, |l| l.core.certificate_seen(&tab, seen, &landed));
+                    let mut v = refusal_json(Refusal::TrustedElsewhere(host), started);
+                    v["cmd"] = json!(ticket.cmd);
+                    v
+                }
+                _ => {
+                    let mut v = json!({"ok": true, "result": r, "cmd": ticket.cmd});
+                    v["elapsedMs"] = json!(started.elapsed().as_millis() as u64);
+                    v
+                }
+            }
         }
     };
     if delivers {
@@ -2359,6 +2502,9 @@ async fn person_page(run: &Run, input: &Value) -> Result<Value> {
         Ok(x) => x,
         Err(r) => return Ok(refusal_json(r, started)),
     };
+    if verb == "proceed" {
+        return proceed(run, input, person, tab, started).await;
+    }
     let argv = match verb {
         "reload" => s(&["reload"]),
         "back" => s(&["back"]),
@@ -2407,6 +2553,104 @@ async fn person_page(run: &Run, input: &Value) -> Result<Value> {
     let mut r = json!({"tab": tab, "url": url});
     with_lab(run, |l| {
         l.core.quote(&mut r, &url, "page title", json!(title))
+    });
+    Ok(json!({"ok": true, "result": r, "elapsedMs": started.elapsed().as_millis() as u64}))
+}
+
+/// The person's Go on anyway (the owner's "B: headless, trust key"): only on a tab they hold that
+/// stopped at a certificate Oby read, and only for that exact certificate, read again now and
+/// named by the person (`fingerprint`). The job's browser starts again with the certificate's key
+/// trusted and opens the address again; its other tabs are gone.
+async fn proceed(
+    run: &Run,
+    input: &Value,
+    person: &str,
+    tab: &str,
+    started: Instant,
+) -> Result<Value> {
+    let (conversation, seen) = match with_lab(run, |l| {
+        l.core.person_may_act(person, tab).map(|t| {
+            (
+                t.conversation.clone(),
+                t.seen.clone().filter(|_| t.certificate),
+            )
+        })
+    }) {
+        Ok(x) => x,
+        Err(r) => return Ok(refusal_json(r, started)),
+    };
+    let Some((seen, url)) = seen else {
+        return Ok(refusal_json(Refusal::NoCertificate, started));
+    };
+    let named = input["fingerprint"].as_str().unwrap_or_default();
+    let now = match browser_cert::read(&seen.host, seen.port).await {
+        Ok(n) => n,
+        Err(e) => {
+            return Ok(refusal_json(
+                Refusal::Browser(format!(
+                    "Oby couldn't read the site's certificate again: {e:#}"
+                )),
+                started,
+            ))
+        }
+    };
+    if with_lab(run, |l| l.core.rules.trust_exact)
+        && (now.fingerprint != seen.fingerprint || named != seen.fingerprint)
+    {
+        // What the person sees next is the certificate there now.
+        with_lab(run, |l| l.core.certificate_seen(tab, now, &url));
+        return Ok(refusal_json(Refusal::CertificateChanged, started));
+    }
+    let mut agent = agent_of(&conversation)?;
+    agent.trusted.push((now.host.clone(), now.spki.clone()));
+    with_lab(run, |l| {
+        l.agents.insert(conversation.clone(), agent.clone());
+    });
+    match ab(&agent, &s(&["open", &url]), Some(Duration::from_secs(60))).await {
+        Call::Ok(_) => {}
+        Call::Failed(e) => return Ok(refusal_json(Refusal::Browser(e), started)),
+        Call::TimedOut(ms) => return Ok(refusal_json(Refusal::TimedOut { ms }, started)),
+    }
+    remember_processes(&mut agent).await;
+    let tabs = system(&agent, &["tab", "list"]).await?;
+    let target = tabs["tabs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| t["active"] == true)
+        .and_then(|t| t["targetId"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let landed = system(&agent, &["get", "url"]).await?["url"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let title = system(&agent, &["get", "title"])
+        .await
+        .ok()
+        .and_then(|v| v["title"].as_str().map(str::to_string));
+    let closed: Vec<String> = with_lab(run, |l| {
+        let before: Vec<String> = l
+            .core
+            .tabs_of(&conversation)
+            .iter()
+            .filter(|t| t.id != tab)
+            .map(|t| t.id.clone())
+            .collect();
+        l.core.restarted(tab, &target);
+        l.core.person_moved(tab, &landed, title.as_deref());
+        l.agents.insert(conversation.clone(), agent.clone());
+        before
+    });
+    if is_error_page(&landed) {
+        return Ok(refusal_json(
+            Refusal::Browser("proceed: the page still stops at a certificate problem.".into()),
+            started,
+        ));
+    }
+    let mut r = json!({"tab": tab, "url": landed, "closedTabs": closed, "trusted": {"host": now.host, "fingerprint": now.fingerprint}});
+    with_lab(run, |l| {
+        l.core.quote(&mut r, &landed, "page title", json!(title))
     });
     Ok(json!({"ok": true, "result": r, "elapsedMs": started.elapsed().as_millis() as u64}))
 }
@@ -2481,6 +2725,7 @@ async fn new_agent(run: &Run, input: &Value) -> Result<Value> {
                 room,
                 daemon: None,
                 chrome_pid: None,
+                trusted: vec![],
             };
             (a, sha)
         }
@@ -2520,6 +2765,7 @@ async fn new_agent(run: &Run, input: &Value) -> Result<Value> {
                 room,
                 daemon: None,
                 chrome_pid: None,
+                trusted: vec![],
             };
             (a, sha)
         }

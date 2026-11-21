@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 
-use super::Refs;
+use super::{Refs, SeenCertificate};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineTab {
@@ -30,4 +30,7 @@ pub struct EngineTab {
     /// The page stopped at a certificate problem: a navigation Oby ran failed with
     /// `net::ERR_CERT_*`, and nothing has loaded in the tab since.
     pub certificate: bool,
+    /// While `certificate`: the certificate obid read there and the address the tab was going to,
+    /// what the person's Go on anyway may trust (BROWSER-29).
+    pub seen: Option<(SeenCertificate, String)>,
 }

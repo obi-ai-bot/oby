@@ -14,6 +14,7 @@
 
 mod binaries;
 mod call;
+mod certificate;
 mod chrome_said;
 mod download_file;
 mod downloads;
@@ -24,6 +25,7 @@ mod live_file;
 mod options;
 mod person;
 mod person_page;
+mod person_proceed;
 mod procs;
 mod reap;
 mod run;

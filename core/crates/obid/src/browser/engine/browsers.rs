@@ -10,7 +10,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use super::{
-    Actor, CmdState, EngineTab, Entry, Kind, Refs, Refusal, Ticket, Tool, in_room,
+    Actor, CmdState, EngineTab, Entry, Kind, Refs, Refusal, SeenCertificate, Ticket, Tool, in_room,
     is_certificate_error, is_error_page, may_act, outside, tool, works_the_page,
 };
 
@@ -483,6 +483,7 @@ impl Browsers {
                 takeover_asked: None,
                 dialog: None,
                 certificate: false,
+                seen: None,
             },
         );
         self.current.insert(conversation.into(), id.clone());
@@ -545,7 +546,45 @@ impl Browsers {
             t.page_generation += 1;
             t.refs = None;
             t.certificate = true;
+            t.seen = None;
         }
+    }
+
+    /// The certificate obid read where the tab stopped (`url`, the address it was going to): what
+    /// the person's Go on anyway may trust (BROWSER-29). The tab stops there as at a certificate
+    /// problem, its refs dead.
+    pub fn certificate_seen(&mut self, tab: &str, seen: SeenCertificate, url: &str) {
+        if let Some(t) = self.tabs.get_mut(tab) {
+            if !t.certificate {
+                t.page_generation += 1;
+                t.refs = None;
+                t.certificate = true;
+            }
+            t.seen = Some((seen, url.into()));
+        }
+    }
+
+    /// The job's browser started again trusting a key (the person's Go on anyway, BROWSER-29): its
+    /// other tabs went with the old browser, and this one is the browser's `target` now. Answers
+    /// the tabs that went.
+    pub fn restarted(&mut self, tab: &str, target: &str) -> Vec<String> {
+        let Some(conversation) = self.tabs.get(tab).map(|t| t.conversation.clone()) else {
+            return vec![];
+        };
+        let others: Vec<String> = self
+            .tabs_of(&conversation)
+            .iter()
+            .filter(|t| t.id != tab)
+            .map(|t| t.id.clone())
+            .collect();
+        for o in &others {
+            self.closed(o);
+        }
+        if let Some(t) = self.tabs.get_mut(tab) {
+            t.target = target.into();
+        }
+        self.current.insert(conversation, tab.into());
+        others
     }
 
     /// The person moved the page themselves (Reload, Go back, a dialog answered: BROWSER-26): what
@@ -659,6 +698,11 @@ impl Browsers {
                     "takeoverAsked": t.takeover_asked,
                     "dialog": t.dialog.is_some(),
                     "certificatePage": t.certificate,
+                    "certificate": t
+                        .seen
+                        .as_ref()
+                        .filter(|_| t.certificate)
+                        .map(|(s, _)| json!({"host": s.host, "fingerprint": s.fingerprint})),
                 })
             })
             .collect();
@@ -1026,6 +1070,66 @@ mod tests {
                 "{p}"
             );
         }
+    }
+
+    #[test]
+    fn browser_29_a_certificate_seen_stops_the_tab_and_a_restart_keeps_only_that_tab() {
+        let room = Path::new(ROOM);
+        let mut b = Browsers::new();
+        let other = opened(&mut b, "c1");
+        let tab = opened(&mut b, "c1");
+        let seen = SeenCertificate {
+            host: "127.0.0.1".into(),
+            port: 8443,
+            fingerprint: "f".into(),
+            spki: "k".into(),
+        };
+        b.navigation_failed(&tab, "Navigation failed: net::ERR_CERT_AUTHORITY_INVALID");
+        assert!(b.tab(&tab).unwrap().seen.is_none(), "nothing read yet");
+        b.certificate_seen(&tab, seen.clone(), "https://127.0.0.1:8443/");
+        let status = b.status(&agent("c1"));
+        let listed = status["result"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["tab"] == tab.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            listed["certificate"],
+            json!({"host": "127.0.0.1", "fingerprint": "f"})
+        );
+        assert_eq!(
+            b.begin(
+                &agent("c1"),
+                "oby_browser_evaluate",
+                &json!({"expression": "1"}),
+                room,
+                0
+            )
+            .err()
+            .map(|r| r.code()),
+            Some("certificate_page")
+        );
+        // A page elsewhere presenting a key trusted for another host stops the same way.
+        b.certificate_seen(&other, seen, "https://localhost:8443/");
+        assert!(b.tab(&other).unwrap().certificate);
+        // The browser started again trusting the key: only this tab is left, on its new target.
+        assert_eq!(b.restarted(&tab, "T2"), vec![other.clone()]);
+        assert!(b.tab(&other).is_none());
+        assert_eq!(b.tab(&tab).unwrap().target, "T2");
+        b.person_moved(&tab, "https://127.0.0.1:8443/", Some("Secure"));
+        assert!(!b.tab(&tab).unwrap().certificate);
+        assert!(
+            b.begin(
+                &agent("c1"),
+                "oby_browser_evaluate",
+                &json!({"expression": "1"}),
+                room,
+                0
+            )
+            .is_ok()
+        );
     }
 
     #[test]

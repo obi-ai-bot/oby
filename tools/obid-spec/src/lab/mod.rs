@@ -28,6 +28,7 @@ pub mod artifacts_contract;
 pub mod artifactsphere;
 pub mod artifactview;
 pub mod browser;
+pub mod browser_cert;
 pub mod browser_contract;
 pub mod browserapi;
 pub mod browsersphere;

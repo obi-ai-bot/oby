@@ -58,6 +58,10 @@ fn sample_tab() -> Tab {
         computer: Computer::this_mac(),
         ask: Some(sample_ask()),
         dialog: Some("words".into()),
+        certificate: Some(Box::new(Certificate {
+            host: "h".into(),
+            fingerprint: "f".into(),
+        })),
     }
 }
 
@@ -172,6 +176,10 @@ fn samples() -> Vec<Value> {
             tab_id: "tab-1".into(),
             field: "#pw".into(),
             filled: true,
+        })
+        .unwrap(),
+        serde_json::to_value(ProceedBody {
+            fingerprint: "f".into(),
         })
         .unwrap(),
         serde_json::to_value(DialogBody {

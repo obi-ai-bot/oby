@@ -60,6 +60,13 @@ pub const VERB_BACK: &str = "back";
 /// `POST` a [`DialogBody`]: the page's own dialog answered, Leave (`accept`) or Stay; with no
 /// dialog on the tab, refused `no_dialog`.
 pub const VERB_DIALOG: &str = "dialog";
+/// `POST` a [`ProceedBody`]: Go on anyway, past a certificate the browser doesn't trust (the
+/// owner's "B: headless, trust key"). Only on a tab stopped at a certificate problem whose
+/// certificate obid read (else `no_certificate`), and only for that exact certificate: obid reads it
+/// again and refuses `certificate_changed` when it isn't the one seen there and named in the body.
+/// The job's browser restarts trusting that certificate's key, then opens the tab's address again:
+/// its other tabs close, and so do sign-ins kept only for the browser's session.
+pub const VERB_PROCEED: &str = "proceed";
 /// `POST` an [`AnswerBody`], signed: the person's answer to an agent's ask.
 pub const PATH_ASKS: &str = "/v1/browser/asks";
 pub const VERB_ANSWER: &str = "answer";
@@ -101,6 +108,7 @@ pub const ROUTES: &[&str] = &[
     "POST /v1/browser/tabs/{id}/reload",
     "POST /v1/browser/tabs/{id}/back",
     "POST /v1/browser/tabs/{id}/dialog",
+    "POST /v1/browser/tabs/{id}/proceed",
     "POST /v1/browser/asks/{id}/answer",
     "POST /v1/browser/mcp",
 ];
@@ -181,6 +189,10 @@ pub struct Tab {
     pub ask: Option<Ask>,
     /// The dialog the page shows (an alert's words, the page's), if any.
     pub dialog: Option<String>,
+    /// On a tab stopped at a certificate problem, the certificate obid read there itself: what Go
+    /// on anyway would trust (add-only; absent otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<Box<Certificate>>,
     /// What the tab shows (add-only: a tab without it is a `page`). An `artifact` tab is drawn by
     /// the app itself from Oby's artifact, never streamed, and never an agent's.
     #[serde(default)]
@@ -188,6 +200,15 @@ pub struct Tab {
     /// The artifact an `artifact` tab shows; absent on a page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<ArtifactRef>,
+}
+
+/// A server's certificate as obid read it: the host it was seen on and its SHA-256 fingerprint
+/// (lowercase hex of the certificate's DER), which the person's Go on anyway names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Certificate {
+    pub host: String,
+    pub fingerprint: String,
 }
 
 /// What a tab shows (Oby Artifacts, plan §3.3): a web page, or one of Oby's artifacts.
@@ -381,6 +402,13 @@ pub struct DialogBody {
     pub accept: bool,
     #[serde(default)]
     pub prompt_text: Option<String>,
+}
+
+/// Go on anyway: the fingerprint of the certificate the person was shown ([`Certificate`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProceedBody {
+    pub fingerprint: String,
 }
 
 // ── Downloads ───────────────────────────────────────────────────────────────────────────────────
@@ -685,6 +713,8 @@ pub const REASONS: &[&str] = &[
     "bad_request",
     "browser_starting",
     "no_dialog",
+    "no_certificate",
+    "certificate_changed",
     // An artifact tab: drawn by the app, never streamed, taken or driven (Oby Artifacts).
     "artifact_tab",
 ];
@@ -933,6 +963,10 @@ mod tests {
                 seq: 7,
             })
             .unwrap(),
+            serde_json::to_value(ProceedBody {
+                fingerprint: "f".into(),
+            })
+            .unwrap(),
             serde_json::to_value(DialogBody {
                 accept: true,
                 prompt_text: Some("p".into()),
@@ -994,6 +1028,10 @@ mod tests {
                 choice: None,
             }),
             dialog: None,
+            certificate: Some(Box::new(Certificate {
+                host: "h".into(),
+                fingerprint: "f".into(),
+            })),
             kind: TabKind::Page,
             artifact: None,
         }

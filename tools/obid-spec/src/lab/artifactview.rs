@@ -379,6 +379,7 @@ impl ArtifactTabs {
             computer: bc::Computer::this_mac(),
             ask: None,
             dialog: None,
+            certificate: None,
             kind: bc::TabKind::Artifact,
             artifact: Some(bc::ArtifactRef {
                 id: a.id.clone(),

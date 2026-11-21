@@ -148,5 +148,6 @@ One row per file, sorted by date, then by file name; a file listed under several
 | 2026-11-19 | [2026-11-19-the-browser.md](2026-11-19-the-browser.md) |
 | 2026-11-20 | [2026-11-20-browser-install-and-limits.md](2026-11-20-browser-install-and-limits.md) |
 | 2026-11-20 | [2026-11-20-codex-reads-no-secrets.md](2026-11-20-codex-reads-no-secrets.md) |
+| 2026-11-20 | [2026-11-20-go-on-anyway.md](2026-11-20-go-on-anyway.md) |
 | 2026-11-20 | [2026-11-20-headless-shell.md](2026-11-20-headless-shell.md) |
 | 2026-11-20 | [2026-11-20-preflight-before-push.md](2026-11-20-preflight-before-push.md) |

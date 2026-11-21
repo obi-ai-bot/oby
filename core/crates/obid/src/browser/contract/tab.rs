@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Ask, Computer, Owner, TabState};
+use super::{Ask, Certificate, Computer, Owner, TabState};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,4 +25,8 @@ pub struct Tab {
     pub ask: Option<Ask>,
     /// The dialog the page shows (an alert's words, the page's), if any.
     pub dialog: Option<String>,
+    /// On a tab stopped at a certificate problem, the certificate obid read there itself: what Go
+    /// on anyway would trust (BROWSER-29, add-only; absent otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<Box<Certificate>>,
 }

@@ -119,6 +119,12 @@ impl Driver {
                 Err(r) => return failed(r),
             }
         };
+        // A trusted key on another host than the one it was trusted for (BROWSER-29).
+        if let (Some(u), Some(tab)) = (&url_now, tab)
+            && let Some((_, seen)) = self.trusted_elsewhere(&session, u).await
+        {
+            self.core.lock().unwrap().certificate_seen(tab, seen, u);
+        }
         let may = self
             .core
             .lock()
@@ -150,12 +156,36 @@ impl Driver {
                     && let Some(tab) = tab
                 {
                     self.core.lock().unwrap().navigation_failed(tab, &e);
+                    let url = ticket.argv.iter().find(|a| a.starts_with("https://"));
+                    self.certificate_stopped(tab, url, &e).await;
                 }
                 failed(Refusal::Browser(e))
             }
             Call::Ok(data) => {
                 let shaped = self.shape(&session, ticket, data).await;
                 self.core.lock().unwrap().finished(ticket, true);
+                // Landed on a trusted key's other host: stopped there (BROWSER-29).
+                let landed = shaped.as_ref().ok().and_then(|r| {
+                    Some((
+                        r["tab"]
+                            .as_str()
+                            .map(str::to_string)
+                            .or(ticket.tab.clone())?,
+                        r["url"].as_str()?.to_string(),
+                    ))
+                });
+                if matches!(ticket.tool, "oby_browser_open" | "oby_browser_navigate")
+                    && let Some((tab, url)) = landed
+                    && let Some((host, seen)) = self.trusted_elsewhere(&session, &url).await
+                {
+                    self.core.lock().unwrap().certificate_seen(&tab, seen, &url);
+                    return Self::answer_refused(
+                        Refusal::TrustedElsewhere(host),
+                        started,
+                        ticket.cmd,
+                        Some(&tab),
+                    );
+                }
                 match shaped {
                     Ok(result) => json!({
                         "ok": true,

@@ -263,6 +263,13 @@ impl Api {
     /// Answers the tab's job.
     pub fn way_out(&self, device: &str, tab: &str, verb: &str) -> Result<String, Refused> {
         let job = self.person_holds(Some(device), tab)?;
+        if verb == c::VERB_PROCEED && self.rec(tab)?.tab.certificate.is_none() {
+            return Err(Refused::new(
+                409,
+                "no_certificate",
+                "This tab isn't stopped at a certificate obid read: there is nothing to go on past.",
+            ));
+        }
         if verb == c::VERB_DIALOG && self.rec(tab)?.tab.dialog.is_none() {
             return Err(Refused::new(
                 409,
@@ -307,6 +314,7 @@ impl Api {
                     computer: c::Computer::this_mac(),
                     ask: None,
                     dialog: None,
+                    certificate: None,
                 },
                 inflight: 0,
                 last_error: None,
@@ -321,6 +329,7 @@ impl Api {
             if et["dialog"] != true {
                 rec.tab.dialog = None;
             }
+            rec.tab.certificate = serde_json::from_value(et["certificate"].clone()).ok();
             rec.tab.state = if et["settling"] == true {
                 c::TabState::TimedOut
             } else if rec.tab.dialog.is_some() || et["dialog"] == true {
@@ -942,5 +951,59 @@ mod tests {
             &json!({"tab-1": "X"}),
         );
         assert_eq!(a.tab("tab-1").unwrap().state, c::TabState::Ready);
+    }
+
+    #[test]
+    fn browser_29_go_on_anyway_needs_the_holding_device_and_a_certificate_obid_read() {
+        let mut a = api();
+        with_tab(&mut a, "j1", "tab-1");
+        assert_eq!(
+            a.way_out("d1", "tab-1", c::VERB_PROCEED)
+                .unwrap_err()
+                .reason,
+            "not_held"
+        );
+        a.take("d1", "tab-1").unwrap();
+        assert_eq!(
+            a.way_out("d2", "tab-1", c::VERB_PROCEED)
+                .unwrap_err()
+                .reason,
+            "not_holder"
+        );
+        let no = a.way_out("d1", "tab-1", c::VERB_PROCEED).unwrap_err();
+        assert_eq!((no.status, no.reason), (409, "no_certificate"));
+        // Stopped at a certificate the engine read: the tab shows it, and Go on anyway may go.
+        a.sync_job(
+            "j1",
+            &[
+                json!({"tab": "tab-1", "url": "chrome-error://chromewebdata/", "current": true,
+                "certificatePage": true, "certificate": {"host": "h", "fingerprint": "f"}}),
+            ],
+            &json!({"tab-1": ""}),
+        );
+        let t = a.tab("tab-1").unwrap();
+        assert_eq!(t.state, c::TabState::Certificate);
+        assert_eq!(
+            t.certificate.as_deref(),
+            Some(&c::Certificate {
+                host: "h".into(),
+                fingerprint: "f".into()
+            })
+        );
+        assert_eq!(a.way_out("d1", "tab-1", c::VERB_PROCEED).unwrap(), "j1");
+        assert!(serde_json::from_value::<c::ProceedBody>(json!({})).is_err());
+        // A page of the web loading lifts it: nothing to go on past.
+        a.sync_job(
+            "j1",
+            &[json!({"tab": "tab-1", "url": "https://h/", "current": true})],
+            &json!({"tab-1": "H"}),
+        );
+        assert!(a.tab("tab-1").unwrap().certificate.is_none());
+        assert_eq!(
+            a.way_out("d1", "tab-1", c::VERB_PROCEED)
+                .unwrap_err()
+                .reason,
+            "no_certificate"
+        );
     }
 }

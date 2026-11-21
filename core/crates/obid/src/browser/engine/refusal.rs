@@ -16,14 +16,25 @@ pub enum Refusal {
     HeldByOther,
     ControlChanged,
     UnknownRef(String),
-    StaleRef { reference: String, why: String },
-    Settling { tool: String },
+    StaleRef {
+        reference: String,
+        why: String,
+    },
+    Settling {
+        tool: String,
+    },
     Expired,
-    TimedOut { ms: u64 },
+    TimedOut {
+        ms: u64,
+    },
     UploadOutsideRoom(String),
     NotGranted,
     Browser(String),
     CertificatePage,
+    /// The page presents a key the person trusted only on another host (BROWSER-29).
+    TrustedElsewhere(String),
+    NoCertificate,
+    CertificateChanged,
 }
 
 impl Refusal {
@@ -46,7 +57,9 @@ impl Refusal {
             Refusal::UploadOutsideRoom(_) => "upload_outside_room",
             Refusal::NotGranted => "not_granted",
             Refusal::Browser(_) => "browser",
-            Refusal::CertificatePage => "certificate_page",
+            Refusal::CertificatePage | Refusal::TrustedElsewhere(_) => "certificate_page",
+            Refusal::NoCertificate => "no_certificate",
+            Refusal::CertificateChanged => "certificate_changed",
         }
     }
 
@@ -93,6 +106,9 @@ impl Refusal {
             }
             Refusal::Browser(why) => why.clone(),
             Refusal::CertificatePage => "This page stopped at a certificate problem (or another of the browser's own error pages); only the person can decide to go on. Reads still work, and so does navigating elsewhere.".into(),
+            Refusal::TrustedElsewhere(host) => format!("This site presents a certificate the person trusted only for {host}; only the person can decide to go on here. Reads still work, and so does navigating elsewhere."),
+            Refusal::NoCertificate => "This tab isn't stopped at a certificate obid read: there is nothing to go on past.".into(),
+            Refusal::CertificateChanged => "The site now presents another certificate than the one shown: look at it again before going on.".into(),
         }
     }
 
