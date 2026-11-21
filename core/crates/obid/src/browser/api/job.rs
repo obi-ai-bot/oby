@@ -19,4 +19,6 @@ pub struct Job {
     /// Whether its browser is up, and why not when it failed.
     pub browser: c::BrowserState,
     pub browser_reason: Option<String>,
+    /// The webview partition its tabs open in (`crate::browser::relay::partition_of`).
+    pub partition: String,
 }

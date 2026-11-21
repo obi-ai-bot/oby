@@ -465,6 +465,19 @@ impl Browsers {
 
     /// A new tab of the conversation's, now its current one.
     pub fn opened(&mut self, conversation: &str, target: &str, url: &str, title: &str) -> String {
+        // The window's tab is made before its page loads (`open_new`), its target its own id: the
+        // open that follows finds it.
+        if let Some(t) = self
+            .tabs
+            .values_mut()
+            .find(|t| t.conversation == conversation && t.target == target)
+        {
+            t.url = url.into();
+            t.title = title.into();
+            let id = t.id.clone();
+            self.current.insert(conversation.into(), id.clone());
+            return id;
+        }
         let id = format!("tab-{}", self.next_tab);
         self.next_tab += 1;
         self.tabs.insert(
@@ -486,6 +499,14 @@ impl Browsers {
             },
         );
         self.current.insert(conversation.into(), id.clone());
+        id
+    }
+
+    /// A tab for the window's browser, made before its page exists (T3 Code's way: the window
+    /// mounts a webview for every agent tab it hears of): its target is its own id.
+    pub fn open_new(&mut self, conversation: &str, url: &str) -> String {
+        let id = format!("tab-{}", self.next_tab);
+        self.opened(conversation, &id, url, "");
         id
     }
 

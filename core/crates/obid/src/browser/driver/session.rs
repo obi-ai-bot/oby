@@ -64,9 +64,10 @@ impl Session {
         home.join("browser").join("jobs").join(job)
     }
 
-    /// The job's downloads, in its profile.
+    /// The job's downloads: `<home>/browser/downloads/<job>/`, the only folder Oby's window saves
+    /// an agent's download into (the window's relay, docs/plans/browser-t3.md).
     pub fn downloads_of(home: &Path, job: &str) -> PathBuf {
-        Self::job_dir(home, job).join("profile").join("Downloads")
+        home.join("browser").join("downloads").join(job)
     }
 
     /// The job's session name.
@@ -109,7 +110,7 @@ impl Session {
             bin: installed.agent_browser.clone(),
             chrome: installed.chrome.clone(),
             home: dir.join("home"),
-            downloads: profile.join("Downloads"),
+            downloads: Self::downloads_of(home, job),
             profile,
             socket_dir: Self::socket_dir_of(home, job),
             idle_timeout: idle_timeout.into(),
@@ -246,7 +247,7 @@ mod tests {
         assert_ne!(s.name, other.name);
         assert_ne!(s.socket_dir, other.socket_dir);
         assert_eq!(s.profile, Path::new("/h/browser/jobs/job-1/profile"));
-        assert_eq!(s.downloads, s.profile.join("Downloads"));
+        assert_eq!(s.downloads, Path::new("/h/browser/downloads/job-1"));
         assert_eq!(s.home, Path::new("/h/browser/jobs/job-1/home"));
         assert!(s.socket_dir.starts_with("/h/b"));
         let flags = s.flags().join(" ");
@@ -254,7 +255,7 @@ mod tests {
             flags.contains("--no-auto-dialog --idle-timeout 10m --executable-path"),
             "{flags}"
         );
-        assert!(flags.contains("--download-path /h/browser/jobs/job-1/profile/Downloads"));
+        assert!(flags.contains("--download-path /h/browser/downloads/job-1"));
     }
 
     #[test]

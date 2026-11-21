@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::Service;
-use super::api::{Refused, browser_up, mcp_refusal, mcp_result};
+use super::api::{Refused, mcp_refusal, mcp_result};
 use super::contract as c;
 use super::driver::Session;
 use super::engine::{self, Actor, DownloadFate, Kind, download_rule};
@@ -45,25 +45,24 @@ impl Service {
             ));
         }
         let actor = Actor::Agent(job.into());
-        // Every tool that reaches a page waits for the job's browser first, within its own
-        // allowance; one that closed itself meanwhile starts again.
+        // Every tool that reaches a page needs Oby's window: its tabs are the window's webviews
+        // (T3 Code's design). With no window the call is refused, never run elsewhere.
         if !matches!(name, "oby_browser_list_tabs" | "oby_browser_ask_person") {
-            if !self.driver().is_live(job).await {
-                self.api(|a| {
-                    if a.job(job)
-                        .is_some_and(|j| j.browser == c::BrowserState::Ready)
-                    {
-                        a.set_browser(job, c::BrowserState::NotStarted, None);
-                    }
-                });
-                self.sync(job);
+            if !self.relay().window() {
+                let (reason, message) = super::relay::RelayError::NoWindow.reason();
+                return mcp_refusal(&Refused::new(409, reason, message));
             }
-            let allowance = Duration::from_millis(c::BROWSER_START_ALLOWANCE_MS);
-            let flush = || self.flush();
-            if let Err(e) =
-                browser_up(self.api_lock(), &**self.driver(), job, allowance, &flush).await
-            {
-                return mcp_refusal(&e);
+            let up = self.api(|a| {
+                let ready = a
+                    .job(job)
+                    .is_some_and(|j| j.browser == c::BrowserState::Ready);
+                if !ready {
+                    a.set_browser(job, c::BrowserState::Ready, None);
+                }
+                ready
+            });
+            if !up {
+                self.flush();
             }
         }
         match name {
@@ -192,12 +191,12 @@ impl Service {
             self.act_event(job, tab.clone(), name, args, c::Outcome::Started, None);
         }
         let begun = {
-            let driver = self.driver();
-            let mut core = driver.core().lock().unwrap_or_else(|e| e.into_inner());
-            core.begin(actor, name, args, room, driver.now_ms())
+            let window = self.window();
+            let mut core = window.core().lock().unwrap_or_else(|e| e.into_inner());
+            core.begin(actor, name, args, room, window.now_ms())
         };
         let v = match begun {
-            Ok(ticket) => self.driver().run(job, &ticket).await,
+            Ok(ticket) => self.window().run(job, &ticket).await,
             Err(r) => r.to_json(),
         };
         if let Some(l) = &lease {

@@ -1,8 +1,8 @@
 {
   "schemaVersion": "2",
-  "name": "POST /v1/browser/tabs/{id}/input",
+  "name": "obid's browser: POST /v1/browser/tabs/{id}/input is retired with obid's own browser and answers 410",
   "version": "1.0.0",
-  "description": "BROWSER-7: device A (d1) holds the agent's tab; device B (d2, registered, its words signed) sends a click and keys on its stream: each is refused 403 not_holder and nothing reaches the page (the field stays empty); A's own click and keys land in the field. Unsigned input is refused 401 unsigned.",
+  "description": "BROWSER-30 (docs/plans/browser-t3.md, the window's browser): the person's input: they use the page in the window's webview. The route stays, answering 410 with `retired`, so an app that still calls it is told, never left hanging (the add-only API).",
   "trigger": {
     "http": {
       "method": "POST",
@@ -16,315 +16,36 @@
       "inputs": {
         "name": "o",
         "owner": "alex",
-        "agent": "fake-harness-jobs",
-        "browser": true
+        "agent": "fake-harness-jobs"
       }
     },
     {
-      "id": "site",
-      "use": "runtime.rust:browser-site",
-      "inputs": {}
-    },
-    {
-      "id": "d1",
-      "use": "runtime.rust:device-pair",
+      "id": "retired",
+      "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
-        "name": "d1"
-      }
-    },
-    {
-      "id": "d2",
-      "use": "runtime.rust:device-pair",
-      "inputs": {
-        "obid": "${state.o}",
-        "name": "d2"
-      }
-    },
-    {
-      "id": "j1",
-      "use": "runtime.rust:browser-job",
-      "inputs": {
-        "obid": "${state.o}"
-      }
-    },
-    {
-      "id": "open",
-      "use": "runtime.rust:browser-mcp",
-      "inputs": {
-        "obid": "${state.o}",
-        "token": "${state.j1.token}",
-        "tool": "oby_browser_open",
-        "args": {
-          "url": "${state.site.url}/"
+        "method": "POST",
+        "path": "/v1/browser/tabs/tab-1/input",
+        "as": "owner",
+        "expect": {
+          "status": 410,
+          "paths": {
+            "reason": "retired",
+            "error": {
+              "$contains": "Oby's window does this now"
+            }
+          }
         },
-        "within": 300,
-        "expect": {
-          "paths": {
-            "isError": false,
-            "structured.ok": true
-          }
-        }
-      }
-    },
-    {
-      "id": "take",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/take",
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200,
-          "paths": {
-            "heldBy": "${state.d1.id}"
-          }
-        }
-      }
-    },
-    {
-      "id": "unsigned",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyDown",
-          "key": "x",
-          "text": "x"
-        },
-        "expect": {
-          "status": 401,
-          "paths": {
-            "reason": "unsigned"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-7"
-        ]
-      }
-    },
-    {
-      "id": "b-press",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
         "body": {
           "type": "mouse",
           "eventType": "mousePressed",
-          "x": "${state.site.name.x}",
-          "y": "${state.site.name.y}",
-          "button": "left",
-          "clickCount": 1
-        },
-        "as": "device",
-        "device": "${state.d2}",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
-          }
+          "x": 1,
+          "y": 1
         }
       },
       "ui": {
         "proves": [
-          "BROWSER-7"
-        ]
-      }
-    },
-    {
-      "id": "b-release",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "mouse",
-          "eventType": "mouseReleased",
-          "x": "${state.site.name.x}",
-          "y": "${state.site.name.y}",
-          "button": "left",
-          "clickCount": 1
-        },
-        "as": "device",
-        "device": "${state.d2}",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-7"
-        ]
-      }
-    },
-    {
-      "id": "b-key",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyDown",
-          "key": "b",
-          "text": "b"
-        },
-        "as": "device",
-        "device": "${state.d2}",
-        "expect": {
-          "status": 403,
-          "paths": {
-            "reason": "not_holder"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-7"
-        ]
-      }
-    },
-    {
-      "id": "nothing-reached",
-      "use": "runtime.rust:browser-read",
-      "inputs": {
-        "obid": "${state.o}",
-        "token": "${state.j1.token}",
-        "tab": "${state.open.structured.result.tab}",
-        "device": "${state.d1}",
-        "selector": "#name",
-        "within": 5,
-        "expect": {
-          "paths": {
-            "value": ""
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-7"
-        ]
-      }
-    },
-    {
-      "id": "a-press",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "mouse",
-          "eventType": "mousePressed",
-          "x": "${state.site.name.x}",
-          "y": "${state.site.name.y}",
-          "button": "left",
-          "clickCount": 1
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200,
-          "paths": {
-            "tabId": "${state.open.structured.result.tab}"
-          }
-        }
-      }
-    },
-    {
-      "id": "a-release",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "mouse",
-          "eventType": "mouseReleased",
-          "x": "${state.site.name.x}",
-          "y": "${state.site.name.y}",
-          "button": "left",
-          "clickCount": 1
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "a-down",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyDown",
-          "key": "a",
-          "text": "a"
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "a-up",
-      "use": "runtime.rust:call",
-      "inputs": {
-        "obid": "${state.o}",
-        "method": "POST",
-        "path": "/v1/browser/tabs/${state.open.structured.result.tab}/input",
-        "body": {
-          "type": "key",
-          "eventType": "keyUp",
-          "key": "a"
-        },
-        "as": "device",
-        "device": "${state.d1}",
-        "expect": {
-          "status": 200
-        }
-      }
-    },
-    {
-      "id": "a-reached",
-      "use": "runtime.rust:browser-read",
-      "inputs": {
-        "obid": "${state.o}",
-        "token": "${state.j1.token}",
-        "tab": "${state.open.structured.result.tab}",
-        "device": "${state.d1}",
-        "selector": "#name",
-        "within": 5,
-        "expect": {
-          "paths": {
-            "value": "a"
-          }
-        }
-      },
-      "ui": {
-        "proves": [
-          "BROWSER-7"
+          "BROWSER-30"
         ]
       }
     }

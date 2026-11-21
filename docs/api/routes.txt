@@ -32,6 +32,8 @@ GET /v1/browser/downloads
 POST /v1/browser/downloads/{id}/saveCopy
 GET /v1/browser/events
 POST /v1/browser/mcp
+GET /v1/browser/relay
+POST /v1/browser/relay
 GET /v1/browser/settings
 PUT /v1/browser/settings
 POST /v1/browser/tabs/{id}/back
