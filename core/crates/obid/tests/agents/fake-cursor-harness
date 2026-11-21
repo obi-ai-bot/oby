@@ -28,6 +28,13 @@ if (process.argv[2] === "models") {
 //   REACH <host>       asks its proxy to tunnel to <host>:443, says "reach: <the proxy's status>";
 //                      "reach: no proxy" with none. DIRECT <ip> says "direct: open|refused" of a
 //                      connection to it straight
+//   READ <path>        reads the file with its own read tool (no request, as Cursor's reads go),
+//                      says "read: <its first line>", "read: missing", or "read: refused" when a
+//                      project's deny rule matches it: as cursor-agent 2026.11.13, each
+//                      `.cursor/cli.json` from its working folder's git root (else the folder) down to
+//                      the folder, `Read(<glob>)` rules, `*` one name and `**` any
+//   EDIT <path>        writes "EDITED" to it with its own edit tool (no request), says "edit:
+//                      written", or "edit: refused" when a project's `Write(<glob>)` rule matches it
 //   PLANT              leaves Cursor's settings, hooks, rules and a shell's start-up file in its
 //                      room and its HOME
 //   LOOK               says "look: <which of those are still there>"
@@ -122,6 +129,31 @@ function plant(root, list) {
   }
 }
 
+// A project's deny rules, as cursor-agent 2026.11.13 finds them (its `.cursor/cli.json` files).
+function denies(kind) {
+  const cwd = process.cwd();
+  let root = cwd;
+  for (let at = cwd; ; at = join(at, "..")) {
+    if (existsSync(join(at, ".git"))) { root = at; break; }
+    if (join(at, "..") === at) break;
+  }
+  const folders = [root];
+  for (const name of cwd.slice(root.length).split("/").filter(Boolean)) folders.push(join(folders.at(-1), name));
+  const rules = [];
+  for (const folder of folders) {
+    const file = join(folder, ".cursor", "cli.json");
+    if (!existsSync(file)) continue;
+    for (const rule of JSON.parse(readFileSync(file, "utf8")).permissions?.deny ?? []) {
+      const found = rule.match(new RegExp(`^\\s*${kind}\\s*\\((.*)\\)\\s*$`));
+      if (found) rules.push(found[1].trim());
+    }
+  }
+  return rules;
+}
+const glob = (pattern) => new RegExp("^" + pattern.split("**").map((part) =>
+  part.split("*").map((bit) => bit.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*") + "$");
+const denied = (kind, path) => denies(kind).some((rule) => glob(rule).test(path));
+
 // What a tunnel through its proxy is told.
 const reach = (host) => new Promise((done) => {
   const proxy = process.env.HTTPS_PROXY;
@@ -188,6 +220,19 @@ async function prompt(id, text) {
   }
   if (last.startsWith("REACH ")) return say(id, `reach: ${await reach(last.slice("REACH ".length))}`);
   if (last.startsWith("DIRECT ")) return say(id, `direct: ${await direct(last.slice("DIRECT ".length))}`);
+  if (last.startsWith("READ ")) {
+    const path = last.slice("READ ".length).trim();
+    if (denied("Read", path)) return say(id, "read: refused");
+    if (!existsSync(path)) return say(id, "read: missing");
+    return say(id, `read: ${readFileSync(path, "utf8").split("\n")[0]}`);
+  }
+  if (last.startsWith("EDIT ")) {
+    const path = last.slice("EDIT ".length).trim();
+    if (denied("Write", path)) return say(id, "edit: refused");
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, "EDITED");
+    return say(id, "edit: written");
+  }
   if (last.startsWith("PLANT")) {
     plant(process.cwd(), PLANTED);
     plant(home, HOME_PLANTED);

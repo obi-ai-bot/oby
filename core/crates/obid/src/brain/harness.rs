@@ -899,10 +899,12 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 /// sandbox, with its own Bash and the owner's settings, skills and MCP servers; and, as an own
 /// Codex job (LANES-13, LANES-18), the owner's Codex conversation on `account` in every mode,
 /// unless it's a ChatGPT login: on its own `CODEX_HOME`, with its own shell under Codex's own
-/// sandbox and approvals as the mode sets them (the owner's "Yes, match T3"). Another Oby's
-/// conversation and Cursor's stay boxed. What it read doesn't move it: its untrusted mark and the
-/// owner's Confirm guard what goes out (CONVO-1). On macOS and Linux alike (LANES-26, the owner's
-/// "Extend the lanes to Linux too"). Decided at each turn.
+/// sandbox and approvals as the mode sets them (the owner's "Yes, match T3"); and, on macOS, the
+/// owner's Cursor conversation (LANES-28), its commands under the owner's own Cursor settings.
+/// Another Oby's conversation stays boxed, and so does Cursor's on Linux until its lane there is
+/// measured. What it read doesn't move it: its untrusted mark and the owner's Confirm guard what
+/// goes out (CONVO-1). On macOS and Linux alike (LANES-26, the owner's "Extend the lanes to Linux
+/// too"). Decided at each turn.
 fn own_lane(
     shared: &Shared,
     tool: Tool,
@@ -925,13 +927,13 @@ fn narrowed(shared: &Shared, launched: crate::permissions::Mode) -> bool {
 const NARROWED: &str =
     "You changed the mode, so this turn ended here. Your next message runs under the new mode.";
 
-/// [`own_lane`]'s choice: the owner's Claude Code conversation, on every OS, and their Codex one
-/// when `codex` may leave the box.
+/// [`own_lane`]'s choice: the owner's Claude Code conversation, on every OS, their Codex one when
+/// `codex` may leave the box, and their Cursor one on macOS (LANES-28).
 fn own_conversation(tool: Tool, from_obys: bool, codex: bool) -> bool {
     let lane = match tool {
         Tool::Claude => true,
         Tool::Codex => codex,
-        Tool::Cursor => false,
+        Tool::Cursor => cfg!(target_os = "macos"),
     };
     lane && !from_obys
 }
@@ -1176,6 +1178,7 @@ pub fn hearer(
             why: Some("No account can talk here yet.".into()),
         };
     };
+    // Cursor's skills aren't read yet, in either lane (crate::skills).
     let own = tool != Tool::Cursor && own_lane(shared, tool, &account, conversation.unwrap_or(""));
     crate::skills::Hearer {
         tool: Some(tool),
@@ -2166,7 +2169,7 @@ async fn attempts(
     let words = crate::vault::for_agent(&with(words))?;
     let first = crate::vault::for_agent(&with(first_prompt(shared, said.trim(), given)))?;
     let first = if tool == Tool::Cursor {
-        super::harness_cursor::first_prompt(shared, tetrix.is_some(), helper, &first)?
+        super::harness_cursor::first_prompt(shared, tetrix.is_some(), helper, &first, own)?
     } else {
         first
     };
@@ -2300,6 +2303,7 @@ async fn attempts(
                         tetrix.as_deref(),
                         token,
                         &resume,
+                        own,
                     )
                     .map_err(Unanswered::cant_start)?;
                     (
@@ -4727,9 +4731,9 @@ mod tests {
     }
 
     /// LANES-12, LANES-26 (docs/contracts/lanes.md): the owner's Claude Code conversation is own,
-    /// on macOS and Linux alike; another Oby's and Cursor's stay boxed. LANES-13: so is the owner's
-    /// Codex conversation in every mode where Codex may leave the box (not a ChatGPT login), never
-    /// another Oby's.
+    /// on macOS and Linux alike; another Oby's stays boxed. LANES-13: so is the owner's Codex
+    /// conversation in every mode where Codex may leave the box (not a ChatGPT login), never
+    /// another Oby's. LANES-28: and the owner's Cursor one on macOS only, never another Oby's.
     #[test]
     fn lanes_12_only_the_owners_claude_conversation_is_own() {
         assert!(own_conversation(Tool::Claude, false, false));
@@ -4737,7 +4741,11 @@ mod tests {
         assert!(!own_conversation(Tool::Codex, false, false));
         assert!(own_conversation(Tool::Codex, false, true));
         assert!(!own_conversation(Tool::Codex, true, true));
-        assert!(!own_conversation(Tool::Cursor, false, true));
+        assert_eq!(
+            own_conversation(Tool::Cursor, false, true),
+            cfg!(target_os = "macos")
+        );
+        assert!(!own_conversation(Tool::Cursor, true, true));
     }
 
     /// LANES-16: when obid stops (`end_all_warm`), an own conversation's waiting session's Claude
@@ -4918,13 +4926,13 @@ mod tests {
             );
         }
         assert!(super::super::harness_codex::OFF.contains(&"shell_tool"));
-        // Every conversation but the owner's own Claude Code, and their own Codex in Bypass on
-        // macOS, is boxed.
+        // Every conversation but the owner's own Claude Code, Codex and, on macOS, Cursor ones
+        // is boxed.
         for (tool, from_obys, codex) in [
             (Tool::Claude, true, true),
             (Tool::Codex, false, false),
             (Tool::Codex, true, true),
-            (Tool::Cursor, false, true),
+            (Tool::Cursor, true, true),
         ] {
             assert!(!own_conversation(tool, from_obys, codex), "{tool:?}");
         }

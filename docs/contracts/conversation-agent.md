@@ -46,6 +46,8 @@ A session can't be picked up on another tool or account, so a turn there starts 
 
 ### Cursor
 
+The owner's own Cursor conversation on macOS runs in the own lane (docs/contracts/lanes.md, LANES-28): on the account's own folder and login, no egress proxy, its shell under the owner's own Cursor settings, its read and edit tools denied obid's secret places by the room's `.cursor/cli.json`. It counts as untrusted from its start as below, and what it plants is gone before its next start. Everything else in this section is a boxed Cursor conversation's: another Oby's, and every one on Linux.
+
 Cursor's own reads and edits never ask and no flag takes its tools away (docs/cursor.md), so Claude Code's and Codex's way of keeping a conversation's agent from reading its login and sending it out can't hold. Instead:
 
 - A turn on Cursor counts from its start as having read something untrusted. Once its session has started, it marks the conversation for the owner's secrets, and that stays after it leaves Cursor; one that never started read nothing and leaves no mark. What the owner asks through Oby's tools there becomes a Confirm card, as after any untrusted read.
@@ -109,10 +111,10 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 - **CONVERSATION-AGENT-3:** The chosen account fills, can't run, or was full when chosen: the turn is answered on another account, any tool (not a ChatGPT login, on or off, without the owner's click), with a line that says so, once, until it answers on that account again or the owner chooses again. The choice stays. Cursor moves off the same way. A turn that already did anything but read stays where it is: nothing runs twice.
 - **CONVERSATION-AGENT-4:** `accountFailover` off: one account only, across tools too, and the turn says why.
 - **CONVERSATION-AGENT-5:** What a conversation read goes with it to another agent: its work starts marked untrusted there.
-- **CONVERSATION-AGENT-6:** Cursor talks: in its box, one session per conversation picked up with `session/load`, its words streaming and never what a load replays, told what it is in its first prompt, with Oby's tools, and the turn's token only in `session/new`. One that can't load gets a new session with the earlier turns handed over.
+- **CONVERSATION-AGENT-6:** Cursor talks: in its box (another Oby's conversation; the owner's own on macOS in the own lane, LANES-28), one session per conversation picked up with `session/load`, its words streaming and never what a load replays, told what it is in its first prompt, with Oby's tools, and the turn's token only in `session/new`. One that can't load gets a new session with the earlier turns handed over.
 - **CONVERSATION-AGENT-7:** A turn on Cursor counts as untrusted from its start, and that stays after it leaves. One that never started leaves no mark. One reached without the owner choosing it says what that costs.
-- **CONVERSATION-AGENT-8:** A conversation's Cursor gets out through the proxy only, to Cursor's own services only; with no such box, choosing it is `422` with `talk-needs-egress-box`.
-- **CONVERSATION-AGENT-9:** Cursor's commands are refused, what it plants is gone before its next start, its login copy goes when the turn ends, and its folder goes with the conversation.
+- **CONVERSATION-AGENT-8:** A boxed conversation's Cursor (another Oby's) gets out through the proxy only, to Cursor's own services only; with no such box, choosing it is `422` with `talk-needs-egress-box`.
+- **CONVERSATION-AGENT-9:** A boxed Cursor's commands are refused (another Oby's conversation; the owner's own runs them under their Cursor settings, LANES-28), what it plants is gone before its next start, its login copy goes when the turn ends, and its folder goes with the conversation.
 - **CONVERSATION-AGENT-10:** Retired: no turn runs unwatched since the conversation supervisor was deleted ([rules-delete-supervisor, obi-ai-bot/oby#1952](https://github.com/obi-ai-bot/oby/pull/1952)).
 - **CONVERSATION-AGENT-11:** An account that's removed is no choice any more: the setting and every conversation's choice are cleared, and that conversation talks on Auto.
 - **CONVERSATION-AGENT-12:** The picker and its list show each account's percentage (the fuller of its week and its session), one held full "Full", one with no figure "No usage" (Cursor's when its read gives none), the dot yellow past 80% and red past 90%, red when held full, and every connected account under its tool.
@@ -132,7 +134,7 @@ The order of accounts and what a turn counts as off are tested in `brain/talk.rs
 ### Test it on a real Mac
 
 1. With Claude Code and Codex connected: open a conversation, click the picker by send, pick Codex. The next answer comes from Codex and knows what was said.
-2. Run `cursor-agent login`, pick Cursor. It answers, `oby_jobs` works, `oby_dispatch` starts a job marked untrusted, and a run of `echo hi` by its own shell is refused.
+2. Run `cursor-agent login`, pick Cursor. It answers, `oby_jobs` works, `oby_dispatch` starts a job marked untrusted, a run of `echo hi` by its own shell runs, and asked to read obid's `vault/secrets.json` with its read tool it's refused (LANES-28).
 3. Fill an account (or mark it full): the chat keeps going on another, and says so once.
 4. Open the message-box account menu on Home and in a conversation. Each account shows its model and reported usage; click a row to open its models to the left. Choose a model: both menus close, the account is chosen and the pill shows its tool and model. Repeat at the window's minimum width.
 5. Give two accounts of the same tool different models. Send a turn and start a task, then restart obid: each uses its own account's model, while Settings' tool defaults stay unchanged. An account with no choice uses the tool default; a retired choice says it is using that default.

@@ -14,6 +14,12 @@
 //!   it can carry what it read out in a search, and obid can't gate that (the contract's known
 //!   limits). Where the box can't hold it to the proxy, it doesn't talk (macOS's Seatbelt does);
 //! - its commands ask, and obid's rule refuses them all: a boxed conversation runs none (CONVO-2).
+//!
+//! The owner's own conversation on macOS runs in the own lane instead (docs/contracts/lanes.md,
+//! LANES-28): unboxed, on the account's own folder and login, no proxy, its commands run as the
+//! owner's user under the owner's own Cursor settings, its file tools denied obid's secret places by
+//! the room's `.cursor/cli.json` (`Jobs::conversation_own_cursor_launch`). Its reads stay unseen, so
+//! it's marked as the boxed one is.
 
 use std::path::{Path, PathBuf};
 
@@ -33,16 +39,21 @@ pub(super) const MARK: &str = "it talked on Cursor, whose own reads obid can't s
 /// What the orientation adds on Cursor, in the first prompt of its session: ACP has no system prompt.
 const ON_CURSOR: &str = "\n\nYou run on Cursor here. Your own shell is refused: you run no commands. You reach only Cursor's own services, not the web: say so when that stops you. Oby can't see what your own tools read, so this conversation counts as having read something untrusted: what the owner asks through Oby's tools may become a Confirm card they answer with one click.";
 
+/// [`ON_CURSOR`] for the owner's own conversation (LANES-28): its shell is its own.
+const ON_OWN_CURSOR: &str = "\n\nYou run on Cursor here, in the owner's own lane: your shell runs as the owner's user, under their own Cursor settings, and Oby's secret files are kept from your file tools. Oby can't see what your own tools read, so this conversation counts as having read something untrusted: what the owner asks through Oby's tools may become a Confirm card they answer with one click.";
+
 /// The first prompt of a Cursor session: what its session has no other way of being told, a
-/// `helper`'s section among it, then `first`.
+/// `helper`'s section among it, then `first`; an `own` one hears that its shell is its own.
 pub(super) fn first_prompt(
     shared: &Shared,
     tetrix: bool,
     helper: Option<&Told>,
     first: &str,
+    own: bool,
 ) -> Result<String, String> {
     let oriented = orientation(shared, tetrix, helper);
-    let told = crate::vault::for_agent(&format!("{oriented}{ON_CURSOR}"))?;
+    let on = if own { ON_OWN_CURSOR } else { ON_CURSOR };
+    let told = crate::vault::for_agent(&format!("{oriented}{on}"))?;
     Ok(format!("{told}\n\n{first}"))
 }
 
@@ -54,6 +65,7 @@ pub(super) fn door(conversation: &str) -> String {
 /// The `cursor-agent acp` to run for one attempt of the turn, and what its session is started with:
 /// `resume`'s when there is one, Oby's server at `url` and Tetrix's at `tetrix` with the turn's
 /// `token`, which goes over its stdin and never in an argument, its environment or a file of obid's.
+/// An `own` one runs in the own lane (LANES-28), with no door.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn launch(
     shared: &Shared,
@@ -64,21 +76,35 @@ pub(super) fn launch(
     tetrix: Option<&str>,
     token: &str,
     resume: &Option<String>,
+    own: bool,
 ) -> Result<(Launch, crate::acp::Options), String> {
-    let temp = temp_for(&place.cursor, conversation)?;
+    // Its sockets go under its folder: the login copy's, or an own one's account folder (LANES-28).
+    let folder = match own {
+        true => (account.config_dir.clone())
+            .or_else(crate::jobs::login_home)
+            .ok_or("obid can't find the home Cursor's login is in.")?,
+        false => place.cursor.clone(),
+    };
+    let temp = temp_for(&folder, conversation)?;
     crate::secrets::known().learn(
         &format!("conversation {} MCP token", place.folder.display()),
         token,
     );
-    let launch = shared.jobs.conversation_cursor_launch(
-        account,
-        &place.room,
-        &temp,
-        &place.cursor,
-        vec![place.repos.clone()],
-        place.folder.join("agent.log"),
-        &door(conversation),
-    )?;
+    let stderr = place.folder.join("agent.log");
+    let launch = match own {
+        true => shared
+            .jobs
+            .conversation_own_cursor_launch(account, &place.room, &temp, stderr)?,
+        false => shared.jobs.conversation_cursor_launch(
+            account,
+            &place.room,
+            &temp,
+            &place.cursor,
+            vec![place.repos.clone()],
+            stderr,
+            &door(conversation),
+        )?,
+    };
     let mut options = options(&account.name, url, tetrix, token, resume);
     let offered = shared
         .jobs

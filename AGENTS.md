@@ -44,8 +44,8 @@ Oby dispatches the user's agents and joins them to the Obysphere, not competing 
 
 So work runs in two lanes, step by step in [docs/contracts/lanes.md](docs/contracts/lanes.md) (LANES-1 to 18, some still proposed) and run by run in "Logins and secrets".
 
-- In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code and Codex job and conversation of the owner's own, on macOS and Linux (LANES-26, LANES-18, LANES-13), but Codex on a ChatGPT login.
-- In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work on a ChatGPT login, and every Cursor job and conversation.
+- In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code and Codex job and conversation of the owner's own, on macOS and Linux (LANES-26, LANES-18, LANES-13), but Codex on a ChatGPT login, and their Cursor conversation on macOS (LANES-28).
+- In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work on a ChatGPT login, every Cursor job, and every Cursor conversation but the owner's own on macOS.
 - `claudeOwnSandbox` is accepted and ignored (LANE-9). Each step changes those rules in the same pull request.
 - `jobs.rs` may only shrink (`jobs_rs_limit` in `scripts/oby-check.sh`); a raise of it comes in a pull request of its own, a `# payback:` line directly above it naming the issue or task whose cut repays it (docs/contracts/ci.md, CI-39 to 41). The Rust core's total lines are reported, never limited ([why](docs/decisions/2026-11-16-obid-lines-reported.md)).
 - obid's tests may only lose `thread::sleep`/`time::sleep` calls (`tests_sleep_limit` in `scripts/oby-check.sh`, docs/contracts/ci.md): a test waits for state with `support::within`.
@@ -154,7 +154,7 @@ Claude Code in the own lane:
 - It runs under the owner's own settings, sandbox, hooks and permissions, as their terminal does; obid refuses nothing they hold, only pins its git and no-publish variables and denies file tools its secrets ([why](docs/decisions/2026-11-16-own-lane-trusts-the-cli.md)).
 - obid answers what Claude Code asks it, by the job's mode; an unsandboxed command reaches what the owner's user can.
 - On macOS and Linux the owner's own Claude Code conversation runs the same way (LANES-12, LANES-26); an untrusted read keeps it in the own lane and marks it (CONVO-1).
-- Another Oby's conversation, Codex's and Cursor's (CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy.
+- Another Oby's conversation, Codex's, Cursor's on Linux (CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy; the owner's own Cursor conversation on macOS runs on its own login, its file tools denied obid's secret places, its shell under their Cursor settings (LANES-28).
 - obid's own git calls in a worktree are pinned to the job's git folders as obid checked them.
 
 Codex:

@@ -143,6 +143,24 @@ cursor-agent --sandbox disabled acp
   before Cursor starts. (obid asks with a card, as for its hooks, and Bypass answers it: BYPASS-9.)
 - A repository's hooks wait for the owner's yes before Cursor starts (obid only): see below.
 
+### The owner's own conversation (obid only, LANES-28)
+
+The owner's own Cursor conversation on macOS runs `cursor-agent acp` unboxed, with no `--sandbox`, on the
+account's own folder and login (docs/contracts/lanes.md, LANES-28). Measured with cursor-agent 2026.11.13 on
+macOS, the owner's own login, settings only in the working folder's `.cursor/`:
+
+- Cursor reads a project's `.cursor/cli.json` from every folder between its working folder's git root (else
+  the folder) and the folder, beside the user's `~/.cursor/cli-config.json`. Its `permissions.deny`
+  `Read(<glob>)` rules stop its read tool and `Write(<glob>)` rules its edit tool ("Permission denied", nothing
+  written), matched on the path as given, and a deny beats every allow.
+- Those rules don't reach its shell: with `--sandbox enabled` (the read boundary `system`, its default),
+  `cat` of a denied file prints it. A per-repo `.cursor/sandbox.json` `{"readBoundary": "workspace"}` (it
+  wins over the user's) refuses a command's read outside the workspace, the user's home too
+  (`~/.zshenv` sourcing `~/.cargo/env` fails), and Cursor then asks to retry with no limits.
+- So obid writes the room's `.cursor/cli.json` with `Read` and `Write` denies of its secret places and leaves
+  the shell to the owner's Cursor settings, as an own Claude Code conversation's Bash is left to theirs.
+
+### A repository's hooks
 ### A repository's hooks
 
 Cursor runs hooks from the workspace's `.cursor/hooks.json` and, while "Include third-party

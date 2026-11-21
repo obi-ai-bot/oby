@@ -72,10 +72,10 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `AGENTS.md`: So work runs in two lanes, step by step in [docs/contracts/lanes.md](docs/contracts/lanes.md) (LANES-1 to 18, some still proposed) and run by run in "Logins and secrets".
 
 ### L45
-- `AGENTS.md`: In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code and Codex job and conversation of the owner's own, on macOS and Linux (LANES-26, LANES-18, LANES-13), but Codex on a ChatGPT login.
+- `AGENTS.md`: In the **own lane**, work the owner asked for runs on their own login under the CLI's own sandbox, with no login copy (LANE-1, LANES-12). It holds every Claude Code and Codex job and conversation of the owner's own, on macOS and Linux (LANES-26, LANES-18, LANES-13), but Codex on a ChatGPT login, and their Cursor conversation on macOS (LANES-28).
 
 ### L46
-- `AGENTS.md`: In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work on a ChatGPT login, and every Cursor job and conversation.
+- `AGENTS.md`: In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. Until their steps land, that is another Oby's job or conversation, one marked `untrusted`, Oby's own review, Codex work on a ChatGPT login, every Cursor job, and every Cursor conversation but the owner's own on macOS.
 
 ### L47
 - `AGENTS.md`: `claudeOwnSandbox` is accepted and ignored (LANE-9). Each step changes those rules in the same pull request.
@@ -357,7 +357,7 @@ Every line of the root `AGENTS.md` at `3ff84b79` that states a rule (each bullet
 - `core/AGENTS.md`: On macOS and Linux, an owner's own Claude Code conversation runs the same way (LANES-12, LANES-26): on their own Claude Code login with no copy, its file tools denied obid's secret places, the stored threads and its room's `repos/`. Reading something untrusted keeps it in the own lane and marks it (CONVO-1).
 
 ### L177
-- `core/AGENTS.md`: Another Oby's conversation, Codex's and Cursor's (no shell, CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy.
+- `core/AGENTS.md`: Another Oby's conversation, Codex's, Cursor's on Linux (no shell, CONVO-2) and the brain's planner (CONVO-5) stay boxed with a login copy. The owner's own Cursor conversation on macOS runs on the account's own folder and login, its file tools denied obid's secret places by the room's `.cursor/cli.json`, its shell under the owner's own Cursor settings (LANES-28).
 
 ### L178
 - `core/AGENTS.md`: obid's own git calls in a worktree are pinned to the job's git folders as obid checked them.

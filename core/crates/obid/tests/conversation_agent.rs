@@ -77,6 +77,22 @@ fn obid(name: &str) -> (Folder, Obid) {
     (folder, obid)
 }
 
+/// [`obid`], holding a conversation another Oby started (ASK-16), whose Cursor stays in Oby's box
+/// (LANES-28): where the box's own tests talk. Its id.
+fn obid_boxed(name: &str) -> (Folder, Obid, String) {
+    let folder = Folder::new(name);
+    let id = uuid::Uuid::new_v4().to_string();
+    let thread = json!({"id": id, "title": "Questions from other Obys", "pinned": false,
+        "created": "2026-11-10T00:00:00Z", "sequence": 1, "turns": [], "foreign": null,
+        "readUntrusted": true, "fromObys": true});
+    let dir = folder.0.join("home/conversations");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{id}.json")), thread.to_string()).unwrap();
+    let config = configured(&folder);
+    let obid = start(&folder.0, &config, None);
+    (folder, obid, id)
+}
+
 /// CONVERSATION-AGENT-22: usage reads also refresh each account's CLI model list; status adds
 /// `models` when it differs; PATCH accepts an id from that list.
 #[test]
@@ -315,13 +331,18 @@ fn recorded(path: &Path) -> Vec<Value> {
 /// What the Cursor stand-in recorded of each prompt, in its short folder under `logins/`.
 #[cfg(target_os = "macos")]
 fn cursor_turns(obid: &Obid) -> Vec<Value> {
-    std::fs::read_dir(obid.home.join("logins"))
+    let mut turns: Vec<Value> = std::fs::read_dir(obid.home.join("logins"))
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("t-"))
         .flat_map(|e| recorded(&e.path().join("turns.jsonl")))
-        .collect()
+        .collect();
+    // An own conversation's Cursor keeps them in its account's own folder (LANES-28).
+    turns.extend(recorded(
+        &obid.home.join("accounts").join(CURSOR).join("turns.jsonl"),
+    ));
+    turns
 }
 
 /// What Codex's stand-in recorded in `conversation`'s own config folder (Claude Code's records
@@ -1107,16 +1128,17 @@ fn conversation_agent_5_what_it_read_goes_with_it_to_another_agent() {
     );
 }
 
-/// Cursor talks as the others do: in its room and box, one session per conversation picked up with
-/// `session/load`, its words streaming (never what a load replays), told what it is in its first
-/// prompt, with Oby's tools, and the turn's token only in `session/new`.
+/// Cursor talks as the others do: in its room and, another Oby's, its box, one session per
+/// conversation picked up with `session/load`, its words streaming (never what a load replays),
+/// told what it is in its first prompt, with Oby's tools, and the turn's token only in
+/// `session/new`.
 #[cfg(target_os = "macos")]
 #[test]
 fn conversation_agent_6_cursor_talks_with_obys_tools_and_keeps_its_session() {
-    let (_folder, obid) = obid("talk-cursor");
+    let (_folder, obid, id) = obid_boxed("talk-cursor");
     let events = follow_events(&obid);
-    let first = said(&obid, json!({"said": "HELLO", "new": true}));
-    let id = conversation(&first);
+    let first = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert_eq!(first.status, 200, "{}", first.text);
     assert_eq!(listed(&obid, &id)["talkedOn"], CLAUDE);
     choose(&obid, &id, json!(CURSOR));
 
@@ -1212,9 +1234,7 @@ fn conversation_agent_7_a_cursor_that_never_started_leaves_no_mark() {
 #[cfg(target_os = "macos")]
 #[test]
 fn conversation_agent_41_a_cursor_conversation_answers_whatever_the_homes_length() {
-    let (_folder, obid) = obid("talk-cursor-sockets");
-    let first = said(&obid, json!({"said": "HELLO", "new": true}));
-    let id = conversation(&first);
+    let (_folder, obid, id) = obid_boxed("talk-cursor-sockets");
     choose(&obid, &id, json!(CURSOR));
     let data = obid.home.join("logins").join(format!("t-{}", &id[..8]));
     assert!(
@@ -1347,14 +1367,12 @@ fn conversation_agent_7_cursor_counts_as_untrusted_from_its_first_turn() {
     assert_eq!(job(&obid, &back)["untrusted"], true, "{}", back.text);
 }
 
-/// A conversation's Cursor gets out through obid's proxy only, and it lets through only Cursor's
-/// own services: what it read has nowhere to go.
+/// A boxed conversation's Cursor (another Oby's) gets out through obid's proxy only, and it lets
+/// through only Cursor's own services: what it read has nowhere to go.
 #[cfg(target_os = "macos")]
 #[test]
 fn conversation_agent_8_cursor_reaches_only_its_own_services() {
-    let (_folder, obid) = obid("talk-cursor-egress");
-    let first = said(&obid, json!({"said": "REMEMBER", "new": true}));
-    let id = conversation(&first);
+    let (_folder, obid, id) = obid_boxed("talk-cursor-egress");
     choose(&obid, &id, json!(CURSOR));
     let elsewhere = said(
         &obid,
@@ -1371,14 +1389,13 @@ fn conversation_agent_8_cursor_reaches_only_its_own_services() {
     assert_ne!(text(&direct), "direct: open", "{}", direct.text);
 }
 
-/// Cursor's commands ask, and obid's rule refuses every one: a boxed conversation runs none
-/// (CONVO-2). Its edits don't ask, so what it plants for its next run goes before that run.
+/// A boxed Cursor's commands ask (another Oby's conversation), and obid's rule refuses every one: a
+/// boxed conversation runs none (CONVO-2). Its edits don't ask, so what it plants for its next run
+/// goes before that run.
 #[cfg(target_os = "macos")]
 #[test]
 fn conversation_agent_9_cursors_commands_are_refused_and_what_it_plants_goes() {
-    let (_folder, obid) = obid("talk-cursor-plants");
-    let first = said(&obid, json!({"said": "REMEMBER", "new": true}));
-    let id = conversation(&first);
+    let (_folder, obid, id) = obid_boxed("talk-cursor-plants");
     choose(&obid, &id, json!(CURSOR));
     let shell = said(&obid, json!({"said": "SHELL echo hi", "conversation": id}));
     assert_eq!(text(&shell), "shell: reject-once", "{}", shell.text);
@@ -1406,6 +1423,95 @@ fn conversation_agent_9_cursors_commands_are_refused_and_what_it_plants_goes() {
         204
     );
     assert!(!talk.exists());
+}
+
+/// LANES-28: the owner's own Cursor conversation, on macOS, runs in the own lane: unboxed, on its
+/// account's own folder and login with no copy, no egress proxy and no `--sandbox` of obid's, so its
+/// commands run as the owner's user under their own Cursor settings; a command it asks about is
+/// answered as an own Claude Code conversation's Bash is, and it hears that its shell is its own.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_28_an_own_cursor_conversation_runs_its_commands_in_its_own_lane() {
+    let (_folder, obid) = obid("talk-cursor-own");
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    choose(&obid, &id, json!(CURSOR));
+    let shell = said(&obid, json!({"said": "SHELL echo hi", "conversation": id}));
+    assert_eq!(text(&shell), "shell: allow-once", "{}", shell.text);
+    let reach = said(
+        &obid,
+        json!({"said": "REACH example.com", "conversation": id}),
+    );
+    assert_eq!(text(&reach), "reach: no proxy", "{}", reach.text);
+    let turns = cursor_turns(&obid);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert_eq!(turns[0]["argv"], json!(["acp"]), "{turns:?}");
+    let home = turns[0]["home"].as_str().unwrap();
+    assert!(
+        Path::new(home).ends_with(Path::new("accounts").join(CURSOR)),
+        "its account's own folder, no login copy: {turns:?}"
+    );
+    let prompt = turns[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("in the owner's own lane"), "{prompt}");
+    assert!(!prompt.contains("Your own shell is refused"), "{prompt}");
+}
+
+/// LANES-28: an own Cursor conversation's file tools are denied obid's secret places by the room's
+/// `.cursor/cli.json`, which obid writes as each session starts and Cursor reads from its working
+/// folder (the stand-in finds and keeps it as cursor-agent 2026.11.13 does): its read tool can't
+/// read them, its edit tool can't write them nor that file; the room it reads and writes. What its
+/// shell reads is the owner's settings' to keep, not obid's.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_28_an_own_cursor_conversations_file_tools_are_denied_obids_secret_places() {
+    let (_folder, obid) = obid("talk-cursor-own-denied");
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    choose(&obid, &id, json!(CURSOR));
+    let ask = |words: String| text(&said(&obid, json!({"said": words, "conversation": id})));
+    let token = obid.home.join("api-token");
+    assert!(token.exists());
+    assert_eq!(ask(format!("READ {}", token.display())), "read: refused");
+    let planted = obid.home.join("vault/planted.json");
+    assert_eq!(ask(format!("EDIT {}", planted.display())), "edit: refused");
+    assert!(!planted.exists());
+    let room = obid.home.join("conversations").join(&id).join("room");
+    let settings = room.join(".cursor/cli.json");
+    assert_eq!(ask(format!("EDIT {}", settings.display())), "edit: refused");
+    let notes = room.join("notes.txt");
+    assert_eq!(ask(format!("EDIT {}", notes.display())), "edit: written");
+    assert_eq!(ask(format!("READ {}", notes.display())), "read: EDITED");
+    let rules: Value = serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+    let deny = rules["permissions"]["deny"].as_array().unwrap();
+    for rule in
+        ["Read", "Write"].map(|tool| format!("{tool}({}/**)", obid.home.join("vault").display()))
+    {
+        assert!(deny.contains(&json!(rule)), "{rule}: {deny:?}");
+    }
+}
+
+/// LANES-28: what's in the room's `.cursor` place as a session starts goes, a link without what it
+/// leads to: obid writes only the room's own folder, never the one a link names (the account's).
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_28_a_link_in_the_rooms_cursor_place_is_never_followed() {
+    let (folder, obid) = obid("talk-cursor-own-link");
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    choose(&obid, &id, json!(CURSOR));
+    let hello = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert_eq!(text(&hello), "Hello there.", "{}", hello.text);
+    let room = obid.home.join("conversations").join(&id).join("room");
+    let theirs = folder.0.join("their-cursor");
+    std::fs::create_dir_all(&theirs).unwrap();
+    std::fs::remove_dir_all(room.join(".cursor")).unwrap();
+    std::os::unix::fs::symlink(&theirs, room.join(".cursor")).unwrap();
+    let again = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert_eq!(text(&again), "Hello there.", "{}", again.text);
+    assert_eq!(
+        std::fs::read_dir(&theirs).unwrap().count(),
+        0,
+        "written through the link"
+    );
+    let place = std::fs::symlink_metadata(room.join(".cursor")).unwrap();
+    assert!(place.is_dir() && room.join(".cursor/cli.json").exists());
 }
 
 /// Cursor fills or can't run: Oby moves off it as off any other.

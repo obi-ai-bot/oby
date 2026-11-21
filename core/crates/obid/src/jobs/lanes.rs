@@ -312,6 +312,101 @@ impl Jobs {
         })
     }
 
+    /// An own Cursor conversation's session (crate::brain::harness_cursor, LANES-28), on macOS:
+    /// unboxed by obid, with no egress proxy and no login copy, on `account`'s own folder and login
+    /// (a `configDir`'s, as [`acp::cursor::environment`] names it; else the person's own `~/.cursor`
+    /// and Keychain login, with their `HOME`), the owner's shell's environment, in `room`. No
+    /// `--sandbox` of obid's: its commands run as the owner's user under the owner's own Cursor
+    /// settings, as an own Claude Code conversation's Bash does under theirs (LANES-23, the
+    /// owner's own-lane decision of 2026-11-16). Its file tools are denied obid's secret places by
+    /// the room's `.cursor/cli.json` ([`Self::cursor_room_settings`]), written as it starts; the
+    /// account's own folder is never written.
+    pub fn conversation_own_cursor_launch(
+        &self,
+        account: &crate::config::Account,
+        room: &Path,
+        temp: &Path,
+        stderr: PathBuf,
+    ) -> Result<Launch, String> {
+        let sandbox =
+            (self.sandbox.as_ref()).map_err(|why| format!("obid can't run Cursor: {why}"))?;
+        let bin = (self.agent_bin(Tool::Cursor)).ok_or("obid can't find Cursor's binary.")?;
+        self.cursor_room_settings(room)?;
+        let mut extra = process::no_publish_env(temp);
+        match &account.config_dir {
+            Some(folder) => extra.extend(acp::cursor::environment(folder)),
+            None => {
+                let home = login_home().ok_or("obid can't find the home Cursor's login is in.")?;
+                extra.push(("HOME", home.into_os_string()));
+            }
+        }
+        let mut env = process::sandbox_env(&process::tools_path(), temp, &extra);
+        let owners = process::login_env().map(|env| owners_for(Tool::Cursor, env));
+        process::with_owners(&mut env, &owners.unwrap_or_default());
+        Ok(Launch {
+            own_sandbox: true,
+            group: None,
+            argv: sandbox.unboxed(&acp::cursor::own_argv(bin)),
+            env,
+            cwd: room.to_path_buf(),
+            stderr,
+        })
+    }
+
+    /// The room's `.cursor/cli.json`, written before each own Cursor session (LANES-28): Read and
+    /// Write deny rules ([`Self::cursor_denials`]) that Cursor's own read and edit tools keep,
+    /// whatever the owner's settings allow. Cursor reads a project's `cli.json` from each folder
+    /// between the git root and its working folder: the room is in no repository, so it reads the
+    /// room's. Its place is emptied before each run (crate::brain::harness, `scrub`); whatever is
+    /// there still, a link too, goes and is never followed: only the room's own folder is
+    /// written, never the account's.
+    pub(crate) fn cursor_room_settings(&self, room: &Path) -> Result<PathBuf, String> {
+        let folder = room.join(".cursor");
+        let why =
+            |e: std::io::Error| format!("obid can't write Cursor's settings in the room: {e}");
+        match std::fs::symlink_metadata(&folder) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => std::fs::remove_file(&folder).map_err(why)?,
+            Err(_) => {}
+        }
+        crate::store::make_private_dir(&folder).map_err(why)?;
+        if !std::fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
+            return Err(
+                "obid can't write Cursor's settings in the room: its .cursor isn't a folder".into(),
+            );
+        }
+        let file = folder.join("cli.json");
+        let settings = json!({"permissions": {"allow": [], "deny": self.cursor_denials(room)}});
+        crate::store::write_private(&file, settings.to_string().as_bytes()).map_err(why)?;
+        Ok(file)
+    }
+
+    /// Cursor's deny rules for an own conversation whose room is `room` (LANES-28): `Read` and
+    /// `Write` of every place an own Claude Code conversation's file tools are denied
+    /// ([`Self::conversation_secret_places`]), and `Write` of the room's own `.cursor`, so no edit
+    /// takes them away. cursor-agent 2026.11.13 matches each as a glob on the path as given (`*`
+    /// one name, `**` what a folder holds) and a deny beats every allow. Its shell isn't held by
+    /// them (measured): it runs under the owner's own Cursor settings.
+    fn cursor_denials(&self, room: &Path) -> Vec<String> {
+        let mut rules = Vec::new();
+        let mut add = |tools: &[&str], path: &Path| {
+            let path = path.to_string_lossy();
+            for tool in tools {
+                rules.push(format!("{tool}({path})"));
+                rules.push(format!("{tool}({path}/**)"));
+            }
+        };
+        for path in self.conversation_secret_places(room) {
+            add(&["Read", "Write"], &path);
+        }
+        let real_room = room.canonicalize().unwrap_or_else(|_| room.to_path_buf());
+        add(&["Write"], &room.join(".cursor"));
+        if real_room != room {
+            add(&["Write"], &real_room.join(".cursor"));
+        }
+        rules
+    }
+
     /// What an own conversation's commands reach (LANES-12, LANES-13): they write `room` and
     /// `temp`, but not `frozen` in the room, nor the room's own settings, MCP servers and
     /// instructions; they read nothing of obid's home, the person's or any account's folder.

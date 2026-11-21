@@ -1092,6 +1092,13 @@ pub mod cursor {
         ]
     }
 
+    /// `cursor-agent acp` for an own conversation (docs/contracts/lanes.md, LANES-28): no
+    /// `--sandbox` of obid's, so the owner's own Cursor settings decide whether its commands run
+    /// in Cursor's sandbox, as in their terminal.
+    pub fn own_argv(bin: PathBuf) -> Vec<OsString> {
+        vec![bin.into_os_string(), "acp".into()]
+    }
+
     /// The account's own folders: its login lives under them, and the probe proved two accounts
     /// stay apart only with all three (docs/cursor.md, "Login isolation").
     pub fn environment(home: &Path) -> Vec<(&'static str, OsString)> {
