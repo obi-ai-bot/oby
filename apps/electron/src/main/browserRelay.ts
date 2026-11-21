@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from 'node:path';
+import { appPage, pageOk } from './pageRule';
 
 // The relay between obid's agents and the page in the window (docs/plans/browser-t3.md, as T3 Code
 // does it: packages/contracts/src/desktopBrowser.ts). obid sends page-level CDP for a tab on its
@@ -73,9 +74,18 @@ export interface Guest {
   downloadsTo(folder: string | null): void;
 }
 
-// Page-level CDP only (T3 fakes a browser for Playwright; obid speaks to the page itself): any other
-// domain, or a command for a session, never reaches the debugger.
-export const DOMAINS = new Set(['Page', 'Runtime', 'DOM', 'DOMSnapshot', 'Accessibility', 'Input', 'Network', 'Emulation', 'Log']);
+// The CDP methods obid sends (T3 fakes a browser for Playwright; obid speaks to the page itself),
+// plus main's own Emulation.setFocusEmulationEnabled: any other method, or a command for a session,
+// never reaches the debugger. BROWSERAPP-29 keeps it in step with obid's sources.
+export const METHODS: ReadonlySet<string> = new Set([
+  'Page.enable', 'Page.setDownloadBehavior', 'Page.navigate', 'Page.handleJavaScriptDialog', 'Page.captureScreenshot',
+  'Page.getNavigationHistory', 'Page.navigateToHistoryEntry', 'Page.reload',
+  'Runtime.evaluate', 'Runtime.callFunctionOn',
+  'DOM.scrollIntoViewIfNeeded', 'DOM.getContentQuads', 'DOM.resolveNode', 'DOM.focus', 'DOM.setFileInputFiles',
+  'Input.dispatchMouseEvent', 'Input.dispatchKeyEvent', 'Input.insertText',
+  'Accessibility.getFullAXTree',
+  'Emulation.setDeviceMetricsOverride', 'Emulation.setEmulatedMedia', 'Emulation.setFocusEmulationEnabled',
+]);
 /** a message bigger than this ends the tab's relay, as T3's does (CdpRelay.ts, 64 MB) */
 export const MAX_MESSAGE = 64 * 1024 * 1024;
 /** how long main waits before sending a relay again after obid didn't take it */
@@ -143,12 +153,11 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     const { id, method } = m as { id: number; method: string };
     const params = m.params && typeof m.params === 'object' ? m.params as Record<string, unknown> : undefined;
     if (m.sessionId !== undefined) return refuse(t, id, 'Oby relays the page itself, never a session of it.');
-    const domain = method.split('.')[0];
-    if (!DOMAINS.has(domain)) return refuse(t, id, `Oby relays page-level CDP only: ${domain} isn't one of its domains.`);
+    if (!METHODS.has(method)) return refuse(t, id, `Oby relays only the CDP methods obid sends: ${method} isn't one of them.`);
+    if (method === 'Page.navigate' && (!pageOk(params?.url) || appPage(params?.url))) return refuse(t, id, 'Oby loads only web pages, never its own: Page.navigate needs an http(s) address or about:blank.');
     try {
       let result: unknown = {};
       if (method === 'Page.reload') t.guest.reload();
-      else if (method === 'Page.stopLoading') t.guest.stop();
       else if (method === 'Page.setDownloadBehavior') {
         // downloads go where obid says, inside its own folder, and nowhere else
         if (params?.behavior === 'allow' && insideDownloads(options.home, params.downloadPath)) t.guest.downloadsTo(resolve(params.downloadPath as string));
