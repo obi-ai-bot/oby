@@ -17,7 +17,9 @@ export const SHOWN = 4;
 // newest to-do list and its last lines while it works, each a short line as it happens; ended, its last
 // words (what changed, the test run, the commit, the result) with the lines before them folded. Long
 // words fold behind Show more, as T3 Code's do. The card above it stays progress only.
-export default function TaskLog({ task }: { task: Task }) {
+// said: the owner's words in the thread around it; words told it that are there already show once,
+// there, as the owner's message (#2787)
+export default function TaskLog({ task, said }: { task: Task; said?: ReadonlySet<string> }) {
   const entries = useEntries(task.id);
   const [open, setOpen] = useState(false);
   const atWork = task.status === 'running' || task.status === 'needs';
@@ -25,8 +27,8 @@ export default function TaskLog({ task }: { task: Task }) {
   const j = task.job, agent = agentOf(j.agent);
   const plan = atWork ? entries.filter((e) => e.kind === 'plan').at(-1) : undefined;
   // what it was told to start with is the conversation's already (Oby's answer that started it): the
-  // words told it since stay
-  const all = entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start');
+  // words told it since stay, but those the thread shows as the owner's message already
+  const all = entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start' && !(e.kind === 'you' && said?.has(e.text.trim())));
   const told = all.findIndex((e) => e.kind !== 'you');
   const lines = told < 0 ? [] : all.slice(told);
   // ended: its last words are its result, shown whole; the rest folds

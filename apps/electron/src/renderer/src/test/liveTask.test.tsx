@@ -206,6 +206,27 @@ describe('a task at work', () => {
     expect(Object.keys(page.boxes)).toEqual(['Reply to Oby']);
   });
 
+  it('LIVETASK-5: words sent once to steer it show once, as the owner\'s message; words told it from elsewhere stay in its lines', async () => {
+    stub();
+    const { default: ChatView } = await import('../ChatView');
+    const { replaceTasks } = await import('../tasks');
+    const { SESSIONS } = await import('../session');
+    const steer = 'For that task: also end the line with a period.';
+    // the agent's transcript holds the words obid told it, between its steps
+    SESSIONS.j1 = [tool('Read', 'a.ts'), { kind: 'you', text: steer, at: '1:51 PM' }, { kind: 'you', text: 'Keep the title short.', at: '1:52 PM' }, tool('Edited', 'b.ts')];
+    replaceTasks([await taskOf('j1')]);
+    page.chats = [{ id: 'c1', title: 'One fix', said: [
+      { who: 'you', text: 'fix it', ago: 5 }, { who: 'oby', text: 'On it.', ago: 4, jobs: ['j1'] },
+      { who: 'you', text: steer, ago: 2 }, { who: 'oby', text: 'I told it to end the line with a period.', ago: 1 },
+    ] } satisfies Chat];
+    const none = () => {};
+    const html = read(renderToStaticMarkup(<ChatView kind="oby" id="c1" leaving={false} onBack={none} onGone={none} />));
+    expect(html.split(`>${steer}<`).length - 1).toBe(1);
+    expect(logOf(html, 'Fix the login test')).not.toContain(steer);
+    // what the thread doesn't show (told it from its card, on another device) stays among its lines
+    expect(logOf(html, 'Fix the login test')).toContain('>Keep the title short.<');
+  });
+
   it('LIVETASK-6: thinking shows only what its tool gave', async () => {
     const thought = (more: Partial<TranscriptEntry>) => sessionOf([wire(1, { kind: 'thought', summary: 'Thinking', state: undefined, ...more })])[0] as Extract<Entry, { kind: 'thought' }>;
     const { log } = await views([thought({ state: 'running' }), thought({ state: 'done', seconds: 8 }), thought({ state: 'done', text: 'Only the project file.' })]);
