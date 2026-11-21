@@ -244,6 +244,20 @@ fn browser_18_a_follow_up_whose_earlier_job_is_gone_gets_no_browser() {
     stop_with_no_browser_left(&mut obid);
 }
 
+/// The owner's review saved by an obid from before its start mark (`someone_elses_code`), marked
+/// `foreign` alone, is someone else's code once read again: it gets no browser, whether or not its
+/// worktree is there to find who wrote it (BROWSER-18).
+#[test]
+fn browser_18_a_review_saved_before_its_start_mark_gets_no_browser() {
+    let folder = Folder::new("browser-18-saved-review");
+    let (mut obid, token) = seeded_job(&folder, "eeee1818", |job| {
+        job.kind = "review".into();
+        job.foreign = Some("as it started, someone else wrote in pull request #90".into());
+    });
+    refused_as_foreign(&obid, &token);
+    stop_with_no_browser_left(&mut obid);
+}
+
 /// One request as obid-spec's client sends it: its head, then its body in a write of its own,
 /// then everything obid answers until it closes. A reset, while writing or reading, is an error.
 fn refused_whole(

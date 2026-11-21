@@ -37,24 +37,73 @@ impl Jobs {
     /// what anyone else wrote there reached it then, even if it's gone by its check. `shown` is
     /// what obid quoted of its issue for this run.
     pub(super) async fn authors_as_it_starts(&self, job: &Job, shown: Option<&Value>, when: &str) {
-        let Some(gh) = crate::github::gh() else {
-            let why = format!("obid had no gh to ask who wrote what it works from {when}");
-            self.mark(&job.id, why, false);
-            return;
-        };
+        Box::pin(self.authors_asking(crate::github::gh(), job, shown, when)).await;
+    }
+
+    /// [`Jobs::authors_as_it_starts`], asking `gh`, or none when obid has none.
+    async fn authors_asking(
+        &self,
+        gh: Option<PathBuf>,
+        job: &Job,
+        shown: Option<&Value>,
+        when: &str,
+    ) {
         // Never asked again: a comment deleted in between would clear a job it reached. The
         // owner's review of a pull request anyone else wrote in reads someone else's code
         // (MERGING-36), a member's too.
-        if let Some((why, members)) = self.others_wrote(&gh, job, shown).await {
-            self.mark(
-                &job.id,
-                format!("{when}, {why}"),
-                members && !job.read_only(),
-            );
-            // Oby's browser reads this start mark, never a page read's (BROWSER-18).
-            if job.read_only() {
-                self.update(&job.id, |job| job.someone_elses_code = true);
-            }
+        let found = match gh {
+            None => Some((
+                format!("obid had no gh to ask who wrote what it works from {when}"),
+                false,
+            )),
+            Some(gh) => (self.others_wrote(&gh, job, shown).await)
+                .map(|(why, members)| (format!("{when}, {why}"), members)),
+        };
+        let Some((why, members)) = found else { return };
+        self.mark(&job.id, why, members && !job.read_only());
+        // Oby's browser reads this start mark, never a page read's (BROWSER-18).
+        if job.read_only() {
+            self.update(&job.id, |job| job.someone_elses_code = true);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BROWSER-18: the owner's review whose authors obid couldn't ask, with no gh, is someone
+    /// else's code from its start, as one anyone else wrote in is: Oby's browser reads that mark.
+    #[tokio::test]
+    async fn browser_18_a_review_obid_had_no_gh_to_ask_about_is_someone_elses_code() {
+        let root = std::env::temp_dir().join(format!("obid-authors-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        let mut job = Job::new(
+            "aaaa1818".into(),
+            "o/r".into(),
+            "review".into(),
+            "Review it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.pr = Some(90);
+        std::fs::write(
+            home.join("jobs/aaaa1818.json"),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://127.0.0.1:9/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, Events::new(), Err("no sandbox".into())).unwrap();
+        jobs.authors_asking(None, &job, None, "as it started").await;
+        let marked = jobs.get("aaaa1818").unwrap();
+        assert!(marked.foreign.is_some(), "{marked:?}");
+        assert!(marked.someone_elses_code, "{marked:?}");
+        let _ = std::fs::remove_dir_all(root);
     }
 }
