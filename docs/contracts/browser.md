@@ -33,16 +33,16 @@ The business behavior contract for Oby's browser in obid: the engine that drives
 - **The live stream** sends the newest frame only: a slow reader drops frames, never queues them.
 - **Events.** Every change is one event with a `seq`; `GET /v1/browser` and `GET /v1/browser/downloads` carry the last `seq` they reflect, so a reader never takes a list older than an event it applied. A reader reconnecting with `Last-Event-ID` gets what it missed while obid holds it (2000 events).
 - **Every agent, both lanes.** Every job's agent is given obid's browser server, whatever its tool, account or lane, while the first switch is on. Every other outside MCP tool stays refused ([permissions](permissions.md), `policy::fixed_denial_as`).
-- **The foreign lane.** A job's origin comes from obid's own records (the incoming exchange whose `job` is this job), never from what a request says. Another Oby's task, or one marked `untrusted`, gets a browser in Oby's box (`box-<job>`), apart from the owner's: it opens only `http` and `https` pages, never `file:`, browser-internal pages or the host's own services on loopback (`outside_box`), and its Chrome runs behind the box's egress proxy ([why](../decisions/2026-11-19-the-browser.md)).
+- **The foreign lane.** A job's origin comes from obid's own records (the incoming exchange whose `job` is this job), never from what a request says. Another Oby's task, or one marked `untrusted`, gets a browser in Oby's box: its tabs open in the window in the partition `oby-box-<job>`, apart from every agent's, and its open and navigate reach only `http` and `https` pages, never `file:`, browser-internal pages or the host's own services on loopback (`outside_box`) ([why](../decisions/2026-11-19-the-browser.md)). Still proposed: holding a page's own redirects and links at the same edge, in the window's partition.
 - **Asks** go to the host's own devices only; another owner's device can't take a tab or answer one.
 - **What goes back** through the Sphere passes the secret scan first; a finding, or a scanner that can't run, sends nothing with text ("Non-negotiable").
 
 ### Failures and recovery
 
-- agent-browser or Chrome missing: obid downloads it; a download that fails or doesn't match its pin: the tool answers `browser` with why, and nothing runs (BROWSER-23).
-- A browser that died: its job's next tool starts it again under the allowance; its tabs are gone (`tabClosed`).
-- A job that ends: its token dies, its browser and every process it started stop, its tabs leave the list.
-- obid restarting: browsers left from before are stopped; no tab survives a restart.
+- No window following the relay: an agent's page tool is refused `no_window` at once, and nothing runs anywhere else (BROWSER-31).
+- The window's relay drops: every call waiting on it fails `no_window`, its tabs are detached, and a window that follows again gets only new commands.
+- A job that ends: its token dies, its tabs are released in the window and leave the list.
+- obid restarting: no tab survives a restart.
 
 ## Interfaces and dependencies
 

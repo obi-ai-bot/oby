@@ -19,7 +19,7 @@ An error is `{"error": "<a sentence>", "reason": "<one of the reasons below>"}`.
            "ask": null, "dialog": null, "partition": "persist:oby-agent-codex"}],
  "settings": {"agentsUseBrowser": true, "agentsUseMac": true},
  "browsers": [{"job": "j1", "agent": "codex", "state": "ready", "reason": null,
-               "origin": {"kind": "obi", "peer": "obi-b", "peerOwner": "ben"}, "name": "box-j1"}],
+               "origin": {"kind": "obi", "peer": "obi-b", "peerOwner": "ben"}}],
  "seq": 42}
 ```
 
