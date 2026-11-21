@@ -8,6 +8,7 @@
 //! ([`carried`], ARTIFACTS-24, 25), never worked out from state that changes after they were
 //! made. It writes nothing but under the folder it is given.
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
@@ -17,6 +18,7 @@ use nix::errno::Errno;
 use nix::fcntl::{OFlag, open, openat};
 use nix::sys::stat::{Mode, mkdirat};
 
+use super::blobs::BLOB_PREFIX;
 use super::{Artifact, Artifacts, Kind, Marks, extension, is_dir, metadata, open_in, plain};
 
 /// The entry `version` of `artifact` is laid out under, from obid's own data only: a folder named
@@ -67,11 +69,12 @@ pub fn carried(artifact: &Artifact, upto: u32) -> Marks {
             (None, Some("owner")) => Marks::default(),
             (None, _) => Marks {
                 foreign: Some(UNRECORDED.into()),
-                reached: None,
+                ..Marks::default()
             },
         };
         carried.foreign = carried.foreign.or(marks.foreign);
         carried.reached = carried.reached.or(marks.reached);
+        carried.unproxied |= marks.unproxied;
     }
     carried
 }
@@ -91,12 +94,14 @@ impl Artifacts {
         let kept = (artifact.versions.iter())
             .find(|v| v.version == version)
             .ok_or_else(|| format!("artifact {id} has no version {version}."))?;
-        let kept_in = open(
-            &self.version_path(id, version),
+        // The store, the artifact's folder and the version's, each opened inside the one before.
+        let store = open(
+            &self.dir,
             OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_RDONLY | OFlag::O_CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|e| format!("version {version} can't be opened ({e})."))?;
+        .map_err(|e| format!("the artifacts can't be opened ({e})."))?;
+        let kept_in = open_folder(&open_folder(&store, &artifact.id)?, &version.to_string())?;
         let dev = metadata(&kept_in)?.dev();
         let read = |file: &str| read_kept(&kept_in, dev, file);
         let into = open(
@@ -112,8 +117,19 @@ impl Artifacts {
         mkdirat(&into, entry, Mode::from_bits_truncate(0o700))
             .map_err(|e| format!("{entry} can't be made ({e})."))?;
         let root = open_folder(&into, entry)?;
-        for file in kept.files.iter().filter(|f| !steers(f)) {
-            let (folders, name) = file.rsplit_once('/').unwrap_or(("", file));
+        // A design's uploads go back where Claude Design named them, `_blob/<id>`, so its next
+        // version keeps them under the same aliases (crate::artifacts::blobs, `ingest`).
+        let alias: BTreeMap<&str, String> = (kept.blobs.iter())
+            .map(|(id, file)| (file.as_str(), format!("{BLOB_PREFIX}{id}")))
+            .collect();
+        for file in kept.files.iter() {
+            let to = alias
+                .get(file.as_str())
+                .map_or(file.as_str(), String::as_str);
+            if steers(to) {
+                continue;
+            }
+            let (folders, name) = to.rsplit_once('/').unwrap_or(("", to));
             let mut at: Option<OwnedFd> = None;
             for part in folders.split('/').filter(|p| !p.is_empty()) {
                 let parent = at.as_ref().unwrap_or(&root);

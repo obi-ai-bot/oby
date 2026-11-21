@@ -147,18 +147,29 @@ pub struct Version {
 /// The marks a version's maker had as it made it (ARTIFACTS-24, 25), as `crate::jobs::Jobs::mark`
 /// takes them: `foreign`, someone else's text (an untrusted or foreign job, Oby's turn after it
 /// read something untrusted or off obid's allowlist, an import); `reached`, a job that reached
-/// past the package registries. Both none: the owner's own work.
+/// past the package registries; `unproxied`, a job that ran with no egress proxy. All none: the
+/// owner's own work, run behind obid's proxy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Marks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reached: Option<String>,
+    /// Its job ran with no egress proxy of obid's (LANE-3a, `Job::ran_unproxied`): a job it
+    /// reaches gets none of the declared secrets for its check, and is marked nothing else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unproxied: bool,
 }
 
 impl Marks {
     pub fn is_empty(&self) -> bool {
-        self.foreign.is_none() && self.reached.is_none()
+        !self.taints() && !self.unproxied
+    }
+
+    /// Whether what it carries is someone else's text or a reach past the registries, which
+    /// makes a turn it reaches one that read something untrusted; an unproxied run alone doesn't.
+    pub fn taints(&self) -> bool {
+        self.foreign.is_some() || self.reached.is_some()
     }
 }
 

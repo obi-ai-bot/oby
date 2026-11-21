@@ -2138,7 +2138,7 @@ async fn attempts(
     // (ARTIFACTS-24, 25): it read something untrusted, before any of them is in the room.
     let open = session.control.artifact().map(|open| {
         if (shared.artifacts.get(&open.id))
-            .is_none_or(|a| !crate::artifacts::seed::carried(&a, open.version).is_empty())
+            .is_none_or(|a| crate::artifacts::seed::carried(&a, open.version).taints())
         {
             session.taint();
         }

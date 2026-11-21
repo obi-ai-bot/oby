@@ -118,6 +118,18 @@ impl Jobs {
             if let Some(why) = marks.reached {
                 self.mark(id, why, true);
             }
+            // LANE-3a's: no declared secrets for its check, and no other mark; saved, or nothing
+            // of it is copied.
+            if marks.unproxied
+                && !(self.update(id, |job| job.ran_unproxied = true))
+                    .is_some_and(|j| j.ran_unproxied)
+            {
+                tracing::warn!(
+                    "job {id}: artifact {} isn't laid out: its job couldn't be kept",
+                    one.id
+                );
+                continue;
+            }
             if there {
                 if owned {
                     seeded.push(one);

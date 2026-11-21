@@ -1114,7 +1114,7 @@ async fn artifact(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
                 foreign: shaped.then(|| {
                     "an artifact's files Oby's turn made after it read something untrusted".into()
                 }),
-                reached: None,
+                ..Default::default()
             },
         })
         .await?;

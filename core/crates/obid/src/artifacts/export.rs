@@ -479,7 +479,7 @@ impl Artifacts {
                         kept: None,
                         marks: Marks {
                             foreign: Some(FROM_OUTSIDE.into()),
-                            reached: None,
+                            ..Marks::default()
                         },
                     },
                     Some(Origin::import(from)),
