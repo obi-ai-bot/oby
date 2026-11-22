@@ -23,6 +23,11 @@ export const ALLOW_ONCE = 'Allow once';
 // job, the one message whose words needn't be the text a click held (docs/runner-api.md)
 export const TRY_AGAIN_LABEL = 'Try again';
 export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
+// The artifact pane's Ask to fix (docs/contracts/artifacts-app.md, ARTIFACTSAPP-24, WORDS-24): this
+// label also stands for its fix words to Oby, as the said words of words that aren't an answer, the
+// page's error going with them as an attached file, never in the words
+export const ASK_TO_FIX = 'Ask to fix';
+export const FIX_WORDS = 'The preview shows an error, in the attached file. Fix the artifact so it draws.';
 
 // The yes to work nobody's watching using a ChatGPT login (docs/contracts/chatgpt-sign-in.md): this
 // button's label, its own so a click on any other button (a permission's Allow) can't stand for it.
@@ -193,11 +198,12 @@ export function owners(method: string, path: string, body: unknown, held: string
     if (!n) return null;
     if (answers && i === 0 && earlier.some((e) => norm(e) === n)) continue;
     const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
+    const fix = i === 0 && w === FIX_WORDS && !answers && method === 'POST' && path.split('?')[0] === '/v1/plans';
     const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
     const take = w === TAKE_CONTROL && /\/take$/.test(path.split('?')[0]);
     const skip = w === SKIP && BROWSER_ANSWER.test(path.split('?')[0]);
     const code = i === 0 && method === 'POST' && path.split('?')[0] === COMPUTER_ADD;
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h))) || (code && digitsOf(h) === n)));
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (fix && norm(h) === norm(ASK_TO_FIX)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h))) || (code && digitsOf(h) === n)));
     if (at < 0) return null;
     used.push(at);
   }
