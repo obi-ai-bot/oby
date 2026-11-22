@@ -17,17 +17,23 @@ const VENDORED: Record<string, string> = {
   'react-dom/client': '/__csb_vendor/react-dom/client.mjs',
   'lucide-react': '/__csb_vendor/lucide-react/lucide-react.mjs',
 };
-/** An error's words wrap, never cut off at the frame's edge. */
-const WRAP = 'pre{white-space:pre-wrap}';
+/** What the frame posts its host page once React's first render, or an error, has drawn (ARTIFACTSAPP-18). */
+export const RENDERED = 'oby:rendered';
+/** An error's words wrap and sit inset from the frame's edge, never cut off at it. */
+const ERROR = 'padding:16px;margin:0;white-space:pre-wrap';
+const WRAP = `pre{${ERROR}}`;
 /** What a stylesheet's import gets: nothing, its file linked from the head instead. */
 const EMPTY = '/__oby_empty.js';
 
-// App's default export mounted in #root; any error's own text in a <pre>
+// App's default export mounted in #root, committed at once; any error's own text in a <pre>; either
+// tells the host page one frame later
 const MOUNT = `import { createElement } from 'react';
+import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-const shown = (e) => { const pre = document.createElement('pre'); pre.style.whiteSpace = 'pre-wrap'; pre.textContent = e instanceof Error ? e.message : String(e); document.body.replaceChildren(pre); };
+const drawn = () => { requestAnimationFrame(() => { parent.postMessage(${JSON.stringify(RENDERED)}, '*'); }); };
+const shown = (e) => { const pre = document.createElement('pre'); pre.style.cssText = ${JSON.stringify(ERROR)}; pre.textContent = e instanceof Error ? e.message : String(e); document.body.replaceChildren(pre); drawn(); };
 window.onerror = (message, _source, _line, _column, error) => { shown(error ?? message); };
-import('/App.js').then((app) => { createRoot(document.getElementById('root'), { onUncaughtError: shown }).render(createElement(app.default)); }, shown);`;
+import('/App.js').then((app) => { flushSync(() => { createRoot(document.getElementById('root'), { onUncaughtError: shown }).render(createElement(app.default)); }); drawn(); }, shown);`;
 
 /** The files the preview shows for a React artifact's version, every path from `/`. */
 export function reactShown(v: Version): Shown {

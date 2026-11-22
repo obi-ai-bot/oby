@@ -127,3 +127,12 @@ it('artifactsapp_14_a_compile_error_shows_its_message_and_runs_nothing', () => {
   expect(index).not.toContain('<script');
   expect(index).not.toContain('<b>');
 });
+
+it('artifactsapp_14_the_error_text_is_inset', () => {
+  const inset = /padding:16px;margin:0;white-space:pre-wrap/;
+  const broken = code(showable({ kind: 'html', title: 'Broken', files: { 'App.tsx': { text: 'export default function App() { return <h1>; }' } } })['/index.html']);
+  expect(/<style>pre\{([^}]*)\}<\/style>/.exec(broken)![1]).toMatch(inset);
+  const index = code(showable({ kind: 'html', title: 'Card', files: { 'App.tsx': { text: APP } } })['/index.html']);
+  expect(/pre\.style\.cssText = "([^"]*)"/.exec(index)![1]).toMatch(inset);
+  expect(/<style>(.*?)<\/style>/s.exec(index)![1]).not.toMatch(/pre/);
+});
