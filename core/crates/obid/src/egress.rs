@@ -11,9 +11,14 @@
 //! A plain `http://` request is decided the same way, for its host on its port, and forwarded
 //! alone: one request per connection, its `Host` the address's, the job's token taken out
 //! ([`plain`]).
+//!
+//! A foreign job's box pages in the window get a door of their own, the browser's
+//! ([`Egress::open_browser`]): its sites are decided as the agent's are, and it reaches none of the
+//! host's own network, the address checked once the name resolves ([`door_refuses`]).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -40,11 +45,33 @@ pub struct Egress {
 /// One job worker's way out: whose it is, its tunnels open now, and what it may reach.
 struct Door {
     job: String,
-    /// Its repository's setup's ([`Egress::open_setup`]): what it reaches is a reach only.
-    setup: bool,
+    kind: Kind,
     open: usize,
     /// By site, once decided, and held while it's being decided.
     sites: HashMap<String, Reached>,
+}
+
+/// Whose a door is: the job's agent's, its repository's setup's ([`Egress::open_setup`]: what it
+/// reaches is a reach only), or its box pages' in the window ([`Egress::open_browser`]), with the
+/// host's listener ports it refuses on any address.
+#[derive(Clone, Debug, PartialEq)]
+enum Kind {
+    Agent,
+    Setup,
+    Browser(Vec<u16>),
+}
+
+impl Kind {
+    /// The same kind of door, whatever ports a browser's refuses.
+    fn is(&self, other: &Kind) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+/// Why the browser door's connection didn't go: the host's own network, or nothing answered.
+enum Unconnected {
+    HostsOwn,
+    Unreached,
 }
 
 /// A site's answer for a job: none until decided.
@@ -140,22 +167,30 @@ impl Egress {
     /// asked for and learned as a secret, so whatever repeats it is masked everywhere; it lets
     /// nothing through once [`Egress::close`] ran, and what was decided for it goes with it.
     pub fn open(&self, id: &str) -> String {
-        self.door(id, false)
+        self.door(id, Kind::Agent)
     }
 
     /// The proxy job `id`'s repository's setup is given (PUBLISHING-23): a token of its own, so
     /// what the setup reaches, the owner's line, is a reach only, never someone else's code, and
     /// none of it is the agent's. It lets nothing through once [`Egress::close_setup`] ran.
     pub fn open_setup(&self, id: &str) -> String {
-        self.door(id, true)
+        self.door(id, Kind::Setup)
     }
 
-    fn door(&self, id: &str, setup: bool) -> String {
+    /// The proxy job `id`'s box pages in the window are held to (BROWSER-18), which main sets on
+    /// the job's box partition: a token of its own, learned as a secret, its sites decided as its
+    /// agent's are; it reaches none of the host's own network nor its `listeners`' ports on any
+    /// address ([`door_refuses`]). It lets nothing through once [`Egress::close`] ran.
+    pub fn open_browser(&self, id: &str, listeners: Vec<u16>) -> String {
+        self.door(id, Kind::Browser(listeners))
+    }
+
+    fn door(&self, id: &str, kind: Kind) -> String {
         let mut doors = self.doors();
         let token = doors
             .iter()
             .find_map(|(token, door)| {
-                (door.job == id && door.setup == setup).then(|| token.clone())
+                (door.job == id && door.kind.is(&kind)).then(|| token.clone())
             })
             .unwrap_or_else(|| {
                 let token = format!(
@@ -163,16 +198,16 @@ impl Egress {
                     uuid::Uuid::new_v4().simple(),
                     uuid::Uuid::new_v4().simple()
                 );
+                crate::secrets::known().learn(&secret_name(id, &kind), &token);
                 doors.insert(
                     token.clone(),
                     Door {
                         job: id.to_owned(),
-                        setup,
+                        kind,
                         open: 0,
                         sites: HashMap::new(),
                     },
                 );
-                crate::secrets::known().learn(&secret_name(id, setup), &token);
                 token
             });
         format!("http://oby:{token}@127.0.0.1:{}", self.port)
@@ -180,15 +215,17 @@ impl Egress {
 
     /// Job `id`'s setup ended: its token lets nothing through any more, whatever it left running.
     pub fn close_setup(&self, id: &str) {
-        self.doors().retain(|_, door| door.job != id || !door.setup);
-        crate::secrets::known().forget(&secret_name(id, true));
+        self.doors()
+            .retain(|_, door| door.job != id || door.kind != Kind::Setup);
+        crate::secrets::known().forget(&secret_name(id, &Kind::Setup));
     }
 
     /// Job `id`'s worker ended: its token lets nothing through any more.
     pub fn close(&self, id: &str) {
         self.doors().retain(|_, door| door.job != id);
-        crate::secrets::known().forget(&secret_name(id, false));
-        crate::secrets::known().forget(&secret_name(id, true));
+        for kind in [Kind::Agent, Kind::Setup, Kind::Browser(Vec::new())] {
+            crate::secrets::known().forget(&secret_name(id, &kind));
+        }
     }
 
     /// The sites job `id`'s agent reaches without asking again, until its worker ends: the owner
@@ -270,7 +307,10 @@ impl Egress {
         jobs: &Jobs,
     ) -> Result<(), String> {
         let decided = self.decide_site(token, job, host, port, plain, jobs).await;
-        let setup = self.doors().get(token).is_some_and(|door| door.setup);
+        let setup = self
+            .doors()
+            .get(token)
+            .is_some_and(|door| door.kind == Kind::Setup);
         if decided.is_ok() {
             mark_reach(jobs, job, host, port, setup);
         }
@@ -402,16 +442,39 @@ impl Egress {
             refuse(&mut client, "403 Forbidden", &why).await;
             return;
         }
-        // ponytail: no address filter once the name resolves; the macOS box reaches loopback
-        // anyway. Linux's box (#616's next step) needs one against 10.0.2.2's host loopback.
-        let Some((mut upstream, before)) = self.connect(&host, port).await else {
-            refuse(
-                &mut client,
-                "502 Bad Gateway",
-                &format!("obid's proxy couldn't reach {host}:{port}."),
-            )
-            .await;
-            return;
+        let listeners = self.doors().get(&token).and_then(|door| match &door.kind {
+            Kind::Browser(listeners) => Some(listeners.clone()),
+            _ => None,
+        });
+        let connected = match &listeners {
+            Some(listeners) => self.browser_connect(&host, port, listeners).await,
+            // ponytail: the agent's and the setup's doors have no address filter once the name
+            // resolves (the browser door has one); the macOS box reaches loopback anyway. Linux's
+            // box (#616's next step) needs one against 10.0.2.2's host loopback.
+            None => self
+                .connect(&host, port)
+                .await
+                .ok_or(Unconnected::Unreached),
+        };
+        let (mut upstream, before) = match connected {
+            Ok(connected) => connected,
+            Err(Unconnected::HostsOwn) => {
+                tracing::debug!("egress: job {job}'s box page refused {host}:{port}");
+                let why = format!(
+                    "{host}:{port} is on this Mac or its network, which a task's box page never reaches."
+                );
+                refuse(&mut client, "403 Forbidden", &why).await;
+                return;
+            }
+            Err(Unconnected::Unreached) => {
+                refuse(
+                    &mut client,
+                    "502 Bad Gateway",
+                    &format!("obid's proxy couldn't reach {host}:{port}."),
+                )
+                .await;
+                return;
+            }
         };
         if !tunnel {
             // One plain request, as it came but for the proxy's own headers, its body exactly
@@ -444,7 +507,7 @@ impl Egress {
             return;
         }
         // Nothing goes on but TLS whose hello names this very host.
-        let Some(hello) = read_hello(&mut client, early, &host).await else {
+        let Some(hello) = read_hello(&mut client, early, &host, listeners.is_some()).await else {
             tracing::debug!("egress: job {job}'s tunnel to {host}:{port} didn't name it");
             return;
         };
@@ -471,26 +534,54 @@ impl Egress {
                     .ok()
                     .map(|s| (s, Vec::new()));
             };
-            let mut stream = TcpStream::connect((up.host.as_str(), up.port)).await.ok()?;
-            let login = up
-                .login
-                .as_ref()
-                .map(|l| format!("Proxy-Authorization: Basic {l}\r\n"))
-                .unwrap_or_default();
-            stream
-                .write_all(
-                    format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n{login}\r\n")
-                        .as_bytes(),
-                )
-                .await
-                .ok()?;
-            let (answer, before) = read_head(&mut stream, Duration::from_secs(15)).await?;
-            (answer.split(' ').nth(1) == Some("200")).then_some((stream, before))
+            through(&up, host, port).await
         };
         tokio::time::timeout(Duration::from_secs(15), connect)
             .await
             .ok()
             .flatten()
+    }
+
+    /// The browser door's connection to `host:port` (BROWSER-18): straight, the name resolved
+    /// once, refused whole when any address it has is the host's own network or one of its
+    /// `listeners`' ports ([`door_refuses`]), else to one of those very addresses; or through the
+    /// proxy obid itself is behind, refused by its name ([`upstream_refuses`]). Within 15 s, as
+    /// [`Egress::connect`].
+    async fn browser_connect(
+        &self,
+        host: &str,
+        port: u16,
+        listeners: &[u16],
+    ) -> Result<(TcpStream, Vec<u8>), Unconnected> {
+        let upstream = self.upstream().await.filter(|up| !up.skips(host));
+        let name = host.trim_start_matches('[').trim_end_matches(']');
+        let connect = async {
+            if let Some(up) = upstream {
+                // ponytail: behind an upstream obid can't see the address a name resolves to, so
+                // a public name for a private address passes; the upgrade is to resolve first and
+                // send the upstream the checked address.
+                if upstream_refuses(host, port, listeners) {
+                    return Err(Unconnected::HostsOwn);
+                }
+                return through(&up, host, port).await.ok_or(Unconnected::Unreached);
+            }
+            let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((name, port))
+                .await
+                .map_err(|_| Unconnected::Unreached)?
+                .collect();
+            if addresses.iter().any(|to| door_refuses(*to, listeners)) {
+                return Err(Unconnected::HostsOwn);
+            }
+            for to in addresses {
+                if let Ok(stream) = TcpStream::connect(to).await {
+                    return Ok((stream, Vec::new()));
+                }
+            }
+            Err(Unconnected::Unreached)
+        };
+        tokio::time::timeout(Duration::from_secs(15), connect)
+            .await
+            .unwrap_or(Err(Unconnected::Unreached))
     }
 
     /// The proxy obid itself is behind: its own `HTTPS_PROXY`, else, on macOS, the system's
@@ -510,6 +601,85 @@ impl Egress {
             (Some(Instant::now()), now.clone());
         now
     }
+}
+
+/// A tunnel to `host:port` through the proxy obid is behind, and what that proxy sent past its
+/// answer, for the client.
+async fn through(up: &Upstream, host: &str, port: u16) -> Option<(TcpStream, Vec<u8>)> {
+    let mut stream = TcpStream::connect((up.host.as_str(), up.port)).await.ok()?;
+    let login = up
+        .login
+        .as_ref()
+        .map(|l| format!("Proxy-Authorization: Basic {l}\r\n"))
+        .unwrap_or_default();
+    stream
+        .write_all(
+            format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n{login}\r\n")
+                .as_bytes(),
+        )
+        .await
+        .ok()?;
+    let (answer, before) = read_head(&mut stream, Duration::from_secs(15)).await?;
+    (answer.split(' ').nth(1) == Some("200")).then_some((stream, before))
+}
+
+/// Whether `ip` is the host's own network: loopback, unspecified, private, shared, link-local,
+/// benchmarking, multicast or reserved, an IPv4 address written as IPv6 read as itself. Ported
+/// from T3 Code's `isPrivateIpv4Address`, `isSpecialPurposeIpv4Address`'s `>= 224` and
+/// `isPrivateNetworkHost` (pingdotgg/t3code@304cf149
+/// packages/shared/src/hostClassification.ts:56-67, 95-118), with IPv6 multicast too.
+fn host_network(ip: IpAddr) -> bool {
+    let v4 = |v4: std::net::Ipv4Addr| {
+        let [a, b, _, _] = v4.octets();
+        matches!(a, 0 | 10 | 127 | 224..)
+            || (a == 100 && (64..=127).contains(&b))
+            || (a == 172 && (16..=31).contains(&b))
+            || (a == 192 && b == 168)
+            || (a == 169 && b == 254)
+            || (a == 198 && (b == 18 || b == 19))
+    };
+    match ip {
+        IpAddr::V4(ip) => v4(ip),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(mapped) => v4(mapped),
+            None => {
+                let [first, second, ..] = v6.octets();
+                v6.is_unspecified()
+                    || v6.is_loopback()
+                    || first & 0xfe == 0xfc
+                    || (first == 0xfe && second & 0xc0 == 0x80)
+                    || first == 0xff
+            }
+        },
+    }
+}
+
+/// Whether the browser door refuses a connection to `to`: the host's own network
+/// ([`host_network`]), or one of the host's `listeners`' ports (obid's, its gateway's, the
+/// `direct` ones) on any address.
+fn door_refuses(to: std::net::SocketAddr, listeners: &[u16]) -> bool {
+    host_network(to.ip()) || listeners.contains(&to.port())
+}
+
+/// Whether the browser door refuses `host:port` behind an upstream proxy, where the name isn't
+/// resolved: one of the `listeners`' ports, an address of the host's own network, or a private
+/// name (T3's `isPrivateNetworkHost`: `localhost`, `.localhost`, `.local`, `home.arpa`, and a
+/// name with no dot).
+fn upstream_refuses(host: &str, port: u16, listeners: &[u16]) -> bool {
+    let name = host.trim_start_matches('[').trim_end_matches(']');
+    if listeners.contains(&port) {
+        return true;
+    }
+    if let Ok(ip) = name.parse::<IpAddr>() {
+        return host_network(ip);
+    }
+    let name = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name.ends_with(".local")
+        || name == "home.arpa"
+        || name.ends_with(".home.arpa")
+        || !name.contains('.')
 }
 
 /// A tunnel of a door's, counted while it's open.
@@ -731,8 +901,16 @@ async fn read_head(client: &mut TcpStream, wait: Duration) -> Option<(String, Ve
 }
 
 /// The client's TLS hello, whole, when it names `host` ([`hello_fits`]): `early` and what comes
-/// after it, within [`HELLO_WAIT`] and [`HELLO_CAP`]. None for anything else.
-async fn read_hello(client: &mut TcpStream, early: Vec<u8>, host: &str) -> Option<Vec<u8>> {
+/// after it, within [`HELLO_WAIT`] and [`HELLO_CAP`]. None for anything else. On the browser door
+/// (`browser`) an Encrypted Client Hello extension is let through: only the window's Chromium holds
+/// that door's token, and behind a proxy it resolves no name, so it has no site's ECH key and the
+/// extension it always sends is GREASE (seen 2026-11-22, Electron's hello through a proxy).
+async fn read_hello(
+    client: &mut TcpStream,
+    early: Vec<u8>,
+    host: &str,
+    browser: bool,
+) -> Option<Vec<u8>> {
     let mut bytes = early;
     let read = async {
         let mut chunk = [0u8; 4096];
@@ -751,6 +929,10 @@ async fn read_hello(client: &mut TcpStream, early: Vec<u8>, host: &str) -> Optio
         }
     };
     let named = tokio::time::timeout(HELLO_WAIT, read).await.ok()??;
+    let named = Named {
+        ech: named.ech && !browser,
+        ..named
+    };
     hello_fits(&named, host).then_some(bytes)
 }
 
@@ -1166,10 +1348,11 @@ pub(crate) mod hello {
 }
 
 /// The name a door's token is learned by as a secret.
-fn secret_name(id: &str, setup: bool) -> String {
-    match setup {
-        true => format!("job {id} setup proxy token"),
-        false => format!("job {id} proxy token"),
+fn secret_name(id: &str, kind: &Kind) -> String {
+    match kind {
+        Kind::Setup => format!("job {id} setup proxy token"),
+        Kind::Agent => format!("job {id} proxy token"),
+        Kind::Browser(_) => format!("job {id} browser proxy token"),
     }
 }
 
@@ -1522,5 +1705,246 @@ mod tests {
         );
         let up = Upstream::from_url("http://proxy.corp:3128", ["*"].into_iter()).unwrap();
         assert!(up.skips("example.com"));
+    }
+
+    /// `Jobs` on a scratch home holding job `id` (repository `o/r`, in `mode`), its file written
+    /// before they open with these saved rules, and obid's proxy deciding for it.
+    fn proxied_job(id: &str, mode: &str, rules: Vec<crate::permissions::Rule>) -> Arc<Egress> {
+        let root = std::env::temp_dir().join(format!("obid-egress-{id}-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        let mut job = crate::job::Job::new(
+            id.into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = crate::job::Status::Running;
+        job.mode = Some(mode.into());
+        let file = home.join(format!("jobs/{id}.json"));
+        std::fs::write(file, serde_json::to_vec(&job).unwrap()).unwrap();
+        let kept = crate::permissions::Kept {
+            mode: Some(mode.into()),
+            rules,
+        };
+        crate::permissions::save(&home, &kept).unwrap();
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let egress = Egress::start(&jobs).unwrap();
+        jobs.use_egress(egress.clone());
+        // The proxy holds `jobs` weakly: they live as long as the test.
+        std::mem::forget(jobs);
+        egress
+    }
+
+    /// The status a `CONNECT target` through `proxy` (a door's URL, its login in it) is answered.
+    async fn connected(proxy: &str, target: &str) -> String {
+        let (login, at) = proxy
+            .trim_start_matches("http://")
+            .rsplit_once('@')
+            .unwrap();
+        let auth = base64::engine::general_purpose::STANDARD.encode(login);
+        let mut stream = TcpStream::connect(at).await.unwrap();
+        let head =
+            format!("CONNECT {target} HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n");
+        stream.write_all(head.as_bytes()).await.unwrap();
+        let (answer, _) = read_head(&mut stream, Duration::from_secs(30))
+            .await
+            .unwrap();
+        answer.split(' ').nth(1).unwrap_or("").to_owned()
+    }
+
+    /// BROWSER-18: a box page's door, the browser's, reaches what the job's agent door reaches but
+    /// the host's own network: loopback, private and link-local addresses, an IPv4 one written as
+    /// IPv6 and a name for one of them, all checked once the name resolves, and nothing connects.
+    /// The host's listeners are refused on any address; behind an upstream proxy the private
+    /// names are.
+    #[tokio::test]
+    async fn browser_18_a_box_pages_door_refuses_the_hosts_own_network_after_resolving() {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = server.local_addr().unwrap().port();
+        let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = reached.clone();
+        tokio::spawn(async move {
+            while let Ok((_stream, _)) = server.accept().await {
+                counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let egress = proxied_job("b18net", "bypass", Vec::new());
+        let agent = egress.open("b18net");
+        assert_eq!(connected(&agent, &format!("localhost:{up}")).await, "200");
+        let browser = egress.open_browser("b18net", vec![7777]);
+        for host in [
+            "127.0.0.1",
+            "localhost",
+            "[::1]",
+            "10.0.0.1",
+            "169.254.169.254",
+            "[::ffff:127.0.0.1]",
+        ] {
+            let target = format!("{host}:{up}");
+            assert_eq!(connected(&browser, &target).await, "403", "{target}");
+        }
+        assert_eq!(
+            reached.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the agent's door reached the server"
+        );
+        let public: std::net::SocketAddr = "93.184.215.14:7777".parse().unwrap();
+        assert!(door_refuses(public, &[7777]));
+        assert!(!door_refuses(public, &[7778]));
+        for private in ["printer.local", "a.localhost", "home.arpa", "intranet"] {
+            assert!(upstream_refuses(private, 443, &[]), "{private}");
+        }
+        assert!(!upstream_refuses("example.com", 443, &[]));
+        assert!(upstream_refuses("example.com", 7777, &[7777]));
+        assert!(upstream_refuses("[::1]", 443, &[]));
+        egress.close("b18net");
+    }
+
+    /// BROWSER-18: the window's Chromium sends an Encrypted Client Hello extension in every hello,
+    /// GREASE behind a proxy: the browser door takes it when the hello names the tunnel's host, the
+    /// agent's door still never does.
+    #[tokio::test]
+    async fn browser_18_the_browser_doors_hello_may_carry_chromiums_ech_grease() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = listener.local_addr().unwrap();
+        for (browser, host, taken) in [
+            (true, "example.com", true),
+            (false, "example.com", false),
+            (true, "other.example", false),
+        ] {
+            let mut client = TcpStream::connect(at).await.unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+            let hello = hello::client_hello(Some("example.com"), true);
+            client.write_all(&hello).await.unwrap();
+            let read = read_hello(&mut server, Vec::new(), host, browser).await;
+            assert_eq!(read.is_some(), taken, "{browser} {host}");
+        }
+    }
+
+    /// BROWSER-18: the browser door decides a site exactly as the job's agent door does: a site
+    /// its rules deny is refused, one the owner let through goes on (it doesn't resolve: 502, not
+    /// 403). Once the job's worker ends, neither token gets through and the browser's is no
+    /// secret any more.
+    #[tokio::test]
+    async fn browser_18_a_box_page_reaches_only_what_its_job_may() {
+        let deny = crate::permissions::Rule {
+            id: "rdeny".into(),
+            rule: "WebFetch(domain:denied.invalid)".into(),
+            repo: "o/r".into(),
+            decision: "deny".into(),
+            created: 0,
+        };
+        let egress = proxied_job("b18own", "sandbox", vec![deny]);
+        let agent = egress.open("b18own");
+        let browser = egress.open_browser("b18own", vec![7777]);
+        assert_eq!(browser, egress.open_browser("b18own", vec![7777]));
+        assert_ne!(browser, agent);
+        assert_eq!(connected(&browser, "denied.invalid:443").await, "403");
+        egress.let_through("b18own", &["once.invalid".to_owned()]);
+        assert_eq!(connected(&browser, "once.invalid:443").await, "502");
+        let token = browser
+            .trim_start_matches("http://oby:")
+            .split('@')
+            .next()
+            .unwrap()
+            .to_owned();
+        let named = || crate::secrets::known().names_in(&token);
+        assert_eq!(named(), ["job b18own browser proxy token"]);
+        egress.close_setup("b18own");
+        assert_eq!(connected(&browser, "once.invalid:443").await, "502");
+        egress.close("b18own");
+        assert_eq!(connected(&agent, "once.invalid:443").await, "407");
+        assert_eq!(connected(&browser, "once.invalid:443").await, "407");
+        assert!(named().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proofs of the browser door's address rule (BROWSER-18): `kani::any()` stands for
+    //! every IPv4 and IPv6 address, every port and every three listener ports.
+
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    /// Any IPv4 or IPv6 address, and its bytes.
+    fn any_ip() -> (IpAddr, bool, [u8; 16]) {
+        if kani::any::<bool>() {
+            let b: [u8; 4] = kani::any();
+            let mut bytes = [0u8; 16];
+            bytes[..4].copy_from_slice(&b);
+            (IpAddr::V4(Ipv4Addr::from(b)), true, bytes)
+        } else {
+            let b: [u8; 16] = kani::any();
+            (IpAddr::V6(Ipv6Addr::from(b)), false, b)
+        }
+    }
+
+    /// The host's own network, from the IPv4 address's first two bytes.
+    fn v4_expected(a: u8, b: u8) -> bool {
+        a == 0
+            || a == 10
+            || a == 127
+            || (a == 100 && 64 <= b && b <= 127)
+            || (a == 172 && 16 <= b && b <= 31)
+            || (a == 192 && b == 168)
+            || (a == 169 && b == 254)
+            || (a == 198 && (b == 18 || b == 19))
+            || a >= 224
+    }
+
+    /// The host's own network, from the address's bytes alone.
+    fn expected(v4: bool, b: [u8; 16]) -> bool {
+        if v4 {
+            return v4_expected(b[0], b[1]);
+        }
+        let zero_to_9 = b[0] | b[1] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7] | b[8] | b[9];
+        if zero_to_9 == 0 && b[10] == 0xff && b[11] == 0xff {
+            return v4_expected(b[12], b[13]);
+        }
+        let zero_to_14 = zero_to_9 | b[10] | b[11] | b[12] | b[13] | b[14];
+        (zero_to_14 == 0 && (b[15] == 0 || b[15] == 1))
+            || b[0] & 0xfe == 0xfc
+            || (b[0] == 0xfe && b[1] & 0xc0 == 0x80)
+            || b[0] == 0xff
+    }
+
+    /// PROOF-1, BROWSER-18: the address rule refuses exactly the host's own network.
+    #[kani::proof]
+    fn browser_18_the_browser_door_refuses_the_hosts_own_network() {
+        let (ip, v4, bytes) = any_ip();
+        assert_eq!(host_network(ip), expected(v4, bytes));
+    }
+
+    /// PROOF-2, BROWSER-18: the door refuses exactly the host's own network, and the host's
+    /// listeners' ports on any address.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn browser_18_the_browser_door_refuses_the_hosts_listeners_on_any_address() {
+        let (ip, _, _) = any_ip();
+        let port: u16 = kani::any();
+        let listeners: [u16; 3] = kani::any();
+        assert_eq!(
+            door_refuses(SocketAddr::new(ip, port), &listeners),
+            host_network(ip)
+                || listeners[0] == port
+                || listeners[1] == port
+                || listeners[2] == port
+        );
     }
 }
