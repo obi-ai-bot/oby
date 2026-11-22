@@ -267,6 +267,41 @@ fn browser_18_a_foreign_jobs_tabs_open_in_its_box_and_its_navigate_to_obid_is_ou
     stop_with_no_browser_left(&mut obid);
 }
 
+/// A foreign job's worktree is its box's to write, links included: its screenshot goes into obid's
+/// own folder for the job, never through a linked `screens`, and an upload of a link, or of a path
+/// through a linked folder, to a file outside the room is refused `upload_outside_room`
+/// (BROWSER-18).
+#[test]
+fn browser_18_a_foreign_jobs_screenshot_and_upload_go_through_no_link() {
+    let folder = Folder::new("browser-18-links");
+    let (mut obid, token) = seeded_job(&folder, "ffff1818", |job| job.untrusted = true);
+    browses_in_its_box(&obid, &token, "ffff1818");
+    let outside = folder.0.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret"), "the owner's").unwrap();
+    let worktree = obid.home.join("worktrees/ffff1818");
+    std::os::unix::fs::symlink(&outside, worktree.join("screens")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret"), worktree.join("leak")).unwrap();
+    std::os::unix::fs::symlink(&outside, worktree.join("linked")).unwrap();
+    let shot = tool(&obid, &token, "oby_browser_screenshot", json!({}));
+    assert_eq!(shot["ok"], true, "{shot}");
+    let path = shot["result"]["path"].as_str().unwrap_or_default();
+    let own = obid.home.join("browser/jobs/ffff1818/room/screens");
+    assert!(Path::new(path).starts_with(&own), "{shot}");
+    let left: Vec<_> = std::fs::read_dir(&outside).unwrap().flatten().collect();
+    assert_eq!(left.len(), 1, "nothing written through the link");
+    for linked in [worktree.join("leak"), worktree.join("linked/secret")] {
+        let refused = tool(
+            &obid,
+            &token,
+            "oby_browser_act",
+            json!({"action": "upload", "ref": "e1", "paths": [linked]}),
+        );
+        assert_eq!(refused["error"]["code"], "upload_outside_room", "{refused}");
+    }
+    stop_with_no_browser_left(&mut obid);
+}
+
 /// A follow-up whose earlier job is gone (a received review the owner deleted, then obid
 /// restarted) can't show where its line came from: it browses in its box, never the owner's
 /// partition (BROWSER-18). It carries the `foreign` mark obid gives a follow-up of someone else's
