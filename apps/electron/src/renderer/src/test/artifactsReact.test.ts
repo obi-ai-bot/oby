@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -111,7 +111,7 @@ it('artifactsapp_26_the_relay_serves_every_vendored_module_and_nothing_else', as
     expect(served.type, f).toBe('text/javascript; charset=utf-8');
     expect(served.body.equals(readFileSync(join(vendored, f))), f).toBe(true);
   }
-  for (const path of ['/__csb_vendor/recharts/LICENSE', '/__csb_vendor/recharts/THIRD_PARTY_LICENSES', '/__csb_vendor/README.md', '/__csb_vendor/three/three.mjs', '/__csb_vendor/react/../react/react.mjs']) {
+  for (const path of ['/__csb_vendor/recharts/LICENSE', '/__csb_vendor/recharts/THIRD_PARTY_LICENSES', '/__csb_vendor/shadcn/LICENSE', '/__csb_vendor/shadcn/THIRD_PARTY_LICENSES', '/__csb_vendor/README.md', '/__csb_vendor/three/three.mjs', '/__csb_vendor/react/../react/react.mjs']) {
     expect((await get(host, path)).status, path).toBe(404);
   }
   for (const f of modules) expect((await get(`localhost:${relay.port}`, `/__csb_vendor/${f}`)).status, f).toBe(404);
@@ -130,8 +130,65 @@ it('artifactsapp_26_a_react_artifacts_map_has_recharts_and_the_trio', () => {
   for (const a of Object.values(map) as string[]) expect(a, a).toMatch(/^\/(?!\/)/);
 });
 
+// ARTIFACTSAPP-27: shadcn's components, as LibreChat ships them, built into sandpack-vendor/shadcn/
+const SHADCN = ['accordion', 'alert', 'alert-dialog', 'avatar', 'badge', 'breadcrumb', 'button', 'card', 'checkbox', 'collapsible', 'dialog', 'dropdown-menu', 'input', 'label', 'menubar', 'navigation-menu', 'pagination', 'popover', 'progress', 'radio-group', 'select', 'separator', 'skeleton', 'slider', 'switch', 'table', 'tabs', 'textarea', 'toast', 'toaster', 'toggle', 'toggle-group', 'tooltip', 'use-toast'];
+const EXTERNAL = ['react', 'react-dom', 'react/jsx-runtime', 'lucide-react', 'clsx', 'tailwind-merge', 'class-variance-authority'];
+const shadcnSrc = join(app, 'resources/shadcn-src');
+const shadcnOut = join(vendored, 'shadcn');
+/** Every specifier a module imports or re-exports, statically or by a literal `import()`. */
+const importsOf = (code: string) => [...code.matchAll(/(?<![\w$.])(?:import|export)\s*(?:[^"';]*?\bfrom\s*)?["']([^"']+)["']|(?<![\w$.])import\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1] ?? m[2]);
+
+it('artifactsapp_27_a_react_artifacts_map_has_shadcn', () => {
+  const mapOf = (files: Record<string, { text: string }>) => JSON.parse(/<script type="importmap">(.*?)<\/script>/s.exec(code(showable({ kind: 'html', title: 'Board', files })['/index.html']))![1]).imports;
+  const map = mapOf({ 'App.tsx': { text: APP }, 'Label.tsx': { text: LABEL } });
+  for (const name of SHADCN) {
+    expect(map[`/components/ui/${name}`], name).toBe(`/__csb_vendor/shadcn/ui/${name}.mjs`);
+    expect(map[`@/components/ui/${name}`], name).toBe(`/__csb_vendor/shadcn/ui/${name}.mjs`);
+  }
+  expect(map['/lib/utils']).toBe('/__csb_vendor/shadcn/lib/utils.mjs');
+  expect(map['@/lib/utils']).toBe('/__csb_vendor/shadcn/lib/utils.mjs');
+  for (const a of Object.values(map) as string[]) expect(a, a).toMatch(/^\/(?!\/)/);
+  // the names the map has are the files the build wrote
+  const named = Object.keys(map).filter((k) => k.startsWith('/components/ui/')).map((k) => k.slice('/components/ui/'.length)).sort();
+  expect(named).toEqual([...SHADCN].sort());
+  expect(named).toEqual(readdirSync(join(shadcnOut, 'ui')).filter((f) => f.endsWith('.mjs')).map((f) => f.slice(0, -4)).sort());
+  // the artifact's own file wins, under both spellings
+  const own = mapOf({ 'App.tsx': { text: APP }, 'Label.tsx': { text: LABEL }, 'components/ui/button.tsx': { text: 'export function Button() {\n  return <button>mine</button>;\n}\n' } });
+  expect(own['/components/ui/button']).toBe('/components/ui/button.js');
+  expect(own['@/components/ui/button']).toBe('/components/ui/button.js');
+  expect(own['@/components/ui/card']).toBe('/__csb_vendor/shadcn/ui/card.mjs');
+  // `@/components/ui/<name>` is in the map, so the import check lets it through
+  const board = code(showable({ kind: 'html', title: 'Board', files: { 'App.tsx': { text: "import { Card } from '@/components/ui/card';\n\nexport default function App() {\n  return <Card>ok</Card>;\n}\n" } } })['/index.html']);
+  expect(board).toContain("import('/App.js')");
+  expect(board).not.toContain('<pre data-oby-error>');
+});
+
+it('artifactsapp_27_shadcns_sources_name_only_what_resolves', () => {
+  expect(walk(shadcnSrc)).toEqual(['LICENSE', ...SHADCN.map((n) => `components/ui/${n}.tsx`).sort(), 'lib/utils.ts'].sort());
+  const radix = Object.keys(JSON.parse(readFileSync(join(app, 'package.json'), 'utf8')).devDependencies).filter((p) => p.startsWith('@radix-ui/react-'));
+  const lucide = readFileSync(join(vendored, 'lucide-react/lucide-react.mjs'), 'utf8');
+  const icons = new Set([...lucide.slice(lucide.lastIndexOf('export{')).matchAll(/ as ([\w$]+)/g)].map((m) => m[1]));
+  const licence = readFileSync(join(shadcnSrc, 'LICENSE'), 'utf8');
+  const mit = licence.slice(licence.indexOf('Permission is hereby granted'), licence.indexOf('SOFTWARE.\n') + 'SOFTWARE.'.length);
+  expect(mit).toMatch(/^Permission is hereby granted[^]*THE SOFTWARE IS PROVIDED "AS IS"[^]*DEALINGS IN THE\nSOFTWARE\.$/);
+  for (const f of walk(shadcnSrc).filter((f) => f !== 'LICENSE')) {
+    const text = readFileSync(join(shadcnSrc, f), 'utf8');
+    const top = /^\/\*([^]*?)\*\//.exec(text)?.[1] ?? '';
+    for (const line of ['From LibreChat (`danny-avila/LibreChat` at `4700c44`, `packages/data-provider/src/artifacts.ts`, `', 'Copyright (c) 2026 LibreChat', 'Copyright (c) 2023 shadcn', mit]) expect(top, f).toContain(line);
+    for (const s of importsOf(text)) {
+      if (s.startsWith('.')) {
+        const at = resolve(join(shadcnSrc, f, '..'), s);
+        expect(at.startsWith(shadcnSrc + '/') && ['.ts', '.tsx'].some((x) => existsSync(at + x)), `${f}: ${s}`).toBe(true);
+      } else expect([...EXTERNAL, ...radix], `${f}: ${s}`).toContain(s);
+    }
+    for (const m of text.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']lucide-react["']/g)) {
+      for (const name of m[1].split(',').map((n) => n.trim().split(/\s+as\s+/)[0]).filter(Boolean)) expect(icons.has(name), `${f}: lucide's ${name}`).toBe(true);
+    }
+  }
+});
+
 // ARTIFACTSAPP-28: a bare import outside the set is named before anything runs, with what is there
-const HAS = 'It has: react, react-dom, lucide-react, recharts, clsx, tailwind-merge and class-variance-authority.';
+const HAS = 'It has: react, react-dom, lucide-react, recharts, clsx, tailwind-merge, class-variance-authority and shadcn/ui at /components/ui/&#60;name&#62;.';
 const refusal = (files: Record<string, { text: string }>) => {
   const shown = showable({ kind: 'html', title: 'Scene', files });
   expect(Object.keys(shown)).toEqual(['/index.html']);
@@ -172,19 +229,23 @@ it('artifactsapp_23_the_relay_serves_the_bridge', async () => {
   expect(forbiddenIn('bridge.js', bridge.body.toString())).toEqual([]);
 });
 
-it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', async () => {
+// one rebuild of the set into a scratch folder, for every test that compares it (it takes minutes)
+let rebuild: { scratch: string; printed: Record<string, string[]> } | undefined;
+const rebuilt = () => {
+  if (rebuild) return rebuild;
   const scratch = mkdtempSync(join(tmpdir(), 'oby-vendor-'));
-  let printed: Record<string, string[]>;
-  try {
-    printed = JSON.parse(execFileSync(process.execPath, [join(app, 'scripts/vendor-sandpack.mjs'), scratch], { cwd: app, stdio: 'pipe', encoding: 'utf8' }));
-    const committed = walk(vendored);
-    expect(committed.filter((f) => f !== 'README.md')).toEqual(walk(scratch));
-    for (const f of committed.filter((f) => f !== 'README.md')) expect(readFileSync(join(scratch, f)).equals(readFileSync(join(vendored, f))), f).toBe(true);
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
+  rebuild = { scratch, printed: JSON.parse(execFileSync(process.execPath, [join(app, 'scripts/vendor-sandpack.mjs'), scratch], { cwd: app, stdio: 'pipe', encoding: 'utf8' })) };
+  return rebuild;
+};
+afterAll(() => { if (rebuild) rmSync(rebuild.scratch, { recursive: true, force: true }); });
+
+it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', async () => {
+  const { scratch, printed } = rebuilt();
+  const committed = walk(vendored);
+  expect(committed.filter((f) => f !== 'README.md')).toEqual(walk(scratch));
+  for (const f of committed.filter((f) => f !== 'README.md')) expect(readFileSync(join(scratch, f)).equals(readFileSync(join(vendored, f))), f).toBe(true);
   // each built folder's THIRD_PARTY_LICENSES: a section per package the build took in, as the run said
-  expect(Object.keys(printed).sort()).toEqual(['class-variance-authority', 'clsx', 'lucide-react', 'react', 'react-dom', 'recharts', 'tailwind-merge']);
+  expect(Object.keys(printed).sort()).toEqual(['class-variance-authority', 'clsx', 'lucide-react', 'react', 'react-dom', 'recharts', 'shadcn', 'tailwind-merge']);
   for (const [folder, packages] of Object.entries(printed)) {
     const sections = readFileSync(join(vendored, folder, 'THIRD_PARTY_LICENSES'), 'utf8').split(/^--- (.+) \(.*\) ---$/m);
     expect(sections.filter((_, i) => i % 2 === 1), folder).toEqual(packages);
@@ -207,6 +268,47 @@ it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_lic
   // an ES package's own default export is kept: `import clsx from 'clsx'` resolves, as it does on npm
   const clsx = await import(/* @vite-ignore */ pathToFileURL(join(vendored, 'clsx/clsx.mjs')).href);
   expect(clsx.default, 'clsx default').toBe(clsx.clsx);
+}, 180_000);
+
+it('artifactsapp_27_each_shadcn_file_is_its_builds_output_with_its_licences_beside_it', () => {
+  const committed = walk(shadcnOut);
+  const { scratch, printed } = rebuilt();
+  expect(walk(join(scratch, 'shadcn'))).toEqual(committed);
+  for (const f of committed) expect(readFileSync(join(scratch, 'shadcn', f)).equals(readFileSync(join(shadcnOut, f))), f).toBe(true);
+  expect(committed).toEqual(expect.arrayContaining(['LICENSE', 'THIRD_PARTY_LICENSES', 'lib/utils.mjs', ...SHADCN.map((n) => `ui/${n}.mjs`)]));
+  const licence = readFileSync(join(shadcnOut, 'LICENSE'));
+  expect(licence.equals(readFileSync(join(shadcnSrc, 'LICENSE')))).toBe(true);
+  for (const line of ['Copyright (c) 2026 LibreChat', 'Copyright (c) 2023 shadcn']) expect(licence.toString()).toContain(line);
+  // every Radix package at its lock version, and none of what stays outside
+  const lock = JSON.parse(readFileSync(join(app, 'package-lock.json'), 'utf8')).packages;
+  const radix = Object.keys(JSON.parse(readFileSync(join(app, 'package.json'), 'utf8')).devDependencies).filter((p) => p.startsWith('@radix-ui/react-'));
+  expect(radix).toHaveLength(23);
+  for (const p of radix) expect(printed.shadcn, p).toContain(`${p}@${lock[`node_modules/${p}`].version}`);
+  const names = printed.shadcn.map((p) => p.slice(0, p.lastIndexOf('@')));
+  for (const p of ['react', 'react-dom', 'lucide-react', 'clsx', 'tailwind-merge', 'class-variance-authority']) expect(names).not.toContain(p);
+  const sections = readFileSync(join(shadcnOut, 'THIRD_PARTY_LICENSES'), 'utf8').split(/^--- (.+) \(.*\) ---$/m);
+  expect(sections.filter((_, i) => i % 2 === 1)).toEqual(printed.shadcn);
+  // a bare import is one of the seven the page's map sends to its one copy; any other is a file here
+  const modules = committed.filter((f) => f.endsWith('.mjs'));
+  const relative = new Map<string, string[]>();
+  for (const f of modules) {
+    const text = readFileSync(join(shadcnOut, f), 'utf8');
+    expect(forbiddenIn(f, text), f).toEqual([]);
+    const specs = importsOf(text);
+    relative.set(f, []);
+    for (const s of specs) {
+      if (!s.startsWith('.')) { expect(EXTERNAL, `${f}: ${s}`).toContain(s); continue; }
+      const at = join(f, '..', s);
+      expect(modules, `${f}: ${s}`).toContain(at);
+      relative.get(f)!.push(at);
+    }
+  }
+  // one DismissableLayer, in a shared chunk that a dialog and a popover both reach
+  const layer = modules.filter((f) => readFileSync(join(shadcnOut, f), 'utf8').includes('DismissableLayer'));
+  expect(layer).toHaveLength(1);
+  expect(layer[0]).toMatch(/^chunks\//);
+  const reached = (from: string) => { const seen = new Set<string>(); const next = [from]; while (next.length) for (const g of relative.get(next.pop()!) ?? []) if (!seen.has(g)) { seen.add(g); next.push(g); } return seen; };
+  for (const f of ['ui/dialog.mjs', 'ui/popover.mjs']) expect(reached(f).has(layer[0]), f).toBe(true);
 }, 180_000);
 
 it('artifactsapp_14_a_compile_error_shows_its_message_and_runs_nothing', () => {
@@ -246,4 +348,7 @@ it('artifactsapp_21_agents_are_told_every_package_the_preview_has', () => {
   const sentence = /macro_rules! preview_imports \{\s*\(\) => \{\s*"((?:[^"\\]|\\.)*)"/.exec(readFileSync(join(app, '../../core/crates/obid/src/brain/tools.rs'), 'utf8'))?.[1];
   expect(sentence).toBeTruthy();
   for (const name of bare) expect(sentence, name).toMatch(new RegExp(`(?<![\\w@/-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w/-])`));
+  // shadcn's components (ARTIFACTSAPP-27) by their one phrase, in the sentence and the refusal line
+  expect(sentence).toContain('shadcn/ui at /components/ui/<name>');
+  expect(/const missing = .*/.exec(readFileSync(join(app, 'src/renderer/src/artifacts/react.ts'), 'utf8'))![0]).toContain('shadcn/ui at /components/ui/<name>');
 });

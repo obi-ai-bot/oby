@@ -34,6 +34,10 @@
 //   ARTIFACTSAPP-26: a dashboard on recharts, its class names joined by its own lib/utils (clsx and
 //                   tailwind-merge), draws its teal line from loopback only, and its card's picture
 //                   holds the chart (artifactsapp_26_a_dashboard_draws_with_recharts).
+//   ARTIFACTSAPP-27: a dashboard on shadcn's Button, Card and Dialog and its cn, none of them its own
+//                   files, draws from loopback only, shadcn/'s files and chunks among the requests: its
+//                   Button is gray-900, its card's picture holds the teal Card, and a click opens the
+//                   dialog (artifactsapp_27_a_dashboard_draws_with_shadcn).
 //   ARTIFACTSAPP-14 and 28: one importing a package outside that set (three) shows, in the frame and
 //                   the pane's error strip, the line naming it and what the set has; nothing is fetched
 //                   for it (artifactsapp_28_an_import_outside_the_set_says_what_is_there_in_the_window).
@@ -676,11 +680,42 @@ async function main() {
   await shot(page, '12b-recharts-dashboard');
   console.log(`ok artifactsapp_26_a_dashboard_draws_with_recharts (a ${chart.stroke} curve, main's classes ${JSON.stringify(chart.className)}, ${dashboardPicture.teal} of ${dashboardPicture.of} pixels in its picture's top half teal, ${dashboardRequests.length} requests, all on loopback)`);
 
+  // ARTIFACTSAPP-27: a dashboard on shadcn's Button, Card and Dialog and its cn, with no lib/ or
+  // components/ of its own, draws from loopback only: the Card teal through cn (bg-white merged away),
+  // the Button gray-900, and a click on it opens the dialog
+  const shadcnBoard = await publishFiles('shadcn', {
+    'App.tsx': `import { Button } from '/components/ui/button';\nimport { Card, CardHeader, CardTitle, CardContent } from '/components/ui/card';\nimport { Dialog, DialogTrigger, DialogContent, DialogTitle } from '/components/ui/dialog';\nimport { cn } from '/lib/utils';\n\nexport default function App() {\n  return (\n    <main className="p-4">\n      <Card className={cn('bg-white', 'bg-teal-600')}>\n        <CardHeader>\n          <CardTitle>Revenue</CardTitle>\n        </CardHeader>\n        <CardContent>\n          <Dialog>\n            <DialogTrigger asChild>\n              <Button id="details">Details</Button>\n            </DialogTrigger>\n            <DialogContent>\n              <DialogTitle>Revenue by month</DialogTitle>\n            </DialogContent>\n          </Dialog>\n        </CardContent>\n      </Card>\n      <div id="gray" className="mt-4 h-4 w-4 bg-gray-900" />\n    </main>\n  );\n}\n`,
+  });
+  const board = await until('the shadcn dashboard drawn', async () => {
+    const r = await inFrame(`(() => { const b = document.getElementById('details'); const g = document.getElementById('gray'); return b && g && { button: getComputedStyle(b).backgroundColor, gray: getComputedStyle(g).backgroundColor, card: getComputedStyle(b.closest('main > div')).backgroundColor }; })()`);
+    // Tailwind compiles after React draws: the Button's background is gray-900's once it has, never transparent
+    return r.value?.button && r.value.button === r.value.gray && !/^(transparent|rgba\(0, 0, 0, 0\))$/.test(r.value.button) && r.value;
+  }, 60_000).catch(async (e) => { console.error('the shadcn frame shows:', JSON.stringify((await inFrame('document.body.innerHTML.slice(0, 600)')).value)); throw e; });
+  const shadcnCard = page.locator(`button.art-card[data-artifact="${shadcnBoard}"]`);
+  await until('the shadcn card’s picture', async () => shadcnCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
+  const shadcnPicture = await tealOf(shadcnCard);
+  assert.ok(shadcnPicture.teal > 0, `artifactsapp_27: the shadcn card's picture holds the page: ${JSON.stringify(shadcnPicture)}`);
+  await shadcnCard.scrollIntoViewIfNeeded();
+  await shot(page, '12c-shadcn-dashboard');
+  await inFrame(`document.getElementById('details').click(); true`);
+  // open, and settled: its entrance run, drawn whole
+  const opened = await until('the dialog open', async () => (await inFrame(`(() => { const d = [...document.querySelectorAll('[role="dialog"]')].find((e) => e.textContent.includes('Revenue by month')); return d && !d.getAnimations({ subtree: true }).some((a) => a.playState === 'running') && getComputedStyle(d).opacity === '1' && { title: d.textContent, background: getComputedStyle(d).backgroundColor, left: Math.round(d.getBoundingClientRect().left), width: Math.round(d.getBoundingClientRect().width), inner: innerWidth }; })()`)).value, 30_000)
+    .catch(async (e) => { console.error('the dialog shows:', JSON.stringify((await inFrame(`(() => { const d = document.querySelector('[role="dialog"]'); return d && { opacity: getComputedStyle(d).opacity, transform: getComputedStyle(d).translate, animations: d.getAnimations({ subtree: true }).map((a) => a.playState) }; })()`)).value)); throw e; });
+  assert.ok(opened.title.startsWith('Revenue by month'), `artifactsapp_27: a click on the trigger opened the dialog: ${JSON.stringify(opened)}`);
+  await shot(page, '12c-shadcn-dialog');
+  const shadcnRequests = await app.evaluate(() => [...globalThis.__previewRequests, ...globalThis.__previewSent]);
+  const shadcnOff = shadcnRequests.filter((u) => !/^(file|data|blob|devtools):/.test(u) && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u));
+  assert.deepEqual(shadcnOff, [], `artifactsapp_27: nothing left loopback: ${shadcnOff.join(', ')}`);
+  for (const f of ['ui/button.mjs', 'ui/dialog.mjs']) assert.ok(shadcnRequests.some((u) => u.endsWith(`/__csb_vendor/shadcn/${f}`)), `artifactsapp_27: shadcn/${f} came from the relay`);
+  const shadcnChunks = new Set(shadcnRequests.filter((u) => u.includes('/__csb_vendor/shadcn/chunks/')).map((u) => new URL(u).pathname));
+  assert.ok(shadcnChunks.size > 0, 'artifactsapp_27: shadcn/chunks/ came from the relay');
+  console.log(`ok artifactsapp_27_a_dashboard_draws_with_shadcn (the Button ${board.button} as a gray-900 element, the Card ${board.card}, the dialog opened on a click and drawn whole (${opened.background}, ${opened.width} px wide at ${opened.left} in ${opened.inner}), ${shadcnChunks.size} shared chunks, ${shadcnPicture.teal} of ${shadcnPicture.of} pixels in its picture's top half teal, all on loopback)`);
+
   // ARTIFACTSAPP-14 and 28: an import outside the vendored set is named, with what the set has, in
   // the frame and the pane's error strip; nothing is fetched for it
   await publishFiles('charts', { 'App.tsx': `import * as THREE from 'three';\n\nexport default function App() {\n  return <p>{String(THREE.REVISION)}</p>;\n}\n` });
   const refused = await until('the import’s error shown', async () => (await inFrame(`document.querySelector('pre')?.textContent ?? null`)).value, 60_000);
-  const NO_THREE = 'This preview has no `three`. It has: react, react-dom, lucide-react, recharts, clsx, tailwind-merge and class-variance-authority.';
+  const NO_THREE = 'This preview has no `three`. It has: react, react-dom, lucide-react, recharts, clsx, tailwind-merge, class-variance-authority and shadcn/ui at /components/ui/<name>.';
   assert.equal(refused, NO_THREE, `artifactsapp_28: the frame names the import and the set: ${refused}`);
   const stripSays = await until('the import’s error in the pane', async () => { const t = await page.locator('.art-page-error pre').innerText().catch(() => ''); return t.includes(NO_THREE) && t; }, 30_000);
   const chartsSent = await app.evaluate(() => [...globalThis.__previewRequests, ...globalThis.__previewSent]);
