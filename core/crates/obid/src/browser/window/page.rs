@@ -197,14 +197,26 @@ impl WindowDriver {
 
     /// `expression`'s value in the page (awaited, by value), or the page's exception.
     async fn eval_value(&self, tab: &str, expression: &str, until: Until) -> Step<Value> {
-        let r = self
-            .send(
-                tab,
-                "Runtime.evaluate",
-                json!({"expression": expression, "returnByValue": true, "awaitPromise": true}),
-                until,
-            )
-            .await?;
+        self.eval_with(tab, expression, false, until).await
+    }
+
+    /// [`Self::eval_value`], its frame marked `agentCode` when it is the agent's own script
+    /// (BROWSER-33).
+    async fn eval_with(
+        &self,
+        tab: &str,
+        expression: &str,
+        agent_code: bool,
+        until: Until,
+    ) -> Step<Value> {
+        let params = json!({"expression": expression, "returnByValue": true, "awaitPromise": true});
+        let r = if agent_code {
+            self.relay
+                .cdp_agent(tab, "Runtime.evaluate", params, until.left())
+                .await?
+        } else {
+            self.send(tab, "Runtime.evaluate", params, until).await?
+        };
         if let Some(e) = r.get("exceptionDetails") {
             let text = e["exception"]["description"]
                 .as_str()
@@ -474,7 +486,7 @@ impl WindowDriver {
             }
             ["eval", expression] => {
                 let tab = current()?;
-                let result = self.eval_value(&tab, expression, until).await?;
+                let result = self.eval_with(&tab, expression, true, until).await?;
                 Ok(json!({"result": result}))
             }
             ["wait", rest @ ..] => {
@@ -805,5 +817,82 @@ impl WindowDriver {
             Err(Stop::Failed(e)) => Err(e),
             Err(Stop::TimedOut) => Err("The page didn't answer in time.".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::browser::contract::{RelayCommand, RelayEvent};
+    use crate::browser::relay::Relay;
+
+    /// Answers the next `cdp` command with `result`: its method and whether it was marked.
+    async fn answer(
+        relay: &Relay,
+        rx: &mut tokio::sync::broadcast::Receiver<RelayCommand>,
+        result: Value,
+    ) -> (String, bool) {
+        let RelayCommand::Cdp {
+            message,
+            agent_code,
+            ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("a cdp command");
+        };
+        let frame: Value = serde_json::from_str(&message).unwrap();
+        relay.receive(vec![RelayEvent::Cdp {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+            message: json!({"id": frame["id"], "result": result}).to_string(),
+        }]);
+        (frame["method"].as_str().unwrap().to_string(), agent_code)
+    }
+
+    /// BROWSER-33: only the agent's own script (`eval`) goes out marked; obid's own reads don't.
+    #[tokio::test]
+    async fn browser_33_only_evaluate_sends_agent_code() {
+        let relay = Arc::new(Relay::new());
+        let (mut rx, _following) = relay.follow();
+        let home = std::env::temp_dir().join(format!("obid-page-{}", std::process::id()));
+        let d = WindowDriver::new(
+            relay.clone(),
+            Arc::new(Mutex::new(crate::browser::engine::Browsers::new())),
+            &home,
+        );
+        relay.expect("j1", "tab-1").unwrap();
+        relay.receive(vec![RelayEvent::Attached {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+        }]);
+        d.set_current("j1", "tab-1");
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let limit = Duration::from_secs(5);
+        let (eval, url, snap) = (
+            words(&["eval", "1+1"]),
+            words(&["get", "url"]),
+            words(&["snapshot"]),
+        );
+
+        let (called, sent) = tokio::join!(
+            d.call("j1", &eval, limit),
+            answer(&relay, &mut rx, json!({"result": {"value": 2}}))
+        );
+        assert_eq!(sent, ("Runtime.evaluate".to_string(), true));
+        assert_eq!(called, Call::Ok(json!({"result": 2})));
+
+        let (_, sent) = tokio::join!(
+            d.call("j1", &url, limit),
+            answer(&relay, &mut rx, json!({"result": {"value": "https://a/"}}))
+        );
+        assert_eq!(sent, ("Runtime.evaluate".to_string(), false));
+
+        let (_, sent) = tokio::join!(
+            d.call("j1", &snap, limit),
+            answer(&relay, &mut rx, json!({"nodes": []}))
+        );
+        assert_eq!(sent, ("Accessibility.getFullAXTree".to_string(), false));
     }
 }
