@@ -25,6 +25,9 @@ const PICTURE = 'html,body{margin:0;height:100%;background:#fff}body{display:fle
 const TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif' };
 const ext = (p: string) => p.slice(p.lastIndexOf('.') + 1).toLowerCase();
 
+/** A React artifact (ARTIFACTSAPP-13): an `html` version with an App.tsx or App.jsx and no index.html. */
+export const isReact = (v: Version): boolean => v.kind === 'html' && !v.files['index.html'] && !!(v.files['App.tsx'] || v.files['App.jsx']);
+
 /** The files the preview shows for a version, every path from `/`. */
 export function showable(v: Version): Shown {
   const paths = Object.keys(v.files).sort();
@@ -40,8 +43,8 @@ export function showable(v: Version): Shown {
     if (pic) shown[`/${pic}`] = { code: bytes(v.files[pic]) };
     return shown;
   }
-  // a React artifact (ARTIFACTSAPP-13): an App.tsx or App.jsx and no index.html, compiled
-  if (v.kind === 'html' && !v.files['index.html'] && (v.files['App.tsx'] || v.files['App.jsx'])) return reactShown(v);
+  // a React artifact, compiled
+  if (isReact(v)) return reactShown(v);
   // a page, a canvas, a design (drawn by Oby's runtime later, P4): its own files, index.html first
   const shown: Shown = {};
   for (const p of paths) shown[`/${p}`] = { code: 'text' in v.files[p] ? (v.files[p] as { text: string }).text : bytes(v.files[p]) };

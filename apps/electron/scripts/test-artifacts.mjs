@@ -25,7 +25,9 @@
 //                   second, never-shown view (preview.html?thumb), the page drawn 640x185 at scale 2 and
 //                   the pane's at zoom 1; taking it sent nothing but to its host page and the pane's own
 //                   relay, and refused nothing the pane's view didn't; three fresh cards all have their
-//                   pictures within 6 s, and one picture's view at most is left.
+//                   pictures within 6 s, and one picture's view at most is left; a React page drawn
+//                   1.5 s after its frame loads still fills its card's picture, the picture's view told
+//                   by React (artifactsapp_18_a_react_cards_picture_shows_the_page).
 //   ARTIFACTSAPP-13: a React folder (App.tsx importing its Label.tsx, useState, lucide's Check and
 //                   Tailwind's classes) is a Page: it draws in the preview on the vendored set main's
 //                   relay serves at /__csb_vendor/, every request on loopback.
@@ -588,7 +590,7 @@ async function main() {
     return id;
   };
   const react = await publishFiles('react', {
-    'App.tsx': `import { useState } from 'react';\nimport { Check } from 'lucide-react';\nimport { Label } from './Label';\n\nexport default function App() {\n  const [n] = useState<number>(3);\n  return (\n    <main className="p-4 bg-teal-600 text-white">\n      <h1>React {n}</h1>\n      <Check />\n      <Label text="drawn" />\n    </main>\n  );\n}\n`,
+    'App.tsx': `import { useState } from 'react';\nimport { Check } from 'lucide-react';\nimport { Label } from './Label';\n\nawait new Promise((r) => setTimeout(r, 1500));\n\nexport default function App() {\n  const [n] = useState<number>(3);\n  return (\n    <main className="p-4 bg-teal-600 text-white">\n      <h1>React {n}</h1>\n      <Check />\n      <Label text="drawn" />\n    </main>\n  );\n}\n`,
     'Label.tsx': `export function Label({ text }: { text: string }) {\n  return <p className="mt-2">{text}</p>;\n}\n`,
   });
   const reactCard = page.locator(`button.art-card[data-artifact="${react}"]`);
@@ -604,8 +606,8 @@ async function main() {
   assert.deepEqual(reactOff, [], 'artifactsapp_13: every request the preview made went to its host page or the relay');
   const vendorLoaded = reactRequests.filter((u) => u.includes('/__csb_vendor/'));
   assert.ok(vendorLoaded.length > 0, 'artifactsapp_13: the vendored files came from the relay');
-  // the card's picture, taken once the host page said drawn: how much of the teal page it holds
-  // (a follow-up when React drew after it: docs/contracts/artifacts-app.md, ARTIFACTSAPP-18)
+  // ARTIFACTSAPP-18: React draws 1.5 s after the frame loads, and the card's picture, taken once the
+  // host page said drawn, still holds the teal page in its top half
   await until('the React card’s picture', async () => reactCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
   const reactPicture = await reactCard.evaluate((el) => {
     const img = el.querySelector('img.art-thumb-img');
@@ -613,14 +615,20 @@ async function main() {
     c.width = img.naturalWidth; c.height = img.naturalHeight;
     const g = c.getContext('2d');
     g.drawImage(img, 0, 0);
-    const { data } = g.getImageData(0, 0, c.width, c.height);
+    const { data } = g.getImageData(0, 0, c.width, Math.floor(c.height / 2));
     let teal = 0;
     for (let i = 0; i < data.length; i += 4) if (data[i] < 60 && data[i + 1] > 120 && data[i + 2] > 110) teal++;
     return { teal, of: data.length / 4 };
   });
+  // the picture's view heard "drawn" from React, not its 4 s ceiling
+  const thumbDrawn = await app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html?thumb'))
+    ?.executeJavaScript('Promise.race([window.obyDrawn.then(() => true), new Promise((r) => setTimeout(() => r(false), 100))])'));
+  assert.equal(thumbDrawn, true, "artifactsapp_18: the picture's view heard the React page drawn");
+  assert.ok(reactPicture.teal > 0, `artifactsapp_18: the React card's picture holds the teal page in its top half: ${JSON.stringify(reactPicture)}`);
   await reactCard.scrollIntoViewIfNeeded();
   await shot(page, '12-react');
-  console.log(`ok artifactsapp_13_a_react_artifact_draws_with_lucide_and_tailwind_from_loopback_only (${reactRequests.length} requests, ${vendorLoaded.length} to /__csb_vendor/; its card's picture ${reactPicture.teal} of ${reactPicture.of} pixels teal)`);
+  console.log(`ok artifactsapp_13_a_react_artifact_draws_with_lucide_and_tailwind_from_loopback_only (${reactRequests.length} requests, ${vendorLoaded.length} to /__csb_vendor/)`);
+  console.log(`ok artifactsapp_18_a_react_cards_picture_shows_the_page (${reactPicture.teal} of ${reactPicture.of} pixels in its top half teal; the picture's view drawn)`);
 
   // ARTIFACTSAPP-14: an import outside the vendored set is the browser's own error in the frame, and
   // nothing is fetched for it
