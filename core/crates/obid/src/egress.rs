@@ -261,8 +261,9 @@ impl Egress {
         }
     }
 
-    /// The token and job the request's `Proxy-Authorization` carries (Basic, any user name).
-    fn job_of(&self, head: &str) -> Option<(String, String)> {
+    /// The token, job and door kind the request's `Proxy-Authorization` carries (Basic, any user
+    /// name).
+    fn job_of(&self, head: &str) -> Option<(String, String, Kind)> {
         let value = head.lines().skip(1).find_map(|line| {
             let (name, value) = line.split_once(':')?;
             name.trim()
@@ -277,8 +278,9 @@ impl Egress {
             .decode(encoded.trim())
             .ok()?;
         let (_, token) = std::str::from_utf8(&decoded).ok()?.split_once(':')?;
-        let job = self.doors().get(token)?.job.clone();
-        Some((token.to_owned(), job))
+        let doors = self.doors();
+        let door = doors.get(token)?;
+        Some((token.to_owned(), door.job.clone(), door.kind.clone()))
     }
 
     /// One more tunnel of the door `token`'s, unless it has [`MOST_PER_JOB`] open.
@@ -406,15 +408,20 @@ impl Egress {
         };
         // No token, or a job's that ended: nobody is asked (a client that sends the proxy's login
         // only once challenged, like git, comes back with it).
-        let Some((token, job)) = self.job_of(&head) else {
+        let Some((token, job, kind)) = self.job_of(&head) else {
             let _ = client
                 .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"oby\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .await;
             return;
         };
+        // A box page's plain http:// request that's refused gets no answer: Chromium shows a
+        // proxy's answer to one as the page itself, so the load fails instead and the window shows
+        // its failed state. A tunnel's refusal fails the load either way.
+        let silent = !tunnel && matches!(kind, Kind::Browser(_));
         let Some(_opened) = self.opened(&token) else {
-            refuse(
+            refuse_as(
                 &mut client,
+                silent,
                 "429 Too Many Requests",
                 &format!("This job has {MOST_PER_JOB} connections open through obid's proxy."),
             )
@@ -423,8 +430,9 @@ impl Egress {
         };
         // A job's own request now: it takes room of every job's, never before.
         let Ok(_room) = self.room.clone().try_acquire_owned() else {
-            refuse(
+            refuse_as(
                 &mut client,
+                silent,
                 "503 Service Unavailable",
                 "obid's proxy has every connection it takes open: try again.",
             )
@@ -439,19 +447,21 @@ impl Egress {
         };
         if let Err(why) = allowed {
             tracing::debug!("egress: job {job} refused {host}:{port}");
-            refuse(&mut client, "403 Forbidden", &why).await;
+            refuse_as(&mut client, silent, "403 Forbidden", &why).await;
             return;
         }
-        let listeners = self.doors().get(&token).and_then(|door| match &door.kind {
-            Kind::Browser(listeners) => Some(listeners.clone()),
-            _ => None,
-        });
-        let connected = match &listeners {
-            Some(listeners) => self.browser_connect(&host, port, listeners).await,
+        // The job may have ended while its site was decided: its token goes no further.
+        if !self.doors().contains_key(&token) {
+            refuse_as(&mut client, silent, "403 Forbidden", "The job ended.").await;
+            return;
+        }
+        // The path is the door's own kind, as it was when the request came.
+        let connected = match &kind {
+            Kind::Browser(listeners) => self.browser_connect(&host, port, listeners).await,
             // ponytail: the agent's and the setup's doors have no address filter once the name
             // resolves (the browser door has one); the macOS box reaches loopback anyway. Linux's
             // box (#616's next step) needs one against 10.0.2.2's host loopback.
-            None => self
+            Kind::Agent | Kind::Setup => self
                 .connect(&host, port)
                 .await
                 .ok_or(Unconnected::Unreached),
@@ -463,12 +473,13 @@ impl Egress {
                 let why = format!(
                     "{host}:{port} is on this Mac or its network, which a task's box page never reaches."
                 );
-                refuse(&mut client, "403 Forbidden", &why).await;
+                refuse_as(&mut client, silent, "403 Forbidden", &why).await;
                 return;
             }
             Err(Unconnected::Unreached) => {
-                refuse(
+                refuse_as(
                     &mut client,
+                    silent,
                     "502 Bad Gateway",
                     &format!("obid's proxy couldn't reach {host}:{port}."),
                 )
@@ -507,7 +518,8 @@ impl Egress {
             return;
         }
         // Nothing goes on but TLS whose hello names this very host.
-        let Some(hello) = read_hello(&mut client, early, &host, listeners.is_some()).await else {
+        let browser = matches!(kind, Kind::Browser(_));
+        let Some(hello) = read_hello(&mut client, early, &host, browser).await else {
             tracing::debug!("egress: job {job}'s tunnel to {host}:{port} didn't name it");
             return;
         };
@@ -1168,6 +1180,13 @@ fn forwarded(head: &str) -> String {
     out
 }
 
+/// [`refuse`], or, when `silent`, no answer at all: the connection closes.
+async fn refuse_as(client: &mut TcpStream, silent: bool, status: &str, why: &str) {
+    if !silent {
+        refuse(client, status, why).await;
+    }
+}
+
 async fn refuse(client: &mut TcpStream, status: &str, why: &str) {
     let _ = client
         .write_all(
@@ -1707,9 +1726,21 @@ mod tests {
         assert!(up.skips("example.com"));
     }
 
+    /// obid's proxy deciding for job `id` ([`proxied_jobs`]); its `Jobs` live as long as the test.
+    fn proxied_job(id: &str, mode: &str, rules: Vec<crate::permissions::Rule>) -> Arc<Egress> {
+        let (egress, jobs) = proxied_jobs(id, mode, rules);
+        // The proxy holds `jobs` weakly: they live as long as the test.
+        std::mem::forget(jobs);
+        egress
+    }
+
     /// `Jobs` on a scratch home holding job `id` (repository `o/r`, in `mode`), its file written
     /// before they open with these saved rules, and obid's proxy deciding for it.
-    fn proxied_job(id: &str, mode: &str, rules: Vec<crate::permissions::Rule>) -> Arc<Egress> {
+    fn proxied_jobs(
+        id: &str,
+        mode: &str,
+        rules: Vec<crate::permissions::Rule>,
+    ) -> (Arc<Egress>, Arc<Jobs>) {
         let root = std::env::temp_dir().join(format!("obid-egress-{id}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         std::fs::create_dir_all(home.join("jobs")).unwrap();
@@ -1744,9 +1775,7 @@ mod tests {
         .unwrap();
         let egress = Egress::start(&jobs).unwrap();
         jobs.use_egress(egress.clone());
-        // The proxy holds `jobs` weakly: they live as long as the test.
-        std::mem::forget(jobs);
-        egress
+        (egress, jobs)
     }
 
     /// The status a `CONNECT target` through `proxy` (a door's URL, its login in it) is answered.
@@ -1870,6 +1899,84 @@ mod tests {
         assert_eq!(connected(&agent, "once.invalid:443").await, "407");
         assert_eq!(connected(&browser, "once.invalid:443").await, "407");
         assert!(named().is_empty());
+    }
+    /// What a plain `GET target` through `proxy` is answered, every byte until it closes.
+    async fn plain_answer(proxy: &str, target: &str) -> Vec<u8> {
+        let (login, at) = proxy
+            .trim_start_matches("http://")
+            .rsplit_once('@')
+            .unwrap();
+        let auth = base64::engine::general_purpose::STANDARD.encode(login);
+        let mut stream = TcpStream::connect(at).await.unwrap();
+        let head = format!(
+            "GET http://{target}/ HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(30), stream.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        answer
+    }
+
+    /// BROWSER-18, BROWSERAPP-36: a box page's plain http:// request the browser door refuses gets
+    /// no answer at all, so Chromium fails the load (the window's failed state) rather than showing
+    /// a refusal as the page; the agent's door still answers `403` with its reason.
+    #[tokio::test]
+    async fn browser_18_a_box_pages_refused_plain_request_gets_no_answer() {
+        let deny = crate::permissions::Rule {
+            id: "rdeny".into(),
+            rule: "WebFetch(domain:denied.invalid:80)".into(),
+            repo: "o/r".into(),
+            decision: "deny".into(),
+            created: 0,
+        };
+        let egress = proxied_job("b18plain", "bypass", vec![deny]);
+        let agent = egress.open("b18plain");
+        let browser = egress.open_browser("b18plain", vec![7777]);
+        let refused = plain_answer(&agent, "denied.invalid").await;
+        assert!(refused.starts_with(b"HTTP/1.1 403"), "{refused:?}");
+        assert_eq!(plain_answer(&browser, "denied.invalid").await, b"");
+        assert_eq!(plain_answer(&browser, "127.0.0.1:9").await, b"");
+        egress.close("b18plain");
+    }
+
+    /// BROWSER-18: a browser door closed while its site waits on the owner's card reaches nothing
+    /// once the card is answered: never the agent's door's way out, which has no address filter.
+    #[tokio::test]
+    async fn browser_18_a_door_closed_while_its_site_is_decided_reaches_nothing() {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = server.local_addr().unwrap().port();
+        let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = reached.clone();
+        tokio::spawn(async move {
+            while let Ok((_stream, _)) = server.accept().await {
+                counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let (egress, jobs) = proxied_jobs("b18race", "sandbox", Vec::new());
+        let browser = egress.open_browser("b18race", vec![7777]);
+        let asked = {
+            let browser = browser.clone();
+            tokio::spawn(async move { connected(&browser, &format!("localhost:{up}")).await })
+        };
+        let card = loop {
+            if let Some(card) = jobs.get("b18race").and_then(|j| j.permission) {
+                break card;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        egress.close("b18race");
+        jobs.answer_permission(
+            "b18race",
+            &card.id,
+            crate::permissions::Decision::Allow,
+            None,
+        )
+        .unwrap();
+        assert_eq!(asked.await.unwrap(), "403");
+        assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }
 
