@@ -11,6 +11,7 @@ import { everything, onObid } from '../lean';
 import type { BrowserApi, BrowserState, Tab } from './view';
 import { demoBoard } from './demo';
 import { connectLive, type Live } from './live';
+import { focusPage } from './Webviews';
 import { closeChanges, useChangesOpen } from '../ChangesPanel';
 
 /** The window's own state: not the browser's, never sent anywhere. */
@@ -50,6 +51,9 @@ export const PANEL_DEFAULT = 640, PANEL_MIN = 360;
 
 export const UI0: Ui = { open: true, full: false, width: PANEL_DEFAULT, gaveBack: false, card: null, typed: 0, filled: null, tipClosed: false };
 const NONE = async () => undefined;
+// the message box Give back returns the keyboard to: the conversation's (ChatView.tsx:279), else
+// Home's (Home.tsx:408)
+const MESSAGE_BOXES = ['.chat-layer:not(.is-covered):not(.is-leaving) > .composer [contenteditable="true"]', '.composer .composer-input'];
 const EMPTY: BrowserState = { tabs: [], active: null, asks: [], downloads: [], settings: BROWSER_DEFAULT_SETTINGS };
 
 // outside a BrowserProvider (a screen drawn on its own, in a test): no browser offered
@@ -98,8 +102,16 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
     if (onLive) {
       // the owner's acts, signed by main on their own click (shared/words.ts)
       return {
-        take: (t) => conn.current?.take(t) ?? Promise.resolve(),
-        giveBack: async (t) => { await conn.current?.giveBack(t); setUi({ gaveBack: true }); },
+        // once obid takes the tab, the keyboard is on its page; once it gives it back, in the message
+        // box (BROWSERAPP-40, 41), as T3 Code's Take control and Release control move it
+        take: async (t) => {
+          const job = latest.current.tabs.find((x) => x.id === t)?.job;
+          if ((await conn.current?.take(t)) && job) focusPage(job, t);
+        },
+        giveBack: async (t) => {
+          if (await conn.current?.giveBack(t)) MESSAGE_BOXES.map((css) => document.querySelector<HTMLElement>(css)).find(Boolean)?.focus();
+          setUi({ gaveBack: true });
+        },
         // the password or code goes to main, which fills it on your click and keeps nothing (BROWSERAPP-12)
         secret: async (t, field, value, ask) => { setUi({ card: null, typed: 0 }); const at = await conn.current?.fill(t, field, value, ask); if (at === true) setUi({ filled: { tab: t, field, length: value.length } }); },
         answer: (a, choice) => conn.current?.answer(a, choice) ?? Promise.resolve(),

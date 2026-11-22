@@ -58,6 +58,16 @@ const POINTER_MS = 700;
 
 type WebviewEl = HTMLElement & { getWebContentsId(): number; getURL(): string };
 
+// the mounted webviews, by tab: Take control puts the keyboard on one
+const mounted = new Map<string, WebviewEl>();
+
+/** Take control's keyboard on the tab's page, only while its slot is on screen: focusing the
+ *  <webview> gives its guest the keyboard, as T3 Code's `wc.focus()` does (Manager.ts:2482). */
+export function focusPage(job: string, tab: string): void {
+  const key = tabKey(job, tab);
+  if (rects.has(key)) mounted.get(key)?.focus();
+}
+
 function Hosted({ job, tab }: { job: string; tab: Tab }) {
   const key = tabKey(job, tab.id);
   const rect = useRect(key);
@@ -103,10 +113,13 @@ function Hosted({ job, tab }: { job: string; tab: Tab }) {
   useEffect(() => { browser?.shown(job, tab.id, !!rect); }, [!!rect, job, tab.id, browser]);
   useEffect(() => () => { browser?.shown(job, tab.id, false); }, [job, tab.id, browser]);
 
-  // the agent's pointer over its page: drawn, then faded (T3: AgentBrowserCursor)
+  // the agent's pointer over its page: drawn, then faded (T3: AgentBrowserCursor); none while you
+  // hold the tab, and one that comes meanwhile is dropped
+  const held = tab.holder === 'you';
+  useEffect(() => { if (held) setPointer(null); }, [held]);
   useEffect(() => browser?.pointer((p) => {
-    if (p.threadId === job && p.tabId === tab.id) setPointer({ x: p.x, y: p.y, at: Date.now(), click: p.phase === 'click' });
-  }), [job, tab.id, browser]);
+    if (!held && p.threadId === job && p.tabId === tab.id) setPointer({ x: p.x, y: p.y, at: Date.now(), click: p.phase === 'click' });
+  }), [job, tab.id, browser, held]);
   useEffect(() => {
     if (!pointer) return;
     const t = setTimeout(() => setPointer(null), POINTER_MS);
@@ -116,9 +129,9 @@ function Hosted({ job, tab }: { job: string; tab: Tab }) {
   // off screen, the page stays mounted and painting at the panel's usual size
   const place = rect ?? { left: -20_000, top: 0, width: 640, height: 720 };
   return (
-    <div className="br-hosted" data-browser="webview" data-tab={tab.id} style={{ position: 'fixed', left: place.left, top: place.top, width: place.width, height: place.height }}>
-      <webview key={mount.n} ref={(w) => { ref.current = w as WebviewEl | null; }} src={mount.src} partition={first.partition} style={{ width: '100%', height: '100%', display: 'flex' }} />
-      {pointer && rect && <Pointer tab={tab} x={pointer.x} y={pointer.y} ring={pointer.click} />}
+    <div className={held ? 'br-hosted is-held' : 'br-hosted'} data-browser="webview" data-tab={tab.id} style={{ position: 'fixed', left: place.left, top: place.top, width: place.width, height: place.height }}>
+      <webview key={mount.n} ref={(w) => { ref.current = w as WebviewEl | null; if (w) mounted.set(key, w as WebviewEl); else mounted.delete(key); }} src={mount.src} partition={first.partition} style={{ width: '100%', height: '100%', display: 'flex' }} />
+      {pointer && rect && !held && <Pointer tab={tab} x={pointer.x} y={pointer.y} ring={pointer.click} />}
     </div>
   );
 }

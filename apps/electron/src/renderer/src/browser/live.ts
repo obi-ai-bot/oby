@@ -11,8 +11,10 @@ import {
 import { STOPPED, type AgentId, type BrowserState, type Download, type Tab } from './view';
 
 export type Live = {
-  take(tab: string): Promise<void>;
-  giveBack(tab: string): Promise<void>;
+  /** true once obid took the tab (a 2xx), false when it refused */
+  take(tab: string): Promise<boolean>;
+  /** true once obid gave it back (a 2xx), false when it refused */
+  giveBack(tab: string): Promise<boolean>;
   /** a password or code into the page's field, through main on your click; true once filled */
   fill(tab: string, field: string, value: string, ask?: string): Promise<boolean>;
   /** an ask answered: a choice, or none (Skip) */
@@ -185,8 +187,10 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   void refresh().then((has) => { if (has && !closed) following = calls.follow(on); });
 
   const act = async (path: string) => {
-    try { await call('POST', path, {}); sinks.problem(null); } catch (e) { sinks.problem((e as Error).message); }
+    let done = false;
+    try { await call('POST', path, {}); sinks.problem(null); done = true; } catch (e) { sinks.problem((e as Error).message); }
     await refresh();
+    return done;
   };
   return {
     take: (t) => act(browserTabPath(t, 'take')),

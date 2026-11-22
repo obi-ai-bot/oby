@@ -266,4 +266,13 @@ html.is-mac-overlay, html.is-mac-overlay body, html.is-mac-overlay #root { backg
 html.is-mac-overlay .control-pill { position: fixed; top: 8px; }
 
 /* The agents' pages, each a <webview> on its slot (Webviews.tsx), with the agent's pointer over it */
-.br-hosted { z-index: 1; overflow: hidden; background: var(--bg); }
+.br-hosted { z-index: 1; overflow: hidden; background: #fff; }
+/* board 6's ring on a page you hold, over its webview */
+.br-hosted.is-held::after { content: ''; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--unread); pointer-events: none; z-index: 10; }
+/* The webview stays at the root, under the panel (a moved one loses its page), so over a live page
+   the panel is see-through and lets clicks through to it; its rows keep the panel's colour and
+   what it draws over the page (the ring, Ran a script, the peek, the pointer) stays on top, as T3
+   Code keeps its own overlays over its webview. Only a live slot: the demo's page is unchanged. */
+.br:has(> .br-view > .br-slot), .br-view:has(> .br-slot) { background: transparent; pointer-events: none; }
+:where(.br:has(> .br-view > .br-slot)) > :where(:not(.br-view)), :where(.br-view:has(> .br-slot)) > :where(:not(.br-slot)) { pointer-events: auto; }
+:where(.br:has(> .br-view > .br-slot)) > :where(.br-tabs, .where-bar, .br-nav, .br-control, .br-shelf) { background-color: var(--bg); }
