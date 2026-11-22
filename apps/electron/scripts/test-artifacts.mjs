@@ -41,6 +41,12 @@
 //   ARTIFACTSAPP-21: a page written for Tailwind's CDN (its script tag and an inline tailwind.config)
 //                   draws styled on the bundled Tailwind main's relay serves; nothing leaves loopback
 //                   and nothing, main or the frame's CSP, refuses the CDN (artifactsapp_21_a_page_written_for_tailwinds_cdn_draws_styled).
+//   ARTIFACTSAPP-24: a page that throws and asks for a CDN script draws what it can, and the pane's strip
+//                   says both; a real click on Ask to fix sends the fix words, signed by main, the error
+//                   attached as a file and the artifact with them
+//                   (artifactsapp_24_a_pages_error_shows_in_the_pane_and_ask_to_fix_sends_it).
+//   ARTIFACTSAPP-25: three fresh cards of a Tailwind React page, drawn at once, each have a teal picture,
+//                   the picture's view told drawn by the bridge (artifactsapp_25_three_tailwind_react_cards_pictures_are_drawn).
 // Screenshots go to OBY_ARTIFACTS_SHOTS (a folder) when it's set: the window, with the preview laid
 // where main lays it.
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts
@@ -582,7 +588,7 @@ async function main() {
   // ARTIFACTSAPP-13: a React folder (App.tsx and its Label.tsx, no index.html), published from the
   // conversation's room, draws in the preview on the vendored React, lucide-react and Tailwind that
   // main's relay serves: every request on loopback
-  const publishFiles = async (path, files) => {
+  const publishFiles = async (path, files, open = true) => {
     const room = join(s.home, 'conversations', made.conversation, 'room', path);
     mkdirSync(room, { recursive: true });
     for (const [name, text] of Object.entries(files)) writeFileSync(join(room, name), text);
@@ -592,6 +598,7 @@ async function main() {
     // opened from its card, in the turn that published it
     const itsCard = page.locator(`button.art-card[data-artifact="${id}"]`);
     await until(`${path}’s card`, async () => (await itsCard.count()) === 1, 60_000);
+    if (!open) return id;
     await itsCard.scrollIntoViewIfNeeded();
     await itsCard.click();
     await until(`${path} open`, async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === path, 60_000);
@@ -617,7 +624,8 @@ async function main() {
   // ARTIFACTSAPP-18: React draws 1.5 s after the frame loads, and the card's picture, taken once the
   // host page said drawn, still holds the teal page in its top half
   await until('the React card’s picture', async () => reactCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
-  const reactPicture = await reactCard.evaluate((el) => {
+  // the teal pixels in a card's picture's top half
+  const tealOf = (c) => c.evaluate((el) => {
     const img = el.querySelector('img.art-thumb-img');
     const c = document.createElement('canvas');
     c.width = img.naturalWidth; c.height = img.naturalHeight;
@@ -628,9 +636,11 @@ async function main() {
     for (let i = 0; i < data.length; i += 4) if (data[i] < 60 && data[i + 1] > 120 && data[i + 2] > 110) teal++;
     return { teal, of: data.length / 4 };
   });
+  const reactPicture = await tealOf(reactCard);
   // the picture's view heard "drawn" from React, not its 4 s ceiling
-  const thumbDrawn = await app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html?thumb'))
-    ?.executeJavaScript('Promise.race([window.obyDrawn.then(() => true), new Promise((r) => setTimeout(() => r(false), 100))])'));
+  const thumbStatus = () => app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html?thumb'))
+    ?.executeJavaScript('Promise.race([window.obyStatus, new Promise((r) => setTimeout(() => r(null), 100))])'));
+  const thumbDrawn = (await thumbStatus())?.drawn === true;
   assert.equal(thumbDrawn, true, "artifactsapp_18: the picture's view heard the React page drawn");
   assert.ok(reactPicture.teal > 0, `artifactsapp_18: the React card's picture holds the teal page in its top half: ${JSON.stringify(reactPicture)}`);
   await reactCard.scrollIntoViewIfNeeded();
@@ -697,6 +707,62 @@ async function main() {
   assert.deepEqual(tailwindOff, [], 'artifactsapp_21: every request the preview made went to its host page or the relay');
   assert.deepEqual(cdnRefused, [], 'artifactsapp_21: nothing was refused for the CDN');
   console.log(`ok artifactsapp_21_a_page_written_for_tailwinds_cdn_draws_styled (paddingTop ${tailwind.paddingTop}, background ${tailwind.backgroundColor}, ${tailwindRequests.length} requests, all on loopback)`);
+
+  // ARTIFACTSAPP-24: a page that throws, then asks for a CDN script: the frame draws what it can, the
+  // pane's strip says both, and a real click on Ask to fix sends the fix words, signed by main, the
+  // error attached as a file and the artifact with them
+  const broken = await publishFiles('broken', { 'index.html': `<!doctype html><html><body><h1>Half</h1><script>throw new Error('boom')</script><script src="https://cdn.example.com/x.js"></script></body></html>` });
+  const strip = page.locator('.art-page-error');
+  const said = await until('the page’s error in the pane', async () => { const t = await strip.locator('pre').innerText().catch(() => ''); return t.includes('boom') && t.includes('cdn.example.com') && t; }, 30_000).catch(async (e) => {
+    console.error('artifactsapp_24: the pane shows', JSON.stringify(await page.locator('.art-br').innerText().catch(() => '')), '; the picture view’s status', JSON.stringify(await inHost('Promise.race([window.obyStatus, new Promise((r) => setTimeout(() => r(null), 100))])')));
+    throw e;
+  });
+  assert.equal(await strip.locator('p').innerText(), 'This page stopped with an error.', 'artifactsapp_24: the strip’s lead');
+  assert.equal((await inFrame(`document.querySelector('h1')?.textContent ?? null`)).value, 'Half', 'artifactsapp_24: the frame shows what drew');
+  // its card's picture is its own, never the teal page shown before it in the picture's view
+  const brokenCard = page.locator(`button.art-card[data-artifact="${broken}"]`);
+  await until('the broken card’s picture', async () => brokenCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
+  assert.equal((await tealOf(brokenCard)).teal, 0, 'artifactsapp_18: the broken page’s picture is its own, not the Tailwind page’s before it');
+  await shot(page, '17-page-error');
+  // what main sends obid for the click, its X-Oby-Words included: main's own fetch, watched from main
+  await app.evaluate(() => {
+    globalThis.__plansSent = [];
+    const f = globalThis.fetch;
+    globalThis.fetch = (url, init) => {
+      if (String(url).endsWith('/v1/plans')) globalThis.__plansSent.push({ words: init?.headers?.['X-Oby-Words'] ?? null, body: JSON.parse(init?.body ?? 'null') });
+      return f(url, init);
+    };
+  });
+  const FIX = 'The preview shows an error, in the attached file. Fix the artifact so it draws.';
+  await page.getByRole('button', { name: 'Ask to fix', exact: true }).click();
+  const fixTurn = await until('the owner’s fix words in the conversation', async () => (await s.call('GET', `/v1/conversation?id=${made.conversation}&limit=100`)).find((t) => t.who === 'user' && t.text === FIX), 60_000);
+  assert.deepEqual(fixTurn.attachments?.map((a) => a.split('/').pop()), ['preview-error.txt'], `artifactsapp_24: the error went as a file: ${JSON.stringify(fixTurn.attachments)}`);
+  const fixSent = (await app.evaluate(() => globalThis.__plansSent)).filter((r) => r.body?.said === FIX);
+  assert.equal(fixSent.length, 1, `artifactsapp_24: one send: ${JSON.stringify(fixSent)}`);
+  assert.deepEqual(fixSent[0].body.artifact, { id: broken, version: 1 }, 'artifactsapp_24: the artifact went with the words');
+  assert.ok(!fixSent[0].body.said.includes('boom'), 'artifactsapp_24: the error is not in the words');
+  assert.match(fixSent[0].words ?? '', /^\S+ \S+ \S+$/, `artifactsapp_24: main signed it (X-Oby-Words): ${fixSent[0].words}`);
+  await shot(page, '18-asked-to-fix');
+  console.log(`ok artifactsapp_24_a_pages_error_shows_in_the_pane_and_ask_to_fix_sends_it (${JSON.stringify(said)}; sent with X-Oby-Words ${fixSent[0].words.split(' ')[0]} …, attachments ${JSON.stringify(fixTurn.attachments)})`);
+
+  // ARTIFACTSAPP-25: three fresh cards of a Tailwind React page, drawn at once, one after another: each
+  // picture's top half is teal, the picture's view told drawn by the bridge, not its ceiling
+  const teal = { 'App.tsx': `export default function App() {\n  return <main className="p-4 bg-teal-600 text-white"><h1>Teal</h1></main>;\n}\n` };
+  const fresh25 = [];
+  let tealCard;
+  for (const n of ['teal-1', 'teal-2', 'teal-3']) {
+    const tealId = await publishFiles(n, teal, false);
+    tealCard = page.locator(`button.art-card[data-artifact="${tealId}"]`);
+    await until(`${n}’s picture`, async () => tealCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
+    fresh25.push({ n, ...(await tealOf(tealCard)), status: await thumbStatus() });
+  }
+  await tealCard.scrollIntoViewIfNeeded();
+  await shot(page, '19-teal-cards');
+  for (const f of fresh25) {
+    assert.ok(f.teal > 0, `artifactsapp_25: ${f.n}'s picture is drawn and styled: ${JSON.stringify(fresh25)}`);
+    assert.deepEqual(f.status, { drawn: true }, `artifactsapp_25: ${f.n}'s picture view heard drawn: ${JSON.stringify(fresh25)}`);
+  }
+  console.log(`ok artifactsapp_25_three_tailwind_react_cards_pictures_are_drawn (${fresh25.map((f) => `${f.n}: ${f.teal} of ${f.of} teal`).join(', ')})`);
 
   // Close takes it away
   await page.getByRole('button', { name: 'Close the artifact' }).click();

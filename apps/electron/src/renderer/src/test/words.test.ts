@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf, IMPORT } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf, IMPORT, ASK_TO_FIX, FIX_WORDS } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -317,6 +317,17 @@ describe('signed words', () => {
     expect(wordsOf('PUT', path, edit)).toBeNull();
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     expect(wordsHeader(privateKey, 'd1', 'POST', path, edit)).not.toBeNull();
+  });
+
+  it('words_24_ask_to_fix_signs_its_own_words_by_its_own_label', () => {
+    expect([ASK_TO_FIX, FIX_WORDS]).toEqual(['Ask to fix', 'The preview shows an error, in the attached file. Fix the artifact so it draws.']);
+    const body = { said: FIX_WORDS, conversation: 'c1', id: 't1', artifact: { id: '3f0c2a1e-1111-4222-8333-944455556666', version: 2 }, attachments: ['uploads/preview-error.txt'] };
+    expect(owners('POST', '/v1/plans', body, ['Ask to fix'], [])).toEqual([0]);
+    // another button can't stand for it, nor it for other words, another request or an answer
+    expect(owners('POST', '/v1/plans', body, ['Try again'], [])).toBeNull();
+    expect(owners('POST', '/v1/plans', { ...body, said: 'something else' }, ['Ask to fix'], [])).toBeNull();
+    expect(owners('POST', '/v1/jobs/x/messages', { text: FIX_WORDS }, ['Ask to fix'], [])).toBeNull();
+    expect(owners('POST', '/v1/plans', { said: 'Which one?', answer: { question: 'Which one?', option: FIX_WORDS }, conversation: 'c1', id: 't2' }, ['Ask to fix'], ['Which one?'])).toBeNull();
   });
 
   it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {

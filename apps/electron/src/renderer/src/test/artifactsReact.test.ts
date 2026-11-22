@@ -95,6 +95,16 @@ it('artifactsapp_13_the_relay_serves_the_vendored_files_on_a_preview_host', asyn
   expect((await get(`localhost:${relay.port}`, '/__csb_vendor/react/react.mjs')).status).toBe(404);
 });
 
+// ARTIFACTSAPP-23: the bridge, served as it is on a preview host only
+it('artifactsapp_23_the_relay_serves_the_bridge', async () => {
+  const bridge = await get(`k3j9-preview.localhost:${relay.port}`, '/__csb_oby/bridge.js');
+  expect(bridge.status).toBe(200);
+  expect(bridge.type).toBe('text/javascript; charset=utf-8');
+  expect(bridge.body.equals(readFileSync(join(app, 'resources/preview-bridge/bridge.js')))).toBe(true);
+  expect((await get(`localhost:${relay.port}`, '/__csb_oby/bridge.js')).status).toBe(404);
+  expect(forbiddenIn('bridge.js', bridge.body.toString())).toEqual([]);
+});
+
 it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'oby-vendor-'));
   try {
@@ -121,11 +131,19 @@ it('artifactsapp_14_a_compile_error_shows_its_message_and_runs_nothing', () => {
   const shown = showable({ kind: 'html', title: 'Broken', files: { 'App.tsx': { text: 'export default function App() { return <h1>open <b>never closed</h1>; }' } } });
   expect(Object.keys(shown)).toEqual(['/index.html']);
   const index = code(shown['/index.html']);
-  const pre = /<pre>(.*)<\/pre>/s.exec(index)![1];
+  // marked as the page's error (ARTIFACTSAPP-22), for the bridge to say in drawn's place
+  const pre = /<pre data-oby-error>(.*)<\/pre>/s.exec(index)![1];
   expect(pre.length).toBeGreaterThan(5);
   expect(pre).not.toContain('<');
   expect(index).not.toContain('<script');
   expect(index).not.toContain('<b>');
+  // a page that compiled: React's errors are the bridge's to tell, the page left as it drew; it says
+  // when it rendered on a timer, never a frame, and a failed import's <pre> is marked too
+  const mount = /<script type="module">(.*)<\/script>/s.exec(code(showable({ kind: 'html', title: 'Card', files: { 'App.tsx': { text: APP } } })['/index.html']))![1];
+  for (const gone of ['window.onerror', 'onUncaughtError', 'requestAnimationFrame', 'replaceChildren(pre); drawn', 'oby:rendered']) expect(mount, gone).not.toContain(gone);
+  expect(mount).toMatch(/^[^]*?window\.__obyReact = true;[^]*import\('\/App\.js'\)/);
+  expect(mount).toContain("setTimeout(() => { window.__obyRendered?.(); }, 0)");
+  expect(mount).toContain("pre.setAttribute('data-oby-error', '')");
 });
 
 it('artifactsapp_14_the_error_text_is_inset', () => {

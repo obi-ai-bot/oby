@@ -44,6 +44,10 @@
 .art-br .art-save { flex: none; }
 .art-br .art-file.is-edited::after { content: ' •'; color: var(--ink); }
 .art-br .art-refused { flex: none; margin: 0; padding: 8px 14px; font-size: var(--text-sm); color: var(--ink); background: rgba(255, 159, 10, 0.12); border-bottom: 1px solid var(--divider); }
+/* the page's error, as the refused line, its text in a block of ten lines at most (ARTIFACTSAPP-24) */
+.art-br .art-page-error { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 14px; font-size: var(--text-sm); color: var(--ink); background: rgba(255, 69, 58, 0.12); border-bottom: 1px solid var(--divider); }
+.art-br .art-page-error p { margin: 0; }
+.art-br .art-page-error pre { margin: 0; max-width: 100%; font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 10; overflow: hidden; }
 
 /* a file dropped on the thread, offered as an artifact (ARTIFACTSAPP-12) */
 .chat-scroll.is-import-over { outline: 2px dashed var(--line-strong); outline-offset: -8px; }

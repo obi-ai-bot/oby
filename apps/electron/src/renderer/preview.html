@@ -6,7 +6,8 @@
     <title>Artifact preview</title>
     <style>
       html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; }
-      iframe { border: 0; width: 100%; height: 100%; display: block; }
+      /* each show's frame at full size, a new one laid under the last until it has drawn (host.ts) */
+      iframe { border: 0; position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
     </style>
   </head>
   <body>

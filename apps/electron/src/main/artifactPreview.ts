@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { startRelay, type Relay } from './sandpackRelay';
-import { allowed, noFiles, overlay, previewAsk, shownAs, thumbAsk } from './previewRules';
+import { allowed, noFiles, oneColour, overlay, pageError, previewAsk, previewStatus, shownAs, thumbAsk, type Status } from './previewRules';
 
 // An artifact's preview, drawn by Sandpack (docs/contracts/artifacts-app.md, ARTIFACTSAPP-1 and 3).
 // The page says which version and where (`artifact-preview`); main reads the version's files from
@@ -27,13 +27,19 @@ import { allowed, noFiles, overlay, previewAsk, shownAs, thumbAsk } from './prev
 //
 // The pane's Reload (`artifact-reload`, ARTIFACTSAPP-20) runs the version on view again, in the
 // pane's view only: the host page's own refresh, a constant script, never the picture's view.
+//
+// Both wait for the host page's status (host.ts, ARTIFACTSAPP-23), what the bridge in the page said:
+// the pane's view shows once it has drawn, so a new version never flashes white, and its answer says
+// what broke (`pageError`, ARTIFACTSAPP-24); a picture is taken once it has drawn, and again while
+// it comes out blank (ARTIFACTSAPP-25). The status is the artifact's own word and can be forged: it
+// only times these and gives text, never more.
 
 export const PARTITION = 'oby-artifact-preview';
 const dev = process.env.ELECTRON_RENDERER_URL;
 // a card's picture's page, in CSS px (ARTIFACTSAPP-18): drawn at scale 2, a 1280x370 picture
 const HALF = { width: 640, height: 185 };
 
-export type Shown = { shown: true } | { error: string };
+export type Shown = { shown: true; pageError?: string } | { error: string };
 export type Thumb = { src: string } | { none: true };
 
 type View = { view: WebContentsView; loaded: Promise<void>; relay: Relay };
@@ -42,13 +48,17 @@ let starting: Promise<View> | null = null;
 // the one relay, and the session locked to it, both views use (a second onBeforeRequest would
 // replace the first, and a second relay's port would be refused): made once per window lifetime
 let shared: Promise<Relay> | null = null;
-const refused: string[] = [];
+// what the session refused, each with the view that asked and its number, the last 50
+const refused: { n: number; url: string; by: number | undefined }[] = [];
+let refusals = 0;
+// the picture's view's, whose refusals are never the pane's page's
+let thumbContents: number | undefined;
 const rendererDir = join(__dirname, '../renderer');
 
 function lockSession(s: Session, relay: Relay, hostPage: string) {
   s.webRequest.onBeforeRequest((d, done) => {
     const ok = allowed(d.url, relay.port, hostPage, dev);
-    if (!ok) { refused.push(d.url); if (refused.length > 50) refused.shift(); console.warn(`artifact preview: refused ${d.url.slice(0, 200)}`); }
+    if (!ok) { refused.push({ n: ++refusals, url: d.url, by: d.webContentsId }); if (refused.length > 50) refused.shift(); console.warn(`artifact preview: refused ${d.url.slice(0, 200)}`); }
     done({ cancel: !ok });
   });
   s.setPermissionRequestHandler((_wc, _p, answer) => answer(false));
@@ -71,10 +81,13 @@ async function makeView(win: BrowserWindow, thumb = false): Promise<View> {
       partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false,
       nodeIntegrationInSubFrames: false, nodeIntegrationInWorker: false, webviewTag: false,
       spellcheck: false, safeDialogs: true, navigateOnDragDrop: false, devTools: !app.isPackaged,
+      // the picture's view is never shown: its page's timers run on all the same
+      ...(thumb ? { backgroundThrottling: false } : {}),
     },
   });
   view.setBackgroundColor('#ffffff');
   const wc = view.webContents;
+  if (thumb) thumbContents = wc.id;
   wc.setWindowOpenHandler(() => ({ action: 'deny' }));
   wc.on('will-navigate', (e) => e.preventDefault());
   wc.on('will-attach-webview', (e) => e.preventDefault());
@@ -84,6 +97,12 @@ async function makeView(win: BrowserWindow, thumb = false): Promise<View> {
   const loaded = dev ? wc.loadURL(`${dev}/preview.html${thumb ? '?thumb' : ''}`) : wc.loadFile(join(rendererDir, 'preview.html'), thumb ? { search: 'thumb' } : undefined);
   return { view, loaded, relay };
 }
+
+// the host page's status, at most 4 s; anything but its shapes a timeout
+const statusOf = (view: WebContentsView): Promise<Status> => Promise.race([
+  view.webContents.executeJavaScript('window.obyStatus').then(previewStatus, (): Status => ({ timeout: true })),
+  new Promise<Status>((done) => setTimeout(() => done({ timeout: true }), 4_000)),
+]);
 
 // a version's files as obid serves them: text, or base64 for bytes that aren't UTF-8
 async function readVersion(id: string, version: number): Promise<{ kind: string; title: string; files: Record<string, { text: string } | { base64: string }> } | string> {
@@ -140,6 +159,7 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
   }, null);
   async function show(key: string, id: string, version: number, edits?: Record<string, string>): Promise<Shown> {
     const { view, loaded, relay } = current!;
+    const since = refusals;
     const read = await readVersion(id, version);
     // each edit over its file, a file of that version only
     if (typeof read !== 'string') overlay(read.files, edits);
@@ -148,8 +168,10 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     if (typeof read === 'string') { view.setVisible(false); return { error: read }; }
     await loaded;
     await view.webContents.executeJavaScript(shownAs({ ...read, bundler: relay.origin }));
+    const status = await statusOf(view);
     if (wanted === key) { onView = key; view.setVisible(true); }
-    return { shown: true };
+    const said = pageError(status, refused.filter((r) => r.n > since && r.by !== thumbContents).map((r) => r.url));
+    return said ? { shown: true, pageError: said } : { shown: true };
   }
 
   // a card's picture of a version (ARTIFACTSAPP-18), in main's memory only: each key's answer, or the
@@ -211,13 +233,20 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     view.webContents.enableDeviceEmulation({ screenPosition: 'desktop', screenSize: HALF, viewSize: HALF, viewPosition: { x: 0, y: 0 }, deviceScaleFactor: 2, scale: 1 });
     await view.webContents.executeJavaScript(shownAs({ ...read, bundler: relay.origin }));
     if (gone()) return { none: true };
-    // the host page's own "drawn" (host.ts), at most 4 s
-    const drawn = await Promise.race([view.webContents.executeJavaScript('window.obyDrawn').then(() => true), new Promise<false>((done) => setTimeout(() => done(false), 4_000))]);
-    // ponytail: a frame just loaded isn't painted yet (taken at its load, the picture is blank on the
-    // Mac), so a fixed settle after it; a paint signal from the frame would need a bridge into it
-    if (drawn) await new Promise((done) => setTimeout(done, 250));
+    await statusOf(view);
     if (gone()) return { none: true };
-    const image = await view.webContents.capturePage();
+    let image = await view.webContents.capturePage();
+    // blank: nudged a pixel narrower and back, as LlamaCoder repaints its frame
+    // (nudgePreviewIframeGeometry), and taken again, at most 3 more times; the last is kept even
+    // then, as a page that really is one colour stays so
+    for (let again = 0; again < 3 && (image.isEmpty() || oneColour(image.toBitmap())); again++) {
+      if (gone()) return { none: true };
+      view.setBounds({ x: 0, y: 0, width: HALF.width - 1, height: HALF.height });
+      await new Promise((done) => setTimeout(done, 150));
+      if (gone()) return { none: true };
+      view.setBounds({ x: 0, y: 0, ...HALF });
+      image = await view.webContents.capturePage();
+    }
     if (gone()) return { none: true };
     // 1280x370, made so where a display captured it larger
     const png = (image.getSize().width > 1280 ? image.resize({ width: 1280 }) : image).toPNG();

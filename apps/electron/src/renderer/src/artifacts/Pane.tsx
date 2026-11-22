@@ -3,7 +3,8 @@ import { Download, RotateCw, X } from 'lucide-react';
 import { Panel } from '../browser/Panel';
 import { useClicksEverywhere } from '../Menu';
 import { closeArtifact, kindName, onLatest, save, showTab, showVersion, useOpenArtifact, type Tab } from './store';
-import { saveAs } from '../../../shared/words';
+import { ASK_TO_FIX, FIX_WORDS, saveAs } from '../../../shared/words';
+import { ask, uploadFiles, useLive } from '../live';
 // Code loads with its first use: CodeMirror reads the page as it loads, and needn't on every start
 const Code = lazy(() => import('./Code').then((m) => ({ default: m.Code })));
 import '../browser/browser.css';
@@ -21,6 +22,10 @@ export function ArtifactPane({ width }: { width: number }) {
   const open = useOpenArtifact();
   const box = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  // what the page on view said broke, as main answered it (ARTIFACTSAPP-24), and Ask to fix on its way
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [fixing, setFixing] = useState(false);
+  const { waiting } = useLive();
   const [saved, setSaved] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
   useEffect(() => { setMenu(false); setSaved(null); }, [open?.artifact.id, open?.version]);
@@ -55,11 +60,14 @@ export function ArtifactPane({ width }: { width: number }) {
     const preview = window.app?.artifactPreview;
     if (!el || !id || !version || !preview || !previewing) return;
     setError(null);
+    setPageError(null);
     let gone = false;
     const tell = () => {
       const r = el.getBoundingClientRect();
       void preview({ id, version, bounds: { x: r.left, y: r.top, width: r.width, height: r.height }, ...(edits ? { edits } : {}) }).then((a) => {
         if (!gone && a && 'error' in a) setError(a.error);
+        // a resize of the same version answers without it: the strip stays
+        if (!gone && a && 'shown' in a && a.pageError) setPageError(a.pageError);
       });
     };
     tell();
@@ -72,6 +80,20 @@ export function ArtifactPane({ width }: { width: number }) {
 
   if (!open) return null;
   const { artifact } = open;
+  // the page's error to the agent of the artifact's conversation, only on this click: as an attached
+  // file, never in the words (data from the page, "From outside"); its words carry the artifact by
+  // themselves (ARTIFACTSAPP-7), signed by the button's own label (WORDS-24)
+  const conversation = artifact.conversation;
+  const fix = async () => {
+    if (!pageError || !conversation) return;
+    setFixing(true);
+    try {
+      const files = await uploadFiles([{ name: 'preview-error.txt', file: new File([pageError], 'preview-error.txt', { type: 'text/plain' }) }]);
+      if (files) ask(FIX_WORDS, conversation, undefined, undefined, { files });
+    } finally {
+      setFixing(false);
+    }
+  };
   const latest = artifact.versions.at(-1)?.version ?? 1;
   const edited = Object.keys(open.edits).length > 0;
   return (
@@ -116,6 +138,14 @@ export function ArtifactPane({ width }: { width: number }) {
         {saved && <p className="art-saved" role="status">{saved}</p>}
         {/* why the last Save was refused, the edits kept (ARTIFACTSAPP-10) */}
         {open.refused && <p className="art-refused" role="alert">{open.refused}</p>}
+        {/* what the page on view said broke (ARTIFACTSAPP-24): its text as text, and Ask to fix */}
+        {open.tab === 'preview' && pageError && (
+          <div className="art-page-error" role="alert">
+            <p>This page stopped with an error.</p>
+            <pre>{pageError}</pre>
+            {conversation && <button className="tc-option is-sm" disabled={fixing || !!waiting[conversation]} onClick={() => void fix()}>{ASK_TO_FIX}</button>}
+          </div>
+        )}
         {open.tab === 'code' ? <Suspense fallback={null}><Code artifact={artifact} version={open.version} edits={open.edits} editable={onLatest(open)} /></Suspense> : (
           <div ref={box} className="art-view" data-artifact-view={artifact.id} role="region" aria-label={`${artifact.title}, its preview`}>
             {!window.app?.artifactPreview && <p className="art-view-note">The preview shows in Oby’s Mac app.</p>}
