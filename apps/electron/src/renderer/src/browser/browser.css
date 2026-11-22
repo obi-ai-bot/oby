@@ -267,3 +267,5 @@ html.is-mac-overlay .control-pill { position: fixed; top: 8px; }
 
 /* The agents' pages, each a <webview> on its slot (Webviews.tsx), with the agent's pointer over it */
 .br-hosted { z-index: 1; overflow: hidden; background: var(--bg); }
+/* board 6's ring on a page you hold, over its webview (.br-view.is-held is under it) */
+.br-hosted.is-held::after { content: ''; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--unread); pointer-events: none; z-index: 10; }
