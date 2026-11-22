@@ -129,6 +129,48 @@ it('artifactsapp_26_a_react_artifacts_map_has_recharts_and_the_trio', () => {
   for (const a of Object.values(map) as string[]) expect(a, a).toMatch(/^\/(?!\/)/);
 });
 
+// ARTIFACTSAPP-28: a bare import outside the set is named before anything runs, with what is there
+const HAS = 'It has: react, react-dom, lucide-react, recharts, clsx, tailwind-merge and class-variance-authority.';
+const refusal = (files: Record<string, { text: string }>) => {
+  const shown = showable({ kind: 'html', title: 'Scene', files });
+  expect(Object.keys(shown)).toEqual(['/index.html']);
+  const index = code(shown['/index.html']);
+  expect(index).not.toContain('<script');
+  return /<pre data-oby-error>(.*)<\/pre>/s.exec(index)![1];
+};
+it('artifactsapp_28_an_import_outside_the_set_says_what_is_there', () => {
+  const three = "import * as THREE from 'three';\n\nexport default function App() {\n  return <p>{String(THREE)}</p>;\n}\n";
+  expect(refusal({ 'App.tsx': { text: three } })).toBe(`This preview has no \`three\`. ${HAS}`);
+  const scene = "import * as THREE from 'three';\n\nexport function Scene() {\n  return <p>{String(THREE)}</p>;\n}\n";
+  expect(refusal({ 'App.tsx': { text: "import { Scene } from './Scene';\n\nexport default function App() {\n  return <Scene />;\n}\n" }, 'Scene.tsx': { text: scene } })).toBe(`This preview has no \`three\`. ${HAS}`);
+  const two = "import * as THREE from 'three';\nimport { format } from 'date-fns';\nimport { Vector3 } from 'three';\n\nexport default function App() {\n  return <p>{format(new Date(), 'y')}{String(THREE)}{String(Vector3)}</p>;\n}\n";
+  expect(refusal({ 'App.tsx': { text: two } })).toBe(`This preview has no \`three\`, \`date-fns\`. ${HAS}`);
+  const lazy = "export default function App() {\n  import('three');\n  return <p />;\n}\n";
+  expect(refusal({ 'App.tsx': { text: lazy } })).toBe(`This preview has no \`three\`. ${HAS}`);
+  // what the set and its own files hold draws as before, sucrase's react/jsx-runtime import with it
+  const fine = showable({ kind: 'html', title: 'Fine', files: {
+    'App.tsx': { text: "import { useState } from 'react';\nimport { LineChart } from 'recharts';\nimport { clsx } from 'clsx';\nimport { Label } from './Label';\nimport { cn } from '/lib/utils';\nimport { X } from '/components/x';\n\nexport default function App() {\n  const [n] = useState(1);\n  return <main className={cn(clsx('p-4'))}><LineChart width={n} height={n} data={[]} /><Label text=\"ok\" /><X /></main>;\n}\n" },
+    'Label.tsx': { text: LABEL },
+    'lib/utils.ts': { text: "import { clsx, type ClassValue } from 'clsx';\nimport { twMerge } from 'tailwind-merge';\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs));\n}\n" },
+    'components/x.tsx': { text: 'export function X() {\n  return <b>x</b>;\n}\n' },
+  } });
+  expect(code(fine['/App.js'])).toContain('from "react/jsx-runtime"');
+  const index = code(fine['/index.html']);
+  expect(index).toContain('<div id="root"></div>');
+  expect(index).toContain("import('/App.js')");
+  expect(index).not.toContain('<pre data-oby-error>');
+});
+
+// ARTIFACTSAPP-23: the bridge, served as it is on a preview host only
+it('artifactsapp_23_the_relay_serves_the_bridge', async () => {
+  const bridge = await get(`k3j9-preview.localhost:${relay.port}`, '/__csb_oby/bridge.js');
+  expect(bridge.status).toBe(200);
+  expect(bridge.type).toBe('text/javascript; charset=utf-8');
+  expect(bridge.body.equals(readFileSync(join(app, 'resources/preview-bridge/bridge.js')))).toBe(true);
+  expect((await get(`localhost:${relay.port}`, '/__csb_oby/bridge.js')).status).toBe(404);
+  expect(forbiddenIn('bridge.js', bridge.body.toString())).toEqual([]);
+});
+
 it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'oby-vendor-'));
   let printed: Record<string, string[]>;

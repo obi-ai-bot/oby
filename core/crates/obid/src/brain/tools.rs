@@ -27,7 +27,7 @@ use crate::mcp::{self, Does, Server, Tool};
 /// What a preview can import (ARTIFACTS-27): a macro so `oby_artifact` and a job's brief `concat!` it in.
 macro_rules! preview_imports {
     () => {
-        "A React artifact is a folder whose App.tsx default-exports a component with no props, and no index.html; it imports only react, react-dom and lucide-react (1.55: newer icons are missing). Tailwind classes apply; nothing is fetched, so draw placeholder images in SVG or CSS. A page's Tailwind CDN script gets the bundled Tailwind 4; other CDNs are refused."
+        "A React artifact is a folder whose App.tsx default-exports a component with no props, and no index.html; it imports only react, react-dom, lucide-react (1.55: newer icons are missing), recharts, clsx, tailwind-merge and class-variance-authority. Tailwind classes apply; nothing is fetched, so draw placeholder images in SVG or CSS. A page's Tailwind CDN script gets the bundled Tailwind 4; other CDNs are refused."
     };
 }
 pub(crate) use preview_imports;
