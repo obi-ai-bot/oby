@@ -238,8 +238,9 @@ fn heard_there(message: tungstenite::Message) -> Heard {
 }
 
 /// The socket and the WebSocket both ways ([`both_ways`]) until either closes or fails, then both
-/// end; or until `ended`, which ends it whatever it waits on, a write the other side doesn't take
-/// included: then both are dropped at once, the socket reset, so nothing still queued goes on.
+/// end; or until `ended`, which ends it whatever it waits on, a write or a close the other side
+/// doesn't take included: then both are dropped at once, the socket reset, so nothing still queued
+/// goes on.
 ///
 /// ponytail: no idle limit on a tunnel, as T3's has none: it lasts while both sides hold it, an
 /// idle one holding a socket at each end and one of its door's 64; the egress proxy's `IDLE` is
@@ -254,9 +255,14 @@ async fn pump<W, M, E>(
 ) where
     W: Sink<M> + Stream<Item = Result<M, E>> + Unpin,
 {
+    // The graceful close races the end too: a peer that stops reading can hold it.
     let cut = tokio::select! {
         () = ended => true,
-        () = both_ways(&mut ws, &mut socket, rest, binary, heard) => false,
+        () = async {
+            both_ways(&mut ws, &mut socket, rest, binary, heard).await;
+            let _ = ws.close().await;
+            let _ = socket.shutdown().await;
+        } => false,
     };
     if cut {
         // Closed with a reset, not a FIN: what its send buffer holds is dropped with it.
@@ -265,10 +271,7 @@ async fn pump<W, M, E>(
             l_linger: 0,
         };
         let _ = nix::sys::socket::setsockopt(&socket, nix::sys::socket::sockopt::Linger, &reset);
-        return;
     }
-    let _ = ws.close().await;
-    let _ = socket.shutdown().await;
 }
 
 /// The socket and the WebSocket both ways, as binary frames of at most [`READ`], each written
@@ -478,6 +481,85 @@ mod tests {
         );
         assert!(ended.await.is_ok(), "the tunnel outlived its pairing");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A WebSocket peer that ends at once, then stops reading: its close never completes.
+    struct Stuck {
+        heard: bool,
+    }
+
+    impl Stream for Stuck {
+        type Item = Result<Bytes, ()>;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            match std::mem::replace(&mut self.heard, true) {
+                false => std::task::Poll::Ready(Some(Ok(Bytes::new()))),
+                true => std::task::Poll::Pending,
+            }
+        }
+    }
+
+    impl Sink<Bytes> for Stuck {
+        type Error = ();
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _: Bytes) -> Result<(), ()> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// COMPUTERS-26: a tunnel whose WebSocket peer stops reading while it closes still ends when
+    /// its pairing does, its socket reset: the service at its end gets nothing more.
+    #[tokio::test]
+    async fn computers_26_a_tunnel_closing_on_a_peer_that_stopped_reading_ends_when_revoked() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut service, _) = listener.accept().await.unwrap();
+        let (revoke, revoked) = tokio::sync::oneshot::channel::<()>();
+        let ended = async {
+            let _ = revoked.await;
+        };
+        let pumped = tokio::spawn(pump(
+            Stuck { heard: false },
+            socket,
+            None,
+            ended,
+            |b| b,
+            |_| Heard::End,
+        ));
+        // The peer ended, and its close is stuck: then the pairing ends.
+        tokio::task::yield_now().await;
+        let _ = revoke.send(());
+        let done = tokio::time::timeout(std::time::Duration::from_secs(5), pumped).await;
+        assert!(
+            done.is_ok(),
+            "the tunnel outlived its pairing while closing"
+        );
+        let mut got = [0u8; 16];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), service.read(&mut got))
+            .await
+            .expect("the service's connection is over");
+        assert!(matches!(read, Ok(0) | Err(_)), "the service got {read:?}");
     }
 
     /// COMPUTERS-26: the query's port is one `port` of digits; anything else is a bad port.
