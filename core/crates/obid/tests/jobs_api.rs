@@ -4773,10 +4773,10 @@ fn merging_36_a_review_of_someone_elses_commits_asks_for_its_reads() {
 }
 
 /// BROWSER-18: the owner's review of a pull request whose head has a commit obid didn't record
-/// reads someone else's code from its start: its agent is given no browser server, as another
-/// Oby's task isn't, until the window's side of the box's edge lands.
+/// reads someone else's code from its start: its agent is given Oby's browser, for its box, as
+/// another Oby's task is.
 #[test]
-fn browser_18_a_review_of_someone_elses_commits_gets_no_browser() {
+fn browser_18_a_review_of_someone_elses_commits_loads_its_box_browser() {
     let folder = Folder::new("review-theirs-browser");
     let remote = fixture(&folder.0.join("fixture"));
     authors_commit(&folder.0, &remote, "refs/pull/91/head");
@@ -4788,14 +4788,14 @@ fn browser_18_a_review_of_someone_elses_commits_gets_no_browser() {
         .to_owned();
     assert_eq!(wait(&obid, &id)["status"], "done");
     let loaded = loaded(&obid, &id);
-    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
+    assert_eq!(loaded["mcpServers"], json!(["browser"]), "{loaded}");
 }
 
 /// BROWSER-18: the owner's review of a pull request someone else wrote in (a member, here) reads
-/// someone else's code from its start, though obid recorded its commits: its run loads no browser
-/// server.
+/// someone else's code from its start, though obid recorded its commits: its run loads Oby's
+/// browser, for its box.
 #[test]
-fn browser_18_a_review_of_a_pull_request_someone_else_wrote_in_gets_no_browser() {
+fn browser_18_a_review_of_a_pull_request_someone_else_wrote_in_loads_its_box_browser() {
     let folder = Folder::new("review-member-browser");
     let remote = fixture(&folder.0.join("fixture"));
     pull_request_90(&remote);
@@ -4824,7 +4824,7 @@ fn browser_18_a_review_of_a_pull_request_someone_else_wrote_in_gets_no_browser()
     let id = started.body["id"].as_str().unwrap();
     assert_eq!(wait(&obid, id)["status"], "done");
     let loaded = loaded(&obid, id);
-    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
+    assert_eq!(loaded["mcpServers"], json!(["browser"]), "{loaded}");
 }
 
 /// MERGING-36: a review the owner dispatched (signed, so obid asks GitHub who wrote the pull
@@ -7205,9 +7205,9 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     let loaded = loaded(&obid, job["id"].as_str().unwrap());
     assert_eq!(loaded["sources"], json!([]), "{loaded}");
     assert_eq!(loaded["skills"], json!([]), "{loaded}");
-    // None of the owner's or the repository's servers, and no browser: an untrusted job gets none
-    // until the window's side of the box's edge lands (box_edge::FOREIGN_BROWSER, BROWSER-18).
-    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
+    // None of the owner's or the repository's servers, only Oby's browser: an untrusted job's
+    // pages open in its box partition, held to its own egress door (BROWSER-18).
+    assert_eq!(loaded["mcpServers"], json!(["browser"]), "{loaded}");
 }
 
 /// LANES-23: an owner's settings file with what obid used to refuse (commands out of the

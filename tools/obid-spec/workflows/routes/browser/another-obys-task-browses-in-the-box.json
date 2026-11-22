@@ -241,8 +241,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -270,8 +269,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -292,8 +290,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -321,8 +318,7 @@
         "proves": [
           "BROWSER-18",
           "BROWSER-32"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -340,8 +336,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -359,8 +354,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -378,8 +372,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -397,8 +390,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -418,8 +410,7 @@
       "ui": {
         "proves": [
           "BROWSER-18"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     },
     {
@@ -500,9 +491,6 @@
         "obid": "${state.a}",
         "job": "${state.job.picked.id}",
         "until": "calls.off"
-      },
-      "ui": {
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
       }
     },
     {
@@ -524,8 +512,7 @@
         "proves": [
           "BROWSER-18",
           "BROWSER-15"
-        ],
-        "expectedRed": "the window's box edge, the browser lane's task after W01-03: a foreign job gets no browser until it lands (browser::box_edge::FOREIGN_BROWSER)"
+        ]
       }
     }
   ]

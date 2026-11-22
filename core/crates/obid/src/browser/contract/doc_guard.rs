@@ -205,6 +205,12 @@ fn samples() -> Vec<Value> {
             active: true,
         })
         .unwrap(),
+        serde_json::to_value(RelayCommand::Box {
+            thread_id: "j1".into(),
+            partition: "oby-box-j1".into(),
+            proxy: "http://oby:<token>@127.0.0.1:1".into(),
+        })
+        .unwrap(),
         serde_json::to_value(RelayEvents {
             events: vec![
                 RelayEvent::LoadFailed {

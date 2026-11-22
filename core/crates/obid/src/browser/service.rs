@@ -40,8 +40,9 @@ pub struct Service {
     relay: Arc<super::relay::Relay>,
     /// The window's browser: the agents' tools run on it, over the relay, on the engine's core.
     window: Arc<super::window::WindowDriver>,
-    /// The host's own services on loopback (obid's port, its gateway's): the box's edge a foreign
-    /// job's browser stops at (BROWSER-18). obid's start sets them ([`Service::set_host_ports`]).
+    /// The host's own services' ports (obid's, its gateway's, the `direct` listeners'): the box's
+    /// edge a foreign job's browser stops at (BROWSER-18), on loopback for its navigate and on any
+    /// address for its browser door. obid's start sets them ([`Service::set_host_ports`]).
     host_ports: Mutex<Vec<u16>>,
 }
 
@@ -65,12 +66,13 @@ impl Service {
         }
     }
 
-    /// The host's own services' ports on loopback: obid's and its gateway's (BROWSER-18).
+    /// The host's own services' ports: obid's, its gateway's and the `direct` listeners'
+    /// (BROWSER-18).
     pub fn set_host_ports(&self, ports: Vec<u16>) {
         *self.host_ports.lock().unwrap_or_else(|e| e.into_inner()) = ports;
     }
 
-    pub(super) fn host_ports(&self) -> Vec<u16> {
+    pub(crate) fn host_ports(&self) -> Vec<u16> {
         self.host_ports
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -227,9 +229,10 @@ mod tests {
     use super::*;
 
     /// An own job the browser already knows, later found foreign in obid's records, is foreign
-    /// from its next call: its origin is never only the first one heard (BROWSER-18).
+    /// from its next call: its origin is never only the first one heard, and its tabs open in its
+    /// box (BROWSER-18).
     #[tokio::test]
-    async fn browser_18_a_job_that_becomes_foreign_loses_its_browser() {
+    async fn browser_18_a_job_that_becomes_foreign_browses_in_its_box() {
         let home = std::env::temp_dir().join(format!("oby-browser-18-{}", std::process::id()));
         let service = Service::open(&home).await;
         service.ensure_job("j1", "claude", c::Origin::Own);
@@ -238,11 +241,12 @@ mod tests {
             service.api(|a| a.job("j1").map(|j| j.origin.clone())),
             Some(c::Origin::Untrusted)
         );
+        // Its tools run, in the window's browser (none here).
         let answer = service
             .call_tool("j1", &home, "oby_browser_snapshot", &json!({}))
             .await;
         assert_eq!(
-            answer["structuredContent"]["error"]["code"], "browser_off",
+            answer["structuredContent"]["error"]["code"], "no_window",
             "{answer}"
         );
         // A job found foreign never goes back to its agent's partition.

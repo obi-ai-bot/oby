@@ -8,27 +8,6 @@
 use super::api::Refused;
 use super::contract::Origin;
 
-/// Whether a foreign job (another Oby's task, one marked `untrusted`, Oby's own review) gets a
-/// browser. Off until the window's side of the box's edge lands, the browser lane's task after
-/// W01-03: the window runs pages on the owner's Mac and network, outside the box's egress proxy,
-/// and [`in_box`] reads only the address open and navigate are given. That task turns this on once
-/// the window holds a foreign page to the job's egress decisions, refuses private, link-local and
-/// every loopback host after resolving names, and holds script, links, redirects and navigations a
-/// page starts to the same rules (`evaluate`, `act`). Until then `jobs::reach` gives such a job no
-/// browser server and every tool refuses it ([`not_yet`]); the tests that fail if this breaks are
-/// `browser_api.rs` `browser_18_a_foreign_jobs_browser_tools_are_refused_until_the_windows_edge`
-/// and `jobs_api.rs` `lanes_23_*` (an untrusted run loads no server).
-pub const FOREIGN_BROWSER: bool = false;
-
-/// A foreign job's browser tool while [`FOREIGN_BROWSER`] is off: it finishes without one.
-pub fn not_yet() -> Refused {
-    Refused::new(
-        403,
-        "browser_off",
-        "A task from another Oby, or one marked untrusted, gets no browser on this Oby yet. Finish without a browser, and say so in your summary.",
-    )
-}
-
 /// How many of the Sphere's latest exchanges [`origin_of`] looks through for the one that brought
 /// a job: a running job's is among them.
 pub const EXCHANGES_LOOKED: usize = 500;

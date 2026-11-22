@@ -304,7 +304,7 @@ impl Window {
                 // Each command runs apart, so a slow one (a navigation) never holds the next.
                 tokio::spawn(async move { me.cdp_command(&job, &tab, frame).await });
             }
-            Some("release" | "pointer" | "turn") => {}
+            Some("release" | "pointer" | "turn" | "box") => {}
             other => self.refuse("command", "", &format!("{other:?}")),
         }
     }

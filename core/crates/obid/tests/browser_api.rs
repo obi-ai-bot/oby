@@ -216,37 +216,63 @@ fn seeded_job(folder: &Folder, id: &str, mark: impl FnOnce(&mut obid::job::Job))
     (obid, token)
 }
 
-/// Every browser tool `token`'s job calls is refused as a foreign job's: no browser on this Oby
-/// yet (BROWSER-18), its navigate to obid's own API on loopback too.
-fn refused_as_foreign(obid: &Obid, token: &str) {
+/// A foreign job's tab, opened by its agent in the stand-in window, is in its box partition
+/// (`oby-box-<job>`), and its navigate to obid's own API on loopback is outside the box
+/// (BROWSER-18).
+fn browses_in_its_box(obid: &Obid, token: &str, job: &str) {
+    let window = Window::follow(obid);
+    let opening = {
+        let (port, token) = (obid.port, token.to_string());
+        std::thread::spawn(move || {
+            let bearer = format!("Bearer {token}");
+            raw_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_open", "arguments": {"url": PAGE}}}),
+            )
+        })
+    };
+    let tab = window.attach(obid, job);
+    let (status, opened) = opening.join().unwrap();
+    assert_eq!(status, 200, "{opened}");
+    assert_eq!(
+        opened["result"]["structuredContent"]["ok"], true,
+        "{opened}"
+    );
+    let tabs = call(obid, "GET", "/v1/browser", None).body;
+    let shown = tabs["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == tab.as_str())
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(shown["partition"], format!("oby-box-{job}"), "{tabs}");
     let url = format!("http://127.0.0.1:{}/v1/jobs", obid.port);
-    for (name, args) in [
-        ("oby_browser_navigate", json!({"url": url})),
-        ("oby_browser_snapshot", json!({})),
-    ] {
-        let refused = tool(obid, token, name, args);
-        assert_eq!(refused["error"]["code"], "browser_off", "{refused}");
-        let message = refused["error"]["message"].as_str().unwrap_or_default();
-        assert!(message.contains("no browser on this Oby yet"), "{refused}");
-    }
+    let refused = tool(obid, token, "oby_browser_navigate", json!({"url": url}));
+    assert_eq!(refused["error"]["code"], "outside_box", "{refused}");
 }
 
-/// A job marked `untrusted` gets no browser until the window's side of the box's edge lands
-/// (box_edge::FOREIGN_BROWSER, BROWSER-18): its agent, which holds its broker token, has every tool
-/// refused. Written before obid starts, as a foreign job is.
+/// A job marked `untrusted` gets the browser in its box (BROWSER-18): its agent's tab opens in
+/// `oby-box-<job>`, and its navigate to obid's own API is refused. Written before obid starts, as
+/// a foreign job is.
 #[test]
-fn browser_18_a_foreign_jobs_browser_tools_are_refused_until_the_windows_edge() {
+fn browser_18_a_foreign_jobs_tabs_open_in_its_box_and_its_navigate_to_obid_is_outside_box() {
     let folder = Folder::new("browser-18");
     let (mut obid, token) = seeded_job(&folder, "bbbb1818", |job| job.untrusted = true);
-    refused_as_foreign(&obid, &token);
+    browses_in_its_box(&obid, &token, "bbbb1818");
     stop_with_no_browser_left(&mut obid);
 }
 
 /// A follow-up whose earlier job is gone (a received review the owner deleted, then obid
-/// restarted) can't show where its line came from: it gets no browser, never the owner's
-/// (BROWSER-18). It carries the `foreign` mark obid gives a follow-up of someone else's job.
+/// restarted) can't show where its line came from: it browses in its box, never the owner's
+/// partition (BROWSER-18). It carries the `foreign` mark obid gives a follow-up of someone else's
+/// job.
 #[test]
-fn browser_18_a_follow_up_whose_earlier_job_is_gone_gets_no_browser() {
+fn browser_18_a_follow_up_whose_earlier_job_is_gone_browses_in_its_box() {
     let folder = Folder::new("browser-18-gone");
     let (mut obid, token) = seeded_job(&folder, "cccc1818", |job| {
         job.follow_up_of = Some("dddd1818".into());
@@ -255,21 +281,21 @@ fn browser_18_a_follow_up_whose_earlier_job_is_gone_gets_no_browser() {
                 .into(),
         );
     });
-    refused_as_foreign(&obid, &token);
+    browses_in_its_box(&obid, &token, "cccc1818");
     stop_with_no_browser_left(&mut obid);
 }
 
 /// The owner's review saved by an obid from before its start mark (`someone_elses_code`), marked
-/// `foreign` alone, is someone else's code once read again: it gets no browser, whether or not its
-/// worktree is there to find who wrote it (BROWSER-18).
+/// `foreign` alone, is someone else's code once read again: it browses in its box, whether or not
+/// its worktree is there to find who wrote it (BROWSER-18).
 #[test]
-fn browser_18_a_review_saved_before_its_start_mark_gets_no_browser() {
+fn browser_18_a_review_saved_before_its_start_mark_browses_in_its_box() {
     let folder = Folder::new("browser-18-saved-review");
     let (mut obid, token) = seeded_job(&folder, "eeee1818", |job| {
         job.kind = "review".into();
         job.foreign = Some("as it started, someone else wrote in pull request #90".into());
     });
-    refused_as_foreign(&obid, &token);
+    browses_in_its_box(&obid, &token, "eeee1818");
     stop_with_no_browser_left(&mut obid);
 }
 
