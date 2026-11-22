@@ -2046,3 +2046,71 @@ fn githubwork_29_fix_ci_asked_for_in_words_starts_the_cards_task() {
     );
     assert!(github_items(&obid, "open").is_empty(), "no card on the way");
 }
+
+/// LANE-3a (docs/contracts/lanes.md): Fix CI asked for in words in a conversation that laid an
+/// unproxied version (ARTIFACTS-24) starts a job whose check gets no declared secrets, in its file
+/// from the start, though it runs boxed on Cursor (so its own run never marks it); asked in a
+/// clean conversation, it doesn't.
+#[test]
+fn lane_3a_fix_ci_in_a_flagged_conversation_withholds_the_secrets() {
+    let folder = Folder::new("lane-3a-fix-ci");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = agents().join("fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["conversation"] = json!({"agent": "claude"});
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    with_cursor(&folder.0, &mut config);
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Login fix", "body": "", "author": {"login": "wellington"},
+               "labels": [], "comments": [], "headRefName": "fix-login", "isCrossRepository": false,
+               "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci/test", "state": "FAILURE"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let a = "a".repeat(40);
+    let red = vec![mine(5, &a, "FAILURE"), mine(6, &a, "FAILURE")];
+    write_work(&gh, "wellington", vec![], vec![], red);
+    refresh(&obid);
+    let fix_ci = |pr: u64, conversation: Option<&str>| {
+        let said = format!(
+            r#"OBY oby_dispatch {{"repo": "{REPO}", "task": "Fix CI on pull request {pr}", "kind": "fix", "pr": {pr}, "agent": "cursor", "account": "Cursor account"}}"#
+        );
+        let mut body = json!({"said": said});
+        match conversation {
+            Some(c) => body["conversation"] = json!(c),
+            None => body["new"] = json!(true),
+        }
+        let answer = call(&obid, "POST", "/v1/plans", Some(&body));
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        let job = answer.body["jobs"][0].clone();
+        assert_eq!(
+            (&job["title"], &job["agent"]),
+            (
+                &json!(format!("Fix CI fixture-app #{pr}")),
+                &json!("cursor")
+            ),
+            "{}",
+            answer.text
+        );
+        job["id"].as_str().unwrap().to_owned()
+    };
+    let hello = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "HELLO", "new": true})),
+    );
+    assert_eq!(hello.status, 200, "{}", hello.text);
+    let flagged = hello.body["conversation"].as_str().unwrap().to_owned();
+    laid_unproxied(&obid, &flagged);
+    let theirs = fix_ci(5, Some(&flagged));
+    assert!(ran_unproxied(&obid, &theirs), "{theirs}");
+    let clean = fix_ci(6, None);
+    assert!(!ran_unproxied(&obid, &clean), "{clean}");
+}

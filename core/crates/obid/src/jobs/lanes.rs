@@ -110,6 +110,21 @@ impl Jobs {
         ))
     }
 
+    /// Job `id` hears words from a conversation that laid an unproxied version (LANE-3a): its check
+    /// gets no declared secrets from now on, in its file before the words go, or they don't.
+    pub(crate) fn kept_unproxied(&self, id: &str) -> Result<(), String> {
+        if self
+            .update(id, |j| j.ran_unproxied = true)
+            .is_some_and(|job| job.ran_unproxied)
+        {
+            return Ok(());
+        }
+        let e = self.unkept(id).unwrap_or_else(|| "the job is gone".into());
+        Err(format!(
+            "obid couldn't save that its check gets no declared secrets ({e})"
+        ))
+    }
+
     /// LANES-18: a Codex thread is kept in its lane's own `CODEX_HOME` (the account's folder, or
     /// the box's), so a job whose last run was in the other lane than its next goes on in a new
     /// session, told so: what it's told, or none when its session can go on.
@@ -1838,6 +1853,50 @@ mod tests {
                 assert!(denied.contains(&rule), "{rule}: {denied:?}");
             }
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANE-3a: a job a flagged conversation's words reach is marked in its file first; a mark
+    /// that can't be saved is an error, so the words don't go, and once it can be it's kept.
+    #[test]
+    fn lane_3a_a_mark_that_cant_be_kept_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lane-3a-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        let mut job = Job::new(
+            "told".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "cursor".into(),
+            "a".into(),
+        );
+        job.status = Status::Done;
+        std::fs::write(
+            home.join("jobs/told.json"),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        assert!(!jobs.ran_unproxied("told"));
+        let kept = home.join("jobs");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let refused = jobs.kept_unproxied("told");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(
+            jobs.kept_unproxied("gone")
+                .is_err_and(|e| e.contains("the job is gone"))
+        );
+        assert_eq!(jobs.kept_unproxied("told"), Ok(()));
+        assert!(jobs.ran_unproxied("told"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

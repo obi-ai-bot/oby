@@ -648,15 +648,18 @@ pub fn written_after(shared: &Shared, conversation: &str) -> Option<String> {
 
 /// `new`, a job Oby's brain starts with words it wrote in `conversation` (crate::secretspec): the
 /// owner's own words only while the conversation read nothing off obid's allowlist; otherwise
-/// someone else's from the start, in a clone apart.
+/// someone else's from the start, in a clone apart. In a conversation that laid an unproxied
+/// version it's LANE-3a's too (`ran_unproxied`: no declared secrets for its check).
 pub fn written_in(
     shared: &Shared,
     conversation: &str,
     new: crate::jobs::NewJob,
 ) -> crate::jobs::NewJob {
+    let ran_unproxied = new.ran_unproxied || open_artifact::laid_unproxied(shared, conversation);
     match shared.conversations.foreign(conversation) {
         None => crate::jobs::NewJob {
             vetted: true,
+            ran_unproxied,
             ..new
         },
         Some(why) => crate::jobs::NewJob {
@@ -664,6 +667,7 @@ pub fn written_in(
             foreign: Some(format!(
                 "Oby's conversation that wrote its words read {why}"
             )),
+            ran_unproxied,
             ..new
         },
     }
