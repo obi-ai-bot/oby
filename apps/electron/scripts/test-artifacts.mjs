@@ -31,8 +31,12 @@
 //   ARTIFACTSAPP-13: a React folder (App.tsx importing its Label.tsx, useState, lucide's Check and
 //                   Tailwind's classes) is a Page: it draws in the preview on the vendored set main's
 //                   relay serves at /__csb_vendor/, every request on loopback.
-//   ARTIFACTSAPP-14: one importing a package outside that set (recharts) shows the browser's own
-//                   error in the frame, and nothing is fetched for it.
+//   ARTIFACTSAPP-26: a dashboard on recharts, its class names joined by its own lib/utils (clsx and
+//                   tailwind-merge), draws its teal line from loopback only, and its card's picture
+//                   holds the chart (artifactsapp_26_a_dashboard_draws_with_recharts).
+//   ARTIFACTSAPP-14 and 28: one importing a package outside that set (three) shows, in the frame and
+//                   the pane's error strip, the line naming it and what the set has; nothing is fetched
+//                   for it (artifactsapp_28_an_import_outside_the_set_says_what_is_there_in_the_window).
 //   ARTIFACTSAPP-19: a page whose script declares `scope`, the console hook's own name, draws
 //                   (artifactsapp_19_a_page_declaring_scope_draws).
 //   ARTIFACTSAPP-20: the pane's Reload runs the page on view again: a page counting its loads in
@@ -56,7 +60,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { buildFixture } from '../../../e2e/lib/fixture.mjs';
 import { appRoot, launch, until, skipFirstRun } from './drive-lib.mjs';
 
@@ -591,7 +595,7 @@ async function main() {
   const publishFiles = async (path, files, open = true) => {
     const room = join(s.home, 'conversations', made.conversation, 'room', path);
     mkdirSync(room, { recursive: true });
-    for (const [name, text] of Object.entries(files)) writeFileSync(join(room, name), text);
+    for (const [name, text] of Object.entries(files)) { mkdirSync(dirname(join(room, name)), { recursive: true }); writeFileSync(join(room, name), text); }
     const said = await s.call('POST', '/v1/plans', { said: `OBY oby_artifact ${JSON.stringify({ title: path, path })}`, conversation: made.conversation });
     assert.match(said.text ?? '', /Published artifact /, `the conversation published ${path}: ${said.text}`);
     const id = /Published artifact ([0-9a-f-]{36})/.exec(said.text)[1];
@@ -648,17 +652,44 @@ async function main() {
   console.log(`ok artifactsapp_13_a_react_artifact_draws_with_lucide_and_tailwind_from_loopback_only (${reactRequests.length} requests, ${vendorLoaded.length} to /__csb_vendor/)`);
   console.log(`ok artifactsapp_18_a_react_cards_picture_shows_the_page (${reactPicture.teal} of ${reactPicture.of} pixels in its top half teal; the picture's view drawn)`);
 
-  // ARTIFACTSAPP-14: an import outside the vendored set is the browser's own error in the frame, and
-  // nothing is fetched for it
-  await publishFiles('charts', { 'App.tsx': `import { LineChart } from 'recharts';\n\nexport default function App() {\n  return <LineChart width={300} height={200} data={[]} />;\n}\n` });
+  // ARTIFACTSAPP-26: a dashboard on recharts, its classes joined by its own lib/utils on clsx and
+  // tailwind-merge (`p-4 p-2` merged to p-2), draws its teal line from loopback only, and its card's
+  // picture holds the chart
+  const dashboard = await publishFiles('dashboard', {
+    'App.tsx': `import { LineChart, Line, XAxis, ResponsiveContainer } from 'recharts';\nimport { cn } from '/lib/utils';\n\nconst data = [{ m: 'Jan', v: 4 }, { m: 'Feb', v: 9 }, { m: 'Mar', v: 6 }, { m: 'Apr', v: 12 }];\n\nexport default function App() {\n  return (\n    <main className={cn('p-4', 'p-2')}>\n      <div style={{ width: '100%', height: 160 }}>\n        <ResponsiveContainer width="100%" height="100%">\n          <LineChart data={data}>\n            <XAxis dataKey="m" />\n            <Line type="monotone" dataKey="v" stroke="#0d9488" strokeWidth={6} dot={false} isAnimationActive={false} />\n          </LineChart>\n        </ResponsiveContainer>\n      </div>\n    </main>\n  );\n}\n`,
+    'lib/utils.ts': `import { clsx, type ClassValue } from 'clsx';\nimport { twMerge } from 'tailwind-merge';\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs));\n}\n`,
+  });
+  const chart = await until('the dashboard drawn', async () => {
+    const r = await inFrame(`(() => { const c = document.querySelector('svg.recharts-surface path.recharts-curve'); const m = document.querySelector('main'); return c && m && { curve: true, stroke: c.getAttribute('stroke'), className: m.className, paddingTop: getComputedStyle(m).paddingTop }; })()`);
+    return r.value?.paddingTop === '8px' && r.value;
+  }, 60_000).catch(async (e) => { console.error('the dashboard frame shows:', JSON.stringify((await inFrame('document.body.innerHTML.slice(0, 600)')).value)); throw e; });
+  assert.deepEqual(chart, { curve: true, stroke: '#0d9488', className: 'p-2', paddingTop: '8px' }, `artifactsapp_26: recharts drew its line and cn merged the classes: ${JSON.stringify(chart)}`);
+  const dashboardCard = page.locator(`button.art-card[data-artifact="${dashboard}"]`);
+  await until('the dashboard card’s picture', async () => dashboardCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
+  const dashboardPicture = await tealOf(dashboardCard);
+  assert.ok(dashboardPicture.teal > 0, `artifactsapp_26: the dashboard card's picture holds the chart: ${JSON.stringify(dashboardPicture)}`);
+  const dashboardRequests = await app.evaluate(() => globalThis.__previewRequests);
+  const dashboardOff = dashboardRequests.filter((u) => !u.startsWith('file://') && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u) && !u.startsWith('data:') && !u.startsWith('devtools:'));
+  assert.deepEqual(dashboardOff, [], 'artifactsapp_26: every request the preview made went to its host page or the relay');
+  assert.ok(dashboardRequests.some((u) => u.endsWith('/__csb_vendor/recharts/recharts.mjs')), 'artifactsapp_26: recharts came from the relay');
+  await dashboardCard.scrollIntoViewIfNeeded();
+  await shot(page, '12b-recharts-dashboard');
+  console.log(`ok artifactsapp_26_a_dashboard_draws_with_recharts (a ${chart.stroke} curve, main's classes ${JSON.stringify(chart.className)}, ${dashboardPicture.teal} of ${dashboardPicture.of} pixels in its picture's top half teal, ${dashboardRequests.length} requests, all on loopback)`);
+
+  // ARTIFACTSAPP-14 and 28: an import outside the vendored set is named, with what the set has, in
+  // the frame and the pane's error strip; nothing is fetched for it
+  await publishFiles('charts', { 'App.tsx': `import * as THREE from 'three';\n\nexport default function App() {\n  return <p>{String(THREE.REVISION)}</p>;\n}\n` });
   const refused = await until('the import’s error shown', async () => (await inFrame(`document.querySelector('pre')?.textContent ?? null`)).value, 60_000);
-  assert.match(refused, /recharts/, `artifactsapp_14: the frame says which import: ${refused}`);
+  const NO_THREE = 'This preview has no `three`. It has: react, react-dom, lucide-react, recharts, clsx, tailwind-merge and class-variance-authority.';
+  assert.equal(refused, NO_THREE, `artifactsapp_28: the frame names the import and the set: ${refused}`);
+  const stripSays = await until('the import’s error in the pane', async () => { const t = await page.locator('.art-page-error pre').innerText().catch(() => ''); return t.includes(NO_THREE) && t; }, 30_000);
   const chartsSent = await app.evaluate(() => [...globalThis.__previewRequests, ...globalThis.__previewSent]);
-  assert.deepEqual(chartsSent.filter((u) => u.includes('recharts')), [], 'artifactsapp_14: nothing was fetched for recharts');
+  assert.deepEqual(chartsSent.filter((u) => u.includes('three')), [], 'artifactsapp_14: nothing was fetched for three');
   const chartsAway = chartsSent.filter((u) => !/^(file|data|blob|devtools):/.test(u) && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u));
   assert.deepEqual(chartsAway, [], `artifactsapp_14: nothing left loopback: ${chartsAway.join(', ')}`);
   await shot(page, '13-react-import-refused');
   console.log(`ok artifactsapp_14_an_import_outside_the_vendored_set_shows_its_error_and_fetches_nothing (${JSON.stringify(refused)})`);
+  console.log(`ok artifactsapp_28_an_import_outside_the_set_says_what_is_there_in_the_window (the pane's strip: ${JSON.stringify(stripSays)})`);
 
   // ARTIFACTSAPP-19: a page that declares `scope` draws beside Sandpack's console hook; the frame's
   // console, said when it doesn't
