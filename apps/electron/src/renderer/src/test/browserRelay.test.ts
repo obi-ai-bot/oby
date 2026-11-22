@@ -663,6 +663,69 @@ describe('BROWSERAPP-44: after a fill only the agent\'s own script waits, and no
     expect([answer(o, 8)?.result, answer(o, 9)?.result]).toEqual([expect.anything(), expect.anything()]);
   });
 
+  it('browserapp_44_while_guarded_a_tabs_commands_run_one_at_a_time_so_no_act_sits_between_a_read_and_its_check', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    // the agent's keys made the field p-a-s-s… and Show password turned it to text; its snapshot is
+    // read while it shows, and a click on Show password would turn it back before main checks
+    const SPLIT = [...PW].join('-');
+    let done!: () => void;
+    const g = fakeGuest({
+      send: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+        g.sent.push({ method, params });
+        if (method === 'Accessibility.getFullAXTree') { g.showing.add('pw-field'); await new Promise<void>((r) => { done = r; }); return { nodes: [{ value: { value: SPLIT } }] }; }
+        if (method === 'Input.dispatchMouseEvent') g.showing.delete('pw-field');
+        return {};
+      }),
+    });
+    host.attach(K, g);
+    host.filled(K, PW, 'pw-field');
+    host.command(cdp(1, 'Accessibility.getFullAXTree', {}));
+    host.command(cdp(2, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 5, y: 5, button: 'left', clickCount: 1 }));
+    await settled();
+    // the click waits for the read and its check
+    expect(g.sent.map((c) => c.method)).toEqual(['Accessibility.getFullAXTree']);
+    done();
+    await settled();
+    expect(answer(o, 1)?.error?.message).toBe(NOT_PASSED);
+    expect(answer(o, 2)?.result).toBeDefined();
+    expect(JSON.stringify(o.all())).not.toContain(SPLIT);
+    // a page's dialog is answered at once, even behind a read the dialog holds up
+    host.command(cdp(3, 'Accessibility.getFullAXTree', {}));
+    host.command(cdp(4, 'Page.handleJavaScriptDialog', { accept: true }));
+    await settled();
+    expect(answer(o, 4)?.result).toBeDefined();
+    done();
+    await settled();
+    expect(answer(o, 3)).toBeDefined();
+  });
+
+  it('browserapp_44_a_failed_loads_address_never_carries_the_password_to_obid', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    host.filled(K, PW);
+    // a GET form sent to a host that refuses it: the address carries the field's value
+    host.loadFailed(K, `http://127.0.0.1:1/signin?email=owner%40example.test&pw=${PW}`, -102, 'ERR_CONNECTION_REFUSED');
+    host.loadFailed(K, `http://127.0.0.1:1/${PW}/next#x`, -102, 'ERR_CONNECTION_REFUSED');
+    // and one said before the tab is attached again, kept until it is
+    host.detach(K);
+    host.loadFailed(K, `http://127.0.0.1:1/signin?pw=${encodeURIComponent(PW + '!')}`, -102, 'ERR_CONNECTION_REFUSED');
+    host.attach(K, g);
+    await settled();
+    const failed = o.all().filter((e): e is Extract<RelayEvent, { type: 'loadFailed' }> => e.type === 'loadFailed');
+    expect(failed.map((e) => e.url)).toEqual(['http://127.0.0.1:1/signin', 'http://127.0.0.1:1', 'http://127.0.0.1:1/signin']);
+    expect(failed.every((e) => e.code === -102 && e.description === 'ERR_CONNECTION_REFUSED')).toBe(true);
+    expect(JSON.stringify(o.all())).not.toContain(PW);
+    // a tab never filled keeps its whole address
+    const K2 = { threadId: 'j1', tabId: 't2' };
+    host.attach(K2, fakeGuest());
+    host.loadFailed(K2, 'http://127.0.0.1:1/search?q=books', -102, 'ERR_CONNECTION_REFUSED');
+    await settled();
+    expect(o.all().filter((e) => e.type === 'loadFailed' && e.tabId === 't2').map((e) => (e as { url: string }).url)).toEqual(['http://127.0.0.1:1/search?q=books']);
+  });
+
   it('browserapp_44_relay_command_keeps_agent_code_true_and_nothing_else', () => {
     const frame = { threadId: 'j1', tabId: 't1', message: '{}' };
     expect(relayCommand('cdp', JSON.stringify({ ...frame, agentCode: true }))).toEqual({ ...K, type: 'cdp', message: '{}', agentCode: true });

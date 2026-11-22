@@ -2190,7 +2190,7 @@
             "BROWSERAPP-41": "the Electron app's ring and pointer on a held tab, Give back's keyboard, and the live page seen through the panel (browser/store.tsx, browser/live.ts, browser/Webviews.tsx, browser/browser.css), as T3 Code keeps its overlays over its webview: browserHold.test.tsx; in the real app workflows/app/browser-104-live-webview.json; no obid API of its own",
             "BROWSERAPP-42": "the Electron main's hold around Fill in (main/device.ts fillSecret: take unless this device holds the tab, give back only the hold it took, each signed): device.test.ts; no obid API of its own",
             "BROWSERAPP-43": "the Electron main's typing into the tab's own webview (main/browserGuest.ts typeInto, FILL_PREP reload, focusField, FIELD_LENGTH; a password only into a password input, a code ask's kind read from obid; owner's agents' partitions only): browserFill.test.ts; no obid API of its own",
-            "BROWSERAPP-44": "the Electron main's guard after a fill (main/browserRelay.ts NO_SCRIPT, NOT_PASSED, filled, no screenshot while guarded, no read once a filled field shows; obid's agentCode, BROWSER-33): browserRelay.test.ts; no obid API of its own"
+            "BROWSERAPP-44": "the Electron main's guard after a fill (main/browserRelay.ts NO_SCRIPT, NOT_PASSED, filled, no screenshot while guarded, no read once a filled field shows, a guarded tab's commands one at a time, a filled tab's failed load bare; obid's agentCode, BROWSER-33): browserRelay.test.ts; no obid API of its own"
           }
         },
         "computers-app.md": {

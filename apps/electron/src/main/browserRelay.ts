@@ -155,7 +155,15 @@ export function insideDownloads(home: string, path: unknown): path is string {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
-type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; broken: boolean };
+type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; queue: Promise<unknown>; broken: boolean };
+
+/** a page's address with none of these values in it: no query or fragment, and no path if that holds one */
+function bare(url: string, values: string[]): string {
+  try {
+    const u = new URL(url);
+    return carries(u.origin + u.pathname, values) ? u.origin : u.origin + u.pathname;
+  } catch { return ''; }
+}
 
 export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, options: { home: string; pointer?: (c: Extract<RelayCommand, { type: 'pointer' }>) => void; box?: (c: BoxCommand) => void; released?: (k: TabKey) => void; wait?: (ms: number) => Promise<void> }) {
   const tabs = new Map<string, Tab>();
@@ -257,7 +265,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     attach(k: TabKey, guest: Guest) {
       const before = early.get(key(k));
       early.delete(key(k));
-      const t: Tab = { k, guest, attached: true, shown: before?.shown ?? null, failed: before?.failed ?? null, mouse: Promise.resolve(), broken: false };
+      const t: Tab = { k, guest, attached: true, shown: before?.shown ?? null, failed: before?.failed ?? null, mouse: Promise.resolve(), queue: Promise.resolve(), broken: false };
       tabs.set(key(k), t);
       emit({ ...k, type: 'attached' });
       if (t.shown !== null) emit({ ...k, type: 'shown', shown: t.shown });
@@ -295,7 +303,11 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     },
     /** the main frame didn't load; kept until the tab is attached, as T3 replays it */
     loadFailed(k: TabKey, url: string, code: number, description: string) {
-      const e: RelayEvent = { ...k, type: 'loadFailed', url, code, description };
+      // a tab main filled a password into: its address goes bare (a GET form's query holds the field)
+      const filled = filledIn.get(key(k)) ?? [];
+      const e: RelayEvent = filled.length
+        ? { ...k, type: 'loadFailed', url: bare(url, filled), code, description: carries(description, filled) ? '' : description }
+        : { ...k, type: 'loadFailed', url, code, description };
       const t = tabs.get(key(k));
       if (t?.attached) emit(e);
       else early.set(key(k), { shown: early.get(key(k))?.shown ?? null, failed: e });
@@ -328,7 +340,13 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
         if (typeof id === 'number') emit({ threadId: c.threadId, tabId: c.tabId, type: 'cdp', message: JSON.stringify({ id, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }) });
         return;
       }
-      void run(t, c.message, c.agentCode === true);
+      // while guarded, the tab's commands run one at a time, so no act of the agent's runs between a
+      // read and main's check of what it read; a page dialog's answer never waits behind a read it holds up
+      let method: unknown;
+      try { method = JSON.parse(c.message).method; } catch { /* run refuses it */ }
+      const go = () => run(t, c.message, c.agentCode === true);
+      const one = guarded(t.k) && method !== 'Page.handleJavaScriptDialog' ? t.queue.then(go) : go();
+      t.queue = Promise.all([t.queue, one]).then(() => undefined, () => undefined);
     },
     /** obid's relay stream (re)connected: every live tab is announced again (T3's announceAll); no command runs again */
     reconnected() {
