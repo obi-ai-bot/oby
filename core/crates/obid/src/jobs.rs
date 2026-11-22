@@ -2796,12 +2796,12 @@ impl Jobs {
         source: Source,
         attachments: &[String],
     ) -> Option<Result<Job, Refused>> {
-        self.message_as(id, text, source, attachments, true, false)
+        self.message_as(id, text, source, attachments, true, (None, false))
     }
 
     /// [`Self::message_attaching`]; `answers` says whether the words may answer the agent's
-    /// question (only the owner's own, as they wrote them, may); `unproxied`, that whichever job
-    /// hears them is LANE-3a's first ([`Self::relay`]).
+    /// question (only the owner's own, as they wrote them, may); `relayed`, a relay's foreign
+    /// reason and unproxied flag, which whichever job hears them takes first ([`Self::relay`]).
     fn message_as(
         self: &Arc<Self>,
         id: &str,
@@ -2809,7 +2809,7 @@ impl Jobs {
         source: Source,
         attachments: &[String],
         answers: bool,
-        unproxied: bool,
+        relayed: (Option<&str>, bool),
     ) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
         // Files with no words (Sangam's message box sends them alone): the follow-up they start
@@ -2834,7 +2834,7 @@ impl Jobs {
                     .into(),
             )));
         }
-        if unproxied && let Err(why) = self.kept_unproxied(id) {
+        if let Err(why) = self.kept_relayed(id, relayed) {
             return Some(Err(Refused(why)));
         }
         // Try again's words, and more after them (oby_continue_job's), pick its session up.
@@ -2852,7 +2852,7 @@ impl Jobs {
                 && let Some(next) = self.following(id)
             {
                 let sent = self
-                    .message_as(&next.id, text, source, attachments, answers, unproxied)?
+                    .message_as(&next.id, text, source, attachments, answers, relayed)?
                     .map_err(|why| {
                         Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
                     });
@@ -2919,9 +2919,9 @@ impl Jobs {
                         named_now: true,
                         // Their word, signed, on it: they're following it now.
                         unattended: source == Source::Api && job.background(),
-                        // Files may hold anyone's words, as a conversation's do (crate::secretspec).
-                        foreign: (!attachments.is_empty())
-                            .then(|| "files the owner attached, which may hold anyone's words".into()),
+                        // A relay's foreign reason, or files, which may hold anyone's words.
+                        foreign: lanes::follow_up_foreign(relayed.0, attachments),
+                        ran_unproxied: relayed.1,
                         // An attachment is untrusted (ATTACH-6, ATTACH-13), as words with one are.
                         untrusted: next.untrusted || !attachments.is_empty(),
                         ..next
@@ -3186,7 +3186,7 @@ impl Jobs {
             let Some(source) = Source::named(&words.source).filter(|_| !nothing_to_pick_up) else {
                 continue;
             };
-            match self.message_as(id, &words.text, source, &[], true, false) {
+            match self.message_as(id, &words.text, source, &[], true, (None, false)) {
                 Some(Ok(_)) => {}
                 Some(Err(why)) => {
                     self.update(id, |job| {
@@ -3222,7 +3222,7 @@ impl Jobs {
             .get(id)
             .and_then(|j| j.owners.first().map(|w| w.text.clone()))
         {
-            match self.message_as(next, &words, Source::Confirmed, &[], true, false) {
+            match self.message_as(next, &words, Source::Confirmed, &[], true, (None, false)) {
                 // Words that couldn't leave `id` aren't sent again.
                 Some(Ok(_)) if take(&words).is_some() => {}
                 Some(Err(why)) => {
