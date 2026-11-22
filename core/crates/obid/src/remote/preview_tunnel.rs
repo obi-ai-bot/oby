@@ -256,7 +256,9 @@ async fn pump<W, M, E>(
     W: Sink<M> + Stream<Item = Result<M, E>> + Unpin,
 {
     // The graceful close races the end too: a peer that stops reading can hold it.
+    // `ended` first: one that came already lets nothing more through.
     let cut = tokio::select! {
+        biased;
         () = ended => true,
         () = async {
             both_ways(&mut ws, &mut socket, rest, binary, heard).await;
@@ -265,13 +267,18 @@ async fn pump<W, M, E>(
         } => false,
     };
     if cut {
-        // Closed with a reset, not a FIN: what its send buffer holds is dropped with it.
-        let reset = nix::libc::linger {
-            l_onoff: 1,
-            l_linger: 0,
-        };
-        let _ = nix::sys::socket::setsockopt(&socket, nix::sys::socket::sockopt::Linger, &reset);
+        reset(&socket);
     }
+}
+
+/// `socket` closed with a reset once it's dropped, not a FIN: what its send buffer holds goes
+/// with it.
+fn reset(socket: &TcpStream) {
+    let linger = nix::libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    let _ = nix::sys::socket::setsockopt(socket, nix::sys::socket::sockopt::Linger, &linger);
 }
 
 /// The socket and the WebSocket both ways, as binary frames of at most [`READ`], each written
@@ -351,33 +358,48 @@ async fn carry(shared: Arc<Shared>, carried: Carried) {
         first,
         rest,
     } = carried;
-    let Some(mut ws) = open(&shared, &computer, port).await else {
-        if rest.is_none() {
-            let why = "Oby couldn't reach that port on its computer.";
-            let answer = format!(
-                "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{why}",
-                why.len()
-            );
-            let _ = client.write_all(answer.as_bytes()).await;
+    // Watched from before the handshake: a computer forgotten while it's reached gets nothing.
+    let ended = forgotten(shared.clone(), computer.clone());
+    tokio::pin!(ended);
+    let setup = async {
+        let Some(mut ws) = open(&shared, &computer, port).await else {
+            if rest.is_none() {
+                let why = "Oby couldn't reach that port on its computer.";
+                let answer = format!(
+                    "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{why}",
+                    why.len()
+                );
+                let _ = client.write_all(answer.as_bytes()).await;
+            }
+            return None;
+        };
+        tracing::debug!("preview tunnel: this Mac reaches computer {computer}'s port {port}");
+        if rest.is_none()
+            && client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .is_err()
+        {
+            return None;
         }
-        return;
+        for chunk in first.chunks(READ) {
+            let frame = tungstenite::Message::Binary(Bytes::copy_from_slice(chunk));
+            if ws.send(frame).await.is_err() {
+                return None;
+            }
+        }
+        Some(ws)
     };
-    tracing::debug!("preview tunnel: this Mac reaches computer {computer}'s port {port}");
-    if rest.is_none()
-        && client
-            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            .await
-            .is_err()
-    {
-        return;
-    }
-    for chunk in first.chunks(READ) {
-        let frame = tungstenite::Message::Binary(Bytes::copy_from_slice(chunk));
-        if ws.send(frame).await.is_err() {
-            return;
-        }
-    }
-    let ended = forgotten(shared.clone(), computer);
+    let set_up = tokio::select! {
+        biased;
+        () = &mut ended => Err(()),
+        ws = setup => Ok(ws),
+    };
+    let ws = match set_up {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return,
+        Err(()) => return reset(&client),
+    };
     pump(
         ws,
         client,

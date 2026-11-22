@@ -1898,3 +1898,125 @@ async fn computers_26_a_revoked_tunnel_ends_while_its_service_reads_nothing() {
         "the service got {got} of the {stalled} bytes sent"
     );
 }
+
+/// A stand-in network between the Mac and Studio's direct address `to`: it passes connections
+/// through, until `hold` is set; then it holds the next one until `release`, and closes any other
+/// at once. `done`: the held one's relaying ended.
+struct Network {
+    port: u16,
+    hold: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    held: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+/// Bytes both ways between `a` and `b` until either side ends.
+fn relay(a: TcpStream, b: TcpStream) {
+    let (mut a_in, mut b_out) = (a.try_clone().unwrap(), b.try_clone().unwrap());
+    let up = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut a_in, &mut b_out);
+        let _ = b_out.shutdown(std::net::Shutdown::Both);
+    });
+    let (mut b_in, mut a_out) = (b, a);
+    let _ = std::io::copy(&mut b_in, &mut a_out);
+    let _ = a_out.shutdown(std::net::Shutdown::Both);
+    let _ = up.join();
+}
+
+impl Network {
+    fn to(to: String) -> Network {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (hold, held, done) = (
+            std::sync::Arc::new(AtomicBool::new(false)),
+            std::sync::Arc::new(AtomicBool::new(false)),
+            std::sync::Arc::new(AtomicBool::new(false)),
+        );
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (h, d, k) = (hold.clone(), done.clone(), held.clone());
+        std::thread::spawn(move || {
+            let mut released = Some(released);
+            for client in listener.incoming() {
+                let Ok(client) = client else { continue };
+                let to = to.clone();
+                if !h.load(Ordering::SeqCst) {
+                    std::thread::spawn(move || relay(client, TcpStream::connect(to).unwrap()));
+                } else if let Some(released) = released.take() {
+                    k.store(true, Ordering::SeqCst);
+                    let d = d.clone();
+                    std::thread::spawn(move || {
+                        let _ = released.recv();
+                        relay(client, TcpStream::connect(to).unwrap());
+                        d.store(true, Ordering::SeqCst);
+                    });
+                }
+            }
+        });
+        Network {
+            port,
+            hold,
+            held,
+            done,
+            release,
+        }
+    }
+}
+
+/// COMPUTERS-27: a computer forgotten while its door's connection is still reaching it, its
+/// unpairing there failed, sends that connection's first request nowhere: the handshake that
+/// finishes later carries nothing to the service.
+#[test]
+fn computers_27_a_computer_forgotten_mid_handshake_gets_no_first_request() {
+    use obid::remote::{link::Link, route::Via};
+    use std::sync::atomic::Ordering;
+    let studio_folder = Folder::new("remote-door-handshake-studio");
+    let studio = start(&studio_folder.0, &with_direct(&studio_folder), None);
+    let (address, _) = direct_of(&studio);
+    let mac_folder = Folder::new("remote-door-handshake-mac");
+    let mac = started(&mac_folder);
+    // Studio's direct address, reached through the stand-in network.
+    let network = Network::to(address);
+    let (code, out, err) = invite_computer(&studio);
+    assert_eq!(code, 0, "{out}{err}");
+    let invited: Value = serde_json::from_str(out.trim()).unwrap();
+    let mut link = Link::decode(invited["link"].as_str().unwrap()).unwrap();
+    for route in &mut link.routes {
+        if let Via::Https { host, port, .. } = &mut route.via {
+            *host = "127.0.0.1".into();
+            *port = network.port;
+        }
+    }
+    let add = json!({"link": link.encode(), "code": invited["code"]});
+    let added = call_signed(&mac, "POST", "/v1/computers", Some(&add));
+    assert_eq!(added.status, 201, "{}", added.text);
+    let id = added.body["id"].as_str().unwrap().to_owned();
+    let door = Door::of(&mac, &id);
+    let (service, taken) = echo();
+
+    // The door's request is on its way, its handshake held by the network.
+    network.hold.store(true, Ordering::SeqCst);
+    let asking = std::thread::spawn(move || {
+        let head =
+            format!("GET http://localhost:{service}/ HTTP/1.1\r\nHost: localhost:{service}\r\n");
+        let (_, mut stream) = door.ask(&door.token, &head);
+        let _ = stream.read_to_end(&mut Vec::new());
+    });
+    within(10, "the handshake to be held", || {
+        network.held.load(Ordering::SeqCst).then_some(())
+    });
+    // Removed on the Mac while Studio can't be reached to unpair: then the handshake goes on.
+    let removed = call_signed(&mac, "DELETE", &format!("/v1/computers/{id}"), None);
+    assert_eq!(removed.status, 200, "{}", removed.text);
+    assert_eq!(removed.body["there"], false, "{}", removed.text);
+    network.release.send(()).unwrap();
+    within(10, "the held handshake to end or reach the service", || {
+        (network.done.load(Ordering::SeqCst) || taken.load(Ordering::SeqCst) > 0).then_some(())
+    });
+    assert_eq!(
+        taken.load(Ordering::SeqCst),
+        0,
+        "the forgotten computer's first request reached its service"
+    );
+    let _ = asking.join();
+}
