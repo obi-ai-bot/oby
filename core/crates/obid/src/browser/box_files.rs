@@ -3,9 +3,9 @@
 //! reads or writes through a path there: an upload is copied into obid's own folder for the job,
 //! read through no link, and only the copy reaches the page; its screenshots are written into that
 //! folder too (`Service::call_tool` hands it to the core as the job's room). The box can replace
-//! the worktree itself, so its upload is read only from the very folder obid kept the identity of
-//! ([`room`]) before the job's agent started. It owns no state and writes only into obid's folder
-//! for the job.
+//! the worktree itself, so its upload is read only through the very folder obid opened and holds
+//! ([`room`]) before the job's agent started: a folder put in its place later, whatever its inode,
+//! is never reached through it. It owns no state and writes only into obid's folder for the job.
 
 use std::fs::File;
 use std::io::Write as _;
@@ -23,28 +23,21 @@ const FOLDER: OFlag = OFlag::O_DIRECTORY
     .union(OFlag::O_RDONLY)
     .union(OFlag::O_CLOEXEC);
 
-/// The worktree `room` opened from its parent (obid's own folder, which the box can't write), the
-/// worktree itself never through a link, and its identity (device and inode).
-fn opened(room: &Path) -> Option<(OwnedFd, (u64, u64))> {
+/// The folder at `room` now, opened from its parent (obid's own folder, which the box can't
+/// write), the folder itself never through a link: obid holds it from the job's agent's start,
+/// and an upload reads only through it, so a worktree removed or swapped after is never reached.
+pub fn room(room: &Path) -> Option<OwnedFd> {
     let parent = open(room.parent()?, FOLDER & !OFlag::O_NOFOLLOW, Mode::empty()).ok()?;
-    let dir = openat(&parent, room.file_name()?, FOLDER, Mode::empty()).ok()?;
-    let stat = nix::sys::stat::fstat(&dir).ok()?;
-    Some((dir, (stat.st_dev as u64, stat.st_ino as u64)))
-}
-
-/// The identity of the folder at `room` now, a folder and no link: obid keeps it as the job's
-/// agent starts, and an upload reads only from that very folder.
-pub fn room(room: &Path) -> Option<(u64, u64)> {
-    opened(room).map(|(_, identity)| identity)
+    openat(&parent, room.file_name()?, FOLDER, Mode::empty()).ok()
 }
 
 /// `args` as a foreign job's `oby_browser_act` `upload` runs: each path, a file in `worktree`,
 /// replaced by its copy in a new folder under `own` (obid's folder for the job). Any other call's
 /// `args` as they are. `Err` names the first path that isn't a file in the worktree reached
-/// through no link, the worktree being the folder `kept` names ([`room`]).
+/// through no link, read through the worktree folder obid holds (`kept`, [`room`]).
 pub fn uploads(
     worktree: &Path,
-    kept: Option<(u64, u64)>,
+    kept: Option<&OwnedFd>,
     own: &Path,
     name: &str,
     args: &Value,
@@ -65,10 +58,10 @@ pub fn uploads(
 }
 
 /// Copies `path` into `into` when it's a regular file of one name only (no hard link) inside
-/// `room`, as written (no `..`): the room the very folder `kept` names, and it, every folder below
-/// it and the file opened without following a link, one inside the last (so nothing swapped in
-/// after a check is read). The copy's path, or none.
-fn copy_in(room: &Path, kept: Option<(u64, u64)>, path: &Path, into: &Path) -> Option<PathBuf> {
+/// `room`, as written (no `..`), read through the folder obid holds for the room (`kept`), every
+/// folder below it and the file opened without following a link, one inside the last (so nothing
+/// swapped in after a check is read). The copy's path, or none.
+fn copy_in(room: &Path, kept: Option<&OwnedFd>, path: &Path, into: &Path) -> Option<PathBuf> {
     let names = path
         .strip_prefix(room)
         .ok()?
@@ -79,10 +72,7 @@ fn copy_in(room: &Path, kept: Option<(u64, u64)>, path: &Path, into: &Path) -> O
         })
         .collect::<Option<Vec<_>>>()?;
     let (file, folders) = names.split_last()?;
-    let (mut dir, identity) = opened(room)?;
-    if Some(identity) != kept {
-        return None;
-    }
+    let mut dir = kept?.try_clone().ok()?;
     for name in folders {
         dir = openat(&dir, *name, FOLDER, Mode::empty()).ok()?;
     }
@@ -125,6 +115,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, room.join("linked")).unwrap();
         let act = |paths: &[PathBuf]| json!({"action": "upload", "ref": "e1", "paths": paths});
         let kept = super::room(&room);
+        let kept = kept.as_ref();
         let ran = uploads(
             &room,
             kept,
@@ -177,6 +168,7 @@ mod tests {
         std::fs::hard_link(outside.join("id_ed25519"), room.join("hard")).unwrap();
         let kept = super::room(&room);
         assert!(kept.is_some());
+        let kept = kept.as_ref();
         let act = |p: PathBuf| json!({"action": "upload", "ref": "e1", "paths": [p]});
         let upload = |p: PathBuf| uploads(&room, kept, &own, "oby_browser_act", &act(p));
         assert!(upload(room.join("cv.pdf")).is_ok());
@@ -188,7 +180,7 @@ mod tests {
             upload(room.join("id_ed25519")).is_err(),
             "a worktree that's a link"
         );
-        assert_eq!(super::room(&room), None);
+        assert!(super::room(&room).is_none());
         std::fs::remove_file(&room).unwrap();
         std::fs::create_dir(&room).unwrap();
         std::fs::write(room.join("cv.pdf"), b"theirs").unwrap();

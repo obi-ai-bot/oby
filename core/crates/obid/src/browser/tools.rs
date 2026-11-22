@@ -68,7 +68,7 @@ impl Service {
         let boxed;
         let (room, args) = match foreign {
             false => (room, args),
-            true => match box_files::uploads(room, self.room(job), &own, name, args) {
+            true => match box_files::uploads(room, self.room(job).as_deref(), &own, name, args) {
                 Ok(copied) => {
                     boxed = copied;
                     (own.as_path(), &boxed)

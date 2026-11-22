@@ -44,9 +44,9 @@ pub struct Service {
     /// edge a foreign job's browser stops at (BROWSER-18), on loopback for its navigate and on any
     /// address for its browser door. obid's start sets them ([`Service::set_host_ports`]).
     host_ports: Mutex<Vec<u16>>,
-    /// Each foreign job's worktree as its agent started (`box_files::room`): the folder its
-    /// uploads are read from, whatever its box puts in its place after.
-    rooms: Mutex<std::collections::HashMap<String, (u64, u64)>>,
+    /// Each foreign job's worktree folder, held open from its agent's start (`box_files::room`):
+    /// its uploads are read through it, whatever its box puts in its place after.
+    rooms: Mutex<std::collections::HashMap<String, Arc<std::os::fd::OwnedFd>>>,
 }
 
 impl Service {
@@ -70,24 +70,25 @@ impl Service {
         }
     }
 
-    /// A foreign job's worktree, kept the first time its agent is given the browser (before it
-    /// starts): later its box could have swapped it.
+    /// A foreign job's worktree folder, opened and held the first time its agent is given the
+    /// browser (before it starts): later its box could have swapped it. After obid restarts it's
+    /// opened again at the job's next launch, as the folder is then.
     pub(crate) fn keep_room(&self, job: &str, worktree: &Path) {
         let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
         if !rooms.contains_key(job)
-            && let Some(identity) = super::box_files::room(worktree)
+            && let Some(folder) = super::box_files::room(worktree)
         {
-            rooms.insert(job.to_owned(), identity);
+            rooms.insert(job.to_owned(), Arc::new(folder));
         }
     }
 
-    /// The worktree identity kept for a foreign job (`keep_room`), if any.
-    pub(super) fn room(&self, job: &str) -> Option<(u64, u64)> {
+    /// The worktree folder held for a foreign job (`keep_room`), if any.
+    pub(super) fn room(&self, job: &str) -> Option<Arc<std::os::fd::OwnedFd>> {
         self.rooms
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(job)
-            .copied()
+            .cloned()
     }
 
     /// The host's own services' ports: obid's, its gateway's and the `direct` listeners'
