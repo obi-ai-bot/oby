@@ -715,18 +715,18 @@ fn check_kind(copied: &Copied, staging: &Path, wanted: Option<Kind>) -> Result<K
             };
             canvas = Some(value);
             kind
-        } else if has("index.html") {
+        } else if has("index.html") || has("App.tsx") || has("App.jsx") {
             Kind::Html
         } else {
             return Err(
-                "a folder is an html artifact with an index.html, or a canvas or a design with a canvas.json."
+                "a folder is an html artifact with an index.html or an App.tsx/App.jsx, or a canvas or a design with a canvas.json."
                     .into(),
             );
         }
     } else {
         let name = copied.files.first().map_or("", String::as_str);
         match extension(name).as_str() {
-            "html" => Kind::Html,
+            "html" | "tsx" | "jsx" => Kind::Html,
             "md" | "markdown" => Kind::Markdown,
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => Kind::Image,
             "pdf" => Kind::Pdf,
@@ -813,11 +813,12 @@ fn copy(root: &Path, path: &str, to: &Path) -> Result<Copied, String> {
         copied.folder = true;
         copy_folder(entry, &shown, to, "", 0, &mut copied)?;
     } else if meta.is_file() {
-        // A single page is its folder's index.html.
-        let name = if extension(last) == "html" || extension(last) == "htm" {
-            "index.html"
-        } else {
-            last
+        // A single page is its folder's index.html, a single React file its App.tsx/App.jsx.
+        let name = match extension(last).as_str() {
+            "html" | "htm" => "index.html",
+            "tsx" => "App.tsx",
+            "jsx" => "App.jsx",
+            _ => last,
         };
         copy_file(entry, &to.join(name), name, &mut copied)?;
         copied.files.push(name.to_owned());

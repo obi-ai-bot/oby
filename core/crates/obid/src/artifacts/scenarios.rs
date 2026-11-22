@@ -1,4 +1,4 @@
-//! docs/contracts/artifacts.md, ARTIFACTS-1 to 8, 16 to 18 and 19's design: each scenario a test named after it, on the
+//! docs/contracts/artifacts.md, ARTIFACTS-1 to 8, 16 to 18, 19's design and 26: each scenario a test named after it, on the
 //! store itself. The same scenarios run against a running obid in the Blok suite
 //! (tools/obid-spec/workflows/routes/artifacts/).
 
@@ -208,6 +208,41 @@ async fn artifacts_2_both_canvas_shapes_and_a_spoiled_design_refused() {
         );
     }
     assert_eq!(store.list(None, None).len(), 2);
+}
+
+/// ARTIFACTS-26: a React folder (an `App.tsx`, no `index.html`) is an `html` page as it is, a
+/// single `.tsx` is kept as its `App.tsx`, and a folder with neither is refused naming both.
+#[tokio::test]
+async fn artifacts_26_a_react_folder_or_file_publishes_as_a_page() {
+    let t = Temp::new("a26");
+    t.write(
+        "react/App.tsx",
+        "export default function App() { return <h1>Hi</h1>; }",
+    );
+    t.write("react/Label.tsx", "export const Label = () => <b>L</b>;");
+    t.write(
+        "Counter.tsx",
+        "export default function App() { return <p>1</p>; }",
+    );
+    t.write("neither/Main.tsx", "export {};");
+    let (store, _) = t.store();
+    let room = t.room();
+    for (path, files) in [
+        ("react", vec!["App.tsx", "Label.tsx"]),
+        ("Counter.tsx", vec!["App.tsx"]),
+    ] {
+        let (id, _) = store.publish(what(&room, path)).await.unwrap();
+        let artifact = store.get(&id).unwrap();
+        assert_eq!(artifact.kind, Kind::Html, "{path}");
+        assert_eq!(artifact.versions[0].files, files, "{path}");
+    }
+    let why_not = store.publish(what(&room, "neither")).await.unwrap_err();
+    assert!(
+        why_not.starts_with("Not published: ")
+            && why_not.contains("index.html")
+            && why_not.contains("App.tsx"),
+        "{why_not}"
+    );
 }
 
 /// ARTIFACTS-3: `{version}/_blob/<id>` serves the upload that version keeps, and nothing for an id

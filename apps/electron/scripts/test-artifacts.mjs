@@ -26,6 +26,11 @@
 //                   the pane's at zoom 1; taking it sent nothing but to its host page and the pane's own
 //                   relay, and refused nothing the pane's view didn't; three fresh cards all have their
 //                   pictures within 6 s, and one picture's view at most is left.
+//   ARTIFACTSAPP-13: a React folder (App.tsx importing its Label.tsx, useState, lucide's Check and
+//                   Tailwind's classes) is a Page: it draws in the preview on the vendored set main's
+//                   relay serves at /__csb_vendor/, every request on loopback.
+//   ARTIFACTSAPP-14: one importing a package outside that set (recharts) shows the browser's own
+//                   error in the frame, and nothing is fetched for it.
 // Screenshots go to OBY_ARTIFACTS_SHOTS (a folder) when it's set: the window, with the preview laid
 // where main lays it.
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts
@@ -563,6 +568,71 @@ async function main() {
   // one picture's view at most is left
   const thumbViews = await app.evaluate(({ webContents }) => webContents.getAllWebContents().filter((w) => w.getURL().endsWith('/preview.html?thumb')).length);
   assert.ok(thumbViews <= 1, `artifactsapp_18: one picture's view at most: ${thumbViews}`);
+
+  // ARTIFACTSAPP-13: a React folder (App.tsx and its Label.tsx, no index.html), published from the
+  // conversation's room, draws in the preview on the vendored React, lucide-react and Tailwind that
+  // main's relay serves: every request on loopback
+  const publishFiles = async (path, files) => {
+    const room = join(s.home, 'conversations', made.conversation, 'room', path);
+    mkdirSync(room, { recursive: true });
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(room, name), text);
+    const said = await s.call('POST', '/v1/plans', { said: `OBY oby_artifact ${JSON.stringify({ title: path, path })}`, conversation: made.conversation });
+    assert.match(said.text ?? '', /Published artifact /, `the conversation published ${path}: ${said.text}`);
+    const id = /Published artifact ([0-9a-f-]{36})/.exec(said.text)[1];
+    // opened from its card, in the turn that published it
+    const itsCard = page.locator(`button.art-card[data-artifact="${id}"]`);
+    await until(`${path}’s card`, async () => (await itsCard.count()) === 1, 60_000);
+    await itsCard.scrollIntoViewIfNeeded();
+    await itsCard.click();
+    await until(`${path} open`, async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === path, 60_000);
+    return id;
+  };
+  const react = await publishFiles('react', {
+    'App.tsx': `import { useState } from 'react';\nimport { Check } from 'lucide-react';\nimport { Label } from './Label';\n\nexport default function App() {\n  const [n] = useState<number>(3);\n  return (\n    <main className="p-4 bg-teal-600 text-white">\n      <h1>React {n}</h1>\n      <Check />\n      <Label text="drawn" />\n    </main>\n  );\n}\n`,
+    'Label.tsx': `export function Label({ text }: { text: string }) {\n  return <p className="mt-2">{text}</p>;\n}\n`,
+  });
+  const reactCard = page.locator(`button.art-card[data-artifact="${react}"]`);
+  const reactMeta = await reactCard.locator('.art-card-meta').innerText();
+  assert.match(reactMeta, /^Oby artifact · Page · v1( · made by Claude Code)?$/, `artifactsapp_13: the card says a page: ${reactMeta}`);
+  const reactDrawn = await until('the React page drawn', async () => {
+    const r = await inFrame(`(() => { const h = document.querySelector('h1'); const m = document.querySelector('main'); return h && m && { h1: h.textContent, lucide: !!document.querySelector('svg.lucide'), paddingTop: getComputedStyle(m).paddingTop }; })()`);
+    return r.value?.paddingTop === '16px' && r.value;
+  }, 60_000).catch(async (e) => { console.error('the React frame shows:', JSON.stringify((await inFrame('document.body.innerHTML.slice(0, 600)')).value)); throw e; });
+  assert.deepEqual(reactDrawn, { h1: 'React 3', lucide: true, paddingTop: '16px' }, `artifactsapp_13: React, lucide and Tailwind drew it: ${JSON.stringify(reactDrawn)}`);
+  const reactRequests = await app.evaluate(() => globalThis.__previewRequests);
+  const reactOff = reactRequests.filter((u) => !u.startsWith('file://') && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u) && !u.startsWith('data:') && !u.startsWith('devtools:'));
+  assert.deepEqual(reactOff, [], 'artifactsapp_13: every request the preview made went to its host page or the relay');
+  const vendorLoaded = reactRequests.filter((u) => u.includes('/__csb_vendor/'));
+  assert.ok(vendorLoaded.length > 0, 'artifactsapp_13: the vendored files came from the relay');
+  // the card's picture, taken once the host page said drawn: how much of the teal page it holds
+  // (a follow-up when React drew after it: docs/contracts/artifacts-app.md, ARTIFACTSAPP-18)
+  await until('the React card’s picture', async () => reactCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
+  const reactPicture = await reactCard.evaluate((el) => {
+    const img = el.querySelector('img.art-thumb-img');
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const { data } = g.getImageData(0, 0, c.width, c.height);
+    let teal = 0;
+    for (let i = 0; i < data.length; i += 4) if (data[i] < 60 && data[i + 1] > 120 && data[i + 2] > 110) teal++;
+    return { teal, of: data.length / 4 };
+  });
+  await reactCard.scrollIntoViewIfNeeded();
+  await shot(page, '12-react');
+  console.log(`ok artifactsapp_13_a_react_artifact_draws_with_lucide_and_tailwind_from_loopback_only (${reactRequests.length} requests, ${vendorLoaded.length} to /__csb_vendor/; its card's picture ${reactPicture.teal} of ${reactPicture.of} pixels teal)`);
+
+  // ARTIFACTSAPP-14: an import outside the vendored set is the browser's own error in the frame, and
+  // nothing is fetched for it
+  await publishFiles('charts', { 'App.tsx': `import { LineChart } from 'recharts';\n\nexport default function App() {\n  return <LineChart width={300} height={200} data={[]} />;\n}\n` });
+  const refused = await until('the import’s error shown', async () => (await inFrame(`document.querySelector('pre')?.textContent ?? null`)).value, 60_000);
+  assert.match(refused, /recharts/, `artifactsapp_14: the frame says which import: ${refused}`);
+  const chartsSent = await app.evaluate(() => [...globalThis.__previewRequests, ...globalThis.__previewSent]);
+  assert.deepEqual(chartsSent.filter((u) => u.includes('recharts')), [], 'artifactsapp_14: nothing was fetched for recharts');
+  const chartsAway = chartsSent.filter((u) => !/^(file|data|blob|devtools):/.test(u) && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u));
+  assert.deepEqual(chartsAway, [], `artifactsapp_14: nothing left loopback: ${chartsAway.join(', ')}`);
+  await shot(page, '13-react-import-refused');
+  console.log(`ok artifactsapp_14_an_import_outside_the_vendored_set_shows_its_error_and_fetches_nothing (${JSON.stringify(refused)})`);
 
   // Close takes it away
   await page.getByRole('button', { name: 'Close the artifact' }).click();

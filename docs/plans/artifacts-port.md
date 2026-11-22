@@ -86,7 +86,9 @@ Read from `danny-avila/LibreChat` `main` and `codesandbox/sandpack` `main`, 2026
 | `codesandbox/sandpack-bundler` | Apache-2.0 | Allowed, but not used: it fetches npm packages from a hosted CDN and hasn't changed since 2024-11. |
 | `codesandbox/codesandbox-client`, the classic bundler, and LibreChat's self-hosting fork `LibreChat-AI/codesandbox-client` | GPLv3, except `packages/common`, `packages/sandpack-core` and `packages/app/src/sandbox` (Apache-2.0) | **Not copied or shipped.** Its build mixes GPLv3 code into the bundler. |
 | `@codesandbox/nodebox` 0.1.8 | **Sustainable Use License**, not open source: "only for your own internal business purposes or for non-commercial or personal use" | **Never in Oby's build.** `sandpack-client` depends on it for its `node` client, so the app replaces it with an empty stub of our own through npm's `overrides`. A check fails the build if any of it is in `out/`. |
-| `sucrase` 3.35.1, `@tailwindcss/browser` 4.3.5, React | MIT | Vendored for React artifacts (L5). |
+| React and react-dom 19.3.0, scheduler 0.28.0, `@tailwindcss/browser` 4.3.5 | MIT | Vendored for React artifacts (L5), each with its licence beside it (`resources/sandpack-vendor/`). |
+| `lucide-react` 1.55.0 | ISC, with MIT for the icons derived from Feather (both in its `LICENSE`) | Vendored for React artifacts (L5), its licence beside it. |
+| `sucrase` 3.35.1 | MIT; its `transform` pulls in lines-and-columns (MIT), ts-interface-checker (Apache-2.0) and @jridgewell/gen-mapping (MIT) | Bundled into the preview's host page for React artifacts (L5), not vendored. |
 
 ### How Sandpack runs fully local in Oby
 
@@ -236,6 +238,10 @@ route workflow, red before green. Sangam's artifact screens (the Oby Artifacts c
 #### L5. React artifacts, still local
 
 - **Lane:** dispatcher. **Depends:** L1.
+- **Built** (2026-11-21, W01-17): obid keeps such a folder, or a single `.tsx`/`.jsx` file, as an
+  `html` page (ARTIFACTS-26, add-only); the app compiles it in the preview's host page
+  (`artifacts/react.ts`) on the vendored set main's relay serves at `/__csb_vendor/`
+  (ARTIFACTSAPP-13, 14, docs/contracts/artifacts-app.md).
 - **What:**
   - `sucrase` compiles `.tsx`/`.jsx` in the renderer, and the import map points at the vendored
     `react`, `react-dom`, `lucide-react` and `@tailwindcss/browser`. Those are served by L1's relay
@@ -567,7 +573,7 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 | **L3a** The owner's edit (obid) | P1 | L1, L2 | merged (#2809) |
 | **L3b** Edit, save, versions (app) | L2, L3a | L5 | merged (#2836) |
 | **L4** Export and import (app) | L2, P2 | L5 | merged (#2847) |
-| **L5** React artifacts, local | L1 | L3b, L4 | |
+| **L5** React artifacts, local | L1 | L3b, L4 | built (W01-17) |
 | **L6** The real drive | L1 to L5 | none | |
 | P4 Oby's runtime | P1 | | after the loop (built, held) |
 | P5 Agent tools | P4 | | after the loop |

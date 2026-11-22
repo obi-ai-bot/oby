@@ -3,6 +3,12 @@ import relayHtml from '../../resources/sandpack-relay/__csb_relay/index.html?raw
 import relayJs from '../../resources/sandpack-relay/__csb_relay/__csb_relay.30yfeq026i8arwjbp19vlgcep8e6tgf.js?raw';
 import workerJs from '../../resources/sandpack-relay/__csb_sw.rpfsli6sirrzs1630o3lgzuxwlr2uqc.js?raw';
 import landingHtml from '../../resources/sandpack-relay/index.html?raw';
+import lucideReact from '../../resources/sandpack-vendor/lucide-react/lucide-react.mjs?raw';
+import reactDomClient from '../../resources/sandpack-vendor/react-dom/client.mjs?raw';
+import reactDom from '../../resources/sandpack-vendor/react-dom/react-dom.mjs?raw';
+import jsxRuntime from '../../resources/sandpack-vendor/react/jsx-runtime.mjs?raw';
+import react from '../../resources/sandpack-vendor/react/react.mjs?raw';
+import tailwind from '../../resources/sandpack-vendor/tailwindcss-browser/index.global.js?raw';
 
 // Sandpack's relay, served by main (docs/contracts/artifacts-app.md, ARTIFACTSAPP-1 and 3). Sandpack's
 // `static` template shows a preview at `<id>-<bundler host>`: a hidden relay frame there
@@ -16,7 +22,9 @@ import landingHtml from '../../resources/sandpack-relay/index.html?raw';
 // vendored (resources/sandpack-relay/README.md), with two lines of the service worker changed as
 // it's served: a request to another origin goes to the network, where the CSP and the preview's
 // partition stop it, instead of being answered from the artifact's files; and every answer the
-// worker makes carries PREVIEW_CSP.
+// worker makes carries PREVIEW_CSP. It also serves what a React artifact runs on (ARTIFACTSAPP-13),
+// resources/sandpack-vendor/, at `/__csb_vendor/<package>/<file>`: the worker sends a `/__csb…` path
+// of the preview's own origin to the network, so it reaches this server.
 
 /** What a preview may load: its own origin only, and what it holds inline (data:, blob:). */
 export const PREVIEW_CSP = [
@@ -69,6 +77,12 @@ function files(): Map<string, File> {
     ['/__csb_relay/index.html', { body: relayHtml, type: html }],
     ['/__csb_relay/__csb_relay.30yfeq026i8arwjbp19vlgcep8e6tgf.js', { body: relayJs, type: js }],
     ['/__csb_sw.rpfsli6sirrzs1630o3lgzuxwlr2uqc.js', { body: servedWorker(), type: js }],
+    ['/__csb_vendor/react/react.mjs', { body: react, type: js }],
+    ['/__csb_vendor/react/jsx-runtime.mjs', { body: jsxRuntime, type: js }],
+    ['/__csb_vendor/react-dom/react-dom.mjs', { body: reactDom, type: js }],
+    ['/__csb_vendor/react-dom/client.mjs', { body: reactDomClient, type: js }],
+    ['/__csb_vendor/lucide-react/lucide-react.mjs', { body: lucideReact, type: js }],
+    ['/__csb_vendor/tailwindcss-browser/index.global.js', { body: tailwind, type: js }],
   ]);
 }
 
