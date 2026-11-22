@@ -1,7 +1,7 @@
-//! One way into a computer through one of its routes (docs/contracts/remote.md, COMPUTERS-18, 22
-//! and 25), for everything on this Mac that calls one: forwarding the window's requests, trying its
-//! routes again, removing it, adding it. A direct route is HTTPS with its certificate pinned
-//! (crate::remote::pinned); an SSH route is plain HTTP to the other obid's gateway on its own
+//! One way into a computer through one of its routes (docs/contracts/remote.md, COMPUTERS-18, 22,
+//! 25 and 27), for everything on this Mac that calls one: forwarding the window's requests, trying
+//! its routes again, removing it, adding it, a page's tunnel to its loopback. A direct route is
+//! HTTPS with its certificate pinned (crate::remote::pinned); an SSH route is plain HTTP to the other obid's gateway on its own
 //! 127.0.0.1, through this computer's tunnel (crate::remote::tunnels): who answers there is the host
 //! key the person accepted.
 //!
@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use super::pin::Pin;
 use super::route::{Route, Via};
 use super::ssh::Ssh;
 use crate::api::Shared;
@@ -36,14 +37,20 @@ pub struct Way {
     pub base: String,
 }
 
-/// The way into computer `id` over `route`. `whole`: the answer comes whole, within a minute; a
-/// stream's runs as long as it's followed. An SSH route's tunnel is opened if it isn't running,
-/// never more than once a second.
-pub async fn way(shared: &Shared, id: &str, route: &Route, whole: bool) -> Result<Way, String> {
+/// Where a route reaches the computer: its base URL, and the certificate's pin a direct one's
+/// must have; an SSH one's is plain, ssh carrying it.
+pub struct Base {
+    pub url: String,
+    pub pin: Option<Pin>,
+}
+
+/// Where computer `id` is over `route`: `https://host:port` pinned, or this Mac's end of its SSH
+/// tunnel, opened if it isn't running, never more than once a second.
+pub async fn base(shared: &Shared, id: &str, route: &Route) -> Result<Base, String> {
     match &route.via {
-        Via::Https { host, port, pin } => Ok(Way {
-            client: super::pinned::streaming_client(*pin, CONNECT, whole)?,
-            base: format!("https://{host}:{port}"),
+        Via::Https { host, port, pin } => Ok(Base {
+            url: format!("https://{host}:{port}"),
+            pin: Some(*pin),
         }),
         Via::Ssh {
             destination,
@@ -54,12 +61,26 @@ pub async fn way(shared: &Shared, id: &str, route: &Route, whole: bool) -> Resul
                 .tunnels
                 .port(&ssh(), id, &route.id, destination, *remote_port)
                 .await?;
-            Ok(Way {
-                client: plain(whole)?,
-                base: format!("http://127.0.0.1:{local}"),
+            Ok(Base {
+                url: format!("http://127.0.0.1:{local}"),
+                pin: None,
             })
         }
     }
+}
+
+/// The way into computer `id` over `route` ([`base`]). `whole`: the answer comes whole, within a
+/// minute; a stream's runs as long as it's followed.
+pub async fn way(shared: &Shared, id: &str, route: &Route, whole: bool) -> Result<Way, String> {
+    let base = base(shared, id, route).await?;
+    let client = match base.pin {
+        Some(pin) => super::pinned::streaming_client(pin, CONNECT, whole)?,
+        None => plain(whole)?,
+    };
+    Ok(Way {
+        client,
+        base: base.url,
+    })
 }
 
 /// A client for this Mac's own loopback end of a tunnel: no proxy, no TLS (ssh carries it).

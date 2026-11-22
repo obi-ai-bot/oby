@@ -30,7 +30,7 @@ use axum::body::{Body, Bytes, HttpBody as _};
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use base64::Engine as _;
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,7 @@ const COMPUTER_INVITATION: Duration = Duration::from_secs(600);
 /// Wrong credentials an invitation takes before it is gone.
 const ATTEMPTS: u32 = 5;
 /// How long a device token works (Devices.swift, `GatewayToken.lifetime`).
-const LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub(crate) const LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// A device token used with less than this left gets a fresh [`LIFETIME`] (PAIRING-6): a phone in
 /// use stays paired, one unused for 30 days still expires. Half the lifetime, so the file is written
 /// at most about twice a month per device, never on every request.
@@ -162,6 +162,11 @@ pub const COMPUTER_ROUTES: &[(&str, &str, &str)] = &[
         "GET",
         "/v1/connectors",
         "Settings › Connectors, of the computer in use",
+    ),
+    (
+        "GET",
+        "/v1/preview/tunnel",
+        "a page's localhost in the window, on the computer in use (board 14)",
     ),
 ];
 
@@ -377,6 +382,11 @@ pub struct Gateway {
     /// Another computer's open invitation, apart from the phone's: neither replaces the other
     /// (COMPUTERS-13).
     computer: Mutex<Option<Pending>>,
+    /// obid's own listeners' ports, set once at start: a preview tunnel never dials one
+    /// (crate::remote::preview_tunnel, COMPUTERS-26).
+    own_ports: std::sync::OnceLock<Vec<u16>>,
+    /// Bumped on each pairing that ends: an open preview tunnel ends with its device's.
+    revoked: tokio::sync::watch::Sender<u64>,
 }
 
 fn digest(value: &str) -> String {
@@ -408,7 +418,25 @@ impl Gateway {
             devices: Mutex::new(devices),
             pending: Mutex::new(None),
             computer: Mutex::new(None),
+            own_ports: std::sync::OnceLock::new(),
+            revoked: tokio::sync::watch::channel(0).0,
         }
+    }
+
+    /// obid's own listeners' ports (its API's, the gateway's, the `direct` ones), once: the list
+    /// `lib.rs` hands the browser too. A second call changes nothing.
+    pub fn set_own_ports(&self, ports: Vec<u16>) {
+        let _ = self.own_ports.set(ports);
+    }
+
+    /// The ports [`Gateway::set_own_ports`] set: none before it.
+    pub fn own_ports(&self) -> &[u16] {
+        self.own_ports.get().map_or(&[], Vec::as_slice)
+    }
+
+    /// Told whenever a pairing ends ([`Gateway::revoke`]).
+    pub fn revocations(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revoked.subscribe()
     }
 
     /// A new invitation, replacing the one before. `owned`: the owner made it on their own device,
@@ -696,6 +724,14 @@ impl Gateway {
             .collect()
     }
 
+    /// When the paired device `id`'s token stops working, as it is now (a use may slide it on):
+    /// none once it's revoked.
+    pub fn paired_until(&self, id: &str) -> Option<SystemTime> {
+        let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
+        let until = devices.values().find(|d| d.id == id)?.until();
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(until.max(0) as u64))
+    }
+
     /// The paired devices, oldest first: never a token or its digest.
     pub fn list(&self) -> Value {
         let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
@@ -723,7 +759,10 @@ impl Gateway {
         if devices.len() == before {
             return Ok(false);
         }
-        self.save(&devices)?;
+        let saved = self.save(&devices);
+        drop(devices);
+        self.revoked.send_modify(|n| *n += 1);
+        saved?;
         Ok(true)
     }
 
@@ -733,7 +772,7 @@ impl Gateway {
     }
 }
 
-fn error(status: StatusCode, message: &str) -> Response {
+pub(crate) fn error(status: StatusCode, message: &str) -> Response {
     (status, axum::Json(json!({"error": message}))).into_response()
 }
 
@@ -909,11 +948,12 @@ struct Through {
     api: Router,
 }
 
-/// The gateway's router: redeeming, a computer ending its own pairing, and every allowed route
-/// forwarded to `api`.
+/// The gateway's router: redeeming, a computer ending its own pairing, a computer's preview
+/// tunnel (crate::remote::preview_tunnel), and every allowed route forwarded to `api`.
 pub fn router(shared: Arc<Shared>, api: Router) -> Router {
     Router::new()
         .route("/v1/pairing", post(redeem).delete(unpair))
+        .route("/v1/preview/tunnel", get(preview_tunnel))
         .fallback(forward)
         .with_state(Through { shared, api })
 }
@@ -983,8 +1023,14 @@ async fn redeem(State(through): State<Through>, request: Request) -> Response {
     }
 }
 
+/// `GET /v1/preview/tunnel?port=<n>`, on the gateway only, never forwarded: an upgrade doesn't
+/// survive `oneshot` (COMPUTERS-26).
+async fn preview_tunnel(State(through): State<Through>, request: Request) -> Response {
+    crate::remote::preview_tunnel::serve(&through.shared, request).await
+}
+
 /// The one `Authorization: Bearer` token a request carries, or none.
-fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     match (values.next(), values.next()) {
         (Some(value), None) => value
@@ -2032,6 +2078,9 @@ mod tests {
         assert!(!allows_computer(&Method::POST, "/v1/skills"));
         assert!(!allows_computer(&Method::GET, "/v1/obid/vault"));
         assert!(allows_computer(&Method::GET, "/v1/status"), "a phone's too");
+        // COMPUTERS-26: a page's localhost on the computer in use, a computer's only.
+        assert!(allows_computer(&Method::GET, "/v1/preview/tunnel"));
+        assert!(!allows(&Method::GET, "/v1/preview/tunnel"));
     }
 
     #[test]

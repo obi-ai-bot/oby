@@ -474,6 +474,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/computers/{id}/retry",
             post(crate::remote::window::retry),
         )
+        .route("/v1/computers/{id}/door", post(crate::remote::window::door))
         .route("/v1/pairing/invite", post(crate::gateway::invite))
         .route("/v1/pairing/devices", get(crate::gateway::devices))
         .route(
