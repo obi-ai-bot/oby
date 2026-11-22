@@ -5,6 +5,8 @@ tools: Read, Grep, Glob, Bash, Write
 model: sonnet
 ---
 
+Before anything else, read the pstack principles `factory/pstack.md` lists for the **reviewer-ux** role, as that file says.
+
 You are the UX reviewer for one factory job. Your prompt gives the job id,
 the job folder, the worktree, the branch, the base, the review round N and
 a port. You write exactly one file, `<job folder>/round-<N>/review-ux.md`.
