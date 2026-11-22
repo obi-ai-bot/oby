@@ -1,4 +1,4 @@
-//! The agents' tools over obid's driver (BROWSER-1 to 3, 5, 6, 9 to 13, 15), in the lab's order
+//! The agents' tools over obid's driver (BROWSER-1 to 3, 5, 6, 9 to 13, 15, 34), in the lab's order
 //! (`browserapi.rs`, `call_tool`): the switch first, an unknown tool next, the job's browser up
 //! (within its own allowance) before any tool that reaches a page, then each act let through,
 //! committed right before it runs and done after, with its `action` events (started, done,
@@ -275,7 +275,9 @@ impl Service {
                 self.act_event(job, the_tab.clone(), name, args, c::Outcome::Done, None);
             }
             if name == "oby_browser_act" {
-                self.watch_downloads(job, the_tab, Actor::Agent(job.into()));
+                // ponytail: only an act's next 5 s are watched, so an agent's download a navigate
+                // starts, or one slower than that, stays in its profile unlisted.
+                self.watch_downloads(job, the_tab, Actor::Agent(job.into()), None);
             }
         }
         self.flush();
@@ -362,12 +364,15 @@ impl Service {
     }
 
     /// Looks at a job's downloads for a few seconds after an act (BROWSER-13): an agent's stays in
-    /// its profile; the person's is delivered into their Downloads.
+    /// its profile; the person's is delivered into their Downloads (BROWSER-34), quarantined, under
+    /// a name not taken there, and never opened. With `only`, only the unseen file of that name is
+    /// taken; every other stays for the act's own watch.
     pub(super) fn watch_downloads(
         self: &Arc<Self>,
         job: &str,
         tab: Option<String>,
         started_by: Actor,
+        only: Option<String>,
     ) {
         let me = self.clone();
         let job = job.to_string();
@@ -385,6 +390,7 @@ impl Service {
                     .downloads(&job)
                     .into_iter()
                     .filter(|f| !seen.contains(&f.name))
+                    .filter(|f| only.as_ref().is_none_or(|n| *n == f.name))
                     .collect();
                 if new.is_empty() {
                     continue;
@@ -400,6 +406,14 @@ impl Service {
                         let _ = crate::store::make_private_dir(&to);
                         match me.window().save_copy(&job, &file.name, &to) {
                             Ok(copy) => {
+                                #[cfg(target_os = "macos")]
+                                if let Err(e) = super::quarantine::ensure(&copy) {
+                                    let _ = std::fs::remove_file(&copy);
+                                    tracing::warn!(
+                                        "job {job}: a download wasn't delivered: no quarantine mark: {e}"
+                                    );
+                                    continue;
+                                }
                                 if let Some(n) = copy.file_name() {
                                     name = n.to_string_lossy().into_owned();
                                 }

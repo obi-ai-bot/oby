@@ -28,6 +28,8 @@ pub mod box_edge;
 pub(crate) mod box_files;
 pub mod contract;
 pub mod engine;
+#[cfg(target_os = "macos")]
+mod quarantine;
 pub mod relay;
 pub mod routes;
 pub mod send_buffer;
