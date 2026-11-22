@@ -27,6 +27,8 @@ import { allowed, noFiles, overlay, previewAsk, shownAs, thumbAsk } from './prev
 
 export const PARTITION = 'oby-artifact-preview';
 const dev = process.env.ELECTRON_RENDERER_URL;
+// a card's picture's page, in CSS px (ARTIFACTSAPP-18): drawn at scale 2, a 1280x370 picture
+const HALF = { width: 640, height: 185 };
 
 export type Shown = { shown: true } | { error: string };
 export type Thumb = { src: string } | { none: true };
@@ -147,32 +149,70 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
   const thumbs = new Map<string, Promise<Thumb>>();
   let queue: Promise<unknown> = Promise.resolve();
   let thumbView: Promise<View> | null = null;
+  // the key being answered ('' for none), and the window's lifetime (one more at each stop): a
+  // capture that finds either changed since it started touches no view and answers none
+  let answering = '';
+  let lifetime = 0;
   ipc(trusted).handle('artifact-thumb', [thumbAsk], (_e, ask): Promise<Thumb> => {
     const key = `${ask.id}/${ask.version}`;
     let thumb = thumbs.get(key);
     if (!thumb) {
-      // one at a time, in order, each bounded at 10 seconds
-      const bounded = () => Promise.race([take(ask.id, ask.version), new Promise<Thumb>((done) => setTimeout(() => done({ none: true }), 10_000))]);
-      thumb = queue.then(bounded).catch((): Thumb => ({ none: true }));
+      // one at a time, in order
+      thumb = queue.then(() => bounded(key, ask.id, ask.version)).catch((): Thumb => ({ none: true }));
       queue = thumb;
       thumbs.set(key, thumb);
       if (thumbs.size > 50) thumbs.delete(thumbs.keys().next().value!);
     }
     return thumb;
   }, null);
-  async function take(id: string, version: number): Promise<Thumb> {
+  // a card asked for a newer version of it since: its card shows that one, never this
+  const older = (id: string, version: number) => [...thumbs.keys()].some((k) => k.startsWith(`${id}/`) && Number(k.slice(id.length + 1)) > version);
+  // each capture cut off at 10 seconds: its view closed, so the next gets a fresh one (same session, same relay)
+  async function bounded(key: string, id: string, version: number): Promise<Thumb> {
+    if (older(id, version)) return { none: true };
+    answering = key;
+    let limit: ReturnType<typeof setTimeout> | undefined;
+    const cut = new Promise<Thumb>((done) => {
+      limit = setTimeout(() => {
+        answering = '';
+        void thumbView?.then(drop, () => {});
+        thumbView = null;
+        done({ none: true });
+      }, 10_000);
+    });
+    try { return await Promise.race([take(key, id, version), cut]); } finally {
+      clearTimeout(limit);
+      if (answering === key) answering = '';
+    }
+  }
+  async function take(key: string, id: string, version: number): Promise<Thumb> {
+    const started = lifetime;
+    const gone = () => answering !== key || lifetime !== started;
     const win = window();
     if (!win || win.isDestroyed()) return { none: true };
     const read = await readVersion(id, version);
-    if (typeof read === 'string') return { none: true };
-    thumbView ??= makeView(win, true).then((v) => { v.view.setBounds({ x: 0, y: 0, width: 1280, height: 370 }); return v; }, (e) => { thumbView = null; throw e; });
+    if (typeof read === 'string' || gone()) return { none: true };
+    thumbView ??= makeView(win, true).then((v) => { v.view.setBounds({ x: 0, y: 0, ...HALF }); return v; }, (e) => { thumbView = null; throw e; });
     const { view, loaded, relay } = await thumbView;
+    if (gone()) return { none: true };
     await loaded;
+    if (gone()) return { none: true };
+    // the card's ratio at half 1280's width and scale 2, so its words are twice a 1280-wide page's
+    // shrunk to the card: emulated for this view alone, as a zoom would be every view's of the same
+    // page (Chromium keeps one per host); again each time, as a new renderer would drop it
+    view.webContents.enableDeviceEmulation({ screenPosition: 'desktop', screenSize: HALF, viewSize: HALF, viewPosition: { x: 0, y: 0 }, deviceScaleFactor: 2, scale: 1 });
     await view.webContents.executeJavaScript(shownAs({ ...read, bundler: relay.origin }));
-    // ponytail: a fixed 4 s wait for Sandpack to draw, as the host page has no "drawn" signal: a page
-    // slower than that is taken half drawn; add the signal to host.ts if fixed waits prove flaky
-    await new Promise((done) => setTimeout(done, 4_000));
-    const png = (await view.webContents.capturePage()).resize({ width: 720 }).toPNG();
+    if (gone()) return { none: true };
+    // the host page's own "drawn" (host.ts), at most 4 s
+    const drawn = await Promise.race([view.webContents.executeJavaScript('window.obyDrawn').then(() => true), new Promise<false>((done) => setTimeout(() => done(false), 4_000))]);
+    // ponytail: a frame just loaded isn't painted yet (taken at its load, the picture is blank on the
+    // Mac), so a fixed settle after it; a paint signal from the frame would need a bridge into it
+    if (drawn) await new Promise((done) => setTimeout(done, 250));
+    if (gone()) return { none: true };
+    const image = await view.webContents.capturePage();
+    if (gone()) return { none: true };
+    // 1280x370, made so where a display captured it larger
+    const png = (image.getSize().width > 1280 ? image.resize({ width: 1280 }) : image).toPNG();
     return { src: 'data:image/png;base64,' + png.toString('base64') };
   }
 
@@ -182,6 +222,8 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     if (!v.view.webContents.isDestroyed()) v.view.webContents.close();
   };
   return () => {
+    lifetime++;
+    answering = '';
     if (current) drop(current);
     current = null;
     void thumbView?.then(drop, () => {});

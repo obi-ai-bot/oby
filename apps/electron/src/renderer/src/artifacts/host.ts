@@ -24,9 +24,12 @@ function show(v: Show): void {
   frame.setAttribute('title', v.title);
   frame.setAttribute('data-artifact-preview', '');
   document.body.append(frame);
+  // drawn: the frame's first load once Sandpack gave it the preview's address (its `done` comes as it
+  // does, before the page loads); main waits on it before a card's picture (ARTIFACTSAPP-18)
+  window.obyDrawn = new Promise((done) => frame.addEventListener('load', () => { if (frame.getAttribute('src')) done(); }));
   // bytes go as they are: the static client keeps a Uint8Array as one (its writeBuffer)
   client = new SandpackStatic(frame, { files: showable(v) as Record<string, { code: string }>, template: 'static' }, { bundlerURL: v.bundler, showOpenInCodeSandbox: false });
 }
 
-declare global { interface Window { obyShow?: (v: Show) => void } }
+declare global { interface Window { obyShow?: (v: Show) => void; obyDrawn?: Promise<void> } }
 window.obyShow = show;
