@@ -25,6 +25,12 @@ const PICTURE = 'html,body{margin:0;height:100%;background:#fff}body{display:fle
 const TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif' };
 const ext = (p: string) => p.slice(p.lastIndexOf('.') + 1).toLowerCase();
 
+// A page's Tailwind CDN script outside a comment (ARTIFACTSAPP-21): the Play CDN, or @tailwindcss/browser
+// on jsDelivr or unpkg. Its src becomes the bundled Tailwind main's relay serves, and the page's own
+// `tailwind.config = …` gets a `tailwind` to set. The hosts stay escaped, so the build's localOnly passes.
+const TAILWIND_CDN = /<!--[\s\S]*?-->|(<script\b[^>]*?\ssrc\s*=\s*)(["']?)https:\/\/(?:cdn\.tailwindcss\.com(?:[/?#][^"'\s>]*)?|(?:cdn\.jsdelivr\.net\/npm|unpkg\.com)\/@tailwindcss\/browser(?:@[^/?#"'\s>]*)?(?:[/?#][^"'\s>]*)?)\2(?=[\s>])/gi;
+const bundledTailwind = (html: string) => html.replace(TAILWIND_CDN, (m, tag?: string, q = '') => tag === undefined ? m : `<script>window.tailwind ??= {};</script>${tag}${q}/__csb_vendor/tailwindcss-browser/index.global.js${q}`);
+
 /** A React artifact (ARTIFACTSAPP-13): an `html` version with an App.tsx or App.jsx and no index.html. */
 export const isReact = (v: Version): boolean => v.kind === 'html' && !v.files['index.html'] && !!(v.files['App.tsx'] || v.files['App.jsx']);
 
@@ -47,7 +53,10 @@ export function showable(v: Version): Shown {
   if (isReact(v)) return reactShown(v);
   // a page, a canvas, a design (drawn by Oby's runtime later, P4): its own files, index.html first
   const shown: Shown = {};
-  for (const p of paths) shown[`/${p}`] = { code: 'text' in v.files[p] ? (v.files[p] as { text: string }).text : bytes(v.files[p]) };
+  for (const p of paths) {
+    const f = v.files[p];
+    shown[`/${p}`] = { code: 'text' in f ? (v.kind === 'html' && /\.html$/i.test(p) ? bundledTailwind(f.text) : f.text) : bytes(f) };
+  }
   if (!shown['/index.html']) {
     const list = paths.map((p) => `<li><a href="./${encodeURI(p)}">${escaped(p)}</a></li>`).join('');
     shown['/index.html'] = { code: page(v.title, DOCUMENT, `<h1>${escaped(v.title)}</h1><ul>${list}</ul>`) };

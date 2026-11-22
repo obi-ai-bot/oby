@@ -38,6 +38,9 @@
 //   ARTIFACTSAPP-20: the pane's Reload runs the page on view again: a page counting its loads in
 //                   sessionStorage shows 2 after it, every request on loopback
 //                   (artifactsapp_20_reload_runs_the_page_again).
+//   ARTIFACTSAPP-21: a page written for Tailwind's CDN (its script tag and an inline tailwind.config)
+//                   draws styled on the bundled Tailwind main's relay serves; nothing leaves loopback
+//                   and nothing, main or the frame's CSP, refuses the CDN (artifactsapp_21_a_page_written_for_tailwinds_cdn_draws_styled).
 // Screenshots go to OBY_ARTIFACTS_SHOTS (a folder) when it's set: the window, with the preview laid
 // where main lays it.
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts
@@ -674,6 +677,26 @@ async function main() {
   assert.deepEqual(reloadOff, [], 'artifactsapp_20: every request the preview made went to its host page or the relay');
   await shot(page, '15-reloaded');
   console.log(`ok artifactsapp_20_reload_runs_the_page_again (the frame shows 2 after Reload, ${reloadRequests.length} requests, all on loopback)`);
+
+  // ARTIFACTSAPP-21: a page written for Tailwind's CDN draws styled, its tag sent to the bundled
+  // Tailwind: nothing leaves loopback, and nothing is refused for the CDN
+  const sinceTailwind = await app.evaluate(() => globalThis.__previewRequests.length);
+  await publishFiles('tailwind', { 'index.html': `<!doctype html><html><head><script src="https://cdn.tailwindcss.com"></script><script>tailwind.config = { theme: {} }</script></head><body><main class="p-4 bg-teal-600"><h1>Tailwind's CDN</h1></main></body></html>` });
+  const styled = () => inFrame(`(() => { const m = document.querySelector('main'); return m && { paddingTop: getComputedStyle(m).paddingTop, backgroundColor: getComputedStyle(m).backgroundColor }; })()`).then((r) => r.value);
+  await until('the Tailwind page styled', async () => (await styled())?.paddingTop === '16px', 30_000).catch(() => {});
+  const tailwind = await styled();
+  await shot(page, '16-tailwind-cdn');
+  // refused by the session (main's lock), or by the frame's CSP before any request (its console)
+  const cdnRefused = [...(await app.evaluate(() => globalThis.__previewErrors)).map((e) => e.url), ...mainLogs.join('').split('\n').filter((l) => l.includes('artifact preview: refused')),
+    ...(await app.evaluate(() => globalThis.__previewConsole)).filter((l) => /refused|violates|blocked/i.test(l))].filter((u) => u.includes('cdn.tailwindcss.com'));
+  assert.equal(tailwind?.paddingTop, '16px', `artifactsapp_21: Tailwind's p-4 applied: ${JSON.stringify(tailwind)}; refused for the CDN: ${JSON.stringify(cdnRefused)}`);
+  assert.notEqual(tailwind.backgroundColor, 'rgba(0, 0, 0, 0)', `artifactsapp_21: bg-teal-600 applied: ${JSON.stringify(tailwind)}`);
+  const tailwindRequests = await app.evaluate(() => globalThis.__previewRequests);
+  assert.ok(tailwindRequests.slice(sinceTailwind).some((u) => u.endsWith('/__csb_vendor/tailwindcss-browser/index.global.js')), 'artifactsapp_21: the page had the bundled Tailwind from the relay');
+  const tailwindOff = tailwindRequests.filter((u) => !u.startsWith('file://') && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u) && !u.startsWith('data:') && !u.startsWith('devtools:'));
+  assert.deepEqual(tailwindOff, [], 'artifactsapp_21: every request the preview made went to its host page or the relay');
+  assert.deepEqual(cdnRefused, [], 'artifactsapp_21: nothing was refused for the CDN');
+  console.log(`ok artifactsapp_21_a_page_written_for_tailwinds_cdn_draws_styled (paddingTop ${tailwind.paddingTop}, background ${tailwind.backgroundColor}, ${tailwindRequests.length} requests, all on loopback)`);
 
   // Close takes it away
   await page.getByRole('button', { name: 'Close the artifact' }).click();
