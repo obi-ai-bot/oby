@@ -1786,3 +1786,115 @@ fn computers_28_only_the_window_gets_a_computers_door() {
         assert!(!text.contains(token), "the door's token in {what}");
     }
 }
+
+/// COMPUTERS-26: revoking a computer's pairing ends its tunnel even while the service at its end
+/// has stopped reading and every buffer between is full: both ends are dropped at once, and what
+/// was still queued never reaches the service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn computers_26_a_revoked_tunnel_ends_while_its_service_reads_nothing() {
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio_tungstenite::tungstenite::Message;
+    let folder = Folder::new("remote-tunnel-stalled");
+    let config = tokio::task::block_in_place(|| with_direct(&folder));
+    let studio = tokio::task::block_in_place(|| start(&folder.0, &config, None));
+    let (address, pin) = tokio::task::block_in_place(|| direct_of(&studio));
+    let paired = tokio::task::block_in_place(|| computer_and_phone(&studio));
+
+    // A service that takes its connection and reads nothing until the test says.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let (taken, accepted) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            let _ = taken.send(stream);
+        }
+    });
+    let ws = tunnel(
+        &format!("wss://{address}"),
+        Some(pin),
+        Some(&paired.token),
+        &port,
+        &[],
+    )
+    .await
+    .unwrap();
+    let mut service =
+        tokio::task::block_in_place(|| accepted.recv_timeout(Duration::from_secs(10)).unwrap());
+    service
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let (mut sink, mut stream) = ws.split();
+    let sent = Arc::new(AtomicUsize::new(0));
+    let counted = sent.clone();
+    tokio::spawn(async move {
+        let frame = vec![7u8; 64 * 1024];
+        while counted.load(Ordering::SeqCst) < 512 << 20 {
+            if sink
+                .send(Message::Binary(frame.clone().into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            counted.fetch_add(frame.len(), Ordering::SeqCst);
+        }
+    });
+    let ended = Arc::new(AtomicBool::new(false));
+    let seen = ended.clone();
+    tokio::spawn(async move {
+        while let Some(Ok(message)) = stream.next().await {
+            if message.is_close() {
+                break;
+            }
+        }
+        seen.store(true, Ordering::SeqCst);
+    });
+    // Every buffer between is full: nothing more goes for a second.
+    let (mut last, mut still) = (0, 0);
+    let stalled = tokio::task::block_in_place(|| {
+        within(30, "the tunnel to stall on its service", || {
+            let now = sent.load(Ordering::SeqCst);
+            still = if now == last && now > 0 { still + 1 } else { 0 };
+            last = now;
+            (still >= 10).then_some(now)
+        })
+    });
+
+    let (status, text) = tokio::task::block_in_place(|| {
+        through(&studio, Some(&paired.token), "DELETE", "/v1/pairing", None)
+    });
+    assert_eq!(status, 204, "{text}");
+    tokio::task::block_in_place(|| {
+        within(10, "the stalled tunnel to close", || {
+            ended.load(Ordering::SeqCst).then_some(())
+        })
+    });
+    // The service reads now: its connection is over, and it never gets all that was sent.
+    let mut got = 0;
+    let mut chunk = vec![0u8; 64 * 1024];
+    let over = loop {
+        match service.read(&mut chunk) {
+            Ok(0) => break Ok(()),
+            Ok(n) => got += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break Err(e);
+            }
+            Err(_) => break Ok(()),
+        }
+    };
+    assert!(
+        over.is_ok(),
+        "the service's connection stayed open: {over:?}"
+    );
+    assert!(
+        got < stalled,
+        "the service got {got} of the {stalled} bytes sent"
+    );
+}

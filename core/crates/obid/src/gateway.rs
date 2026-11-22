@@ -47,7 +47,7 @@ const COMPUTER_INVITATION: Duration = Duration::from_secs(600);
 /// Wrong credentials an invitation takes before it is gone.
 const ATTEMPTS: u32 = 5;
 /// How long a device token works (Devices.swift, `GatewayToken.lifetime`).
-const LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub(crate) const LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// A device token used with less than this left gets a fresh [`LIFETIME`] (PAIRING-6): a phone in
 /// use stays paired, one unused for 30 days still expires. Half the lifetime, so the file is written
 /// at most about twice a month per device, never on every request.
@@ -722,6 +722,14 @@ impl Gateway {
             .filter(|d| d.until() > seconds(now))
             .map(|d| d.id.clone())
             .collect()
+    }
+
+    /// When the paired device `id`'s token stops working, as it is now (a use may slide it on):
+    /// none once it's revoked.
+    pub fn paired_until(&self, id: &str) -> Option<SystemTime> {
+        let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
+        let until = devices.values().find(|d| d.id == id)?.until();
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(until.max(0) as u64))
     }
 
     /// The paired devices, oldest first: never a token or its digest.

@@ -88,7 +88,7 @@ A page's `localhost` on another computer (COMPUTERS-26 and 27), ported from T3 C
 - **Its refusals,** in this order, after the caller and each before any upgrade, `{"error", "reason"}`: `400` `bad_port` for a `port` that's missing, empty, given twice, not digits, `0` or past 65535; `403` `own_port` for one of obid's own listeners' (its API's, its gateway's and its direct addresses', as obid bound them at start); `400` `not_a_websocket` for a request with no WebSocket upgrade; `403` `nothing_listens` when nothing answers (`403`, not `502`, so a proxy between can't swap it).
 - **The dial:** `127.0.0.1:<n>`, then `[::1]:<n>`, both within 5 seconds, made before the upgrade so a dead port fails the handshake; never any other address.
 - **The pump:** bytes both ways as binary frames, at most 64 KiB read at a time, each written before the next read on its side; the WebSocket's write buffer, message and frame each at most 1 MiB; text frames ignored, pings answered by the library. Either side closing or failing ends both; there's no idle limit.
-- **Its end:** the tunnel closes, its socket and its WebSocket, once its pairing ends: `DELETE /v1/pairing` with its token, or `DELETE /v1/pairing/devices/{id}` on that computer.
+- **Its end:** the tunnel closes, its socket and its WebSocket, once its pairing ends (`DELETE /v1/pairing` with its token, or `DELETE /v1/pairing/devices/{id}` on that computer) or its token's time is up (checked again at that instant), even while a write waits on a service that stopped reading: both are dropped at once and the socket reset, so nothing still queued reaches the service.
 
 ## `home/addresses.json`
 

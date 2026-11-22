@@ -157,7 +157,7 @@ pub async fn serve(shared: &Arc<Shared>, request: Request) -> Response {
         .max_message_size(MOST)
         .max_frame_size(MOST)
         .on_upgrade(move |ws| async move {
-            let unpaired = unpaired(shared, device);
+            let unpaired = unpaired(&shared.gateway, &device);
             let binary = axum::extract::ws::Message::Binary;
             pump(ws, socket, None, unpaired, binary, heard_here).await
         })
@@ -183,13 +183,20 @@ async fn dial(port: u16) -> Option<TcpStream> {
         .flatten()
 }
 
-/// Once the paired device `device` is no longer paired here (`DELETE /v1/pairing`, or revoked on
-/// this computer).
-async fn unpaired(shared: Arc<Shared>, device: String) {
-    let mut revoked = shared.gateway.revocations();
-    while shared.gateway.paired(SystemTime::now()).contains(&device) {
-        if revoked.changed().await.is_err() {
-            return;
+/// Once the paired device `device` is no longer paired here: revoked (`DELETE /v1/pairing`, or
+/// revoked on this computer), or its token's time is up, checked again whenever either comes.
+async fn unpaired(gateway: &crate::gateway::Gateway, device: &str) {
+    let mut revoked = gateway.revocations();
+    loop {
+        let left = gateway
+            .paired_until(device)
+            .and_then(|until| until.duration_since(SystemTime::now()).ok());
+        let Some(left) = left else { return };
+        tokio::select! {
+            changed = revoked.changed() => if changed.is_err() {
+                return;
+            },
+            () = tokio::time::sleep(left) => {}
         }
     }
 }
@@ -230,10 +237,9 @@ fn heard_there(message: tungstenite::Message) -> Heard {
     }
 }
 
-/// The socket and the WebSocket both ways, as binary frames of at most [`READ`], each written
-/// before the next read on its side, until either closes or fails, or `ended`; then both end.
-/// `rest`: only that much more is read off the socket (a plain request's body), then only the
-/// answer comes back.
+/// The socket and the WebSocket both ways ([`both_ways`]) until either closes or fails, then both
+/// end; or until `ended`, which ends it whatever it waits on, a write the other side doesn't take
+/// included: then both are dropped at once, the socket reset, so nothing still queued goes on.
 ///
 /// ponytail: no idle limit on a tunnel, as T3's has none: it lasts while both sides hold it, an
 /// idle one holding a socket at each end and one of its door's 64; the egress proxy's `IDLE` is
@@ -241,8 +247,37 @@ fn heard_there(message: tungstenite::Message) -> Heard {
 async fn pump<W, M, E>(
     mut ws: W,
     mut socket: TcpStream,
-    mut rest: Option<u64>,
+    rest: Option<u64>,
     ended: impl Future<Output = ()>,
+    binary: fn(Bytes) -> M,
+    heard: fn(M) -> Heard,
+) where
+    W: Sink<M> + Stream<Item = Result<M, E>> + Unpin,
+{
+    let cut = tokio::select! {
+        () = ended => true,
+        () = both_ways(&mut ws, &mut socket, rest, binary, heard) => false,
+    };
+    if cut {
+        // Closed with a reset, not a FIN: what its send buffer holds is dropped with it.
+        let reset = nix::libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        let _ = nix::sys::socket::setsockopt(&socket, nix::sys::socket::sockopt::Linger, &reset);
+        return;
+    }
+    let _ = ws.close().await;
+    let _ = socket.shutdown().await;
+}
+
+/// The socket and the WebSocket both ways, as binary frames of at most [`READ`], each written
+/// before the next read on its side, until either closes or fails. `rest`: only that much more is
+/// read off the socket (a plain request's body), then only the answer comes back.
+async fn both_ways<W, M, E>(
+    ws: &mut W,
+    socket: &mut TcpStream,
+    mut rest: Option<u64>,
     binary: fn(Bytes) -> M,
     heard: fn(M) -> Heard,
 ) where
@@ -250,11 +285,9 @@ async fn pump<W, M, E>(
 {
     let (mut read, mut write) = socket.split();
     let mut buffer = vec![0u8; READ];
-    tokio::pin!(ended);
     loop {
         let want = rest.map_or(READ, |left| left.min(READ as u64) as usize);
         tokio::select! {
-            () = &mut ended => break,
             n = read.read(&mut buffer[..want]), if want > 0 => match n {
                 Ok(n) if n > 0 => {
                     if let Some(left) = rest.as_mut() {
@@ -278,8 +311,6 @@ async fn pump<W, M, E>(
             },
         }
     }
-    let _ = ws.close().await;
-    let _ = write.shutdown().await;
 }
 
 /// What a computer's door carries its connections with (crate::egress::Egress::start_computers,
@@ -422,6 +453,32 @@ async fn socket(base: &Base, token: &str, port: u16) -> Result<Ws, Option<u16>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// COMPUTERS-26: a tunnel ends once its pairing's token stops working by time alone, with no
+    /// revocation to tell it.
+    #[tokio::test]
+    async fn computers_26_a_tunnel_ends_when_its_pairing_expires() {
+        let home =
+            std::env::temp_dir().join(format!("obid-tunnel-expiry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let gateway = crate::gateway::Gateway::open(&home);
+        // Paired so long ago that its token works two seconds more.
+        let then = SystemTime::now() - crate::gateway::LIFETIME + std::time::Duration::from_secs(2);
+        let url = "http://127.0.0.1:7778";
+        let invited = gateway.invite_computer(url, "Studio", "h", then, true, None);
+        let paired = gateway.redeem(&invited.code, "Mac", then, None).unwrap();
+        assert!(
+            gateway
+                .paired(SystemTime::now())
+                .contains(&paired.device_id)
+        );
+        let ended = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            unpaired(&gateway, &paired.device_id),
+        );
+        assert!(ended.await.is_ok(), "the tunnel outlived its pairing");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// COMPUTERS-26: the query's port is one `port` of digits; anything else is a bad port.
     #[test]
