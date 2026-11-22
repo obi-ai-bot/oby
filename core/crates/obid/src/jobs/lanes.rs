@@ -114,9 +114,9 @@ impl Jobs {
     /// answer to the agent's question, which is the owner's alone (#858), so refused while one
     /// waits. `foreign`: why they aren't on obid's allowlist (crate::secretspec), which marks the
     /// job; `None` only when the conversation that wrote them read nothing that isn't. `unproxied`:
-    /// that conversation laid an unproxied version (LANE-3a), so the job that hears them, the
-    /// follow-up they go to instead too, is LANE-3a's first ([`Self::kept_unproxied`]), or none
-    /// hears them.
+    /// that conversation laid an unproxied version (LANE-3a). Both marks go with the words: the
+    /// job that hears them, the follow-up they go to instead too, has them in its file first
+    /// ([`Self::kept_relayed`]), or none hears them, and a follow-up they start has both.
     pub fn relay(
         self: &Arc<Self>,
         id: &str,
@@ -125,12 +125,35 @@ impl Jobs {
         foreign: Option<String>,
         unproxied: bool,
     ) -> Option<Result<Job, Refused>> {
-        if let Some(why) = foreign
+        if let Some(why) = &foreign
             && self.get(id).is_some_and(|job| job.obi.is_none())
         {
-            self.mark(id, why, false);
+            self.mark(id, why.clone(), false);
         }
-        self.message_as(id, text, source, &[], false, unproxied)
+        let relayed = (foreign.as_deref(), unproxied);
+        self.message_as(id, text, source, &[], false, relayed)
+    }
+
+    /// Job `id` hears a relay's words ([`Self::relay`]): `relayed` is their foreign reason, which
+    /// marks it ([`Self::mark`]), and whether their conversation laid an unproxied version
+    /// ([`Self::kept_unproxied`]), each in its file before the words go, or they don't.
+    pub(super) fn kept_relayed(
+        &self,
+        id: &str,
+        (foreign, unproxied): (Option<&str>, bool),
+    ) -> Result<(), String> {
+        if unproxied {
+            self.kept_unproxied(id)?;
+        }
+        let Some(why) = foreign else { return Ok(()) };
+        self.mark(id, why.to_owned(), false);
+        if self.get(id).is_some_and(|job| job.foreign.is_some()) && self.unkept(id).is_none() {
+            return Ok(());
+        }
+        let e = self.unkept(id).unwrap_or_else(|| "the job is gone".into());
+        Err(format!(
+            "obid couldn't save that its check gets none of the owner's secrets ({e})"
+        ))
     }
 
     /// Job `id` hears words from a conversation that laid an unproxied version (LANE-3a): its check
@@ -570,6 +593,15 @@ fn wild(pattern: &str, name: &str) -> bool {
 /// run on a ChatGPT login, which reaches OpenAI only through obid's relay.
 pub(super) fn launches_own(job: &Job, tool: Tool, account: &crate::config::Account) -> bool {
     Jobs::own_lane(job, tool) && !Jobs::relayed(tool, account)
+}
+
+/// Why a follow-up the words start is someone else's code (crate::secretspec): a relay's foreign
+/// reason ([`Jobs::relay`], LANE-3a), else files the owner attached, which may hold anyone's.
+pub(super) fn follow_up_foreign(relayed: Option<&str>, attachments: &[String]) -> Option<String> {
+    relayed.map(str::to_owned).or_else(|| {
+        (!attachments.is_empty())
+            .then(|| "files the owner attached, which may hold anyone's words".into())
+    })
 }
 
 /// What an own run of `tool` on `account` gets over a boxed run's environment: Claude Code's
@@ -1976,5 +2008,115 @@ mod tests {
         assert!(kept("b").ran_unproxied);
         assert_eq!(notes(&jobs), ["Use SQLite"]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ended Cursor job `a` and its follow-up `b` (`b_ended`, or queued) in obid's jobs on a home
+    /// in `root`, where a follow-up can be made but no run starts.
+    fn a_chain(root: &Path, b_ended: bool) -> Arc<Jobs> {
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        let login = root
+            .join("account")
+            .join(super::super::logins::cursor_login_file());
+        std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+        std::fs::write(&login, json!({"accessToken": "t"}).to_string()).unwrap();
+        for (id, of, ended) in [("a", None, true), ("b", Some("a"), b_ended)] {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "cursor".into(),
+                "a".into(),
+            );
+            job.follow_up_of = of.map(Into::into);
+            if ended {
+                job.status = Status::Done;
+            }
+            let file = home.join(format!("jobs/{id}.json"));
+            std::fs::write(file, serde_json::to_vec(&job).unwrap()).unwrap();
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://127.0.0.1:9/o/r.git"}],
+                "agents": {"cursor": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "a", "name": "A", "configDir": root.join("account")}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        jobs.shutting_down
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        jobs
+    }
+
+    /// Job `id` as its file holds it.
+    fn kept_job(root: &Path, id: &str) -> Job {
+        let file = root.join(format!("home/jobs/{id}.json"));
+        serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()
+    }
+
+    /// The follow-up a relay made of `of`.
+    fn made_of(jobs: &Jobs, of: &str) -> Job {
+        let state = jobs.lock();
+        let made = state
+            .jobs
+            .values()
+            .find(|j| j.follow_up_of.as_deref() == Some(of));
+        made.cloned().expect("a follow-up")
+    }
+
+    /// LANE-3a: the brain read job `a` at work with a foreign read behind its words, but `a` ended
+    /// first: running follow-up `b` that hears them instead is marked in its file before it hears
+    /// them, and hears nothing when that can't be saved; with `b` ended too, the follow-up the
+    /// words start carries the relay's reason, and `b` gets no new mark.
+    #[test]
+    fn lane_3a_a_relay_redirected_to_a_follow_up_carries_the_foreign_mark() {
+        let root = std::env::temp_dir().join(format!("obid-lane-3a-{}", uuid::Uuid::new_v4()));
+        let jobs = a_chain(&root, false);
+        let why = || Some("the inbox".to_owned());
+        let notes = |jobs: &Jobs| jobs.get("b").unwrap().notes.unwrap_or_default();
+        let told = jobs.relay("a", "Use SQLite", Source::Owner, why(), false);
+        assert!(matches!(told, Some(Ok(_))), "{told:?}");
+        assert_eq!(kept_job(&root, "b").foreign.as_deref(), Some("the inbox"));
+        assert_eq!(notes(&jobs), ["Use SQLite"]);
+
+        jobs.update("b", |j| (j.foreign, j.notes) = (None, None));
+        let file = root.join("home/jobs/b.json");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(file.join("full")).unwrap();
+        let refused = jobs.relay("a", "Use SQLite", Source::Owner, why(), false);
+        assert!(matches!(refused, Some(Err(_))), "{refused:?}");
+        assert!(notes(&jobs).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+
+        let root = std::env::temp_dir().join(format!("obid-lane-3a-{}", uuid::Uuid::new_v4()));
+        let jobs = a_chain(&root, true);
+        let made = jobs.relay("a", "Use SQLite", Source::Owner, why(), false);
+        assert!(matches!(made, Some(Ok(_))), "{made:?}");
+        let next = made_of(&jobs, "b");
+        assert_eq!(
+            kept_job(&root, &next.id).foreign.as_deref(),
+            Some("the inbox")
+        );
+        assert_eq!(kept_job(&root, "b").foreign, None);
+        assert_eq!(jobs.get("b").unwrap().foreign, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANE-3a: a follow-up a relay from a conversation that laid an unproxied version starts is
+    /// LANE-3a's in its file, though no job in its chain was; one from a relay without it isn't.
+    #[test]
+    fn lane_3a_a_new_follow_up_takes_the_relays_unproxied_flag() {
+        for unproxied in [true, false] {
+            let root = std::env::temp_dir().join(format!("obid-lane-3a-{}", uuid::Uuid::new_v4()));
+            let jobs = a_chain(&root, true);
+            let made = jobs.relay("a", "Use SQLite", Source::Owner, None, unproxied);
+            assert!(matches!(made, Some(Ok(_))), "{made:?}");
+            let next = made_of(&jobs, "b");
+            assert_eq!(kept_job(&root, &next.id).ran_unproxied, unproxied);
+            assert!(!kept_job(&root, "b").ran_unproxied);
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }

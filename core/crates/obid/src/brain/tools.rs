@@ -166,7 +166,7 @@ pub(crate) fn table() -> Vec<Tool> {
         Tool { name: "oby_artifact", server: Server::Conversation, confirm_unless_owners_word: false, owner_only: false, marks_on_result: Nothing, read_only: false, does: Does::Conversation(|shared, session, args| Box::pin(artifact(shared, session, args)), "Publishes a file or folder of your room as an artifact the owner's apps show (a page, a doc, an image, a PDF, a canvas), or a new version of one this conversation made. HTML runs with no network. Answers its id and version.",
          json!({"type": "object", "properties": {
              "title": {"type": "string", "description": "One line, 1 to 100 characters."},
-             "path": {"type": "string", "description": "A file or folder in your room, relative to it: a folder with index.html, a .html, .md, image or .pdf file, or a folder with canvas.json."},
+             "path": {"type": "string", "description": "Relative to your room: a folder with an index.html, App.tsx or App.jsx, or canvas.json; or a .html, .tsx, .jsx, .md, image or .pdf file."},
              "kind": {"type": "string", "enum": ["html", "markdown", "image", "pdf", "canvas"], "description": "Left out: from the file or folder."},
              "artifact": {"type": "string", "description": "An artifact's id to publish a new version of it."}},
              "required": ["title", "path"]})) },
@@ -2641,6 +2641,25 @@ fn glob_regex(glob: &str) -> Result<regex::Regex, String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// ARTIFACTS-26: `oby_artifact` tells agents a React page needs only its App.tsx or App.jsx,
+    /// in a folder with no index.html or as one .tsx or .jsx file, as `check_kind` takes it.
+    #[test]
+    fn artifacts_26_oby_artifact_tells_agents_app_tsx_is_enough() {
+        let listed = super::list(false);
+        let artifact = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "oby_artifact")
+            .unwrap();
+        let path = artifact["inputSchema"]["properties"]["path"]["description"]
+            .as_str()
+            .unwrap();
+        for named in ["index.html", "App.tsx", "App.jsx", ".tsx"] {
+            assert!(path.contains(named), "{named}: {path}");
+        }
+    }
 
     /// RECOVERY-18: words `oby_tell_job` relays from a turn no app of the owner's signed are the
     /// API's, never the owner's own; a signed turn's, and an untrusted one's, keep their source.
