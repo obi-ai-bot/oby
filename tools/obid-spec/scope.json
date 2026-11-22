@@ -1372,7 +1372,8 @@
         "/v1/computers",
         "/v1/devices",
         "/v1/notifications",
-        "/v1/pairing"
+        "/v1/pairing",
+        "/v1/preview"
       ],
       "contracts": {
         "phone-pairing.md": {
@@ -1427,12 +1428,15 @@
           "obid": [
             "COMPUTERS-14",
             "COMPUTERS-16",
-            "COMPUTERS-17..25"
+            "COMPUTERS-17..25",
+            "COMPUTERS-26",
+            "COMPUTERS-28"
           ],
           "elsewhere": {
             "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
             "COMPUTERS-15": "obid's unit tests (computers_15_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
-            "COMPUTERS-17..18": "proposed: proven by the lab's lab-remote workflows (LAB-REMOTE-n) until obid's side is ported, then by its tests in core/crates/obid (docs/contracts/remote.md, Status)."
+            "COMPUTERS-17..18": "proposed: proven by the lab's lab-remote workflows (LAB-REMOTE-n) until obid's side is ported, then by its tests in core/crates/obid (docs/contracts/remote.md, Status).",
+            "COMPUTERS-27": "a proxy client through the door, which no workflow step has: core/crates/obid/tests/remote.rs `computers_27_…`"
           }
         }
       }
