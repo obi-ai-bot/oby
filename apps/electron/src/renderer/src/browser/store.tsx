@@ -113,7 +113,8 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
           setUi({ gaveBack: true });
         },
         // the password or code goes to main, which fills it on your click and keeps nothing (BROWSERAPP-12)
-        secret: async (t, field, value, ask) => { setUi({ card: null, typed: 0 }); const at = await conn.current?.fill(t, field, value, ask); if (at === true) setUi({ filled: { tab: t, field, length: value.length } }); },
+        // the card and its strip stay until main has filled, so board 8's strip shows the whole fill
+        secret: async (t, field, value, ask) => { const at = await conn.current?.fill(t, field, value, ask); setUi(at === true ? { card: null, typed: 0, filled: { tab: t, field, length: value.length } } : { card: null, typed: 0 }); },
         answer: (a, choice) => conn.current?.answer(a, choice) ?? Promise.resolve(),
         saveCopy: (d) => conn.current?.saveCopy(d) ?? Promise.resolve(),
         reveal: async (d) => { const name = latest.current.downloads.find((x) => x.id === d)?.savedAs; if (name) await window.app?.browser?.reveal(name); },
