@@ -50,6 +50,40 @@ export const thumbAsk: Decoder<{ id: string; version: number }> = (v) => {
   return { value: { id, version: version as number } };
 };
 
+/** The host page's status (artifacts/host.ts, ARTIFACTSAPP-23): drawn; the page's first error, 1 to
+ * 4,000 characters, and at most ten more lines of at most 4,000; or a timeout, which anything else
+ * is too. No other key: what the frame posts is the artifact's own, so it only times the view and the
+ * picture and is shown as text. */
+export type Status = { drawn: true } | { error: string; console: string[] } | { timeout: true };
+const line = (s: unknown): s is string => typeof s === 'string' && s.length <= 4_000;
+export function previewStatus(v: unknown): Status {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return { timeout: true };
+  const s = v as Record<string, unknown>;
+  const keys = Object.keys(s).sort().join();
+  if (keys === 'drawn' && s.drawn === true) return { drawn: true };
+  if (keys === 'console,error' && line(s.error) && s.error.length > 0 && Array.isArray(s.console) && s.console.length <= 10 && s.console.every(line)) return { error: s.error, console: [...s.console] };
+  return { timeout: true };
+}
+
+/** What the pane says broke (ARTIFACTSAPP-24): the page's error and its later lines, then each host it
+ * asked for that the session refused, by its host alone (never its path or query); none for neither. */
+export function pageError(status: Status, refused: string[]): string | undefined {
+  const hosts = new Set<string>();
+  for (const url of refused) { try { const { host } = new URL(url); if (host) hosts.add(host); } catch { /* no host */ } }
+  const lines = [...('error' in status ? [status.error, ...status.console] : []), ...[...hosts].map((h) => `The page asked for ${h}: previews have no network.`)];
+  return lines.length ? lines.join('\n') : undefined;
+}
+
+/** Whether a picture's bitmap is all one colour, by a coarse sample (about 1,000 pixels spread over it). */
+export function oneColour(bitmap: Uint8Array): boolean {
+  const pixels = Math.floor(bitmap.length / 4);
+  const step = Math.max(1, Math.floor(pixels / 1_000));
+  for (let i = step; i < pixels; i += step) {
+    for (let b = 0; b < 4; b++) if (bitmap[i * 4 + b] !== bitmap[b]) return false;
+  }
+  return true;
+}
+
 /** Whether the preview's session lets a request go: its host page, or the relay on its port. */
 export function allowed(url: string, relayPort: number, hostPage: string, devOrigin?: string): boolean {
   let u: URL;

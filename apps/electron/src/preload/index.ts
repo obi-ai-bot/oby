@@ -104,7 +104,7 @@ contextBridge.exposeInMainWorld('app', {
   // an artifact's version shown by Sandpack over the page's box for it, in main's view of its own
   // (main/artifactPreview.ts, ARTIFACTSAPP-1); null hides it. Only the id, the version and the box go
   artifactPreview: (ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number }; edits?: Record<string, string> } | null) =>
-    ipcRenderer.invoke('artifact-preview', ask) as Promise<{ shown: true } | { error: string } | null>,
+    ipcRenderer.invoke('artifact-preview', ask) as Promise<{ shown: true; pageError?: string } | { error: string } | null>,
   // an artifact's version, as a project archive (.zip) or standalone HTML, saved where the owner picks
   // in main's own dialog (main/artifactExport.ts, ARTIFACTSAPP-11): only the id, the version and which go
   artifactExport: (id: string, version: number, as: 'zip' | 'html') =>

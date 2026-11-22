@@ -21,7 +21,7 @@ declare global {
       // an artifact's version saved where the owner picks (main/artifactExport.ts)
       artifactExport?(id: string, version: number, as: 'zip' | 'html'): Promise<{ saved: string } | { cancelled: true } | { error: string } | null>;
       // an artifact's version shown by Sandpack over a box of the page, in main's own view (main/artifactPreview.ts); null hides it
-      artifactPreview?(ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number }; edits?: Record<string, string> } | null): Promise<{ shown: true } | { error: string } | null>;
+      artifactPreview?(ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number }; edits?: Record<string, string> } | null): Promise<{ shown: true; pageError?: string } | { error: string } | null>;
       // the version on view in the preview run again (main/artifactPreview.ts)
       artifactReload?(): Promise<null>;
       // a picture of an artifact's version, a PNG data: URL, taken in main's preview view (main/artifactPreview.ts)

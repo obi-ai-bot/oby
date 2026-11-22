@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import bridge from '../../resources/preview-bridge/bridge.js?raw';
 import relayHtml from '../../resources/sandpack-relay/__csb_relay/index.html?raw';
 import relayJs from '../../resources/sandpack-relay/__csb_relay/__csb_relay.30yfeq026i8arwjbp19vlgcep8e6tgf.js?raw';
 import workerJs from '../../resources/sandpack-relay/__csb_sw.rpfsli6sirrzs1630o3lgzuxwlr2uqc.js?raw';
@@ -24,7 +25,8 @@ import tailwind from '../../resources/sandpack-vendor/tailwindcss-browser/index.
 // partition stop it, instead of being answered from the artifact's files; and every answer the
 // worker makes carries PREVIEW_CSP. It also serves what a React artifact runs on (ARTIFACTSAPP-13),
 // resources/sandpack-vendor/, at `/__csb_vendor/<package>/<file>`: the worker sends a `/__csb…` path
-// of the preview's own origin to the network, so it reaches this server.
+// of the preview's own origin to the network, so it reaches this server. So does the bridge every
+// page gets (ARTIFACTSAPP-22 and 23), resources/preview-bridge/, at `/__csb_oby/bridge.js`.
 
 /** What a preview may load: its own origin only, and what it holds inline (data:, blob:). */
 export const PREVIEW_CSP = [
@@ -83,6 +85,7 @@ function files(): Map<string, File> {
     ['/__csb_vendor/react-dom/client.mjs', { body: reactDomClient, type: js }],
     ['/__csb_vendor/lucide-react/lucide-react.mjs', { body: lucideReact, type: js }],
     ['/__csb_vendor/tailwindcss-browser/index.global.js', { body: tailwind, type: js }],
+    ['/__csb_oby/bridge.js', { body: bridge, type: js }],
   ]);
 }
 

@@ -17,23 +17,20 @@ const VENDORED: Record<string, string> = {
   'react-dom/client': '/__csb_vendor/react-dom/client.mjs',
   'lucide-react': '/__csb_vendor/lucide-react/lucide-react.mjs',
 };
-/** What the frame posts its host page once React's first render, or an error, has drawn (ARTIFACTSAPP-18). */
-export const RENDERED = 'oby:rendered';
 /** An error's words wrap and sit inset from the frame's edge, never cut off at it. */
 const ERROR = 'padding:16px;margin:0;white-space:pre-wrap';
 const WRAP = `pre{${ERROR}}`;
 /** What a stylesheet's import gets: nothing, its file linked from the head instead. */
 const EMPTY = '/__oby_empty.js';
 
-// App's default export mounted in #root, committed at once; any error's own text in a <pre>; either
-// tells the host page one frame later
+// App's default export mounted in #root, committed at once, then the bridge told on a timer, as
+// LlamaCoder's page tells it (ARTIFACTSAPP-22); its errors are the bridge's to say, the page left as
+// it drew. An App.js that won't load shows its own text in a <pre>, marked as the page's error
 const MOUNT = `import { createElement } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-const drawn = () => { requestAnimationFrame(() => { parent.postMessage(${JSON.stringify(RENDERED)}, '*'); }); };
-const shown = (e) => { const pre = document.createElement('pre'); pre.style.cssText = ${JSON.stringify(ERROR)}; pre.textContent = e instanceof Error ? e.message : String(e); document.body.replaceChildren(pre); drawn(); };
-window.onerror = (message, _source, _line, _column, error) => { shown(error ?? message); };
-import('/App.js').then((app) => { flushSync(() => { createRoot(document.getElementById('root'), { onUncaughtError: shown }).render(createElement(app.default)); }); drawn(); }, shown);`;
+window.__obyReact = true;
+import('/App.js').then((app) => { flushSync(() => { createRoot(document.getElementById('root')).render(createElement(app.default)); }); setTimeout(() => { window.__obyRendered?.(); }, 0); }, (e) => { const pre = document.createElement('pre'); pre.style.cssText = ${JSON.stringify(ERROR)}; pre.setAttribute('data-oby-error', ''); pre.textContent = e instanceof Error ? e.message : String(e); document.body.replaceChildren(pre); window.__obyRendered?.(); });`;
 
 /** The files the preview shows for a React artifact's version, every path from `/`. */
 export function reactShown(v: Version): Shown {
@@ -53,7 +50,7 @@ export function reactShown(v: Version): Shown {
     try {
       shown[js] = { code: transform(text(f), { transforms: TRANSFORMS[ext.toLowerCase()], jsxRuntime: 'automatic', production: true, filePath: p }).code };
     } catch (e) {
-      return { '/index.html': { code: page(v.title, WRAP, `<pre>${escaped(e instanceof Error ? e.message : String(e))}</pre>`) } };
+      return { '/index.html': { code: page(v.title, WRAP, `<pre data-oby-error>${escaped(e instanceof Error ? e.message : String(e))}</pre>`) } };
     }
     imports[`/${p}`] = js;
     imports[`/${base}`] = js;

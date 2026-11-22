@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// docs/contracts/artifacts-app.md, ARTIFACTSAPP-18: a card's picture, taken in main
-// (main/artifactPreview.ts), run for real with Electron's views, obid and the relay stood in for.
-// Each stand-in view says what it was told and what it drew: its picture's pixels are the title of
-// the artifact last shown in it.
+// docs/contracts/artifacts-app.md, ARTIFACTSAPP-18, 24 and 25: a card's picture and the pane's
+// view, in main (main/artifactPreview.ts), run for real with Electron's views, obid and the relay
+// stood in for. Each stand-in view says what it was told and what it drew: its picture's pixels are
+// the title of the artifact last shown in it, its bitmap one colour or two as `captures` says.
 type Handler = (e: unknown, ...args: unknown[]) => unknown;
-type Image = { getSize(): { width: number; height: number }; resize(o: { width: number }): Image; toPNG(): Buffer };
+type Image = { getSize(): { width: number; height: number }; resize(o: { width: number }): Image; toPNG(): Buffer; isEmpty(): boolean; toBitmap(): Buffer };
+type Request = (d: { url: string; webContentsId?: number }, done: (r: { cancel: boolean }) => void) => void;
 const the = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
   views: [] as {
     bounds: unknown; emulation: unknown; zoom: number; scripts: string[]; shown: string; closed: boolean; captured: number;
-    webContents: { executeJavaScript(js: string): Promise<unknown> };
+    moves: { width: number }[]; visible: boolean[]; preferences: Record<string, unknown>;
+    webContents: { id: number; executeJavaScript(js: string): Promise<unknown> };
   }[],
   relays: 0,
   locks: 0,
@@ -19,14 +21,22 @@ const the = vi.hoisted(() => ({
   heldReads: new Map<string, Promise<void>>(),
   heldCaptures: new Map<string, Promise<void>>(),
   drawn: true,
+  // the host page's status (host.ts), once it settles; and what each next capture comes out as
+  status: { drawn: true } as unknown,
+  captures: [] as ('empty' | 'one' | 'two')[],
   size: { width: 1280, height: 370 },
   resized: [] as { width: number }[],
+  // the preview session's onBeforeRequest, as main set it
+  request: null as Request | null,
 }));
 vi.mock('electron', () => {
-  const image = (pixels: string, size: { width: number; height: number }): Image => ({
+  const image = (pixels: string, size: { width: number; height: number }, kind = 'two'): Image => ({
     getSize: () => size,
-    resize: (o) => { the.resized.push(o); return image(pixels, { width: o.width, height: Math.round(size.height * o.width / size.width) }); },
+    resize: (o) => { the.resized.push(o); return image(pixels, { width: o.width, height: Math.round(size.height * o.width / size.width) }, kind); },
     toPNG: () => Buffer.from(pixels),
+    isEmpty: () => kind === 'empty',
+    // a few pixels, all one colour or half and half
+    toBitmap: () => Buffer.from(Array.from({ length: 64 }, (_, i) => (kind === 'two' && i >= 32 ? 255 : 0))),
   });
   class WebContentsView {
     bounds: unknown = null;
@@ -36,37 +46,41 @@ vi.mock('electron', () => {
     shown = '';
     closed = false;
     captured = 0;
+    moves: { width: number }[] = [];
+    visible: boolean[] = [];
+    preferences: Record<string, unknown>;
     webContents = {
+      id: the.views.length + 1,
       setWindowOpenHandler() {}, on() {},
       loadURL: async () => {}, loadFile: async () => {},
       executeJavaScript: (js: string): Promise<unknown> => {
         this.scripts.push(js);
         const shows = /^window\.obyShow\(JSON\.parse\((.*)\)\)$/.exec(js);
         if (shows) this.shown = (JSON.parse(JSON.parse(shows[1])) as { title: string }).title;
-        if (js === 'window.obyDrawn' && !the.drawn) return new Promise(() => {});
+        if (js === 'window.obyStatus') return the.drawn ? Promise.resolve(the.status) : new Promise(() => {});
         return Promise.resolve();
       },
       capturePage: async () => {
         this.captured++;
         const pixels = this.shown;
         await the.heldCaptures.get(pixels);
-        return image(pixels, the.size);
+        return image(pixels, the.size, the.captures.shift() ?? 'two');
       },
       enableDeviceEmulation: (p: unknown) => { this.emulation = p; },
       setZoomFactor: (f: number) => { this.zoom = f; },
       close: () => { this.closed = true; },
       isDestroyed: () => this.closed,
     };
-    constructor() { the.views.push(this); }
+    constructor(o: { webPreferences: Record<string, unknown> }) { this.preferences = o.webPreferences; the.views.push(this); }
     setBackgroundColor() {}
-    setVisible() {}
-    setBounds(b: unknown) { this.bounds = b; }
+    setVisible(v: boolean) { this.visible.push(v); }
+    setBounds(b: { width: number }) { this.bounds = b; this.moves.push({ width: b.width }); }
   }
   return {
     app: { isPackaged: false },
     ipcMain: { handle: (name: string, f: Handler) => { the.handlers.set(name, f); } },
     WebContentsView,
-    session: { fromPartition: () => ({ webRequest: { onBeforeRequest: () => { the.locks++; } }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} }) },
+    session: { fromPartition: () => ({ webRequest: { onBeforeRequest: (f: Request) => { the.locks++; the.request = f; } }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {} }) },
   };
 });
 // obid: each artifact titled by its id's last letter, with versions 1 and 2 of one file
@@ -100,12 +114,12 @@ async function main() {
 const pixels = (t: { src?: string; none?: true }) => (t.src ? Buffer.from(t.src.replace('data:image/png;base64,', ''), 'base64').toString() : 'none');
 const hold = (on: Map<string, Promise<void>>, key: string) => { let go!: () => void; on.set(key, new Promise((done) => { go = done; })); return () => { on.delete(key); go(); }; };
 const settled = <T>(p: Promise<T>) => { const s = { done: false, value: undefined as T | undefined }; void p.then((v) => { s.done = true; s.value = v; }); return s; };
-// an answer, the settles after "drawn" (250 ms each) let pass
+// an answer, its work's timers let pass
 const answer = async <T>(p: Promise<T>) => { const s = settled(p); await vi.advanceTimersByTimeAsync(1_000); return s.value as T; };
 
 beforeEach(() => {
   vi.useFakeTimers();
-  Object.assign(the, { views: [], relays: 0, locks: 0, reads: [], drawn: true, size: { width: 1280, height: 370 }, resized: [] });
+  Object.assign(the, { views: [], relays: 0, locks: 0, reads: [], drawn: true, status: { drawn: true }, captures: [], size: { width: 1280, height: 370 }, resized: [], request: null });
   the.heldReads.clear();
   the.heldCaptures.clear();
 });
@@ -227,6 +241,96 @@ describe('ARTIFACTSAPP-18: a card’s picture', () => {
     // the window back: a picture again
     expect(pixels(await answer(m.ask('b')))).toBe('b');
     expect(the.relays).toBe(1);
+  });
+});
+
+describe('ARTIFACTSAPP-24: the page’s error, from main', () => {
+  const preview = (letter: string, version = 1) => the.handlers.get('artifact-preview')!({}, { id: id(letter), version, bounds: { x: 0, y: 0, width: 400, height: 300 } }) as Promise<{ shown?: true; pageError?: string; error?: string }>;
+  const refuse = (url: string, webContentsId?: number) => the.request!({ url, webContentsId }, () => {});
+
+  it('artifactsapp_24_main_answers_the_pages_error_and_refused_hosts', async () => {
+    const m = await main();
+    // the picture's view first, so its own refusal can come during the pane's show
+    expect(pixels(await answer(m.ask('b')))).toBe('b');
+    const thumb = the.views[0];
+    expect(thumb.preferences.backgroundThrottling).toBe(false);
+    refuse('https://before.example.com/a.js', 99);
+    // the page's status held back: the pane's view shows only once it settles
+    let settle!: (s: unknown) => void;
+    the.status = new Promise((done) => { settle = done; });
+    const a = settled(preview('a'));
+    await vi.advanceTimersByTimeAsync(100);
+    const pane = the.views[1];
+    expect('backgroundThrottling' in pane.preferences).toBe(false);
+    expect(pane.visible).not.toContain(true);
+    refuse('https://cdn.example.com/x.js?k=1', pane.webContents.id);
+    refuse('https://cdn.example.com/y.css', pane.webContents.id);
+    refuse('https://fonts.example.org/f.woff2#x', pane.webContents.id);
+    refuse('not a url', pane.webContents.id);
+    refuse('https://thumb.example.com/t.png', thumb.webContents.id);
+    settle({ error: 'boom', console: ['and then'] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pane.visible.at(-1)).toBe(true);
+    expect(a.value).toEqual({ shown: true, pageError: 'boom\nand then\nThe page asked for cdn.example.com: previews have no network.\nThe page asked for fonts.example.org: previews have no network.' });
+    expect(a.value!.pageError).not.toMatch(/x\.js|k=1|thumb|before/);
+
+    // a status of any other shape is a timeout: no pageError
+    for (const [letter, status] of [['c', { error: 'boom', console: [], more: 1 }], ['d', { error: 'x'.repeat(4_001), console: [] }], ['e', { error: 'boom', console: Array.from({ length: 11 }, () => 'c') }], ['f', { error: '', console: [] }], ['9', 'boom']] as const) {
+      the.status = status;
+      expect(await answer(preview(letter)), letter).toEqual({ shown: true });
+    }
+    // drawn, and nothing refused: none either
+    the.status = { drawn: true };
+    expect(await answer(preview('a', 2))).toEqual({ shown: true });
+    // one that never settles: shown at main's own 4 s
+    the.drawn = false;
+    const h = settled(preview('8'));
+    await vi.advanceTimersByTimeAsync(3_900);
+    expect(h.done).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.value).toEqual({ shown: true });
+    expect(pane.visible.at(-1)).toBe(true);
+  });
+});
+
+describe('ARTIFACTSAPP-25: a blank picture taken again', () => {
+  it('artifactsapp_25_a_blank_capture_is_nudged_and_taken_again_at_most_3_times', async () => {
+    // drawn: the first capture at once, no fixed settle
+    let m = await main();
+    the.captures = ['empty', 'one', 'two'];
+    const a = settled(m.ask('a'));
+    await vi.advanceTimersByTimeAsync(10);
+    const [view] = the.views;
+    expect(view.captured).toBe(1);
+    expect(view.preferences.backgroundThrottling).toBe(false);
+    // an empty capture: nudged a pixel narrower, back 150 ms later, and taken again
+    expect(view.moves.slice(1)).toEqual([{ width: 639 }]);
+    await vi.advanceTimersByTimeAsync(130);
+    expect(view.captured).toBe(1);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(view.captured).toBe(2);
+    // one colour: again; two colours: that one answered
+    expect(view.moves.slice(1)).toEqual([{ width: 639 }, { width: 640 }, { width: 639 }]);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(view.captured).toBe(3);
+    expect(view.moves.slice(1)).toEqual([{ width: 639 }, { width: 640 }, { width: 639 }, { width: 640 }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(view.captured).toBe(3);
+    expect(pixels(a.value!)).toBe('a');
+
+    // blank every time: four captures in all, the last answered
+    the.captures = ['one', 'one', 'one', 'one'];
+    expect(pixels(await answer(m.ask('b')))).toBe('b');
+    expect(view.captured).toBe(3 + 4);
+    // two colours at once: one capture
+    expect(pixels(await answer(m.ask('c')))).toBe('c');
+    expect(view.captured).toBe(3 + 4 + 1);
+
+    // the pane's view is made without it
+    the.views = [];
+    m = await main();
+    await answer(the.handlers.get('artifact-preview')!({}, { id: id('d'), version: 1, bounds: { x: 0, y: 0, width: 10, height: 10 } }) as Promise<unknown>);
+    expect('backgroundThrottling' in the.views[0].preferences).toBe(false);
   });
 });
 
