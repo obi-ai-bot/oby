@@ -407,14 +407,6 @@ impl Service {
                         let from = me.window().downloads_folder(&job).join(&file.name);
                         match me.window().save_copy(&job, &file.name, &to) {
                             Ok(copy) => {
-                                #[cfg(target_os = "macos")]
-                                if let Err(e) = super::quarantine::ensure(&copy, &from) {
-                                    let _ = std::fs::remove_file(&copy);
-                                    tracing::warn!(
-                                        "job {job}: a download wasn't delivered: no quarantine mark: {e}"
-                                    );
-                                    continue;
-                                }
                                 if let Some(n) = copy.file_name() {
                                     name = n.to_string_lossy().into_owned();
                                 }

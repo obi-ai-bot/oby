@@ -2,7 +2,8 @@
 //! (`<home>/browser/downloads/<job>/`, the only one it takes), they are listed for the API, and
 //! Save a copy copies one (never moves it) into the folder it is given, under a name not taken
 //! there: the name is made new there (`O_CREAT|O_EXCL|O_NOFOLLOW`), so nothing in that folder, a
-//! link included, is ever replaced or followed. It owns no state; it writes only the copy.
+//! link included, is ever replaced or followed, and the copy carries macOS's quarantine mark. It
+//! owns no state; it writes only the copy.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -95,6 +96,12 @@ impl WindowDriver {
             let _ = std::fs::remove_file(&dest);
             return Err(failed(e));
         }
+        // The profile file's quarantine mark, or obid's: none set, no copy (BROWSER-34).
+        #[cfg(target_os = "macos")]
+        if let Err(e) = crate::browser::quarantine::ensure(&dest, &from) {
+            let _ = std::fs::remove_file(&dest);
+            return Err(format!("no quarantine mark on {name}: {e}"));
+        }
         Ok(dest)
     }
 }
@@ -138,6 +145,34 @@ mod tests {
         assert!(dir.join("report.pdf").is_file(), "the agent's file stays");
         assert!(d.save_copy("job-a", "../x", &to).is_err());
         assert!(d.save_copy("job-a", "missing.pdf", &to).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// BROWSER-13, 34: Save a copy carries the profile file's quarantine mark onto the copy, as
+    /// delivery does.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn browser_13_save_a_copy_keeps_the_quarantine_mark() {
+        let home = std::env::temp_dir().join(format!("obid-dl-q-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let d = driver(&home);
+        let dir = d.downloads_folder("job-a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("setup.dmg"), b"dmg").unwrap();
+        let mark = "0083;6740a1b2;Chrome;";
+        let set = std::process::Command::new("/usr/bin/xattr")
+            .args(["-w", "com.apple.quarantine", mark])
+            .arg(dir.join("setup.dmg"))
+            .status()
+            .unwrap();
+        assert!(set.success());
+        let to = home.join("person-downloads");
+        std::fs::create_dir_all(&to).unwrap();
+        let copy = d.save_copy("job-a", "setup.dmg", &to).unwrap();
+        assert_eq!(
+            crate::browser::quarantine::read(&copy).as_deref(),
+            Some(mark)
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }
