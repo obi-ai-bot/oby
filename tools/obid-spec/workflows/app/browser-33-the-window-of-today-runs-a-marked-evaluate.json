@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "2",
+  "name": "browser_33_the_window_of_today_runs_a_marked_evaluate: the window as it is runs the agent's own script, which obid sends marked agentCode (BROWSER-33)",
+  "version": "1.0.0",
+  "description": "BROWSER-33: a stand-in Codex job on a scratch obid calls oby_browser_open on the fixture site, then oby_browser_evaluate of document.title. obid sends that evaluate to the real app's main as a cdp command with \"agentCode\": true; main, which doesn't read the key yet, runs it on the webview as before, and the agent gets the page's title.",
+  "trigger": {
+    "manual": {}
+  },
+  "tags": [
+    "browser"
+  ],
+  "steps": [
+    {
+      "id": "obid",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "agent": "fake-harness-jobs",
+        "browser": true
+      }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:app.launch",
+      "inputs": {
+        "obid": "${state.obid}",
+        "size": {
+          "width": 1280,
+          "height": 800
+        },
+        "storage": {
+          "oby.chatPanelOpen": "0"
+        }
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}"
+      }
+    },
+    {
+      "id": "open",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_open",
+        "args": {
+          "url": "${state.site.url}/"
+        },
+        "within": 60,
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.ok": true
+          }
+        }
+      }
+    },
+    {
+      "id": "evaluate",
+      "use": "runtime.rust:browser-mcp",
+      "inputs": {
+        "obid": "${state.obid}",
+        "token": "${state.job.token}",
+        "tool": "oby_browser_evaluate",
+        "args": {
+          "expression": "document.title"
+        },
+        "expect": {
+          "paths": {
+            "isError": false,
+            "structured.result.outside.data": "Sign in to the lab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-33"
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "use": "runtime.rust:browser-job",
+      "inputs": {
+        "obid": "${state.obid}",
+        "job": "${state.job.job}",
+        "end": true
+      }
+    },
+    {
+      "id": "close",
+      "use": "runtime.rust:app.close",
+      "inputs": {
+        "app": "${state.app}"
+      }
+    }
+  ]
+}

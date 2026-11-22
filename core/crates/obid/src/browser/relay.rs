@@ -248,6 +248,30 @@ impl Relay {
         params: Value,
         within: Duration,
     ) -> Result<Value, RelayError> {
+        self.cdp_call(tab, method, params, within, false).await
+    }
+
+    /// [`Relay::cdp`] for the agent's own script (`oby_browser_evaluate`'s expression, a
+    /// `javascript:` URL it opens): its frame goes out marked `agentCode`, so the window may
+    /// refuse it (BROWSER-33).
+    pub async fn cdp_agent(
+        &self,
+        tab: &str,
+        method: &str,
+        params: Value,
+        within: Duration,
+    ) -> Result<Value, RelayError> {
+        self.cdp_call(tab, method, params, within, true).await
+    }
+
+    async fn cdp_call(
+        &self,
+        tab: &str,
+        method: &str,
+        params: Value,
+        within: Duration,
+        agent_code: bool,
+    ) -> Result<Value, RelayError> {
         if !self.window() {
             return Err(RelayError::NoWindow);
         }
@@ -273,6 +297,7 @@ impl Relay {
             thread_id: job,
             tab_id: tab.into(),
             message,
+            agent_code,
         });
         match tokio::time::timeout(within, rx).await {
             Ok(Ok(answer)) => answer,
@@ -510,6 +535,7 @@ mod tests {
             thread_id,
             tab_id,
             message,
+            ..
         } = rx.recv().await.unwrap()
         else {
             panic!("a cdp command");
@@ -712,6 +738,55 @@ mod tests {
         let (mut after, _after) = relay.follow();
         relay.expect("j1", "tab-2").unwrap();
         assert!(after.try_recv().is_err(), "no door once the job ended");
+    }
+
+    /// BROWSER-33: the agent's own script goes out marked `"agentCode": true`; obid's own frames
+    /// carry no `agentCode` key, byte for byte as before.
+    #[tokio::test]
+    async fn browser_33_the_agents_own_script_is_marked_agent_code_and_obids_are_not() {
+        let relay = Arc::new(Relay::new());
+        let (mut rx, _following) = relay.follow();
+        relay.expect("j1", "tab-1").unwrap();
+        attached(&relay, "j1", "tab-1");
+        let mut lines = Vec::new();
+        for agent in [true, false] {
+            let call = {
+                let r = relay.clone();
+                tokio::spawn(async move {
+                    let params = json!({"expression": "1+1"});
+                    if agent {
+                        r.cdp_agent("tab-1", "Runtime.evaluate", params, SOON).await
+                    } else {
+                        r.cdp("tab-1", "Runtime.evaluate", params, SOON).await
+                    }
+                })
+            };
+            let command = rx.recv().await.unwrap();
+            let line = serde_json::to_string(&command).unwrap();
+            let RelayCommand::Cdp { message, .. } = command else {
+                panic!("a cdp command");
+            };
+            let id = serde_json::from_str::<Value>(&message).unwrap()["id"].clone();
+            relay.receive(vec![RelayEvent::Cdp {
+                thread_id: "j1".into(),
+                tab_id: "tab-1".into(),
+                message: json!({"id": id, "result": {}}).to_string(),
+            }]);
+            assert_eq!(call.await.unwrap(), Ok(json!({})));
+            lines.push(line);
+        }
+        assert!(lines[0].contains(r#""agentCode":true"#), "{}", lines[0]);
+        for line in &lines {
+            let v: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(v["type"], "cdp");
+            assert_eq!(
+                (v["threadId"].as_str(), v["tabId"].as_str()),
+                (Some("j1"), Some("tab-1"))
+            );
+            assert!(v["message"].is_string());
+        }
+        let obids: Value = serde_json::from_str(&lines[1]).unwrap();
+        assert!(obids.get("agentCode").is_none(), "{}", lines[1]);
     }
 
     #[test]

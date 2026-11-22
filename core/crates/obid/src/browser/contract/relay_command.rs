@@ -24,6 +24,11 @@ pub enum RelayCommand {
         thread_id: String,
         tab_id: String,
         message: String,
+        /// The frame is the agent's own script (`oby_browser_evaluate`'s expression, a
+        /// `javascript:` URL it opens), sent as `true`; a window may refuse it. Left out for
+        /// obid's own frames (BROWSER-33).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        agent_code: bool,
     },
     /// obid is done with the tab: the window drops its relay (and, for a box tab, the partition's
     /// storage once it was the job's last).

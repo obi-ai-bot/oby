@@ -95,6 +95,12 @@ fn key_of(key: &str) -> (String, String, i64) {
     (key.to_string(), code, upper as i64)
 }
 
+/// Whether a URL is a `javascript:` one, read as the browser reads it (WHATWG URL,
+/// `reqwest::Url`: ` JavaScript:` and `java\tscript:` too).
+fn runs_script(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| u.scheme() == "javascript")
+}
+
 impl WindowDriver {
     /// One CDP command for `tab`'s page, within what is left of `until`.
     async fn send(&self, tab: &str, method: &str, params: Value, until: Until) -> Step<Value> {
@@ -197,14 +203,26 @@ impl WindowDriver {
 
     /// `expression`'s value in the page (awaited, by value), or the page's exception.
     async fn eval_value(&self, tab: &str, expression: &str, until: Until) -> Step<Value> {
-        let r = self
-            .send(
-                tab,
-                "Runtime.evaluate",
-                json!({"expression": expression, "returnByValue": true, "awaitPromise": true}),
-                until,
-            )
-            .await?;
+        self.eval_with(tab, expression, false, until).await
+    }
+
+    /// [`Self::eval_value`], its frame marked `agentCode` when it is the agent's own script
+    /// (BROWSER-33).
+    async fn eval_with(
+        &self,
+        tab: &str,
+        expression: &str,
+        agent_code: bool,
+        until: Until,
+    ) -> Step<Value> {
+        let params = json!({"expression": expression, "returnByValue": true, "awaitPromise": true});
+        let r = if agent_code {
+            self.relay
+                .cdp_agent(tab, "Runtime.evaluate", params, until.left())
+                .await?
+        } else {
+            self.send(tab, "Runtime.evaluate", params, until).await?
+        };
         if let Some(e) = r.get("exceptionDetails") {
             let text = e["exception"]["description"]
                 .as_str()
@@ -219,9 +237,15 @@ impl WindowDriver {
     async fn navigate(&self, job: &str, tab: &str, url: &str, until: Until) -> Step<Value> {
         self.enable(job, tab, until).await?;
         let mut events = self.relay.page_events();
-        let r = self
-            .send(tab, "Page.navigate", json!({"url": url}), until)
-            .await?;
+        let params = json!({"url": url});
+        // A `javascript:` URL runs the agent's own script in the page: marked (BROWSER-33).
+        let r = if runs_script(url) {
+            self.relay
+                .cdp_agent(tab, "Page.navigate", params, until.left())
+                .await?
+        } else {
+            self.send(tab, "Page.navigate", params, until).await?
+        };
         if let Some(e) = r["errorText"].as_str().filter(|e| !e.is_empty()) {
             return Err(Stop::Failed(format!("{url}: {e}")));
         }
@@ -474,7 +498,7 @@ impl WindowDriver {
             }
             ["eval", expression] => {
                 let tab = current()?;
-                let result = self.eval_value(&tab, expression, until).await?;
+                let result = self.eval_with(&tab, expression, true, until).await?;
                 Ok(json!({"result": result}))
             }
             ["wait", rest @ ..] => {
@@ -805,5 +829,114 @@ impl WindowDriver {
             Err(Stop::Failed(e)) => Err(e),
             Err(Stop::TimedOut) => Err("The page didn't answer in time.".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::browser::contract::{RelayCommand, RelayEvent};
+    use crate::browser::relay::Relay;
+
+    /// Answers the next `cdp` command with `result`: its method and whether it was marked.
+    async fn answer(
+        relay: &Relay,
+        rx: &mut tokio::sync::broadcast::Receiver<RelayCommand>,
+        result: Value,
+    ) -> (String, bool) {
+        let RelayCommand::Cdp {
+            message,
+            agent_code,
+            ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("a cdp command");
+        };
+        let frame: Value = serde_json::from_str(&message).unwrap();
+        relay.receive(vec![RelayEvent::Cdp {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+            message: json!({"id": frame["id"], "result": result}).to_string(),
+        }]);
+        (frame["method"].as_str().unwrap().to_string(), agent_code)
+    }
+
+    /// BROWSER-33: only the agent's own script (`eval`, a `javascript:` URL it opens) goes out
+    /// marked; obid's own reads don't.
+    #[tokio::test]
+    async fn browser_33_only_evaluate_sends_agent_code() {
+        let relay = Arc::new(Relay::new());
+        let (mut rx, _following) = relay.follow();
+        let home = std::env::temp_dir().join(format!("obid-page-{}", std::process::id()));
+        let d = WindowDriver::new(
+            relay.clone(),
+            Arc::new(Mutex::new(crate::browser::engine::Browsers::new())),
+            &home,
+        );
+        relay.expect("j1", "tab-1").unwrap();
+        relay.receive(vec![RelayEvent::Attached {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+        }]);
+        d.set_current("j1", "tab-1");
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let limit = Duration::from_secs(5);
+        let (eval, url, snap) = (
+            words(&["eval", "1+1"]),
+            words(&["get", "url"]),
+            words(&["snapshot"]),
+        );
+
+        let (called, sent) = tokio::join!(
+            d.call("j1", &eval, limit),
+            answer(&relay, &mut rx, json!({"result": {"value": 2}}))
+        );
+        assert_eq!(sent, ("Runtime.evaluate".to_string(), true));
+        assert_eq!(called, Call::Ok(json!({"result": 2})));
+
+        let (_, sent) = tokio::join!(
+            d.call("j1", &url, limit),
+            answer(&relay, &mut rx, json!({"result": {"value": "https://a/"}}))
+        );
+        assert_eq!(sent, ("Runtime.evaluate".to_string(), false));
+
+        let (_, sent) = tokio::join!(
+            d.call("j1", &snap, limit),
+            answer(&relay, &mut rx, json!({"nodes": []}))
+        );
+        assert_eq!(sent, ("Accessibility.getFullAXTree".to_string(), false));
+
+        // A `javascript:` URL the agent opens is its own script too; a page's address isn't.
+        // The first open enables the tab's page (two frames), then navigates and reads the page.
+        let (js, web) = (
+            words(&["open", "javascript:1"]),
+            words(&["open", "https://a/"]),
+        );
+        let (_, sent) = tokio::join!(d.call("j1", &js, limit), async {
+            let mut sent = Vec::new();
+            for _ in 0..4 {
+                sent.push(answer(&relay, &mut rx, json!({})).await);
+            }
+            sent
+        });
+        assert!(
+            sent.contains(&("Page.navigate".to_string(), true)),
+            "{sent:?}"
+        );
+        let (_, sent) = tokio::join!(d.call("j1", &web, limit), async {
+            let mut sent = Vec::new();
+            for _ in 0..2 {
+                sent.push(answer(&relay, &mut rx, json!({})).await);
+            }
+            sent
+        });
+        assert!(
+            sent.contains(&("Page.navigate".to_string(), false)),
+            "{sent:?}"
+        );
+        assert!(runs_script(" JavaScript:1") && runs_script("java\tscript:1"));
+        assert!(!runs_script("https://a/") && !runs_script("about:blank"));
     }
 }

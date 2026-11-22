@@ -190,6 +190,7 @@ fn samples() -> Vec<Value> {
             thread_id: "j1".into(),
             tab_id: "tab-1".into(),
             message: "{}".into(),
+            agent_code: true,
         })
         .unwrap(),
         serde_json::to_value(RelayCommand::Pointer {
