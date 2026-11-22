@@ -2787,25 +2787,6 @@ impl Jobs {
         self.message_attaching(id, text, source, &[])
     }
 
-    /// [`Self::message`] with words the brain wrote (`message_job`, `oby_tell_job`): never the
-    /// answer to the agent's question, which is the owner's alone (#858), so refused while one
-    /// waits. `foreign`: why they aren't on obid's allowlist (crate::secretspec), which marks the
-    /// job; `None` only when the conversation that wrote them read nothing that isn't.
-    pub fn relay(
-        self: &Arc<Self>,
-        id: &str,
-        text: &str,
-        source: Source,
-        foreign: Option<String>,
-    ) -> Option<Result<Job, Refused>> {
-        if let Some(why) = foreign
-            && self.get(id).is_some_and(|job| job.obi.is_none())
-        {
-            self.mark(id, why, false);
-        }
-        self.message_as(id, text, source, &[], false)
-    }
-
     /// [`Self::message`] with files the owner attached (already checked to be in obid's
     /// attachments folder): they go with the follow-up the words start, and only with one.
     pub fn message_attaching(
@@ -2815,11 +2796,12 @@ impl Jobs {
         source: Source,
         attachments: &[String],
     ) -> Option<Result<Job, Refused>> {
-        self.message_as(id, text, source, attachments, true)
+        self.message_as(id, text, source, attachments, true, false)
     }
 
     /// [`Self::message_attaching`]; `answers` says whether the words may answer the agent's
-    /// question (only the owner's own, as they wrote them, may).
+    /// question (only the owner's own, as they wrote them, may); `unproxied`, that whichever job
+    /// hears them is LANE-3a's first ([`Self::relay`]).
     fn message_as(
         self: &Arc<Self>,
         id: &str,
@@ -2827,6 +2809,7 @@ impl Jobs {
         source: Source,
         attachments: &[String],
         answers: bool,
+        unproxied: bool,
     ) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
         // Files with no words (Sangam's message box sends them alone): the follow-up they start
@@ -2851,6 +2834,9 @@ impl Jobs {
                     .into(),
             )));
         }
+        if unproxied && let Err(why) = self.kept_unproxied(id) {
+            return Some(Err(Refused(why)));
+        }
         // Try again's words, and more after them (oby_continue_job's), pick its session up.
         let follows =
             !job.status.is_active() && !text.starts_with(crate::brain::actions::TRY_AGAIN);
@@ -2866,7 +2852,7 @@ impl Jobs {
                 && let Some(next) = self.following(id)
             {
                 let sent = self
-                    .message_as(&next.id, text, source, attachments, answers)?
+                    .message_as(&next.id, text, source, attachments, answers, unproxied)?
                     .map_err(|why| {
                         Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
                     });
@@ -3200,7 +3186,7 @@ impl Jobs {
             let Some(source) = Source::named(&words.source).filter(|_| !nothing_to_pick_up) else {
                 continue;
             };
-            match self.message_as(id, &words.text, source, &[], true) {
+            match self.message_as(id, &words.text, source, &[], true, false) {
                 Some(Ok(_)) => {}
                 Some(Err(why)) => {
                     self.update(id, |job| {
@@ -3236,7 +3222,7 @@ impl Jobs {
             .get(id)
             .and_then(|j| j.owners.first().map(|w| w.text.clone()))
         {
-            match self.message_as(next, &words, Source::Confirmed, &[], true) {
+            match self.message_as(next, &words, Source::Confirmed, &[], true, false) {
                 // Words that couldn't leave `id` aren't sent again.
                 Some(Ok(_)) if take(&words).is_some() => {}
                 Some(Err(why)) => {
@@ -7390,9 +7376,15 @@ mod tests {
     async fn words_from_a_marked_conversation_mark_the_job() {
         let (jobs, _clone, root) = jobs_with_a_clone("brain-words").await;
         jobs.update("j", |job| job.vetted = true);
-        let _ = jobs.relay("j", "Use SQLite", Source::Owner, None);
+        let _ = jobs.relay("j", "Use SQLite", Source::Owner, None, false);
         assert_eq!(jobs.get("j").unwrap().foreign, None);
-        let _ = jobs.relay("j", "Use SQLite", Source::Owner, Some("the inbox".into()));
+        let _ = jobs.relay(
+            "j",
+            "Use SQLite",
+            Source::Owner,
+            Some("the inbox".into()),
+            false,
+        );
         assert_eq!(jobs.get("j").unwrap().foreign.as_deref(), Some("the inbox"));
         jobs.update("j", |job| {
             job.foreign = None;
@@ -13507,7 +13499,7 @@ mod tests {
         };
         let id = waiting();
         for source in [Source::Owner, Source::Confirmed] {
-            let Some(Err(Refused(why))) = jobs.relay("j", "SQLite", source, None) else {
+            let Some(Err(Refused(why))) = jobs.relay("j", "SQLite", source, None, false) else {
                 panic!("the brain answered the question");
             };
             assert_eq!(why, QUESTION_IS_THE_OWNERS);
@@ -13599,7 +13591,7 @@ mod tests {
             let Ruling::Ask(answered) = jobs.rule_on("j", "Bash", &input, &worktree) else {
                 panic!("nothing asked");
             };
-            assert!(jobs.relay("j", words, source, None).unwrap().is_ok());
+            assert!(jobs.relay("j", words, source, None, false).unwrap().is_ok());
             let Answer::Deny(heard) = answered.await.unwrap() else {
                 panic!("the agent heard no refusal");
             };

@@ -823,11 +823,12 @@ fn message_job(
         };
     }
     // Its agent's question is the owner's to answer (#858): the brain's words never are.
-    if let Err(e) = super::open_artifact::heard_unproxied(shared, conversation, &job.id) {
-        return Outcome::Failed(format!("Couldn't tell {name}: {e}"));
-    }
     let foreign = super::written_after(shared, conversation);
-    match shared.jobs.relay(&job.id, &words, source, foreign) {
+    let unproxied = super::open_artifact::laid_unproxied(shared, conversation);
+    match shared
+        .jobs
+        .relay(&job.id, &words, source, foreign, unproxied)
+    {
         Some(Ok(_)) => Outcome::Done(format!("Told {name} what you said.")),
         Some(Err(refused)) => Outcome::Failed(format!("Couldn't tell {name}: {}", refused.0)),
         None => Outcome::Failed("That task isn't here any more.".into()),
@@ -894,13 +895,12 @@ pub(super) fn already_on_it(
     conversation: &str,
 ) -> Outcome {
     let (name, follow) = (job.short_title(), next.short_title());
-    if let Err(e) = super::open_artifact::heard_unproxied(shared, conversation, &next.id) {
-        return Outcome::Failed(format!(
-            "Couldn't tell {follow}, which is following up {name}: {e}"
-        ));
-    }
     let foreign = super::written_after(shared, conversation);
-    match shared.jobs.relay(&next.id, words, source, foreign) {
+    let unproxied = super::open_artifact::laid_unproxied(shared, conversation);
+    match shared
+        .jobs
+        .relay(&next.id, words, source, foreign, unproxied)
+    {
         Some(Ok(heard)) => Outcome::Started(
             format!("Already on it in {follow}, the follow-up of {name}: I told it what you said."),
             heard.to_json(),
