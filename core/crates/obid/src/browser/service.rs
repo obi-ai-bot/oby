@@ -424,6 +424,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// BROWSER-34: a link already in Downloads under the download's name, pointing at nothing, is
+    /// never followed: the delivered file takes the next free name inside Downloads, and nothing is
+    /// written where the link points.
+    #[tokio::test(start_paused = true)]
+    async fn browser_34_a_dangling_link_in_downloads_is_never_followed() {
+        let (service, home) = scratch("browser-34-link", &[("report.pdf", b"profile")]);
+        let downloads = home.join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        let elsewhere = home.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let payload = elsewhere.join("payload");
+        std::os::unix::fs::symlink(&payload, downloads.join("report.pdf")).unwrap();
+        person_watch(&service, "report.pdf").await;
+        assert!(!payload.exists(), "nothing written through the link");
+        assert_eq!(
+            std::fs::read_link(downloads.join("report.pdf")).unwrap(),
+            payload,
+            "the link is left as it was"
+        );
+        assert_eq!(
+            std::fs::read(downloads.join("report (1).pdf")).unwrap(),
+            b"profile"
+        );
+        let listed = serde_json::to_value(service.api(|a| a.downloads())).unwrap();
+        assert_eq!(listed["downloads"][0]["name"], "report (1).pdf", "{listed}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// BROWSER-34: a delivered download carries macOS's quarantine mark: the one its profile file
     /// had, or obid's when it had none.
     #[cfg(target_os = "macos")]
