@@ -6078,7 +6078,7 @@ fn standing_rules(job: &Job) -> Option<String> {
     if asks_goal_line(job) {
         lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't. Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left.".into());
     }
-    lines.push("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file (a .tsx or .jsx file is a React page), or one folder with an index.html, or with an App.tsx or App.jsx and no index.html for a React page, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it.".into());
+    lines.push(concat!("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file (a .tsx or .jsx file is a React page), or one folder with an index.html, or with an App.tsx or App.jsx and no index.html for a React page, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it. ", crate::brain::tools::preview_imports!()).into());
     // Claude Code's own background tasks wake it when they end, and obid waits for them
     // (crate::agent); nothing else that's left running when a turn ends does.
     lines.push(if job.agent == Tool::Claude.id() {
@@ -8089,6 +8089,31 @@ mod tests {
     fn tails_cut_at_characters() {
         assert_eq!(tail("abc", 5), "abc");
         assert_eq!(tail("aébc", 3), "bc");
+    }
+
+    /// ARTIFACTS-27: a job's standing rules carry the sentence naming what a preview imports,
+    /// after the artifacts line's own words.
+    #[test]
+    fn artifacts_27_the_job_brief_names_the_previews_imports() {
+        let job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "Build it".into(),
+            "claude".into(),
+            "default".into(),
+        );
+        let rules = standing_rules(&job).unwrap();
+        assert!(
+            rules.contains(crate::brain::tools::preview_imports!()),
+            "{rules}"
+        );
+        assert!(
+            rules.contains(
+                "obid shows each one when the job ends; keep secrets out, or it shows none of it."
+            ),
+            "{rules}"
+        );
     }
 
     #[test]

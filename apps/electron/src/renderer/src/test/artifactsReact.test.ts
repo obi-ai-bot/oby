@@ -136,3 +136,14 @@ it('artifactsapp_14_the_error_text_is_inset', () => {
   expect(/pre\.style\.cssText = "([^"]*)"/.exec(index)![1]).toMatch(inset);
   expect(/<style>(.*?)<\/style>/s.exec(index)![1]).not.toMatch(/pre/);
 });
+
+// ARTIFACTSAPP-21: agents are told what the preview imports (ARTIFACTS-27), in one sentence of
+// obid's; every bare package VENDORED maps is named in it, so the set can't grow without the line
+it('artifactsapp_21_agents_are_told_every_package_the_preview_has', () => {
+  const vendored = /const VENDORED[^=]*= \{([^}]*)\}/.exec(readFileSync(join(app, 'src/renderer/src/artifacts/react.ts'), 'utf8'))![1];
+  const bare = [...vendored.matchAll(/^\s*'?([\w@./-]+)'?:/gm)].map((m) => m[1]).filter((k) => !k.includes('/'));
+  expect(bare).toContain('react');
+  const sentence = /macro_rules! preview_imports \{\s*\(\) => \{\s*"((?:[^"\\]|\\.)*)"/.exec(readFileSync(join(app, '../../core/crates/obid/src/brain/tools.rs'), 'utf8'))?.[1];
+  expect(sentence).toBeTruthy();
+  for (const name of bare) expect(sentence, name).toMatch(new RegExp(`(?<![\\w@/-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w/-])`));
+});

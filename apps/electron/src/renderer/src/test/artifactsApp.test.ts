@@ -276,3 +276,55 @@ describe('ARTIFACTSAPP-3', () => {
     }
   });
 });
+
+describe('ARTIFACTSAPP-21', () => {
+  const VENDOR = '/__csb_vendor/tailwindcss-browser/index.global.js';
+  const BEFORE = '<script>window.tailwind ??= {};</script>';
+  const html = (shown: ReturnType<typeof showable>, p = '/index.html') => shown[p].code as string;
+
+  it('artifactsapp_21_a_pages_tailwind_cdn_tag_gets_the_bundled_tailwind', () => {
+    const cdns = ['https://cdn.tailwindcss.com', 'https://cdn.tailwindcss.com/3.4.17?plugins=forms', 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4', 'https://unpkg.com/@tailwindcss/browser@4.1.0'];
+    for (const cdn of cdns) {
+      for (const [written, src] of [[`<script src="${cdn}"></script>`, `"${VENDOR}"`], [`<script defer src='${cdn}'></script>`, `'${VENDOR}'`], [`<script src=${cdn}></script>`, VENDOR], [`<SCRIPT Defer SRC="${cdn.toUpperCase()}"></SCRIPT>`, `"${VENDOR}"`]]) {
+        const tag = written.replace(/(src=)(["']?)[^"'\s>]+\2/i, `$1${src}`);
+        const shown = showable({ kind: 'html', title: 'page', files: { 'index.html': { text: `<head>${written}</head><main class="p-4">x</main>` }, 'about.HTML': { text: written } } });
+        expect(html(shown), written).toBe(`<head>${BEFORE}${tag}</head><main class="p-4">x</main>`);
+        expect(html(shown, '/about.HTML'), written).toBe(`${BEFORE}${tag}`);
+      }
+    }
+    // left as written: a stylesheet, a link, another CDN, an escaped tag in a <pre>, a comment
+    const tag = '<script src="https://cdn.tailwindcss.com"></script>';
+    const kept = [
+      '<link rel="stylesheet" href="https://cdn.tailwindcss.com/base.css">',
+      '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>',
+      '<script src="https://cdn.tailwindcss.com.example.com/x.js"></script>',
+      '<pre>&lt;script src="https://cdn.tailwindcss.com"&gt;&lt;/script&gt;</pre>',
+      `<!-- ${tag} -->`,
+    ];
+    const page = showable({ kind: 'html', title: 'page', files: { 'index.html': { text: kept.join('\n') }, 'style.css': { text: tag }, 'notes.txt': { text: tag } } });
+    expect(html(page)).toBe(kept.join('\n'));
+    expect(html(page, '/style.css')).toBe(tag);
+    expect(html(page, '/notes.txt')).toBe(tag);
+    // not a page: a React artifact, a document, a canvas and a design are as they were
+    const react = showable({ kind: 'html', title: 'r', files: { 'App.tsx': { text: 'export default function App() { return <main />; }' }, 'extra.html': { text: tag } } });
+    expect(html(react, '/extra.html')).toBe(tag);
+    expect(html(react)).not.toContain(BEFORE);
+    const doc = html(showable({ kind: 'markdown', title: 'd', files: { 'notes.md': { text: `# Notes\n\n${tag}\n` } } }));
+    expect(doc).toContain(tag);
+    expect(doc).not.toContain(BEFORE);
+    for (const kind of ['canvas', 'design']) expect(html(showable({ kind, title: 'c', files: { 'index.html': { text: tag } } })), kind).toBe(tag);
+  });
+
+  it('artifactsapp_21_a_page_without_a_cdn_tag_is_unchanged', () => {
+    const files = {
+      'index.html': { text: '<!doctype html><html><head><script src="./app.js"></script><link rel="stylesheet" href="style.css"></head><body><h1>Hi</h1></body></html>' },
+      'app.js': { text: 'document.title = "x";' },
+      'style.css': { text: 'h1 { color: teal }' },
+      'logo.png': { base64: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff]).toString('base64') },
+    };
+    const shown = showable({ kind: 'html', title: 'page', files });
+    expect(Object.keys(shown).sort()).toEqual(['/app.js', '/index.html', '/logo.png', '/style.css']);
+    for (const p of ['index.html', 'app.js', 'style.css'] as const) expect(shown[`/${p}`].code, p).toBe(files[p].text);
+    expect([...(shown['/logo.png'].code as Uint8Array)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0xff]);
+  });
+});
