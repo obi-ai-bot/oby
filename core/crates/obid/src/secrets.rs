@@ -1177,10 +1177,13 @@ mod tests {
         }
     }
 
+    /// One way to encode a whole text.
+    type Encode = fn(&str) -> String;
+
     /// Property 1: no form `needles_for` makes of either value is left whole, in the plain text
     /// and, with `encoded`, in the whole text encoded each way.
     fn no_form_survives(cases: &[Case], encoded: bool) {
-        let encodings: [(&str, fn(&str) -> String); 5] = [
+        let encodings: [(&str, Encode); 5] = [
             ("plain", |text| text.to_owned()),
             ("base64", |text| b64(text.as_bytes())),
             ("url-safe base64", |text| {
