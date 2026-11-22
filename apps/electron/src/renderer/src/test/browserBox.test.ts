@@ -20,7 +20,7 @@ type FakeSession = {
   asked: (permission: string) => boolean;
   checked: (permission: string) => boolean;
 };
-const the = vi.hoisted(() => ({ sessions: new Map<string, unknown>() }));
+const the = vi.hoisted(() => ({ sessions: new Map<string, unknown>(), guests: new Map<number, unknown>() }));
 function fakeSession(partition: string) {
   const s = {
     partition, requests: [] as Handler[], proxies: [] as unknown[], cleared: [] as unknown[], cache: 0, auth: 0,
@@ -39,9 +39,9 @@ function fakeSession(partition: string) {
 }
 vi.mock('electron', () => ({
   session: { fromPartition: (p: string) => { if (!the.sessions.has(p)) the.sessions.set(p, fakeSession(p)); return the.sessions.get(p); } },
-  webContents: { fromId: () => null },
+  webContents: { fromId: (id: number) => the.guests.get(id) ?? null },
 }));
-const { BOX_HOLD_MS, boxDoor, boxing, clearBox, hosting } = await import('../../../main/browserGuest');
+const { BOX_CLIPBOARD_GUARD, BOX_HOLD_MS, boxDoor, boxing, clearBox, hosting } = await import('../../../main/browserGuest');
 const { session } = await import('electron');
 const sessionOf = (p: string) => session.fromPartition(p) as unknown as FakeSession;
 const made = (p: string) => the.sessions.has(p);
@@ -56,10 +56,10 @@ function request(s: FakeSession) {
   for (const h of s.requests) h({ url: 'https://example.com/' }, (r) => { answer.got = r; });
   return answer;
 }
-function aWindow() {
+function aWindow(named: string | undefined = undefined) {
   const win = { webContents: new EventEmitter() };
   const host = { attach: vi.fn(), detach: vi.fn(), forget: vi.fn(), event: vi.fn(), shown: vi.fn(), loadFailed: vi.fn() };
-  hosting(win as unknown as BrowserWindow, host as unknown as RelayHost, () => undefined, () => {});
+  const h = hosting(win as unknown as BrowserWindow, host as unknown as RelayHost, () => named, () => {});
   const attaching = (partition: string, src = 'https://example.com/') => {
     const e = { preventDefault: vi.fn() };
     win.webContents.emit('will-attach-webview', e, {}, { partition, src });
@@ -69,12 +69,23 @@ function aWindow() {
     const wc = Object.assign(new EventEmitter(), {
       id: Math.floor(Math.random() * 1e9), session: session.fromPartition(partition),
       setWindowOpenHandler() {}, setWebRTCIPHandlingPolicy: vi.fn(),
-      debugger: Object.assign(new EventEmitter(), { isAttached: () => false }),
+      getType: () => 'webview', hostWebContents: win.webContents, isDestroyed: () => false, isDevToolsOpened: () => false,
+      isLoading: () => false, isLoadingMainFrame: () => false, getURL: () => 'https://example.com/',
+      navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+      debugger: Object.assign(new EventEmitter(), {
+        attached: false,
+        isAttached: () => wc.debugger.attached,
+        attach: () => { wc.debugger.attached = true; },
+        // what main sent the guest's debugger, in order: [method, params, sessionId]
+        sent: [] as unknown[][],
+        sendCommand: vi.fn(async (method: string, params: unknown, sessionId?: string) => { wc.debugger.sent.push([method, params, sessionId]); return {}; }),
+      }),
     });
+    the.guests.set(wc.id, wc);
     win.webContents.emit('did-attach-webview', {}, wc);
     return wc;
   };
-  return { attaching, guest };
+  return { attaching, guest, h, host };
 }
 type Login = { prevented: boolean; answered: unknown[] | null };
 function login(wc: EventEmitter, authInfo: { isProxy: boolean; host: string; port: number }): Login {
@@ -204,6 +215,42 @@ describe('BROWSERAPP-37: a box\'s session goes only through its job\'s door', ()
     expect(early.got).toBe('held');
     expect(request(s).got).toBe('held');
     expect(login(wc, { isProxy: true, host: '127.0.0.1', port: 50140 }).answered).toEqual([]);
+  });
+
+  it('browserapp_37: every frame of a box tab gets main\'s clipboard guard, and obid drives the tab only once it\'s on; a frame\'s own events never reach obid', async () => {
+    const w = aWindow('oby-box-b37h');
+    w.attaching('oby-box-b37h');
+    const wc = w.guest('oby-box-b37h');
+    const k = { threadId: 'b37h', tabId: 't1' };
+    expect(w.h.register(k, wc.id)).toBeNull();
+    expect(w.host.attach).not.toHaveBeenCalled();
+    await settle();
+    expect(wc.debugger.sent).toEqual([
+      ['Page.enable', {}, undefined],
+      ['Page.addScriptToEvaluateOnNewDocument', { source: BOX_CLIPBOARD_GUARD, worldName: 'oby-box-guard', runImmediately: true }, undefined],
+      ['Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, undefined],
+    ]);
+    expect(w.host.attach).toHaveBeenCalledTimes(1);
+    // a cross-site frame the page starts: guarded, then let run
+    wc.debugger.sent.length = 0;
+    wc.debugger.emit('message', {}, 'Target.attachedToTarget', { sessionId: 's1', targetInfo: { type: 'iframe' }, waitingForDebugger: true });
+    await settle();
+    expect(wc.debugger.sent.map(([m, , s]) => [m, s])).toEqual([
+      ['Page.enable', 's1'], ['Page.addScriptToEvaluateOnNewDocument', 's1'], ['Target.setAutoAttach', 's1'], ['Runtime.runIfWaitingForDebugger', 's1'],
+    ]);
+    wc.debugger.emit('message', {}, 'Page.loadEventFired', { timestamp: 1 }, 's1');
+    wc.debugger.emit('message', {}, 'Page.loadEventFired', { timestamp: 2 });
+    expect(w.host.event.mock.calls).toEqual([[k, 'Page.loadEventFired', { timestamp: 2 }]]);
+  });
+
+  it('browserapp_37: an agent tab gets no clipboard guard', async () => {
+    const w = aWindow('persist:oby-agent-claude');
+    w.attaching('persist:oby-agent-claude');
+    const wc = w.guest('persist:oby-agent-claude');
+    expect(w.h.register({ threadId: 'b37i', tabId: 't1' }, wc.id)).toBeNull();
+    await settle();
+    expect(wc.debugger.sent).toEqual([]);
+    expect(w.host.attach).toHaveBeenCalledTimes(1);
   });
 
   it('browserapp_37: a box guest keeps WebRTC to the proxy; an agent guest is left as it was', () => {

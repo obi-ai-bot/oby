@@ -20,6 +20,16 @@ export const SETTLE_MS = 5_000;
 export const PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', 'pointerLock']);
 /** a box page's: never the owner's clipboard, which another Oby's task's acts could write */
 export const BOX_PERMISSIONS = new Set(['fullscreen', 'pointerLock']);
+/**
+ * A box page's copy and cut never reach the owner's clipboard. An agent's click gives the page the
+ * user activation `execCommand('copy')` needs, and Chromium then writes the selection, or what the
+ * page's copy listener set, without asking any permission handler (clipboard_commands.cc). This runs
+ * in a world of main's own in every frame, before the page's scripts, so the page can't reach or undo
+ * it: it stops each copy, cut and their before-events ahead of every listener of the page's, and
+ * drops the selection, so Chromium has nothing to write. A copy the owner makes with the keyboard or
+ * the menu is stopped too (another Oby's page isn't theirs to copy from).
+ */
+export const BOX_CLIPBOARD_GUARD = `(() => { const stop = (e) => { e.stopImmediatePropagation(); const s = getSelection(); if (s) s.removeAllRanges(); }; for (const t of ['beforecopy', 'copy', 'beforecut', 'cut']) addEventListener(t, stop, true); })();`;
 /** how long a box page's request waits for its job's door before it's cancelled */
 export const BOX_HOLD_MS = 10_000;
 /** how long a page may take to answer before main leaves it anyway, stuck in a script (T3: Manager.ts:139) */
@@ -122,6 +132,20 @@ export async function clearBox(partition: string) {
   await cleared;
 }
 
+/**
+ * The clipboard guard on one debugger session (the page's, or a frame's or worker's of it): in every
+ * frame now and every document after, and in every frame or worker the page starts, held by Chromium
+ * until it's guarded (`waitForDebuggerOnStart`), so a cross-site frame gets it too
+ */
+async function guardClipboard(d: Electron.Debugger, sessionId?: string) {
+  try {
+    await d.sendCommand('Page.enable', {}, sessionId);
+    await d.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: BOX_CLIPBOARD_GUARD, worldName: 'oby-box-guard', runImmediately: true }, sessionId);
+  } catch { /* a worker has no page, and no clipboard command */ }
+  await d.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId).catch(() => undefined);
+  if (sessionId) await d.sendCommand('Runtime.runIfWaitingForDebugger', {}, sessionId).catch(() => undefined);
+}
+
 function asGuest(wc: WebContents): Guest {
   return {
     send: (method, params) => wc.debugger.sendCommand(method, params),
@@ -216,7 +240,13 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     // DevTools takes the debugger: the tab is detached until they close (T3: Manager.ts:2252-2267)
     wc.on('devtools-opened', () => { if (wc.debugger.isAttached()) wc.debugger.detach(); });
     wc.on('devtools-closed', () => { const k = keyed.get(wc.id); if (k) attach(wc, k); });
-    wc.debugger.on('message', (_ev, method, params) => { const k = keyed.get(wc.id); if (k) host.event(k, method, params); });
+    wc.debugger.on('message', (_ev, method, params, sessionId) => {
+      // a frame or worker a box page started: guarded before it runs, and never obid's to hear
+      if (method === 'Target.attachedToTarget') { if (box) void guardClipboard(wc.debugger, (params as { sessionId: string }).sessionId); return; }
+      if (sessionId || method.startsWith('Target.')) return;
+      const k = keyed.get(wc.id);
+      if (k) host.event(k, method, params);
+    });
     wc.debugger.on('detach', () => {
       const k = keyed.get(wc.id);
       if (!k) return;
@@ -230,8 +260,14 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
   function attach(wc: WebContents, k: TabKey) {
     if (wc.isDestroyed() || wc.isDevToolsOpened()) return;
     try { if (!wc.debugger.isAttached()) wc.debugger.attach('1.3'); } catch { return; }
+    // a box tab is obid's to drive only once its clipboard guard is on
+    const guarded = boxes.has(wc.session) ? guardClipboard(wc.debugger) : Promise.resolve();
     let announced = false;
-    const announce = () => { if (announced || wc.isDestroyed() || keyed.get(wc.id) !== k) return; announced = true; host.attach(k, asGuest(wc)); };
+    const announce = () => {
+      if (announced) return;
+      announced = true;
+      void guarded.then(() => { if (!wc.isDestroyed() && keyed.get(wc.id) === k) host.attach(k, asGuest(wc)); });
+    };
     if (!wc.isLoading()) return announce();
     wc.once('dom-ready', announce);
     wc.once('did-stop-loading', announce);
