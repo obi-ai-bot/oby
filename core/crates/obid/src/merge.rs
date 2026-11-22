@@ -3671,7 +3671,7 @@ mod tests {
         let cases = security_path_cases();
         for case in cases.iter().filter(|c| c.group == Group::NearMiss) {
             assert!(
-                security_paths(&[case.path.clone()], None).is_empty(),
+                security_paths(std::slice::from_ref(&case.path), None).is_empty(),
                 "{case}"
             );
         }
@@ -3713,7 +3713,7 @@ mod tests {
         {
             assert!(caught_by(&case.path, case.entry), "{case}");
             assert!(
-                !security_paths(&[case.path.clone()], None).is_empty(),
+                !security_paths(std::slice::from_ref(&case.path), None).is_empty(),
                 "{case}"
             );
         }
@@ -3730,7 +3730,7 @@ mod tests {
         {
             assert!(caught_by(&case.path, case.entry), "{case}");
             assert!(
-                !security_paths(&[case.path.clone()], None).is_empty(),
+                !security_paths(std::slice::from_ref(&case.path), None).is_empty(),
                 "{case}"
             );
         }
