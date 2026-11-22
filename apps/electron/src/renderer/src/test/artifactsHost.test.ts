@@ -145,3 +145,23 @@ it('artifactsapp_20_reload_runs_the_version_on_view_again', () => {
   window.obyReload!();
   expect(the.dispatched).toEqual([{ type: 'refresh' }]);
 });
+
+// (last: it loads the host page again, as the picture's view has it)
+it('artifactsapp_18_the_pictures_view_never_keeps_the_artifact_before', async () => {
+  vi.resetModules();
+  vi.stubGlobal('location', { search: '?thumb' });
+  try {
+    await import('../artifacts/host');
+  } finally {
+    vi.unstubAllGlobals();
+  }
+  const a = shown();
+  const aClient = the.clients.at(-1)!;
+  const b = shown();
+  expect([a.isConnected, b.isConnected, aClient.destroyed]).toEqual([false, true, true]);
+  const s = status();
+  posted(b.contentWindow, { oby: 'drawn' });
+  await new Promise((done) => setTimeout(done, 20));
+  expect(s.value).toEqual({ drawn: true });
+  expect(b.isConnected).toBe(true);
+});

@@ -21,6 +21,9 @@ const MOST = 4_000;
 let client: SandpackStatic | null = null;
 let clients: SandpackStatic[] = [];
 let waiting: AbortController | null = null;
+// the picture's view (`?thumb`, ARTIFACTSAPP-18) is never seen: the last show's frames go at once
+// there, so a card's picture is never of the artifact before
+const picture = new URLSearchParams(location.search).has('thumb');
 
 function show(v: Show): void {
   // a show still waiting: its word counts for nothing now
@@ -39,6 +42,13 @@ function show(v: Show): void {
   const mine = new SandpackStatic(frame, { files: showable(v) as Record<string, { code: string }>, template: 'static' }, { bundlerURL: v.bundler, showOpenInCodeSandbox: false, externalResources: [BRIDGE] });
   client = mine;
   clients.push(mine);
+  // the last show's frames and clients taken away
+  const clear = () => {
+    for (const c of clients) if (c !== mine) c.destroy();
+    clients = [mine];
+    for (const f of before) f.remove();
+  };
+  if (picture) clear();
   // The status, from this show's frame only: what the bridge in it posts. That is the artifact's own
   // code and can be forged, so it only times the view and the picture, and is text shown or attached,
   // never more (ARTIFACTSAPP-23)
@@ -50,9 +60,7 @@ function show(v: Show): void {
   window.obyStatus = new Promise<Status>((done) => {
     const settle = (s: Status) => {
       listening.abort();
-      for (const c of clients) if (c !== mine) c.destroy();
-      clients = [mine];
-      for (const f of before) f.remove();
+      clear();
       done(s);
     };
     const failed = () => settle({ error: error!, console: later });
