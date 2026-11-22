@@ -203,7 +203,6 @@ fn planned_job(
         brief: d.brief(),
         complex: d.complexity == super::plan::Complexity::Complex,
         artifacts: open_artifact(shared, asked),
-        ran_unproxied: super::open_artifact::laid_unproxied(shared, asked.conversation),
         ..NewJob::default()
     };
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the
@@ -441,6 +440,7 @@ async fn fix_ci(
         agent: Some(d.agent.clone()),
         account: Some(d.account.clone()),
         request: Some(asked.said.to_owned()),
+        ran_unproxied: super::open_artifact::laid_unproxied(shared, asked.conversation),
         ..NewJob::default()
     };
     let started =
@@ -824,7 +824,11 @@ fn message_job(
     }
     // Its agent's question is the owner's to answer (#858): the brain's words never are.
     let foreign = super::written_after(shared, conversation);
-    match shared.jobs.relay(&job.id, &words, source, foreign) {
+    let unproxied = super::open_artifact::laid_unproxied(shared, conversation);
+    match shared
+        .jobs
+        .relay(&job.id, &words, source, foreign, unproxied)
+    {
         Some(Ok(_)) => Outcome::Done(format!("Told {name} what you said.")),
         Some(Err(refused)) => Outcome::Failed(format!("Couldn't tell {name}: {}", refused.0)),
         None => Outcome::Failed("That task isn't here any more.".into()),
@@ -892,7 +896,11 @@ pub(super) fn already_on_it(
 ) -> Outcome {
     let (name, follow) = (job.short_title(), next.short_title());
     let foreign = super::written_after(shared, conversation);
-    match shared.jobs.relay(&next.id, words, source, foreign) {
+    let unproxied = super::open_artifact::laid_unproxied(shared, conversation);
+    match shared
+        .jobs
+        .relay(&next.id, words, source, foreign, unproxied)
+    {
         Some(Ok(heard)) => Outcome::Started(
             format!("Already on it in {follow}, the follow-up of {name}: I told it what you said."),
             heard.to_json(),
@@ -931,9 +939,13 @@ pub(super) async fn answer_inbox(
             item.kind == crate::sphere::inbox::QUESTION_KIND
                 || crate::permissions::inbox_decision(a).1.is_some()
         })
-        && let Some(why) = super::written_after(shared, conversation)
     {
-        shared.jobs.mark(&item.job, why, false);
+        if let Err(e) = super::open_artifact::heard_unproxied(shared, conversation, &item.job) {
+            return Outcome::Failed(format!("Couldn't answer {}: {e}", item.title));
+        }
+        if let Some(why) = super::written_after(shared, conversation) {
+            shared.jobs.mark(&item.job, why, false);
+        }
     }
     if item.done.is_some() {
         return Outcome::Failed(format!(

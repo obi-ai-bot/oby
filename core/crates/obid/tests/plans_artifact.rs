@@ -505,14 +505,6 @@ fn told(obid: &Obid, conversation: &str, words: &str, signed: bool) -> Answer {
     answer
 }
 
-/// Whether job `id`'s kept file says it ran with no egress proxy of obid's (LANE-3a).
-fn ran_unproxied(obid: &Obid, id: &str) -> bool {
-    let kept: Value =
-        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
-            .unwrap();
-    kept["ranUnproxied"] == json!(true)
-}
-
 /// A task with nothing to do that a turn of `conversation` starts after reading the web, so it
 /// is `untrusted` and runs in Oby's box, behind obid's proxy, waited on to its end: its id.
 fn boxed_task(obid: &Obid, conversation: &str) -> String {

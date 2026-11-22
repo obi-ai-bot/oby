@@ -110,6 +110,44 @@ impl Jobs {
         ))
     }
 
+    /// [`Self::message`] with words the brain wrote (`message_job`, `oby_tell_job`): never the
+    /// answer to the agent's question, which is the owner's alone (#858), so refused while one
+    /// waits. `foreign`: why they aren't on obid's allowlist (crate::secretspec), which marks the
+    /// job; `None` only when the conversation that wrote them read nothing that isn't. `unproxied`:
+    /// that conversation laid an unproxied version (LANE-3a), so the job that hears them, the
+    /// follow-up they go to instead too, is LANE-3a's first ([`Self::kept_unproxied`]), or none
+    /// hears them.
+    pub fn relay(
+        self: &Arc<Self>,
+        id: &str,
+        text: &str,
+        source: Source,
+        foreign: Option<String>,
+        unproxied: bool,
+    ) -> Option<Result<Job, Refused>> {
+        if let Some(why) = foreign
+            && self.get(id).is_some_and(|job| job.obi.is_none())
+        {
+            self.mark(id, why, false);
+        }
+        self.message_as(id, text, source, &[], false, unproxied)
+    }
+
+    /// Job `id` hears words from a conversation that laid an unproxied version (LANE-3a): its check
+    /// gets no declared secrets from now on, in its file before the words go, or they don't.
+    pub(crate) fn kept_unproxied(&self, id: &str) -> Result<(), String> {
+        if self
+            .update(id, |j| j.ran_unproxied = true)
+            .is_some_and(|job| job.ran_unproxied)
+        {
+            return Ok(());
+        }
+        let e = self.unkept(id).unwrap_or_else(|| "the job is gone".into());
+        Err(format!(
+            "obid couldn't save that its check gets no declared secrets ({e})"
+        ))
+    }
+
     /// LANES-18: a Codex thread is kept in its lane's own `CODEX_HOME` (the account's folder, or
     /// the box's), so a job whose last run was in the other lane than its next goes on in a new
     /// session, told so: what it's told, or none when its session can go on.
@@ -1838,6 +1876,105 @@ mod tests {
                 assert!(denied.contains(&rule), "{rule}: {denied:?}");
             }
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANE-3a: a job a flagged conversation's words reach is marked in its file first; a mark
+    /// that can't be saved is an error, so the words don't go, and once it can be it's kept.
+    #[test]
+    fn lane_3a_a_mark_that_cant_be_kept_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lane-3a-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        let mut job = Job::new(
+            "told".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "cursor".into(),
+            "a".into(),
+        );
+        job.status = Status::Done;
+        std::fs::write(
+            home.join("jobs/told.json"),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        assert!(!jobs.ran_unproxied("told"));
+        let kept = home.join("jobs");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let refused = jobs.kept_unproxied("told");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(
+            jobs.kept_unproxied("gone")
+                .is_err_and(|e| e.contains("the job is gone"))
+        );
+        assert_eq!(jobs.kept_unproxied("told"), Ok(()));
+        assert!(jobs.ran_unproxied("told"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANE-3a: the brain read job `a` at work, but it ended and boxed follow-up `b` started
+    /// before its words went: they go to `b`, which is LANE-3a's in its file before it hears them,
+    /// and when that can't be saved, nobody hears them.
+    #[test]
+    fn lane_3a_a_relay_redirected_to_a_follow_up_marks_the_job_that_hears_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lane-3a-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        let job = |id: &str| {
+            Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "cursor".into(),
+                "a".into(),
+            )
+        };
+        let mut ended = job("a");
+        ended.status = Status::Done;
+        std::fs::write(
+            home.join("jobs/a.json"),
+            serde_json::to_vec(&ended).unwrap(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        let mut next = job("b");
+        next.follow_up_of = Some("a".into());
+        jobs.lock().jobs.insert("b".into(), next);
+        assert!(jobs.update("b", |_| ()).is_some());
+        let kept = |id: &str| -> Job {
+            serde_json::from_slice(&std::fs::read(home.join(format!("jobs/{id}.json"))).unwrap())
+                .unwrap()
+        };
+        let notes = |jobs: &Jobs| jobs.get("b").unwrap().notes.unwrap_or_default();
+        let dir = home.join("jobs");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let refused = jobs.relay("a", "Use SQLite", Source::Owner, None, true);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(refused, Some(Err(_))), "{refused:?}");
+        assert!(notes(&jobs).is_empty());
+        let told = jobs.relay("a", "Use SQLite", Source::Owner, None, true);
+        assert!(matches!(told, Some(Ok(_))), "{told:?}");
+        assert!(kept("b").ran_unproxied);
+        assert_eq!(notes(&jobs), ["Use SQLite"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

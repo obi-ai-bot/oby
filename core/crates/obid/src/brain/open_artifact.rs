@@ -171,10 +171,28 @@ pub fn note_unproxied(shared: &Shared, conversation: &str) -> Result<(), String>
 }
 
 /// Whether [`note_unproxied`] kept it for `conversation`: what its turns publish records
-/// `unproxied`, and the jobs it plans run as LANE-3a's (no declared secrets for their checks).
+/// `unproxied`, and every job its brain's words reach is LANE-3a's (no declared secrets for its
+/// check; docs/contracts/lanes.md, LANE-3a).
 pub fn laid_unproxied(shared: &Shared, conversation: &str) -> bool {
     let place = super::harness::Place::of(&shared.config.home, conversation);
-    std::fs::symlink_metadata(place.folder.join(UNPROXIED)).is_ok()
+    flagged(&place.folder.join(UNPROXIED))
+}
+
+/// Whether the flag at `path` is there: only a read that finds nothing there says it isn't, so a
+/// flag that can't be read counts as kept (LANE-3a).
+fn flagged(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true)
+}
+
+/// Before the brain's words in `conversation` reach job `id`, which exists already (a relay, a
+/// continue, a question's answer): in a conversation [`laid_unproxied`], the job is LANE-3a's,
+/// saved first, so an error means the words don't go.
+pub fn heard_unproxied(shared: &Shared, conversation: &str, id: &str) -> Result<(), String> {
+    if !laid_unproxied(shared, conversation) {
+        return Ok(());
+    }
+    shared.jobs.kept_unproxied(id)
 }
 
 /// The line that tells the brain which artifact is open: its id, version and kind, its title
@@ -219,5 +237,21 @@ mod tests {
             &laid[line.len()..],
             " Its files are at artifacts/0b9a7c1e in your room: edit them there, then publish with oby_artifact, \"path\": \"artifacts/0b9a7c1e\" and \"artifact\": \"0b9a7c1e-3d2f-4a5b-8c6d-7e8f9a0b1c2d\"."
         );
+    }
+
+    /// LANE-3a: the flag read is "not flagged" only when nothing is there; any other error, such as
+    /// a folder that is a file, counts as flagged.
+    #[test]
+    fn lane_3a_a_flag_that_cant_be_read_counts_as_flagged() {
+        let root = std::env::temp_dir().join(format!("obid-lane-3a-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let flag = root.join(UNPROXIED);
+        assert!(!flagged(&flag));
+        std::fs::write(&flag, b"").unwrap();
+        assert!(flagged(&flag));
+        let file = root.join("conversation");
+        std::fs::write(&file, b"").unwrap();
+        assert!(flagged(&file.join(UNPROXIED)));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

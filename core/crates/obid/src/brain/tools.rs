@@ -740,6 +740,9 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
             },
         );
     }
+    if let Err(e) = super::open_artifact::heard_unproxied(shared, &session.conversation, &id) {
+        return Err(format!("Couldn't continue {name}: {e}"));
+    }
     let foreign = super::written_after(shared, &session.conversation);
     let carried = shared.jobs.continue_job(
         &id,
