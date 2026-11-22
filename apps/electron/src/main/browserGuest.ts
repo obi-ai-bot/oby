@@ -67,11 +67,15 @@ const clears = new Map<string, number>();
 let guardFile: string | null = null;
 function guardPreload(): string {
   if (!guardFile) {
-    guardFile = join(app.getPath('userData'), 'box-clipboard-guard.js');
-    writeFileSync(guardFile, BOX_CLIPBOARD_GUARD, { mode: 0o600 });
+    const file = join(app.getPath('userData'), 'box-clipboard-guard.js');
+    writeFileSync(file, BOX_CLIPBOARD_GUARD, { mode: 0o600 });
+    guardFile = file;
   }
   return guardFile;
 }
+// the boxes whose guard couldn't be set up (its file not written, say): every request of theirs is
+// cancelled, so none of their pages loads unguarded
+const unguarded = new Set<string>();
 
 /**
  * One partition's session, set up once: its permissions and where its downloads go; for a box, every
@@ -81,7 +85,21 @@ function guardPreload(): string {
 export function prepare(s: Session, partition: string) {
   if (ready.has(s)) return;
   ready.add(s);
-  const granted = isBox(partition) ? BOX_PERMISSIONS : PERMISSIONS;
+  const box = isBox(partition);
+  // a box's hold first, before anything that can fail, so a setup that fails holds or cancels
+  if (box) {
+    boxes.set(s, partition);
+    s.webRequest.onBeforeRequest((_details, callback) => {
+      if (unguarded.has(partition)) return callback({ cancel: true });
+      if (doors.has(partition)) return callback({});
+      const held = waiting.get(partition) ?? new Set<() => void>();
+      waiting.set(partition, held);
+      const go = () => { clearTimeout(timer); held.delete(go); callback(unguarded.has(partition) ? { cancel: true } : {}); };
+      const timer = setTimeout(() => { held.delete(go); callback({ cancel: true }); }, BOX_HOLD_MS);
+      held.add(go);
+    });
+  }
+  const granted = box ? BOX_PERMISSIONS : PERMISSIONS;
   s.setPermissionRequestHandler((_wc, permission, done) => done(granted.has(permission)));
   s.setPermissionCheckHandler((_wc, permission) => granted.has(permission));
   s.on('will-download', (_e, item, wc) => {
@@ -90,19 +108,15 @@ export function prepare(s: Session, partition: string) {
     if (!folder) { item.cancel(); return; }
     item.setSavePath(join(folder, basename(item.getFilename()) || 'download'));
   });
-  if (!isBox(partition)) return;
-  boxes.set(s, partition);
+  if (!box) return;
   // the clipboard guard as the session's preload: in every frame, in its own world, before the page's
-  // first script, its first document's too (the debugger's guard comes only once main attaches it)
-  s.registerPreloadScript({ type: 'frame', id: 'oby-box-clipboard-guard', filePath: guardPreload() });
-  s.webRequest.onBeforeRequest((_details, callback) => {
-    if (doors.has(partition)) return callback({});
-    const held = waiting.get(partition) ?? new Set<() => void>();
-    waiting.set(partition, held);
-    const go = () => { clearTimeout(timer); held.delete(go); callback({}); };
-    const timer = setTimeout(() => { held.delete(go); callback({ cancel: true }); }, BOX_HOLD_MS);
-    held.add(go);
-  });
+  // first script, its first document's too (the debugger's guard comes only once main attaches it).
+  // One that can't be set up leaves the box reaching nothing, its door still set (boxDoor).
+  try {
+    s.registerPreloadScript({ type: 'frame', id: 'oby-box-clipboard-guard', filePath: guardPreload() });
+  } catch {
+    unguarded.add(partition);
+  }
 }
 
 /** obid's `box`: the box's session made ready, its proxy set to the job's door, then its held requests let go */
