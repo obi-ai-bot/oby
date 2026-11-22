@@ -192,8 +192,10 @@ export async function ownersWords(method: string, path: string, body: unknown, o
   return r;
 }
 
-// Who types into the window's pages: the webviews' host (browserGuest.ts), handed in by browser.ts
-type PageTyper = (tab: string, field: string, value: string) => Promise<string | null>;
+// Who types into the window's pages: the webviews' host (browserGuest.ts), handed in by browser.ts.
+// `code`: the ask is for a one-time code, which may go into a text box; anything else is a password,
+// typed only into a password input (BROWSERAPP-43)
+type PageTyper = (tab: string, field: string, value: string, code: boolean) => Promise<string | null>;
 let typer: PageTyper | null = null;
 export const typeInPages = (t: PageTyper) => { typer = t; };
 
@@ -218,8 +220,13 @@ export async function fillSecret(tab: string, field: string, value: string, ask:
     const id = (device ??= await register());
     const send = (path: string) => obid('POST', path, {}, signedHeader(deviceKey(), id, 'POST', path, {}));
     const heldBy = (a: Answer) => { try { return (JSON.parse(a.text) as { heldBy?: unknown }).heldBy; } catch { return null; } };
-    let holder: unknown = null;
-    try { holder = (JSON.parse((await obid('GET', BROWSER_PATH)).text) as BrowserTabsAnswer).tabs?.find((t) => t.id === tab)?.heldBy ?? null; } catch { /* unreadable: nobody holds it */ }
+    // who holds the tab, and the ask's kind, as obid has them, never as the page says
+    let holder: unknown = null, code = false;
+    try {
+      const t = (JSON.parse((await obid('GET', BROWSER_PATH)).text) as BrowserTabsAnswer).tabs?.find((x) => x.id === tab);
+      holder = t?.heldBy ?? null;
+      code = !!ask && t?.ask?.id === ask && t.ask.kind === 'code';
+    } catch { /* unreadable: nobody holds it, and it's a password */ }
     const took = holder !== id;
     if (took) {
       const taken = await send(browserTabPath(tab, 'take'));
@@ -228,7 +235,7 @@ export async function fillSecret(tab: string, field: string, value: string, ask:
       if (heldBy(taken) !== id) return 'held_by_other';
     }
     try {
-      const typed = await type(tab, field, value);
+      const typed = await type(tab, field, value, code);
       if (typed) return typed;
       return ask ? refused(await send(browserAskPath(ask))) : null;
     } finally {

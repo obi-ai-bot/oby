@@ -322,12 +322,13 @@ describe('obid-finish', () => {
 describe('BROWSERAPP-12: main holds the tab and types the password into its own page on the owner\'s own Fill in, never through obid', () => {
   const SECRET = 'device-test-secret-4417';
   const typed: [string, string, string][] = [];
+  const kinds: boolean[] = [];
   const consoles = () => (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m));
   const posts = (from: number) => the.calls.slice(from).filter((c) => c.method === 'POST' && c.path !== '/v1/devices');
-  const tabs = (heldBy: string | null) => { (the as { browserList?: string }).browserList = JSON.stringify({ tabs: [{ id: 't1', heldBy }], settings: {} }); };
+  const tabs = (heldBy: string | null, ask: { id: string; kind: string } | null = null) => { (the as { browserList?: string }).browserList = JSON.stringify({ tabs: [{ id: 't1', heldBy, ask }], settings: {} }); };
   beforeEach(() => {
-    typed.length = 0;
-    typeInPages(async (tab, field, value) => { typed.push([tab, field, value]); return null; });
+    typed.length = 0; kinds.length = 0;
+    typeInPages(async (tab, field, value, code) => { typed.push([tab, field, value]); kinds.push(code); return null; });
     the.take = { status: 200, text: '{"tabId":"t1","heldBy":"d1","holdGeneration":1}' };
     tabs(null);
   });
@@ -368,6 +369,19 @@ describe('BROWSERAPP-12: main holds the tab and types the password into its own 
     // the value goes to obid in no request at all, and to no console
     expect(JSON.stringify(the.calls)).not.toContain(SECRET);
     expect(JSON.stringify(spies.map((s) => s.mock.calls))).not.toContain(SECRET);
+  });
+
+  it('browserapp_43_whether_it_is_a_code_is_obids_ask_never_the_pages', async () => {
+    // obid's ask for this tab is a one-time code: a text box may take it; anything else is a password
+    for (const [ask, code] of [[{ id: 'a1', kind: 'code' }, true], [{ id: 'a1', kind: 'signIn' }, false], [{ id: 'a2', kind: 'code' }, false], [null, false]] as const) {
+      tabs(null, ask);
+      input();
+      expect(await fillSecret('t1', '#otp', SECRET, 'a1', true)).toBeNull();
+    }
+    (the as { browserList?: string }).browserList = 'not json';
+    input();
+    expect(await fillSecret('t1', '#otp', SECRET, 'a1', true)).toBeNull();
+    expect(kinds).toEqual([true, false, false, false, false]);
   });
 
   it('browserapp_42_a_fill_types_only_while_this_device_holds_the_tab', async () => {

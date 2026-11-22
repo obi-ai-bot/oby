@@ -46,7 +46,7 @@ export function hostBrowser(win: BrowserWindow) {
   webviews = hosting(win, relay!, (k) => partitions.of(k), (s) => navState?.(s));
   // Fill in types into the tab's own page, never through obid (BROWSERAPP-12)
   const w = webviews;
-  typeInPages((tab, field, value) => w.type(tab, field, value));
+  typeInPages((tab, field, value, code) => w.type(tab, field, value, code));
 }
 
 // --- following obid's browser for the window

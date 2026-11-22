@@ -99,13 +99,16 @@ export interface Guest {
   passwordFields(): Promise<string[]>;
   /** whether a CDP object of the page is a password input, asked by main itself */
   isPassword(objectId: string): Promise<boolean>;
+  /** whether a field main filled shows what it holds now (out of the page, or no longer a password input), asked by main itself */
+  shows(objectId: string): Promise<boolean>;
 }
 
 // A password never reaches an agent (docs/contracts/browser-app.md, BROWSERAPP-12 and 44): what main
 // relays to obid never carries one the owner filled, nor the value of a password field on the page,
 // as it is or simply encoded; and after a fill, until the page's main frame leaves that document,
 // main runs none of the agent's own script there (obid marks it `agentCode`), no function on a
-// password input, and no `wait_for` selector probe, since any of them could hand on the value.
+// password input, and no `wait_for` selector probe, since any of them could hand on the value; it
+// takes no picture of the page, and passes no read of it once a field it filled shows its value.
 export const NOT_PASSED = 'Oby doesn’t pass a password the owner filled.';
 export const NO_SCRIPT = 'Oby runs no script of the agent’s on a page the owner filled a password into, until it leaves that page.';
 // obid's `wait_for` selector probe (core/crates/obid/src/browser/window/page.rs, `["wait", …]`):
@@ -165,6 +168,8 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
   const noScript = new Set<string>();
   // the tabs Fill in is working on now, across the reload it makes
   const filling = new Set<string>();
+  // the fields main filled in each tab's document (CDP objects), until its main frame leaves
+  const fields = new Map<string, string[]>();
   const guarded = (k: TabKey) => noScript.has(key(k)) || filling.has(key(k));
   let outbox: RelayEvent[] = [];
   let sending = false;
@@ -212,6 +217,8 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     if (!METHODS.has(method)) return refuse(t, id, `Oby relays only the CDP methods obid sends: ${method} isn't one of them.`);
     if (method === 'Page.navigate' && (!pageOk(params?.url) || appPage(params?.url))) return refuse(t, id, 'Oby loads only web pages, never its own: Page.navigate needs an http(s) address or about:blank.');
     if (guarded(t.k)) {
+      // a picture of the page could show a field a page's Show password turned to text
+      if (method === 'Page.captureScreenshot') return refuse(t, id, NOT_PASSED);
       if (agentCode) return refuse(t, id, NO_SCRIPT);
       if (method === 'Runtime.evaluate' && String(params?.expression ?? '').startsWith(SELECTOR_PROBE)) return refuse(t, id, NO_SCRIPT);
       if (method === 'Runtime.callFunctionOn' && typeof params?.objectId === 'string' && await t.guest.isPassword(params.objectId)) return refuse(t, id, NO_SCRIPT);
@@ -234,7 +241,9 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       } else result = await t.guest.send(method, params);
       // nothing of a password leaves for obid: those main filled, and those on the page now
       const said = JSON.stringify(result ?? {});
-      if (carries(said, filledIn.get(key(t.k)) ?? []) || (/^(Runtime|DOM|Accessibility)\./.test(method) && carries(said, await t.guest.passwordFields().catch(() => [])))) {
+      const reads = /^(Runtime|DOM|Accessibility)\./.test(method);
+      const shown = reads && guarded(t.k) && (await Promise.all((fields.get(key(t.k)) ?? []).map((f) => t.guest.shows(f)))).some(Boolean);
+      if (shown || carries(said, filledIn.get(key(t.k)) ?? []) || (reads && carries(said, await t.guest.passwordFields().catch(() => [])))) {
         return reply(t, { id, error: { code: -32000, message: NOT_PASSED } });
       }
       reply(t, { id, result: result ?? {} });
@@ -268,7 +277,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     /** a CDP event of the page's: to obid as it came, unless it carries a password the owner filled */
     event(k: TabKey, method: string, params: unknown) {
       // the main frame left the document a password was filled into: the agent's script runs there again
-      if (method === 'Page.frameNavigated' && !(params as { frame?: { parentId?: string } } | undefined)?.frame?.parentId) noScript.delete(key(k));
+      if (method === 'Page.frameNavigated' && !(params as { frame?: { parentId?: string } } | undefined)?.frame?.parentId) { noScript.delete(key(k)); fields.delete(key(k)); }
       const t = tabs.get(key(k));
       if (!t?.attached || t.broken || carries(JSON.stringify(params ?? {}), filledIn.get(key(k)) ?? [])) return;
       cdp(t, { method, params });
@@ -277,9 +286,10 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     fillStarts(k: TabKey) { filling.add(key(k)); },
     /** Fill in ended without filling: the guard it set is lifted */
     fillEnds(k: TabKey) { filling.delete(key(k)); },
-    /** main filled a password into this tab's page (Fill in): never relayed, and guarded until its main frame leaves */
-    filled(k: TabKey, value: string) {
+    /** main fills a password into this tab's page (Fill in), into `field`: never relayed, and guarded until its main frame leaves */
+    filled(k: TabKey, value: string, field?: string) {
       filledIn.set(key(k), [...(filledIn.get(key(k)) ?? []), value]);
+      if (field) fields.set(key(k), [...(fields.get(key(k)) ?? []), field]);
       filling.delete(key(k));
       noScript.add(key(k));
     },
@@ -329,7 +339,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       }
     },
     /** the webview is gone for good: nothing of it is kept */
-    forget(k: TabKey) { early.delete(key(k)); filledIn.delete(key(k)); noScript.delete(key(k)); filling.delete(key(k)); },
+    forget(k: TabKey) { early.delete(key(k)); filledIn.delete(key(k)); noScript.delete(key(k)); filling.delete(key(k)); fields.delete(key(k)); },
     /** for tests and the window's close: what's attached */
     attached: () => [...tabs.values()].filter((t) => t.attached).map((t) => t.k),
     /** the events not yet taken by obid */

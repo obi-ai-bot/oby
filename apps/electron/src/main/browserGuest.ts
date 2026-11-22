@@ -61,15 +61,18 @@ export const RELOAD_MS = 15_000;
 /** the values of the page's password fields, for main's own check of what it relays (never relayed) */
 export const PASSWORDS = '[...document.querySelectorAll(\'input[type="password" i]\')].map((e) => e.value)';
 const IS_PASSWORD = 'function () { return this instanceof HTMLInputElement && this.type.toLowerCase() === \'password\'; }';
+// a field main filled still hides what it holds: in the page, and a password input (no Show password)
+const HIDES = 'function () { return this.isConnected && this instanceof HTMLInputElement && this.type.toLowerCase() === \'password\'; }';
 /** how many characters the focused field holds: Fill in reads back only that, never the value */
 export const FIELD_LENGTH = '(() => { const el = document.activeElement; return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? [...el.value].length : -1; })()';
 /**
- * The page's own JavaScript that puts the keyboard on the field an ask names (a CSS selector), only
- * when it's an input or a text area: true once it has focus. The selector goes in as a string
- * literal; the value never goes into any script (Fill in types it, Input.insertText).
+ * The page's own JavaScript that puts the keyboard on the field an ask names (a CSS selector, the
+ * agent's own): for a password only a password input, for a one-time code (`code`) a text input or
+ * area too, in the page. The field itself once it has focus, else null. The selector goes in as a
+ * string literal; the value never goes into any script (Fill in types it, Input.insertText).
  */
-export const focusField = (field: string) =>
-  `(() => { const el = document.querySelector(${JSON.stringify(field)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false; el.focus(); return document.activeElement === el; })()`;
+export const focusField = (field: string, code = false) =>
+  `(() => { const el = document.querySelector(${JSON.stringify(field)}); if (!(el instanceof HTMLInputElement && (${code} || el.type.toLowerCase() === 'password')) && !(${code} && el instanceof HTMLTextAreaElement)) return null; if (!el.isConnected) return null; el.focus(); return document.activeElement === el ? el : null; })()`;
 /** the parts of a tab's webview Fill in types through: its WebContents, or a fake one (browserFill.test.ts) */
 export type FillPage = {
   debugger: { sendCommand(method: string, params?: object): Promise<unknown> };
@@ -95,7 +98,7 @@ function reloaded(wc: FillPage): Promise<boolean> {
  * debugger, as keys typed there would; it goes to no script, no log and never to obid. Only into the
  * owner's own agents' tabs, never another Oby's box. Null once typed, else why not.
  */
-export async function typeInto(wc: FillPage, k: TabKey, partition: string | undefined, host: Pick<RelayHost, 'fillStarts' | 'fillEnds' | 'filled'>, field: string, value: string): Promise<string | null> {
+export async function typeInto(wc: FillPage, k: TabKey, partition: string | undefined, host: Pick<RelayHost, 'fillStarts' | 'fillEnds' | 'filled'>, field: string, value: string, code = false): Promise<string | null> {
   if (!partition?.startsWith('persist:oby-agent-')) return 'This page isn’t open in the window.';
   // the agent's script doesn't run on the page from here: not while it reloads, nor once it's filled
   host.fillStarts(k);
@@ -104,12 +107,15 @@ export async function typeInto(wc: FillPage, k: TabKey, partition: string | unde
     if (FILL_PREP === 'reload' && !(await reloaded(wc))) { host.fillEnds(k); return 'The page didn’t load again in time.'; }
     // the guest gets the keyboard first, as T3's Take control gives it (preview/Manager.ts:2482)
     wc.focus();
-    if (await read(focusField(field)) !== true) { host.fillEnds(k); return 'That field isn’t on the page.'; }
+    const focused = ((await wc.debugger.sendCommand('Runtime.evaluate', { expression: focusField(field, code) })) as { result?: { objectId?: unknown } } | undefined)?.result?.objectId;
+    if (typeof focused !== 'string') { host.fillEnds(k); return 'That field isn’t on the page.'; }
+    // the relay knows the value and the field before a key of it is in the page: whatever the page
+    // does with it while it's typed (an alert of it, say) never leaves for obid
+    host.filled(k, value, focused);
     await wc.debugger.sendCommand('Input.insertText', { text: value });
     // only its length is read back, never the value: typed once more as the guest's own input if
     // CDP's didn't land (T3: preview/GuestInput.ts:199-200)
     if (await read(FIELD_LENGTH) === 0) await wc.insertText(value);
-    host.filled(k, value);
     return (await read(FIELD_LENGTH)) === [...value].length ? null : 'The page didn’t take what you typed.';
   } catch (err) {
     host.fillEnds(k);
@@ -259,6 +265,12 @@ function asGuest(wc: WebContents): Guest {
     passwordFields: async () => {
       const r = await wc.debugger.sendCommand('Runtime.evaluate', { expression: PASSWORDS, returnByValue: true }) as { result?: { value?: unknown } };
       return Array.isArray(r?.result?.value) ? r.result.value.filter((v): v is string => typeof v === 'string' && v.length > 0) : [];
+    },
+    shows: async (objectId) => {
+      try {
+        const r = await wc.debugger.sendCommand('Runtime.callFunctionOn', { objectId, functionDeclaration: HIDES, returnByValue: true }) as { result?: { value?: unknown } };
+        return r?.result?.value !== true;
+      } catch { return true; }
     },
     isPassword: async (objectId) => {
       try {
@@ -425,12 +437,12 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       }
     },
     /** Fill in on obid's tab, in this window's webview for it (typeInto): null once typed, else why not */
-    type(tabId: string, field: string, value: string): Promise<string | null> {
+    type(tabId: string, field: string, value: string, code: boolean): Promise<string | null> {
       const id = [...keyed.entries()].find(([, k]) => k.tabId === tabId)?.[0];
       const wc = id === undefined ? undefined : webContents.fromId(id);
       if (!wc || wc.isDestroyed() || wc.hostWebContents !== win.webContents || !wc.debugger.isAttached()) return Promise.resolve('This page isn’t open in the window.');
       const k = keyed.get(wc.id)!;
-      return typeInto(wc, k, named(k), host, field, value);
+      return typeInto(wc, k, named(k), host, field, value, code);
     },
   };
 }

@@ -17,7 +17,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 type FakeGuest = Guest & {
   sent: { method: string; params?: Record<string, unknown> }[];
   reloads: number; stops: number; typed: string[]; keys: Record<string, unknown>[]; folder: string | null | undefined; focus: boolean;
-  onPage: string[]; passwordObjects: Set<string>;
+  onPage: string[]; passwordObjects: Set<string>; showing: Set<string>;
 };
 function fakeGuest(over: Partial<Guest> = {}): FakeGuest {
   const sent: { method: string; params?: Record<string, unknown> }[] = [];
@@ -29,7 +29,8 @@ function fakeGuest(over: Partial<Guest> = {}): FakeGuest {
     insertText: async (t: string) => { g.typed.push(t); },
     key: (p: Record<string, unknown>) => { g.keys.push(p); },
     downloadsTo: (f: string | null) => { g.folder = f; },
-    onPage: [], passwordObjects: new Set<string>(),
+    onPage: [], passwordObjects: new Set<string>(), showing: new Set<string>(),
+    shows: async (id: string) => g.showing.has(id),
     passwordFields: async () => g.onPage,
     isPassword: async (id: string) => g.passwordObjects.has(id),
     ...over,
@@ -628,6 +629,38 @@ describe('BROWSERAPP-44: after a fill only the agent\'s own script waits, and no
     expect(all).toContain('Page.loadEventFired');
     // a few characters aren't looked for: they'd match almost anything
     expect(forms('abc')).toEqual([]);
+  });
+
+  it('browserapp_44_no_picture_of_a_filled_page_and_no_read_once_its_field_shows_the_value', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    host.filled(K, PW, 'pw-field');
+    // no picture while guarded, whatever the field shows; the snapshot reads on while it hides
+    host.command(cdp(1, 'Page.captureScreenshot', { format: 'png' }));
+    host.command(cdp(2, 'Accessibility.getFullAXTree', {}));
+    await settled();
+    expect(answer(o, 1)?.error).toEqual({ code: -32601, message: NOT_PASSED });
+    expect(answer(o, 2)?.result).toBeDefined();
+    // the page's Show password turns the filled field to text: no read of the page leaves
+    g.showing.add('pw-field');
+    host.command(cdp(3, 'Accessibility.getFullAXTree', {}));
+    host.command(cdp(4, 'Runtime.evaluate', { expression: '({url: location.href, title: document.title})', returnByValue: true }));
+    host.command(cdp(5, 'DOM.getContentQuads', { objectId: 'button-object' }));
+    host.command(cdp(6, 'Page.captureScreenshot', { format: 'png' }));
+    // the mouse still works: the agent can go on with the page
+    host.command(cdp(7, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }));
+    await settled();
+    expect([3, 4, 5, 6].map((id) => answer(o, id)?.error?.message)).toEqual([NOT_PASSED, NOT_PASSED, NOT_PASSED, NOT_PASSED]);
+    expect(answer(o, 7)?.result).toBeDefined();
+    expect(g.sent.map((c) => c.method)).not.toContain('Page.captureScreenshot');
+    // the main frame leaves: its fields are gone, and the picture and the reads go on
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });
+    host.command(cdp(8, 'Page.captureScreenshot', { format: 'png' }));
+    host.command(cdp(9, 'Accessibility.getFullAXTree', {}));
+    await settled();
+    expect([answer(o, 8)?.result, answer(o, 9)?.result]).toEqual([expect.anything(), expect.anything()]);
   });
 
   it('browserapp_44_relay_command_keeps_agent_code_true_and_nothing_else', () => {
