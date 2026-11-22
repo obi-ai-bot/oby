@@ -166,7 +166,7 @@ pub(crate) fn table() -> Vec<Tool> {
         Tool { name: "oby_artifact", server: Server::Conversation, confirm_unless_owners_word: false, owner_only: false, marks_on_result: Nothing, read_only: false, does: Does::Conversation(|shared, session, args| Box::pin(artifact(shared, session, args)), "Publishes a file or folder of your room as an artifact the owner's apps show (a page, a doc, an image, a PDF, a canvas), or a new version of one this conversation made. HTML runs with no network. Answers its id and version.",
          json!({"type": "object", "properties": {
              "title": {"type": "string", "description": "One line, 1 to 100 characters."},
-             "path": {"type": "string", "description": "A file or folder in your room, relative to it: a folder with index.html, or a React page's folder with App.tsx or App.jsx and no index.html; a .html, .tsx, .jsx, .md, image or .pdf file; or a folder with canvas.json."},
+             "path": {"type": "string", "description": "Relative to your room: a folder with an index.html, App.tsx or App.jsx, or canvas.json; or a .html, .tsx, .jsx, .md, image or .pdf file."},
              "kind": {"type": "string", "enum": ["html", "markdown", "image", "pdf", "canvas"], "description": "Left out: from the file or folder."},
              "artifact": {"type": "string", "description": "An artifact's id to publish a new version of it."}},
              "required": ["title", "path"]})) },
