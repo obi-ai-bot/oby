@@ -54,9 +54,12 @@ function isEs(name) {
   return !!pkg.module || pkg.type === 'module' || imports(pkg.exports);
 }
 
-/** The entry for `module`: an ES package's own exports, or a CommonJS one's named exports with its default beside them. */
-function entry(module) {
-  if (isEs(module.split('/').slice(0, module.startsWith('@') ? 2 : 1).join('/'))) return `export * from '${module}';\n`;
+/** The entry for `module`: an ES package's own exports (its default too, when `exports` has one), or a CommonJS one's named exports with its default beside them. */
+async function entry(module, exports) {
+  if (isEs(module.split('/').slice(0, module.startsWith('@') ? 2 : 1).join('/'))) {
+    // `export *` leaves out a default: kept as the package has it, so `import clsx from 'clsx'` resolves
+    return `export * from '${module}';\n${(await exports()).includes('default') ? `export { default } from '${module}';\n` : ''}`;
+  }
   const names = Object.keys(require(module)).filter((k) => /^[A-Za-z_$][\w$]*$/.test(k) && k !== 'default').sort();
   return `import m from '${module}';\nexport default m;\nexport const { ${names.join(', ')} } = m;\n`;
 }
@@ -70,7 +73,11 @@ async function built(module, external) {
     mode: 'production',
     define: { 'process.env.NODE_ENV': '"production"' },
     // lib mode resolves its entry from the root: that path is this module's entry, written here
-    plugins: [{ name: 'oby-vendor-entry', enforce: 'pre', resolveId: (s) => (s === join(app, 'vendor-entry') ? id : null), load: (i) => (i === id ? entry(module) : null) }],
+    plugins: [{ name: 'oby-vendor-entry', enforce: 'pre', resolveId: (s) => (s === join(app, 'vendor-entry') ? id : null), async load(i) {
+      if (i !== id) return null;
+      // the ES module's own exports, as this build resolves and reads it
+      return entry(module, async () => (await this.load(await this.resolve(module, i))).exports ?? []);
+    } }],
     build: {
       write: false,
       minify: 'esbuild',

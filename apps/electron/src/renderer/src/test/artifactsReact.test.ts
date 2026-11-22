@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { startRelay, type Relay } from '../../../main/sandpackRelay';
 import { showable } from '../artifacts/showable';
@@ -171,7 +172,7 @@ it('artifactsapp_23_the_relay_serves_the_bridge', async () => {
   expect(forbiddenIn('bridge.js', bridge.body.toString())).toEqual([]);
 });
 
-it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', () => {
+it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', async () => {
   const scratch = mkdtempSync(join(tmpdir(), 'oby-vendor-'));
   let printed: Record<string, string[]>;
   try {
@@ -203,6 +204,9 @@ it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_lic
   }
   for (const f of walk(vendored).filter((f) => /\.m?js$/.test(f))) expect(forbiddenIn(f, readFileSync(join(vendored, f), 'utf8')), f).toEqual([]);
   expect(readFileSync(join(vendored, 'lucide-react/lucide-react.mjs'), 'utf8')).not.toMatch(/dynamicIconImports|DynamicIcon/);
+  // an ES package's own default export is kept: `import clsx from 'clsx'` resolves, as it does on npm
+  const clsx = await import(/* @vite-ignore */ pathToFileURL(join(vendored, 'clsx/clsx.mjs')).href);
+  expect(clsx.default, 'clsx default').toBe(clsx.clsx);
 }, 180_000);
 
 it('artifactsapp_14_a_compile_error_shows_its_message_and_runs_nothing', () => {
