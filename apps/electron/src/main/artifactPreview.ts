@@ -24,6 +24,9 @@ import { allowed, noFiles, overlay, previewAsk, shownAs, thumbAsk } from './prev
 // A second view, never shown, takes the cards' pictures (`artifact-thumb`, ARTIFACTSAPP-18): built
 // the same way, in the same partition, on the same one lock and one relay, its host page told apart
 // by `?thumb`, and never in the window. The page gets only the picture's pixels, a PNG `data:` URL.
+//
+// The pane's Reload (`artifact-reload`, ARTIFACTSAPP-20) runs the version on view again, in the
+// pane's view only: the host page's own refresh, a constant script, never the picture's view.
 
 export const PARTITION = 'oby-artifact-preview';
 const dev = process.env.ELECTRON_RENDERER_URL;
@@ -101,7 +104,7 @@ async function readVersion(id: string, version: number): Promise<{ kind: string;
   return { kind: a.kind, title: a.title, files };
 }
 
-/** The `artifact-preview` and `artifact-thumb` channels; the answer: a function that takes the views away. */
+/** The `artifact-preview`, `artifact-reload` and `artifact-thumb` channels; the answer: a function that takes the views away. */
 export function previewing(trusted: Trusted, window: () => BrowserWindow | null): () => void {
   // the version the page wants on view ('' for none), and the one that is: an ask for the one
   // on view only moves it (the pane resized), and a read whose version is no longer wanted shows nothing
@@ -129,6 +132,11 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     const done = show(key, ask.id, ask.version, ask.edits);
     reading = { key, done };
     try { return await done; } finally { if (reading?.done === done) reading = null; }
+  }, null);
+  // the version on view, run again; with none on view, nothing. It always answers null
+  ipc(trusted).handle('artifact-reload', [], async (): Promise<null> => {
+    if (current && onView) await current.view.webContents.executeJavaScript('window.obyReload?.()').catch(() => {});
+    return null;
   }, null);
   async function show(key: string, id: string, version: number, edits?: Record<string, string>): Promise<Shown> {
     const { view, loaded, relay } = current!;

@@ -6,10 +6,13 @@ import { RENDERED } from '../artifacts/react';
 // waits on before a card's picture. Sandpack's static client is a stand-in that gives the frame its
 // address, as the real one does once its relay is up, and a window of its own (happy-dom loads no frame).
 
+// Each message the stand-in was given goes in `dispatched`.
+const dispatched = vi.hoisted(() => [] as unknown[]);
 vi.mock('oby-sandpack-static', () => ({
   SandpackStatic: class {
     constructor(frame: HTMLIFrameElement) { Object.defineProperty(frame, 'contentWindow', { value: {} }); frame.setAttribute('src', 'about:blank'); }
     destroy(): void {}
+    dispatch(message: unknown): void { dispatched.push(message); }
   },
 }));
 await import('../artifacts/host');
@@ -36,4 +39,11 @@ it('artifactsapp_18_a_react_artifacts_picture_waits_for_its_first_render', async
   const broken = shown({ 'App.tsx': { text: 'export default function App() { return <h1>; }' } });
   loaded(broken);
   expect(await settled(window.obyDrawn!)).toBe(true);
+});
+
+it('artifactsapp_20_reload_runs_the_version_on_view_again', () => {
+  shown({ 'index.html': { text: '<h1>Hi</h1>' } });
+  dispatched.length = 0;
+  window.obyReload!();
+  expect(dispatched).toEqual([{ type: 'refresh' }]);
 });

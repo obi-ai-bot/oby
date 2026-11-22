@@ -40,5 +40,7 @@ function show(v: Show): void {
   client = new SandpackStatic(frame, { files: shown as Record<string, { code: string }>, template: 'static' }, { bundlerURL: v.bundler, showOpenInCodeSandbox: false });
 }
 
-declare global { interface Window { obyShow?: (v: Show) => void; obyDrawn?: Promise<void> } }
+declare global { interface Window { obyShow?: (v: Show) => void; obyDrawn?: Promise<void>; obyReload?: () => void } }
 window.obyShow = show;
+// the pane's Reload (ARTIFACTSAPP-20): the static client's own refresh, which reloads the frame
+window.obyReload = () => client?.dispatch({ type: 'refresh' });

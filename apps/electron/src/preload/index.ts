@@ -111,6 +111,8 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.invoke('artifact-export', id, version, as) as Promise<{ saved: string } | { cancelled: true } | { error: string } | null>,
   // a picture of an artifact's version, taken by main in the preview's own view (main/artifactPreview.ts, ARTIFACTSAPP-18)
   artifactThumb: (id: string, version: number) => ipcRenderer.invoke('artifact-thumb', { id, version }) as Promise<{ src: string } | { none: true } | null>,
+  // the version on view in the preview run again, in main's view (main/artifactPreview.ts, ARTIFACTSAPP-20)
+  artifactReload: () => ipcRenderer.invoke('artifact-reload') as Promise<null>,
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
   // a render error the page's root boundary caught (RenderError.tsx): kept by main, which reloads once

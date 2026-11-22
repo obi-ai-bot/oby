@@ -33,6 +33,11 @@
 //                   relay serves at /__csb_vendor/, every request on loopback.
 //   ARTIFACTSAPP-14: one importing a package outside that set (recharts) shows the browser's own
 //                   error in the frame, and nothing is fetched for it.
+//   ARTIFACTSAPP-19: a page whose script declares `scope`, the console hook's own name, draws
+//                   (artifactsapp_19_a_page_declaring_scope_draws).
+//   ARTIFACTSAPP-20: the pane's Reload runs the page on view again: a page counting its loads in
+//                   sessionStorage shows 2 after it, every request on loopback
+//                   (artifactsapp_20_reload_runs_the_page_again).
 // Screenshots go to OBY_ARTIFACTS_SHOTS (a folder) when it's set: the window, with the preview laid
 // where main lays it.
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts
@@ -641,6 +646,34 @@ async function main() {
   assert.deepEqual(chartsAway, [], `artifactsapp_14: nothing left loopback: ${chartsAway.join(', ')}`);
   await shot(page, '13-react-import-refused');
   console.log(`ok artifactsapp_14_an_import_outside_the_vendored_set_shows_its_error_and_fetches_nothing (${JSON.stringify(refused)})`);
+
+  // ARTIFACTSAPP-19: a page that declares `scope` draws beside Sandpack's console hook; the frame's
+  // console, said when it doesn't
+  await app.evaluate(({ webContents }) => {
+    globalThis.__previewConsole = [];
+    webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'))
+      .on('console-message', (e) => { globalThis.__previewConsole.push(e.message); });
+  });
+  await publishFiles('scope', { 'index.html': `<!doctype html><html><body><script>const scope = 'artifact'; document.body.dataset.scope = scope;</script></body></html>` });
+  const scope = await until('the page declaring scope drawn', async () => (await inFrame('document.body.dataset.scope')).value, 30_000).catch(async (e) => {
+    console.error('artifactsapp_19: document.body.dataset.scope is', (await inFrame('String(document.body.dataset.scope)')).value, '; the frame logged:', JSON.stringify(await app.evaluate(() => globalThis.__previewConsole)));
+    throw e;
+  });
+  assert.equal(scope, 'artifact', `artifactsapp_19: the page's own scope: ${scope}`);
+  await shot(page, '14-scope');
+  console.log(`ok artifactsapp_19_a_page_declaring_scope_draws (document.body.dataset.scope is ${JSON.stringify(scope)})`);
+
+  // ARTIFACTSAPP-20: the pane's Reload runs the page on view again, its frame's session kept
+  await publishFiles('reload', { 'index.html': `<!doctype html><html><body><p id="loads"></p><script>const loads = Number(sessionStorage.getItem('loads') || 0) + 1; sessionStorage.setItem('loads', String(loads)); document.getElementById('loads').textContent = String(loads);</script></body></html>` });
+  const loads = () => inFrame(`document.getElementById('loads')?.textContent ?? null`).then((r) => r.value);
+  assert.equal(await until('the page’s first load', loads, 30_000), '1', 'artifactsapp_20: the page loaded once');
+  await page.locator('[data-artifact-strip] button[aria-label="Reload"]').click();
+  assert.equal(await until('the page loaded again', async () => { const n = await loads(); return n === '2' && n; }, 30_000), '2', 'artifactsapp_20: Reload ran the page again');
+  const reloadRequests = await app.evaluate(() => globalThis.__previewRequests);
+  const reloadOff = reloadRequests.filter((u) => !u.startsWith('file://') && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u) && !u.startsWith('data:') && !u.startsWith('devtools:'));
+  assert.deepEqual(reloadOff, [], 'artifactsapp_20: every request the preview made went to its host page or the relay');
+  await shot(page, '15-reloaded');
+  console.log(`ok artifactsapp_20_reload_runs_the_page_again (the frame shows 2 after Reload, ${reloadRequests.length} requests, all on loopback)`);
 
   // Close takes it away
   await page.getByRole('button', { name: 'Close the artifact' }).click();

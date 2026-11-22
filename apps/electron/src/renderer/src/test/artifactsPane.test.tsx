@@ -151,3 +151,37 @@ describe('ARTIFACTSAPP-18', () => {
     expect(host.querySelector('img.art-thumb-img')!.getAttribute('src')).toBe('data:image/png;base64,V2');
   });
 });
+
+describe('ARTIFACTSAPP-20', () => {
+  it('artifactsapp_20_the_pane_has_board_1bs_reload_on_preview', async () => {
+    const reload = vi.fn(async () => null);
+    (window as unknown as { app: unknown }).app = { artifactPreview: preview, artifactReload: reload };
+    const host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(<><ArtifactCard artifact={page} /><ArtifactPane width={480} /></>));
+    await act(async () => { (host.querySelector('button.art-card') as HTMLButtonElement).click(); });
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="Reload"]')!;
+    expect(button.className).toBe('icon-button is-28');
+    expect(button.textContent).toBe('');
+    const icon = button.querySelector('svg.lucide-rotate-cw')!;
+    expect([icon.getAttribute('width'), icon.getAttribute('stroke-width')]).toEqual(['15', '1.6']);
+    const strip = [...host.querySelector('[data-artifact-strip]')!.children];
+    expect(strip.indexOf(button)).toBe(strip.indexOf(host.querySelector('.art-tabs')!) - 1);
+    await act(async () => button.click());
+    expect(reload).toHaveBeenCalledTimes(1);
+    // on Code, none
+    await act(async () => { (host.querySelectorAll<HTMLButtonElement>('.art-tab')[1]).click(); });
+    expect(host.querySelector('button[aria-label="Reload"]')).toBeNull();
+    await act(async () => { (host.querySelectorAll<HTMLButtonElement>('.art-tab')[0]).click(); });
+    expect(host.querySelector('button[aria-label="Reload"]')).not.toBeNull();
+    // with no Reload on the bridge, none
+    await act(async () => { closeArtifact(); root!.unmount(); });
+    (window as unknown as { app: unknown }).app = { artifactPreview: preview };
+    root = createRoot(host);
+    await act(async () => root!.render(<><ArtifactCard artifact={page} /><ArtifactPane width={480} /></>));
+    await act(async () => { (host.querySelector('button.art-card') as HTMLButtonElement).click(); });
+    expect(host.querySelector('.art-tabs')).not.toBeNull();
+    expect(host.querySelector('button[aria-label="Reload"]')).toBeNull();
+  });
+});

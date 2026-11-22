@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Download, X } from 'lucide-react';
+import { Download, RotateCw, X } from 'lucide-react';
 import { Panel } from '../browser/Panel';
 import { useClicksEverywhere } from '../Menu';
 import { closeArtifact, kindName, onLatest, save, showTab, showVersion, useOpenArtifact, type Tab } from './store';
@@ -11,7 +11,7 @@ import './artifacts.css';
 
 // The artifact beside its conversation (Sangam's board 1b; docs/contracts/artifacts-app.md,
 // ARTIFACTSAPP-1, 4, 5, 8 and 9), in the browser panel's place and frame: its strip, with its
-// version menu, Save once the owner edited it, Preview and Code as LibreChat's panel has them, then
+// version menu, Save once the owner edited it, Reload on Preview, Preview and Code as LibreChat's panel has them, then
 // the tab. Preview isn't the page's: main draws it, with
 // Sandpack, in a view of its own laid over the box this pane keeps for it (main/artifactPreview.ts),
 // told where that box is whenever it moves, and told nothing while Code shows.
@@ -89,6 +89,8 @@ export function ArtifactPane({ width }: { width: number }) {
             </select>
           )}
           {edited && onLatest(open) && <button className="tc-option is-sm art-save" onClick={() => void save()}>{saveAs(open.version)}</button>}
+          {/* board 1b's Reload: main runs the version on view again (ARTIFACTSAPP-20) */}
+          {open.tab === 'preview' && window.app?.artifactReload && <button className="icon-button is-28" aria-label="Reload" onClick={() => void window.app?.artifactReload?.()}><RotateCw size={15} strokeWidth={1.6} /></button>}
           <span className="art-tabs" role="tablist" aria-label="Preview or code">
             {TABS.map(({ tab, label }) => (
               <button key={tab} role="tab" aria-selected={open.tab === tab} className={`art-tab${open.tab === tab ? ' is-on' : ''}`} onClick={() => showTab(tab)}>{label}</button>

@@ -24,7 +24,7 @@
 .art-br .art-strip { height: 40px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--divider); }
 .art-br .art-strip-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .art-br .art-strip-title b { font-size: var(--text-base); font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.art-br .art-strip-title span { font-size: var(--text-sm); color: var(--muted); }
+.art-br .art-strip-title span { font-size: var(--text-sm); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .art-br .art-view { position: relative; flex: 1; min-height: 0; background: #fff; }
 .art-br .art-view-note { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); background: var(--bg); }
 
