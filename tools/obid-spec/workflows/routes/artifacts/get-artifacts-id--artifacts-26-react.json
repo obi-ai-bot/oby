@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}: a React folder (an App.tsx, no index.html) publishes as a page",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-26. An agent's folder with an App.tsx and no index.html, written into the conversation's room, publishes through the conversation's oby_artifact as an html artifact keeping App.tsx. On dev's obid it was refused: \"Not published: a folder is an html artifact with an index.html, …\".",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "app",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.o}",
+        "in": "home",
+        "path": "conversations/${state.said.body.conversation}/room/react/App.tsx",
+        "content": "export default function App() {\n  return <h1>React</h1>;\n}\n"
+      }
+    },
+    {
+      "id": "pub",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"React page\", \"path\": \"react\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "26-a-react-folder-is-a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "kind": "html",
+            "versions.0.files": [
+              "App.tsx"
+            ]
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-26"
+        ]
+      }
+    }
+  ]
+}
