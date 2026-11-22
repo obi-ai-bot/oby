@@ -16,6 +16,7 @@ const VENDORED: Record<string, string> = {
   'react-dom': '/__csb_vendor/react-dom/react-dom.mjs',
   'react-dom/client': '/__csb_vendor/react-dom/client.mjs',
   'lucide-react': '/__csb_vendor/lucide-react/lucide-react.mjs',
+  recharts: '/__csb_vendor/recharts/recharts.mjs',
 };
 /** An error's words wrap and sit inset from the frame's edge, never cut off at it. */
 const ERROR = 'padding:16px;margin:0;white-space:pre-wrap';

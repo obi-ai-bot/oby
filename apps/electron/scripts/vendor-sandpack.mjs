@@ -1,11 +1,14 @@
-// The React artifact's vendored set (docs/contracts/artifacts-app.md, ARTIFACTSAPP-13): React,
-// react-dom, lucide-react and Tailwind's browser build, from the installed packages, written to
-// resources/sandpack-vendor/ (or the folder given) for main's relay to serve at /__csb_vendor/.
-// React ships CommonJS only, so each .mjs is built with Vite's own build() in library mode: ES,
-// minified, NODE_ENV production. Every file but react.mjs keeps `react` external (client.mjs
-// `react-dom` too), so a preview's frame has one React. The same packages give the same bytes.
+// The React artifact's vendored set (docs/contracts/artifacts-app.md, ARTIFACTSAPP-13 and 26): React,
+// react-dom, lucide-react, recharts, clsx, tailwind-merge, class-variance-authority and Tailwind's
+// browser build, from the installed packages, written to resources/sandpack-vendor/ (or the folder
+// given) for main's relay to serve at /__csb_vendor/. React ships CommonJS only, so each .mjs is
+// built with Vite's own build() in library mode: ES, minified, NODE_ENV production. Every file but
+// react.mjs keeps `react` external (client.mjs and recharts.mjs `react-dom` too), so a preview's
+// frame has one React. Beside each built folder's files go its package's LICENSE and
+// THIRD_PARTY_LICENSES, every package the build took in with its licence, read from the build's
+// module ids; those lists are printed as one line of JSON. The same packages give the same bytes.
 //   npm run vendor:sandpack [-- <folder>]
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +26,7 @@ const BUILT = [
   ['react-dom', 'react-dom.mjs', 'react-dom', ['react']],
   ['react-dom', 'client.mjs', 'react-dom/client', ['react', 'react-dom']],
   ['lucide-react', 'lucide-react.mjs', 'lucide-react', ['react']],
+  ['recharts', 'recharts.mjs', 'recharts', ['react', 'react-dom']],
 ];
 /** Each package's LICENSE, by the folder it goes in. */
 const LICENSES = [
@@ -31,13 +35,22 @@ const LICENSES = [
   ['scheduler', 'scheduler'],
   ['lucide-react', 'lucide-react'],
   ['tailwindcss-browser', '@tailwindcss/browser'],
+  ['recharts', 'recharts'],
 ];
 
-const packageDir = (name) => dirname(require.resolve(`${name}/package.json`));
+// ponytail: npm puts every devDependency at the top of node_modules; a package's exports may hide its package.json from require
+const packageDir = (name) => join(app, 'node_modules', name);
 
-/** The entry for `module`: its named exports, and React's CommonJS default beside them. */
+/** Whether a package ships ES modules, by its own package.json: `module`, `"type": "module"` or an `import` condition. */
+function isEs(name) {
+  const pkg = JSON.parse(readFileSync(join(packageDir(name), 'package.json'), 'utf8'));
+  const imports = (e) => !!e && typeof e === 'object' && Object.entries(e).some(([k, v]) => k === 'import' || imports(v));
+  return !!pkg.module || pkg.type === 'module' || imports(pkg.exports);
+}
+
+/** The entry for `module`: an ES package's own exports, or a CommonJS one's named exports with its default beside them. */
 function entry(module) {
-  if (module === 'lucide-react') return "export * from 'lucide-react';\n";
+  if (isEs(module.split('/').slice(0, module.startsWith('@') ? 2 : 1).join('/'))) return `export * from '${module}';\n`;
   const names = Object.keys(require(module)).filter((k) => /^[A-Za-z_$][\w$]*$/.test(k) && k !== 'default').sort();
   return `import m from '${module}';\nexport default m;\nexport const { ${names.join(', ')} } = m;\n`;
 }
@@ -60,14 +73,47 @@ async function built(module, external) {
     },
   });
   const [{ output }] = Array.isArray(out) ? out : [out];
+  const chunk = output.find((o) => o.type === 'chunk' && o.isEntry);
   // Vite's lib mode keeps an ES build's whitespace: its own esbuild takes it out
-  return (await transformWithEsbuild(output.find((o) => o.type === 'chunk' && o.isEntry).code, 'out.mjs', { minify: true, format: 'esm' })).code;
+  return { code: (await transformWithEsbuild(chunk.code, 'out.mjs', { minify: true, format: 'esm' })).code, ids: chunk.moduleIds };
+}
+
+/** A module's package: the folder of its nearest package.json with a name and a version (none off node_modules). */
+function packageOf(id) {
+  const path = id.replace(/^\0/, '').split('?')[0];
+  if (!path.includes('/node_modules/')) return null;
+  for (let dir = dirname(path); dir !== dirname(dir); dir = dirname(dir)) {
+    const file = join(dir, 'package.json');
+    if (!existsSync(file)) continue;
+    const { name, version, license } = JSON.parse(readFileSync(file, 'utf8'));
+    if (name && version) return { name, version, license, dir };
+  }
+  return null;
+}
+
+/** THIRD_PARTY_LICENSES: a section per package, by name, each with its own licence file's text. */
+function thirdParty(packages) {
+  return packages.map(({ name, version, license, dir }) => {
+    const file = readdirSync(dir).filter((f) => /^licen[cs]e/i.test(f)).sort()[0];
+    if (!file) throw new Error(`${name}@${version} has no licence file in ${dir}: it can't be vendored without one.`);
+    return `--- ${name}@${version} (${license}) ---\n\n${readFileSync(join(dir, file), 'utf8').trimEnd()}\n\n`;
+  }).join('');
 }
 
 export async function vendor(into = join(app, 'resources', 'sandpack-vendor')) {
+  const taken = {};
   for (const [folder, file, module, external] of BUILT) {
     mkdirSync(join(into, folder), { recursive: true });
-    writeFileSync(join(into, folder, file), await built(module, external));
+    const { code, ids } = await built(module, external);
+    writeFileSync(join(into, folder, file), code);
+    taken[folder] ??= new Map();
+    for (const p of ids.map(packageOf)) if (p) taken[folder].set(`${p.name}@${p.version}`, p);
+  }
+  const listed = {};
+  for (const [folder, packages] of Object.entries(taken)) {
+    const sorted = [...packages.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    writeFileSync(join(into, folder, 'THIRD_PARTY_LICENSES'), thirdParty(sorted));
+    listed[folder] = sorted.map((p) => `${p.name}@${p.version}`);
   }
   mkdirSync(join(into, 'tailwindcss-browser'), { recursive: true });
   copyFileSync(require.resolve('@tailwindcss/browser'), join(into, 'tailwindcss-browser', 'index.global.js'));
@@ -75,6 +121,7 @@ export async function vendor(into = join(app, 'resources', 'sandpack-vendor')) {
     mkdirSync(join(into, folder), { recursive: true });
     copyFileSync(join(packageDir(name), 'LICENSE'), join(into, folder, 'LICENSE'));
   }
+  return listed;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await vendor(process.argv[2] && resolve(process.argv[2]));
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) console.log(JSON.stringify(await vendor(process.argv[2] && resolve(process.argv[2]))));

@@ -16,6 +16,8 @@ import { forbiddenIn } from '../../../../scripts/local-only.mjs';
 const app = resolve(__dirname, '../../../..');
 const vendored = join(app, 'resources/sandpack-vendor');
 const code = (s: { code: string | Uint8Array }) => s.code as string;
+/** Every file under `dir`, by its path there, sorted. */
+const walk = (dir: string) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(dir.length + 1)).sort();
 
 let relay: Relay;
 beforeAll(async () => { relay = await startRelay(); });
@@ -89,41 +91,60 @@ it('artifactsapp_13_the_relay_serves_the_vendored_files_on_a_preview_host', asyn
   for (const f of ['react/jsx-runtime.mjs', 'react-dom/react-dom.mjs', 'react-dom/client.mjs', 'lucide-react/lucide-react.mjs', 'tailwindcss-browser/index.global.js']) {
     expect((await get(host, `/__csb_vendor/${f}`)).body.equals(readFileSync(join(vendored, f))), f).toBe(true);
   }
-  for (const path of ['/__csb_vendor/react/LICENSE', '/__csb_vendor/README.md', '/__csb_vendor/recharts/recharts.mjs', '/__csb_vendor/react/../react/react.mjs']) {
+  for (const path of ['/__csb_vendor/react/LICENSE', '/__csb_vendor/README.md', '/__csb_vendor/three/three.mjs', '/__csb_vendor/react/../react/react.mjs']) {
     expect((await get(host, path)).status, path).toBe(404);
   }
   expect((await get(`localhost:${relay.port}`, '/__csb_vendor/react/react.mjs')).status).toBe(404);
 });
 
-// ARTIFACTSAPP-23: the bridge, served as it is on a preview host only
-it('artifactsapp_23_the_relay_serves_the_bridge', async () => {
-  const bridge = await get(`k3j9-preview.localhost:${relay.port}`, '/__csb_oby/bridge.js');
-  expect(bridge.status).toBe(200);
-  expect(bridge.type).toBe('text/javascript; charset=utf-8');
-  expect(bridge.body.equals(readFileSync(join(app, 'resources/preview-bridge/bridge.js')))).toBe(true);
-  expect((await get(`localhost:${relay.port}`, '/__csb_oby/bridge.js')).status).toBe(404);
-  expect(forbiddenIn('bridge.js', bridge.body.toString())).toEqual([]);
+// ARTIFACTSAPP-26: every module of the set, found by walking it, and nothing else of it
+it('artifactsapp_26_the_relay_serves_every_vendored_module_and_nothing_else', async () => {
+  const host = `k3j9-preview.localhost:${relay.port}`;
+  const modules = walk(vendored).filter((f) => /\.m?js$/.test(f));
+  expect(modules).toContain('recharts/recharts.mjs');
+  for (const f of modules) {
+    const served = await get(host, `/__csb_vendor/${f}`);
+    expect(served.status, f).toBe(200);
+    expect(served.type, f).toBe('text/javascript; charset=utf-8');
+    expect(served.body.equals(readFileSync(join(vendored, f))), f).toBe(true);
+  }
+  for (const path of ['/__csb_vendor/recharts/LICENSE', '/__csb_vendor/recharts/THIRD_PARTY_LICENSES', '/__csb_vendor/README.md', '/__csb_vendor/three/three.mjs', '/__csb_vendor/react/../react/react.mjs']) {
+    expect((await get(host, path)).status, path).toBe(404);
+  }
+  for (const f of modules) expect((await get(`localhost:${relay.port}`, `/__csb_vendor/${f}`)).status, f).toBe(404);
 });
 
 it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'oby-vendor-'));
+  let printed: Record<string, string[]>;
   try {
-    execFileSync(process.execPath, [join(app, 'scripts/vendor-sandpack.mjs'), scratch], { cwd: app, stdio: 'pipe' });
-    const committed = readdirSync(vendored, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(vendored.length + 1)).sort();
-    expect(committed.filter((f) => f !== 'README.md')).toEqual(readdirSync(scratch, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(scratch.length + 1)).sort());
+    printed = JSON.parse(execFileSync(process.execPath, [join(app, 'scripts/vendor-sandpack.mjs'), scratch], { cwd: app, stdio: 'pipe', encoding: 'utf8' }));
+    const committed = walk(vendored);
+    expect(committed.filter((f) => f !== 'README.md')).toEqual(walk(scratch));
     for (const f of committed.filter((f) => f !== 'README.md')) expect(readFileSync(join(scratch, f)).equals(readFileSync(join(vendored, f))), f).toBe(true);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+  // each built folder's THIRD_PARTY_LICENSES: a section per package the build took in, as the run said
+  expect(Object.keys(printed).sort()).toEqual(['lucide-react', 'react', 'react-dom', 'recharts']);
+  for (const [folder, packages] of Object.entries(printed)) {
+    const sections = readFileSync(join(vendored, folder, 'THIRD_PARTY_LICENSES'), 'utf8').split(/^--- (.+) \(.*\) ---$/m);
+    expect(sections.filter((_, i) => i % 2 === 1), folder).toEqual(packages);
+    for (const text of sections.filter((_, i) => i > 0 && i % 2 === 0)) expect(text.trim().length, folder).toBeGreaterThan(0);
+  }
+  const charts = printed.recharts.map((p) => p.slice(0, p.lastIndexOf('@')));
+  expect(charts).toEqual(expect.arrayContaining(['recharts', 'react-is', 'react-redux', '@reduxjs/toolkit', 'immer']));
+  expect(charts.some((n) => n.startsWith('d3-') || n === 'victory-vendor'), charts.join(', ')).toBe(true);
+  expect(charts).not.toContain('react');
+  expect(charts).not.toContain('react-dom');
   const lock = JSON.parse(readFileSync(join(app, 'package-lock.json'), 'utf8')).packages;
   const readme = readFileSync(join(vendored, 'README.md'), 'utf8');
   for (const [folder, name] of [['react', 'react'], ['react-dom', 'react-dom'], ['scheduler', 'scheduler'], ['lucide-react', 'lucide-react'], ['tailwindcss-browser', '@tailwindcss/browser']]) {
     expect(readFileSync(join(vendored, folder, 'LICENSE')).equals(readFileSync(join(app, 'node_modules', name, 'LICENSE'))), folder).toBe(true);
     expect(readme, name).toMatch(new RegExp(`\\| ${name.replace('/', '\\/')}[ |(].*\\| ${lock[`node_modules/${name}`].version.replace(/\./g, '\\.')} \\|`));
   }
-  for (const f of ['react/react.mjs', 'react/jsx-runtime.mjs', 'react-dom/react-dom.mjs', 'react-dom/client.mjs', 'lucide-react/lucide-react.mjs', 'tailwindcss-browser/index.global.js']) {
-    expect(forbiddenIn(f, readFileSync(join(vendored, f), 'utf8')), f).toEqual([]);
-  }
+  for (const name of ['recharts']) expect(readFileSync(join(vendored, name, 'LICENSE')).equals(readFileSync(join(app, 'node_modules', name, 'LICENSE'))), name).toBe(true);
+  for (const f of walk(vendored).filter((f) => /\.m?js$/.test(f))) expect(forbiddenIn(f, readFileSync(join(vendored, f), 'utf8')), f).toEqual([]);
   expect(readFileSync(join(vendored, 'lucide-react/lucide-react.mjs'), 'utf8')).not.toMatch(/dynamicIconImports|DynamicIcon/);
 }, 180_000);
 
