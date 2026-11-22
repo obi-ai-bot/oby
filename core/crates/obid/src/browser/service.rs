@@ -40,9 +40,13 @@ pub struct Service {
     relay: Arc<super::relay::Relay>,
     /// The window's browser: the agents' tools run on it, over the relay, on the engine's core.
     window: Arc<super::window::WindowDriver>,
-    /// The host's own services on loopback (obid's port, its gateway's): the box's edge a foreign
-    /// job's browser stops at (BROWSER-18). obid's start sets them ([`Service::set_host_ports`]).
+    /// The host's own services' ports (obid's, its gateway's, the `direct` listeners'): the box's
+    /// edge a foreign job's browser stops at (BROWSER-18), on loopback for its navigate and on any
+    /// address for its browser door. obid's start sets them ([`Service::set_host_ports`]).
     host_ports: Mutex<Vec<u16>>,
+    /// Each foreign job's worktree folder, held open from its agent's start (`box_files::room`):
+    /// its uploads are read through it, whatever its box puts in its place after.
+    rooms: Mutex<std::collections::HashMap<String, Arc<std::os::fd::OwnedFd>>>,
 }
 
 impl Service {
@@ -62,15 +66,38 @@ impl Service {
             relay,
             home,
             host_ports: Mutex::new(Vec::new()),
+            rooms: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
-    /// The host's own services' ports on loopback: obid's and its gateway's (BROWSER-18).
+    /// A foreign job's worktree folder, opened and held the first time its agent is given the
+    /// browser (before it starts): later its box could have swapped it. After obid restarts it's
+    /// opened again at the job's next launch, as the folder is then.
+    pub(crate) fn keep_room(&self, job: &str, worktree: &Path) {
+        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        if !rooms.contains_key(job)
+            && let Some(folder) = super::box_files::room(worktree)
+        {
+            rooms.insert(job.to_owned(), Arc::new(folder));
+        }
+    }
+
+    /// The worktree folder held for a foreign job (`keep_room`), if any.
+    pub(super) fn room(&self, job: &str) -> Option<Arc<std::os::fd::OwnedFd>> {
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(job)
+            .cloned()
+    }
+
+    /// The host's own services' ports: obid's, its gateway's and the `direct` listeners'
+    /// (BROWSER-18).
     pub fn set_host_ports(&self, ports: Vec<u16>) {
         *self.host_ports.lock().unwrap_or_else(|e| e.into_inner()) = ports;
     }
 
-    pub(super) fn host_ports(&self) -> Vec<u16> {
+    pub(crate) fn host_ports(&self) -> Vec<u16> {
         self.host_ports
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -193,6 +220,10 @@ impl Service {
 
     /// A job ended (BROWSER-25): its tabs are released on the relay and leave the list.
     pub async fn end_job(&self, job: &str) {
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(job);
         self.window.end(job);
         self.api(|a| a.end_job(job));
         self.flush();

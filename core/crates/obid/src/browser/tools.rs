@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use super::Service;
 use super::api::{Refused, browser_off_for_another_oby, mcp_refusal, mcp_result};
 use super::box_edge;
+use super::box_files;
 use super::contract as c;
 use super::engine::{self, Actor, DownloadFate, Kind, download_rule};
 
@@ -35,7 +36,7 @@ impl Service {
         args: &Value,
     ) -> Value {
         let foreign = self.api(|a| a.job(job).is_some_and(|j| j.origin.foreign()));
-        if foreign && !box_edge::FOREIGN_BROWSER {
+        if foreign && !box_edge::foreign_browser() {
             return mcp_refusal(&box_edge::not_yet());
         }
         if let Err(e) = self.api(|a| a.tools_allowed()) {
@@ -63,6 +64,24 @@ impl Service {
                 return mcp_refusal(&e);
             }
         }
+        // Its worktree is the box's to write, links included: an upload is a copy in obid's own
+        // folder for the job, read through no link, and its screenshots go into that folder
+        // (box_files, BROWSER-18).
+        let own = self.window().room(job);
+        let boxed;
+        let (room, args) = match foreign {
+            false => (room, args),
+            true => match box_files::uploads(room, self.room(job).as_deref(), &own, name, args) {
+                Ok(copied) => {
+                    boxed = copied;
+                    (own.as_path(), &boxed)
+                }
+                Err(path) => {
+                    let refused = engine::Refusal::UploadOutsideRoom(path).to_json();
+                    return mcp_result(self.api(|a| a.for_agent(refused)));
+                }
+            },
+        };
         let actor = Actor::Agent(job.into());
         // Every tool that reaches a page needs Oby's window: its tabs are the window's webviews
         // (T3 Code's design). With no window the call is refused, never run elsewhere.

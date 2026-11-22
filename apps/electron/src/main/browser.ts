@@ -7,7 +7,7 @@ import { flag, oneOf, safeInteger, string } from '../shared/decode';
 import { fillSecret } from './device';
 import { BROWSER_EVENTS, BROWSER_RELAY, sseReader } from '../shared/obid-wire';
 import { namedPartitions, relayCommand, relayHost, type RelayEvent } from './browserRelay';
-import { hosting, type NavState } from './browserGuest';
+import { boxDoor, boxing, hosting, type NavState } from './browserGuest';
 
 // The browser, through main (docs/contracts/browser-app.md, BROWSERAPP-8). Main holds obid's token,
 // so it follows obid's browser for the window, GET /v1/browser/events, passing each message on as it
@@ -22,10 +22,12 @@ import { hosting, type NavState } from './browserGuest';
 // webviews' events go back on POST /v1/browser/relay, in order, on the same token. With the window
 // closed nothing follows the relay: obid's agents are told `no_window`, never given another browser.
 
-// the partition obid named for each agent tab, from its `tab` events: the only one its webview may use
+// the partition obid named for each agent tab, from its `tab` events: the only one its webview may
+// use; a box's session is made ready as soon as a tab names it, and cleared once none does
 const partitions = namedPartitions();
+const boxed = boxing((k) => partitions.drop(k));
 function heard(name: string, data: string) {
-  if (partitions.heard(name, data) === 'refused') console.warn('The browser: a tab event named a partition main doesn’t take for that tab; the first one stands.');
+  if (partitions.heard(name, data, boxed) === 'refused') console.warn('The browser: a tab event named a partition main doesn’t take for that tab; the first one stands.');
 }
 async function post(events: RelayEvent[]): Promise<boolean> {
   const r = await send('POST', BROWSER_RELAY, { events });
@@ -85,7 +87,13 @@ export function browsing(trusted: Trusted, page: Page) {
   const to = (channel: string, message: unknown) => { const w = page(); if (w && !w.isDestroyed()) w.webContents.send(channel, message); };
   // the agent's pointer is drawn by the page over its webview (T3: AgentBrowserCursor), nothing more
   // obid's home is read only when obid names a download folder
-  relay = relayHost(post, { get home() { return HOME; }, pointer: (c) => to('browser-pointer', { threadId: c.threadId, tabId: c.tabId, phase: c.phase, x: c.x, y: c.y }) });
+  relay = relayHost(post, {
+    get home() { return HOME; },
+    pointer: (c) => to('browser-pointer', { threadId: c.threadId, tabId: c.tabId, phase: c.phase, x: c.x, y: c.y }),
+    // a foreign job's door, for its box partition's session only (browserGuest.ts): never to the page
+    box: (c) => { void boxDoor(c).catch(() => undefined); },
+    released: boxed.released,
+  });
   // whether a tab's own page has one behind, one ahead, and is loading, from its webview (T3: Manager.ts:1214-1257)
   navState = (s) => to('browser-nav-state', s);
   let events: (() => void) | null = null;

@@ -41,6 +41,16 @@ pub enum RelayCommand {
     /// Whether an agent's turn runs for the job, so the tabs it uses keep focus between its steps.
     #[serde(rename_all = "camelCase")]
     Turn { thread_id: String, active: bool },
+    /// The door a foreign job's box partition is held to (BROWSER-18): main sets `proxy`, the
+    /// job's browser door with its token in it, as that partition's session's proxy, and alone
+    /// reads it. Sent only on `GET /v1/browser/relay`, never put on `/v1/browser/events` or into
+    /// `browser-event`.
+    #[serde(rename_all = "camelCase")]
+    Box {
+        thread_id: String,
+        partition: String,
+        proxy: String,
+    },
 }
 
 impl RelayCommand {
@@ -50,6 +60,7 @@ impl RelayCommand {
             RelayCommand::Release { .. } => "release",
             RelayCommand::Pointer { .. } => "pointer",
             RelayCommand::Turn { .. } => "turn",
+            RelayCommand::Box { .. } => "box",
         }
     }
 }

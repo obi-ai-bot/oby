@@ -534,8 +534,8 @@ pub async fn serve(
     jobs.use_connections(connections.clone());
     // Oby's browser, browsers a stopped obid left reaped first (crate::browser, BROWSER-25).
     let browser = browser::Service::open(&config.home).await;
-    // The box's edge for another Oby's task's browser: obid's own port and its gateway's
-    // (BROWSER-18).
+    // The box's edge for another Oby's task's browser: obid's own port, its gateway's and the
+    // `direct` listeners' (BROWSER-18).
     let gateway_port = gateway
         .as_ref()
         .and_then(|l| l.local_addr().ok())
@@ -544,6 +544,7 @@ pub async fn serve(
         [Some(bound.port()), gateway_port]
             .into_iter()
             .flatten()
+            .chain(answering.direct.iter().map(|a| a.port()))
             .collect(),
     );
     jobs.use_browser(browser.clone());

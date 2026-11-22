@@ -5,7 +5,10 @@ for the handful a test picks. They live in two places:
 
 - **Beside the code they prove**, in a `#[cfg(test)] mod proofs { #![cfg(kani)] … }` at the end of
   its file (`merge.rs`, `push.rs`, `job/chain.rs` and the others): the factory's harnesses, named
-  after their contract scenarios.
+  after their contract scenarios. `egress.rs`'s two prove the browser door's address rule (BROWSER-18):
+  `browser_18_the_browser_door_refuses_the_hosts_own_network` for every IPv4 and IPv6 address, and
+  `browser_18_the_browser_door_refuses_the_hosts_listeners_on_any_address` for any port and three
+  listener ports too.
 - **In `core/crates/obid/src/proofs/`**, one file per security decider. Each names the files it
   proves on its `//! Proves:` lines, so a change to any of them requires it.
 

@@ -4774,7 +4774,7 @@ fn merging_36_a_review_of_someone_elses_commits_asks_for_its_reads() {
 
 /// BROWSER-18: the owner's review of a pull request whose head has a commit obid didn't record
 /// reads someone else's code from its start: its agent is given no browser server, as another
-/// Oby's task isn't, until the window's side of the box's edge lands.
+/// Oby's task isn't, while the box is off (`box_edge::foreign_browser`).
 #[test]
 fn browser_18_a_review_of_someone_elses_commits_gets_no_browser() {
     let folder = Folder::new("review-theirs-browser");
@@ -7206,7 +7206,7 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     assert_eq!(loaded["sources"], json!([]), "{loaded}");
     assert_eq!(loaded["skills"], json!([]), "{loaded}");
     // None of the owner's or the repository's servers, and no browser: an untrusted job gets none
-    // until the window's side of the box's edge lands (box_edge::FOREIGN_BROWSER, BROWSER-18).
+    // while the box is off (box_edge::foreign_browser, BROWSER-18).
     assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
 }
 

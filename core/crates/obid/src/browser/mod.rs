@@ -25,6 +25,7 @@
 pub mod agent_server;
 pub mod api;
 pub mod box_edge;
+pub(crate) mod box_files;
 pub mod contract;
 pub mod engine;
 pub mod relay;

@@ -4,9 +4,11 @@
 //! (never kept or replayed), and hears [`RelayEvent`]s on `POST /v1/browser/relay`, in order.
 //!
 //! It owns, in memory only: the tabs the window was asked to open and whether each is attached,
-//! the CDP calls waiting for their answers (each by its id, which obid assigns), and the page
-//! events the tools wait on. With nobody following the stream there is no window: a call is
-//! refused `no_window` at once, never run elsewhere. It writes nothing to disk.
+//! the CDP calls waiting for their answers (each by its id, which obid assigns), the page
+//! events the tools wait on, and each foreign job's door for its box partition (BROWSER-18), sent
+//! again to a window that follows anew and when a tab of that job's is made, never logged. With
+//! nobody following the stream there is no window: a call is refused `no_window` at once, never
+//! run elsewhere. It writes nothing to disk.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -84,6 +86,8 @@ struct Pending {
 struct State {
     tabs: HashMap<String, RelayTab>,
     pending: HashMap<u64, Pending>,
+    /// Each foreign job's box partition and its browser door, by job.
+    boxes: HashMap<String, (String, String)>,
 }
 
 /// The relay: see the module's header.
@@ -127,10 +131,42 @@ impl Relay {
 
     /// The stream's reader, for `GET /v1/browser/relay`. Dropping the [`Following`] (the stream
     /// ended) fails every waiting call with [`RelayError::NoWindow`] once nobody follows.
+    /// Every foreign job's door goes to it first, before any later command.
     pub fn follow(self: &Arc<Self>) -> (broadcast::Receiver<RelayCommand>, Following) {
         let rx = self.commands.subscribe();
         self.following.fetch_add(1, Ordering::SeqCst);
+        let state = self.state();
+        for job in state.boxes.keys() {
+            self.send_box(&state, job);
+        }
+        drop(state);
         (rx, Following(self.clone()))
+    }
+
+    /// Job `job`'s box partition is held to `proxy`, its browser door: the window is told once,
+    /// and again only for another door.
+    pub fn set_box(&self, job: &str, partition: &str, proxy: &str) {
+        let mut state = self.state();
+        let door = (partition.to_owned(), proxy.to_owned());
+        if state.boxes.get(job) != Some(&door) {
+            state.boxes.insert(job.to_owned(), door);
+            self.send_box(&state, job);
+        }
+    }
+
+    /// Job `job` ended: its door is forgotten, and nothing is sent.
+    pub fn forget_box(&self, job: &str) {
+        self.state().boxes.remove(job);
+    }
+
+    fn send_box(&self, state: &State, job: &str) {
+        if let Some((partition, proxy)) = state.boxes.get(job) {
+            self.send(RelayCommand::Box {
+                thread_id: job.to_owned(),
+                partition: partition.clone(),
+                proxy: proxy.clone(),
+            });
+        }
     }
 
     /// The page events from now on, for a tool's wait.
@@ -143,18 +179,21 @@ impl Relay {
     }
 
     /// A tab obid just made for `job`, which the window mounts from its `tab` event (T3's way):
-    /// obid waits for its `attached`.
+    /// obid waits for its `attached`. A foreign job's door goes again, so a box the window
+    /// cleared with its last tab gets it back.
     pub fn expect(&self, job: &str, tab: &str) -> Result<(), RelayError> {
         if !self.window() {
             return Err(RelayError::NoWindow);
         }
-        self.state().tabs.insert(
+        let mut state = self.state();
+        state.tabs.insert(
             tab.into(),
             RelayTab {
                 job: job.into(),
                 ..RelayTab::default()
             },
         );
+        self.send_box(&state, job);
         Ok(())
     }
 
@@ -641,6 +680,38 @@ mod tests {
             again.try_recv().is_err(),
             "nothing else, and nothing from before"
         );
+    }
+
+    /// BROWSER-18: a foreign job's door goes to the window once when set, before anything else
+    /// to a window that follows anew, and again when obid makes a tab of that job's; never once
+    /// the job ended.
+    #[tokio::test]
+    async fn browser_18_the_window_is_given_a_foreign_jobs_door_and_again_when_it_follows_anew() {
+        let relay = Arc::new(Relay::new());
+        let (mut first, _following) = relay.follow();
+        let door = RelayCommand::Box {
+            thread_id: "j1".into(),
+            partition: "oby-box-j1".into(),
+            proxy: "http://oby:t@127.0.0.1:1".into(),
+        };
+        relay.set_box("j1", "oby-box-j1", "http://oby:t@127.0.0.1:1");
+        relay.set_box("j1", "oby-box-j1", "http://oby:t@127.0.0.1:1");
+        assert_eq!(first.recv().await.unwrap(), door);
+        assert!(first.try_recv().is_err(), "the same door again sends none");
+        let (mut again, _again) = relay.follow();
+        relay.turn("j1", true);
+        assert_eq!(again.recv().await.unwrap(), door);
+        assert!(matches!(
+            again.recv().await.unwrap(),
+            RelayCommand::Turn { .. }
+        ));
+        relay.expect("j1", "tab-1").unwrap();
+        assert_eq!(again.recv().await.unwrap(), door);
+        assert_eq!(door.kind(), "box");
+        relay.forget_box("j1");
+        let (mut after, _after) = relay.follow();
+        relay.expect("j1", "tab-2").unwrap();
+        assert!(after.try_recv().is_err(), "no door once the job ended");
     }
 
     #[test]

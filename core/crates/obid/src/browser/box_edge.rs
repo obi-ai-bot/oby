@@ -9,18 +9,26 @@ use super::api::Refused;
 use super::contract::Origin;
 
 /// Whether a foreign job (another Oby's task, one marked `untrusted`, Oby's own review) gets a
-/// browser. Off until the window's side of the box's edge lands, the browser lane's task after
-/// W01-03: the window runs pages on the owner's Mac and network, outside the box's egress proxy,
-/// and [`in_box`] reads only the address open and navigate are given. That task turns this on once
-/// the window holds a foreign page to the job's egress decisions, refuses private, link-local and
-/// every loopback host after resolving names, and holds script, links, redirects and navigations a
-/// page starts to the same rules (`evaluate`, `act`). Until then `jobs::reach` gives such a job no
+/// browser: off, the owner's decision. Its box is built and runs once on: the job's browser door
+/// (crate::egress), its `box` on the relay, and the window's box session held to that door. It
+/// stays off because a box page can still write the owner's clipboard on an agent's click:
+/// `document.open()` wipes every listener of the page's window, main's clipboard guard's too, in
+/// every world, so no guard inside the page holds. It turns on when a follow-up keeps a box page off
+/// the clipboard by a means the page can't undo. Until then `jobs::reach` gives such a job no
 /// browser server and every tool refuses it ([`not_yet`]); the tests that fail if this breaks are
-/// `browser_api.rs` `browser_18_a_foreign_jobs_browser_tools_are_refused_until_the_windows_edge`
-/// and `jobs_api.rs` `lanes_23_*` (an untrusted run loads no server).
-pub const FOREIGN_BROWSER: bool = false;
+/// `browser_api.rs` `browser_18_a_foreign_job_gets_no_browser_while_the_box_is_off` and
+/// `jobs_api.rs` `lanes_23_*` (an untrusted run loads no server). A debug build's test turns it on
+/// with `OBID_TEST_FOREIGN_BROWSER=1`, to drive the box.
+pub fn foreign_browser() -> bool {
+    #[cfg(debug_assertions)]
+    if std::env::var("OBID_TEST_FOREIGN_BROWSER").is_ok_and(|v| v == "1") {
+        return true;
+    }
+    false
+}
 
-/// A foreign job's browser tool while [`FOREIGN_BROWSER`] is off: it finishes without one.
+/// A foreign job's browser tool while the box is off ([`foreign_browser`]): it finishes without
+/// one.
 pub fn not_yet() -> Refused {
     Refused::new(
         403,
