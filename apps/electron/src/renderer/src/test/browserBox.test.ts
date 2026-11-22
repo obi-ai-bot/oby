@@ -17,13 +17,18 @@ type FakeSession = {
   cache: number;
   auth: number;
   proxied: { resolve: () => void } | null;
+  asked: (permission: string) => boolean;
+  checked: (permission: string) => boolean;
 };
 const the = vi.hoisted(() => ({ sessions: new Map<string, unknown>() }));
 function fakeSession(partition: string) {
   const s = {
     partition, requests: [] as Handler[], proxies: [] as unknown[], cleared: [] as unknown[], cache: 0, auth: 0,
     proxied: null as { resolve: () => void } | null,
-    setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {},
+    asked: (_p: string) => false, checked: (_p: string) => false,
+    setPermissionRequestHandler(h: (wc: unknown, p: string, done: (ok: boolean) => void) => void) { s.asked = (p) => { let ok = false; h(null, p, (v) => { ok = v; }); return ok; }; },
+    setPermissionCheckHandler(h: (wc: unknown, p: string) => boolean) { s.checked = (p) => h(null, p); },
+    on() {},
     webRequest: { onBeforeRequest: (h: Handler) => { s.requests.push(h); } },
     setProxy: (config: unknown) => { s.proxies.push(config); return new Promise<void>((resolve) => { s.proxied = { resolve }; }); },
     clearStorageData: async (o: unknown) => { s.cleared.push(o); },
@@ -36,7 +41,7 @@ vi.mock('electron', () => ({
   session: { fromPartition: (p: string) => { if (!the.sessions.has(p)) the.sessions.set(p, fakeSession(p)); return the.sessions.get(p); } },
   webContents: { fromId: () => null },
 }));
-const { BOX_HOLD_MS, boxDoor, boxing, hosting } = await import('../../../main/browserGuest');
+const { BOX_HOLD_MS, boxDoor, boxing, clearBox, hosting } = await import('../../../main/browserGuest');
 const { session } = await import('electron');
 const sessionOf = (p: string) => session.fromPartition(p) as unknown as FakeSession;
 const made = (p: string) => the.sessions.has(p);
@@ -124,6 +129,16 @@ describe('BROWSERAPP-36: a box partition\'s session is made before its guest att
     expect(r.got).toEqual({ cancel: true });
   });
 
+  it('browserapp_36: a box page gets only fullscreen and pointer lock, never the clipboard; an agent\'s page keeps the clipboard\'s sanitized write', () => {
+    const w = aWindow();
+    w.attaching('oby-box-b36h');
+    w.attaching('persist:oby-agent-cursor');
+    const box = sessionOf('oby-box-b36h'), agent = sessionOf('persist:oby-agent-cursor');
+    for (const p of ['fullscreen', 'pointerLock']) expect([box.asked(p), box.checked(p)]).toEqual([true, true]);
+    for (const p of ['clipboard-sanitized-write', 'clipboard-read', 'media']) expect([box.asked(p), box.checked(p)], p).toEqual([false, false]);
+    expect([agent.asked('clipboard-sanitized-write'), agent.checked('clipboard-sanitized-write')]).toEqual([true, true]);
+  });
+
   it('browserapp_36: an agent partition\'s session gets no request handler and no proxy', () => {
     const w = aWindow();
     expect(w.attaching('persist:oby-agent-claude')).toBe(true);
@@ -162,6 +177,33 @@ describe('BROWSERAPP-37: a box\'s session goes only through its job\'s door', ()
       { isProxy: true, host: '10.0.0.1', port: 50138 },
       { isProxy: true, host: '127.0.0.1', port: 50139 },
     ]) expect(login(wc, other), JSON.stringify(other)).toEqual({ prevented: true, answered: [] });
+  });
+
+  it('browserapp_37: a box page is given no client certificate of the owner\'s; an agent page is left to Electron', () => {
+    const w = aWindow();
+    w.attaching('oby-box-b37e');
+    const pick = (wc: EventEmitter) => {
+      const got = { prevented: false, answered: null as unknown[] | null };
+      wc.emit('select-client-certificate', { preventDefault: () => { got.prevented = true; } }, 'https://example.com/', [{ subjectName: 'the owner' }], (...args: unknown[]) => { got.answered = args; });
+      return got;
+    };
+    expect(pick(w.guest('oby-box-b37e'))).toEqual({ prevented: true, answered: [] });
+    expect(pick(w.guest('persist:oby-agent-claude'))).toEqual({ prevented: false, answered: null });
+  });
+
+  it('browserapp_37: a box cleared while its door is still being set doesn\'t get that door back', async () => {
+    const w = aWindow();
+    w.attaching('oby-box-b37f');
+    const wc = w.guest('oby-box-b37f');
+    const s = sessionOf('oby-box-b37f');
+    const early = request(s);
+    const set = boxDoor(boxFor('b37f', 50140));
+    await clearBox('oby-box-b37f');
+    s.proxied!.resolve();
+    await set;
+    expect(early.got).toBe('held');
+    expect(request(s).got).toBe('held');
+    expect(login(wc, { isProxy: true, host: '127.0.0.1', port: 50140 }).answered).toEqual([]);
   });
 
   it('browserapp_37: a box guest keeps WebRTC to the proxy; an agent guest is left as it was', () => {

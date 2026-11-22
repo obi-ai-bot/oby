@@ -18,6 +18,8 @@ export { pageOk } from './pageRule';
 export const SETTLE_MS = 5_000;
 /** the permissions a page gets (T3's list, less geolocation and the loopback network): no others */
 export const PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', 'pointerLock']);
+/** a box page's: never the owner's clipboard, which another Oby's task's acts could write */
+export const BOX_PERMISSIONS = new Set(['fullscreen', 'pointerLock']);
 /** how long a box page's request waits for its job's door before it's cancelled */
 export const BOX_HOLD_MS = 10_000;
 /** how long a page may take to answer before main leaves it anyway, stuck in a script (T3: Manager.ts:139) */
@@ -46,6 +48,8 @@ const boxes = new WeakMap<Session, string>();
 const doors = new Map<string, { port: number; token: string }>();
 // each box's requests waiting for its door
 const waiting = new Map<string, Set<() => void>>();
+// how many times each box was cleared: a door still being set when it was isn't kept
+const clears = new Map<string, number>();
 
 /**
  * One partition's session, set up once: its permissions and where its downloads go; for a box, every
@@ -55,8 +59,9 @@ const waiting = new Map<string, Set<() => void>>();
 export function prepare(s: Session, partition: string) {
   if (ready.has(s)) return;
   ready.add(s);
-  s.setPermissionRequestHandler((_wc, permission, done) => done(PERMISSIONS.has(permission)));
-  s.setPermissionCheckHandler((_wc, permission) => PERMISSIONS.has(permission));
+  const granted = isBox(partition) ? BOX_PERMISSIONS : PERMISSIONS;
+  s.setPermissionRequestHandler((_wc, permission, done) => done(granted.has(permission)));
+  s.setPermissionCheckHandler((_wc, permission) => granted.has(permission));
   s.on('will-download', (_e, item, wc) => {
     // an agent's download goes where obid said for its tab (Page.setDownloadBehavior), else nowhere
     const folder = wc ? folders.get(wc.id) : null;
@@ -82,7 +87,10 @@ export async function boxDoor(c: BoxCommand) {
   const s = session.fromPartition(c.partition);
   prepare(s, c.partition);
   const port = Number(door[2]);
+  const cleared = clears.get(c.partition) ?? 0;
   await s.setProxy({ mode: 'fixed_servers', proxyRules: `127.0.0.1:${port}`, proxyBypassRules: '<-loopback>' });
+  // the box was cleared meanwhile: its requests wait for the door obid sends again
+  if ((clears.get(c.partition) ?? 0) !== cleared) return;
   doors.set(c.partition, { port, token: door[1] });
   for (const go of [...(waiting.get(c.partition) ?? [])]) go();
 }
@@ -110,6 +118,7 @@ export async function clearBox(partition: string) {
     s.clearAuthCache(),
   ]);
   doors.delete(partition);
+  clears.set(partition, (clears.get(partition) ?? 0) + 1);
   await cleared;
 }
 
@@ -176,6 +185,9 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
         if (door && authInfo.isProxy && authInfo.host === '127.0.0.1' && authInfo.port === door.port) callback('oby', door.token);
         else callback();
       });
+      // no TLS identity of the owner's to another Oby's page: it goes on with no client certificate
+      // (the same callback as app's, whose typings say what Electron does: none goes on without one)
+      wc.on('select-client-certificate', (ev, _url, _list, callback) => { ev.preventDefault(); (callback as () => void)(); });
     }
     // a page of the web stays on the web: no window of its own, no file:, javascript: or data:
     wc.setWindowOpenHandler(({ url }) => { if (pageOk(url)) void wc.loadURL(url); return { action: 'deny' }; });
