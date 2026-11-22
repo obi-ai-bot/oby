@@ -1,0 +1,64 @@
+import { transform, type Transform } from 'sucrase';
+import { bytes, escaped, page, text, type Shown, type Version } from './showable';
+
+// A React artifact's page (docs/contracts/artifacts-app.md, ARTIFACTSAPP-13 and 14): an `html`
+// version with an App.tsx or App.jsx and no index.html, compiled here in the preview's host page,
+// as LibreChat's react-ts template draws one, but on what main's relay serves (/__csb_vendor/),
+// never a CDN. Each source becomes its `.js`; the written index.html's import map sends React's
+// names to the vendored builds and each file's own URL, with and without its extension, to its
+// `.js`, so the artifact's imports run as they are written. An import outside the map is the
+// browser's own resolve error, shown in the page; a bare name outside it is never fetched.
+
+const TRANSFORMS: Record<string, Transform[]> = { tsx: ['typescript', 'jsx'], ts: ['typescript'], jsx: ['jsx'], js: ['jsx'] };
+const VENDORED: Record<string, string> = {
+  react: '/__csb_vendor/react/react.mjs',
+  'react/jsx-runtime': '/__csb_vendor/react/jsx-runtime.mjs',
+  'react-dom': '/__csb_vendor/react-dom/react-dom.mjs',
+  'react-dom/client': '/__csb_vendor/react-dom/client.mjs',
+  'lucide-react': '/__csb_vendor/lucide-react/lucide-react.mjs',
+};
+/** An error's words wrap, never cut off at the frame's edge. */
+const WRAP = 'pre{white-space:pre-wrap}';
+/** What a stylesheet's import gets: nothing, its file linked from the head instead. */
+const EMPTY = '/__oby_empty.js';
+
+// App's default export mounted in #root; any error's own text in a <pre>
+const MOUNT = `import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+const shown = (e) => { const pre = document.createElement('pre'); pre.style.whiteSpace = 'pre-wrap'; pre.textContent = e instanceof Error ? e.message : String(e); document.body.replaceChildren(pre); };
+window.onerror = (message, _source, _line, _column, error) => { shown(error ?? message); };
+import('/App.js').then((app) => { createRoot(document.getElementById('root'), { onUncaughtError: shown }).render(createElement(app.default)); }, shown);`;
+
+/** The files the preview shows for a React artifact's version, every path from `/`. */
+export function reactShown(v: Version): Shown {
+  const shown: Shown = {};
+  const imports: Record<string, string> = { ...VENDORED };
+  const sheets: string[] = [];
+  for (const p of Object.keys(v.files).sort()) {
+    const f = v.files[p];
+    const source = /^(.*)\.(tsx|ts|jsx|js)$/i.exec(p);
+    if (!source) {
+      shown[`/${p}`] = { code: 'text' in f ? f.text : bytes(f) };
+      if (/\.css$/i.test(p)) { imports[`/${p}`] = EMPTY; sheets.push(p); }
+      continue;
+    }
+    const [, base, ext] = source;
+    const js = `/${base}.js`;
+    try {
+      shown[js] = { code: transform(text(f), { transforms: TRANSFORMS[ext.toLowerCase()], jsxRuntime: 'automatic', production: true, filePath: p }).code };
+    } catch (e) {
+      return { '/index.html': { code: page(v.title, WRAP, `<pre>${escaped(e instanceof Error ? e.message : String(e))}</pre>`) } };
+    }
+    imports[`/${p}`] = js;
+    imports[`/${base}`] = js;
+    // ponytail: a folder's `/dir` only; an import map's `/dir/` key is a prefix and must map to a folder
+    const folder = /^(.+)\/index$/.exec(base);
+    if (folder) imports[`/${folder[1]}`] = js;
+  }
+  if (sheets.length) shown[EMPTY] = { code: 'export {};\n' };
+  const head = `<script type="importmap">${JSON.stringify({ imports }).replace(/</g, '\\u003c')}</script>`
+    + sheets.map((p) => `<link rel="stylesheet" href="/${escaped(encodeURI(p))}">`).join('')
+    + '<script src="/__csb_vendor/tailwindcss-browser/index.global.js"></script>';
+  shown['/index.html'] = { code: page(v.title, '', `<div id="root"></div><script type="module">${MOUNT}</script>`, head) };
+  return shown;
+}

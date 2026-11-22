@@ -1,0 +1,129 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { request } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterAll, beforeAll, expect, it } from 'vitest';
+import { startRelay, type Relay } from '../../../main/sandpackRelay';
+import { showable } from '../artifacts/showable';
+// @ts-expect-error a plain script
+import { forbiddenIn } from '../../../../scripts/local-only.mjs';
+
+// A React artifact in the preview (docs/contracts/artifacts-app.md, ARTIFACTSAPP-13 and 14): what
+// the host page compiles and writes, and the vendored set main's relay serves it from. Drawn in the
+// real window, from loopback only, in scripts/test-artifacts.mjs.
+
+const app = resolve(__dirname, '../../../..');
+const vendored = join(app, 'resources/sandpack-vendor');
+const code = (s: { code: string | Uint8Array }) => s.code as string;
+
+let relay: Relay;
+beforeAll(async () => { relay = await startRelay(); });
+afterAll(async () => { await relay.close(); });
+
+function get(host: string, path: string): Promise<{ status: number; type: string | undefined; body: Buffer }> {
+  return new Promise((done, failed) => {
+    const r = request({ host: '127.0.0.1', port: relay.port, path, headers: { Host: host } }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => done({ status: res.statusCode ?? 0, type: res.headers['content-type'], body: Buffer.concat(chunks) }));
+    });
+    r.on('error', failed);
+    r.end();
+  });
+}
+
+const APP = `import { useState } from 'react';
+import { Check } from 'lucide-react';
+import { Label } from './Label';
+
+export default function App(): JSX.Element {
+  const [n] = useState<number>(3);
+  return <main className="p-4"><h1>React {n}</h1><Check /><Label text="ok" /></main>;
+}
+`;
+const LABEL = `export function Label({ text }: { text: string }) {
+  return <span>{text}</span>;
+}
+`;
+
+it('artifactsapp_13_a_react_folder_gets_an_index_with_the_vendored_import_map', () => {
+  const shown = showable({ kind: 'html', title: 'Counter', files: { 'App.tsx': { text: APP }, 'Label.tsx': { text: LABEL } } });
+  expect(Object.keys(shown).sort()).toEqual(['/App.js', '/Label.js', '/index.html']);
+  for (const js of ['/App.js', '/Label.js']) {
+    expect(code(shown[js]), js).not.toMatch(/<\w|: (string|number|JSX)|<number>/);
+  }
+  expect(code(shown['/App.js'])).toContain('from "react/jsx-runtime"');
+  const index = code(shown['/index.html']);
+  const map = JSON.parse(/<script type="importmap">(.*?)<\/script>/s.exec(index)![1]).imports;
+  expect(map).toMatchObject({
+    react: '/__csb_vendor/react/react.mjs',
+    'react/jsx-runtime': '/__csb_vendor/react/jsx-runtime.mjs',
+    'react-dom': '/__csb_vendor/react-dom/react-dom.mjs',
+    'react-dom/client': '/__csb_vendor/react-dom/client.mjs',
+    'lucide-react': '/__csb_vendor/lucide-react/lucide-react.mjs',
+    '/Label': '/Label.js',
+    '/Label.tsx': '/Label.js',
+  });
+  expect(index).toContain('<script src="/__csb_vendor/tailwindcss-browser/index.global.js"></script>');
+  expect(index).toContain('<div id="root"></div>');
+  expect(index).toContain("import('/App.js')");
+  // every address on the frame's own origin: a path, never a scheme or a host
+  const addresses = [...index.matchAll(/(?:src|href)="([^"]*)"/g)].map((m) => m[1]).concat(Object.values(map) as string[], Object.keys(map).filter((k) => k.startsWith('/')));
+  expect(addresses.length).toBeGreaterThan(8);
+  for (const a of addresses) expect(a, a).toMatch(/^\/(?!\/)/);
+  expect(index).not.toMatch(/https?:|\/\/[a-z]/i);
+});
+
+it('artifactsapp_13_a_page_with_an_index_is_shown_as_it_was', () => {
+  const files = { 'index.html': { text: '<h1>Mine</h1>' }, 'App.tsx': { text: APP } };
+  expect(showable({ kind: 'html', title: 'Mine', files })).toEqual({ '/App.tsx': { code: APP }, '/index.html': { code: '<h1>Mine</h1>' } });
+});
+
+it('artifactsapp_13_the_relay_serves_the_vendored_files_on_a_preview_host', async () => {
+  const host = `k3j9-preview.localhost:${relay.port}`;
+  const react = await get(host, '/__csb_vendor/react/react.mjs');
+  expect(react.status).toBe(200);
+  expect(react.type).toBe('text/javascript; charset=utf-8');
+  expect(react.body.equals(readFileSync(join(vendored, 'react/react.mjs')))).toBe(true);
+  for (const f of ['react/jsx-runtime.mjs', 'react-dom/react-dom.mjs', 'react-dom/client.mjs', 'lucide-react/lucide-react.mjs', 'tailwindcss-browser/index.global.js']) {
+    expect((await get(host, `/__csb_vendor/${f}`)).body.equals(readFileSync(join(vendored, f))), f).toBe(true);
+  }
+  for (const path of ['/__csb_vendor/react/LICENSE', '/__csb_vendor/README.md', '/__csb_vendor/recharts/recharts.mjs', '/__csb_vendor/react/../react/react.mjs']) {
+    expect((await get(host, path)).status, path).toBe(404);
+  }
+  expect((await get(`localhost:${relay.port}`, '/__csb_vendor/react/react.mjs')).status).toBe(404);
+});
+
+it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_licence_beside_it', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'oby-vendor-'));
+  try {
+    execFileSync(process.execPath, [join(app, 'scripts/vendor-sandpack.mjs'), scratch], { cwd: app, stdio: 'pipe' });
+    const committed = readdirSync(vendored, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(vendored.length + 1)).sort();
+    expect(committed.filter((f) => f !== 'README.md')).toEqual(readdirSync(scratch, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(scratch.length + 1)).sort());
+    for (const f of committed.filter((f) => f !== 'README.md')) expect(readFileSync(join(scratch, f)).equals(readFileSync(join(vendored, f))), f).toBe(true);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  const lock = JSON.parse(readFileSync(join(app, 'package-lock.json'), 'utf8')).packages;
+  const readme = readFileSync(join(vendored, 'README.md'), 'utf8');
+  for (const [folder, name] of [['react', 'react'], ['react-dom', 'react-dom'], ['scheduler', 'scheduler'], ['lucide-react', 'lucide-react'], ['tailwindcss-browser', '@tailwindcss/browser']]) {
+    expect(readFileSync(join(vendored, folder, 'LICENSE')).equals(readFileSync(join(app, 'node_modules', name, 'LICENSE'))), folder).toBe(true);
+    expect(readme, name).toMatch(new RegExp(`\\| ${name.replace('/', '\\/')}[ |(].*\\| ${lock[`node_modules/${name}`].version.replace(/\./g, '\\.')} \\|`));
+  }
+  for (const f of ['react/react.mjs', 'react/jsx-runtime.mjs', 'react-dom/react-dom.mjs', 'react-dom/client.mjs', 'lucide-react/lucide-react.mjs', 'tailwindcss-browser/index.global.js']) {
+    expect(forbiddenIn(f, readFileSync(join(vendored, f), 'utf8')), f).toEqual([]);
+  }
+  expect(readFileSync(join(vendored, 'lucide-react/lucide-react.mjs'), 'utf8')).not.toMatch(/dynamicIconImports|DynamicIcon/);
+}, 180_000);
+
+it('artifactsapp_14_a_compile_error_shows_its_message_and_runs_nothing', () => {
+  const shown = showable({ kind: 'html', title: 'Broken', files: { 'App.tsx': { text: 'export default function App() { return <h1>open <b>never closed</h1>; }' } } });
+  expect(Object.keys(shown)).toEqual(['/index.html']);
+  const index = code(shown['/index.html']);
+  const pre = /<pre>(.*)<\/pre>/s.exec(index)![1];
+  expect(pre.length).toBeGreaterThan(5);
+  expect(pre).not.toContain('<');
+  expect(index).not.toContain('<script');
+  expect(index).not.toContain('<b>');
+});
