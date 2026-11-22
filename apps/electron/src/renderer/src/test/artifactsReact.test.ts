@@ -197,11 +197,10 @@ it('artifactsapp_13_each_vendored_file_is_its_pinned_packages_build_with_its_lic
   expect(printed['class-variance-authority'].map((p) => p.slice(0, p.lastIndexOf('@')))).toContain('clsx');
   const lock = JSON.parse(readFileSync(join(app, 'package-lock.json'), 'utf8')).packages;
   const readme = readFileSync(join(vendored, 'README.md'), 'utf8');
-  for (const [folder, name] of [['react', 'react'], ['react-dom', 'react-dom'], ['scheduler', 'scheduler'], ['lucide-react', 'lucide-react'], ['tailwindcss-browser', '@tailwindcss/browser']]) {
+  for (const [folder, name] of [['react', 'react'], ['react-dom', 'react-dom'], ['scheduler', 'scheduler'], ['lucide-react', 'lucide-react'], ['tailwindcss-browser', '@tailwindcss/browser'], ['recharts', 'recharts'], ['clsx', 'clsx'], ['tailwind-merge', 'tailwind-merge'], ['class-variance-authority', 'class-variance-authority']]) {
     expect(readFileSync(join(vendored, folder, 'LICENSE')).equals(readFileSync(licenceOf(name))), folder).toBe(true);
     expect(readme, name).toMatch(new RegExp(`\\| ${name.replace('/', '\\/')}[ |(].*\\| ${lock[`node_modules/${name}`].version.replace(/\./g, '\\.')} \\|`));
   }
-  for (const name of ['recharts', 'clsx', 'tailwind-merge', 'class-variance-authority']) expect(readFileSync(join(vendored, name, 'LICENSE')).equals(readFileSync(licenceOf(name))), name).toBe(true);
   for (const f of walk(vendored).filter((f) => /\.m?js$/.test(f))) expect(forbiddenIn(f, readFileSync(join(vendored, f), 'utf8')), f).toEqual([]);
   expect(readFileSync(join(vendored, 'lucide-react/lucide-react.mjs'), 'utf8')).not.toMatch(/dynamicIconImports|DynamicIcon/);
 }, 180_000);

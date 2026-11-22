@@ -3,7 +3,10 @@
 A React artifact's page (docs/contracts/artifacts-app.md, ARTIFACTSAPP-13) imports these files from
 its own origin: main's relay serves each `.mjs` and `.js` here at `/__csb_vendor/<folder>/<file>`
 (`src/main/sandpackRelay.ts`), so nothing of it comes from a CDN. Each folder holds its package's
-own `LICENSE`, copied from the package.
+own `LICENSE`, copied from the package. Each built folder (not `scheduler/` or `tailwindcss-browser/`)
+also holds `THIRD_PARTY_LICENSES`: a section for every package its build took in, found from the
+build's module ids (the nearest `package.json` with a name and a version), sorted by name, each
+headed `--- <name>@<version> (<licence>) ---` and holding that package's own licence file.
 
 | Folder | Package | Version | Licence | Files |
 |---|---|---|---|---|
@@ -12,13 +15,21 @@ own `LICENSE`, copied from the package.
 | `scheduler/` | scheduler (built into `react-dom/client.mjs`) | 0.28.0 | MIT | its `LICENSE` |
 | `lucide-react/` | lucide-react (its main entry: no `DynamicIcon`, no `dynamicIconImports`) | 1.55.0 | ISC, with MIT for the icons derived from Feather, both in its `LICENSE` | `lucide-react.mjs` |
 | `tailwindcss-browser/` | @tailwindcss/browser (its own `dist/index.global.js`, byte for byte) | 4.3.5 | MIT | `index.global.js` |
+| `recharts/` | recharts (with react-is 19.3.0, the d3 parts through `victory-vendor`, redux, `@reduxjs/toolkit`, react-redux, immer, reselect, es-toolkit and the rest its `THIRD_PARTY_LICENSES` lists) | 3.11.0 | MIT; the d3 parts ISC (victory-vendor, which re-exports them, says `MIT AND ISC AND BSD-3-Clause`), the rest MIT | `recharts.mjs` |
+| `clsx/` | clsx | 2.1.1 | MIT | `clsx.mjs` |
+| `tailwind-merge/` | tailwind-merge | 3.7.1 | MIT | `tailwind-merge.mjs` |
+| `class-variance-authority/` | class-variance-authority (with its own clsx 2.1.1) | 0.7.1 | Apache-2.0 | `class-variance-authority.mjs` |
 
 The versions are `package-lock.json`'s. React ships CommonJS only, so each `.mjs` is built from the
 installed packages with Vite's `build()` in library mode (ES, minified, `NODE_ENV` production);
-every file but `react.mjs` keeps `react` outside it, and `client.mjs` `react-dom` too, so a page
+an ES package's entry is `export * from` it, as its own `package.json` says it is ES. Every file but
+`react.mjs` keeps `react` outside it, and `client.mjs` and `recharts.mjs` `react-dom` too, so a page
 has one React. To make them again, after the packages change:
 
     npm run vendor:sandpack
+
+It prints, as one line of JSON, each built folder's packages, the list its `THIRD_PARTY_LICENSES`
+was written from.
 
 The same packages give the same bytes (`artifactsReact.test.ts` builds them again and compares).
 The set grows only by vendoring: one package and its licence at a time.
