@@ -4,7 +4,7 @@ import { downloadsFile } from './reveal';
 import { HOME, send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { flag, oneOf, safeInteger, string } from '../shared/decode';
-import { fillSecret } from './device';
+import { fillSecret, typeInPages } from './device';
 import { BROWSER_EVENTS, BROWSER_RELAY, sseReader } from '../shared/obid-wire';
 import { namedPartitions, relayCommand, relayHost, type RelayEvent } from './browserRelay';
 import { boxDoor, boxing, hosting, type NavState } from './browserGuest';
@@ -44,6 +44,9 @@ let navState: ((s: NavState) => void) | null = null;
 /** the window's webviews, once it exists: hardened, checked against obid's partitions, relayed */
 export function hostBrowser(win: BrowserWindow) {
   webviews = hosting(win, relay!, (k) => partitions.of(k), (s) => navState?.(s));
+  // Fill in types into the tab's own page, never through obid (BROWSERAPP-12)
+  const w = webviews;
+  typeInPages((tab, field, value) => w.type(tab, field, value));
 }
 
 // --- following obid's browser for the window

@@ -5,8 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { owners, wordsOf } from '../../../shared/words';
 
 // What went with obid's own Chrome (docs/contracts/browser-app.md, BROWSERAPP-10): the page is each
-// tab's own <webview>, so the window streams no picture of it and signs none of the owner's mouse
-// and keys for obid. This fails if any of it comes back into the app's source. Take control and
+// tab's own <webview>, so the window streams no picture of it, signs none of the owner's mouse
+// and keys for obid, and sends obid no password to fill (Fill in types it into the page itself,
+// BROWSERAPP-12). This fails if any of it comes back into the app's source. Take control and
 // Give back stay signed (BROWSERAPP-9, browserLive.test.ts).
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -21,6 +22,7 @@ const RETIRED: [string, RegExp][] = [
   ['the live frame (the streamed picture of the page)', /\bLiveFrame\b|data-browser="frame(-input)?"|\bBrowserFrame\b/],
   ['main\'s stream followers and their channels', /browser-(watch|unwatch|frame)\b|\/v1\/browser\/tabs\/[^'"`\s]*\/stream|browserTabPath\([^)]*'stream'|tabs\\\/\[\^\/\]\+\\\/stream/],
   ['the owner\'s input signed for obid (browserInput)', /\b(sawInput|mayInput|INPUT_PATH|BrowserInput)\b|browserInput|\/v1\/browser\/tabs\/[^'"`\s]*\/input|browserTabPath\([^)]*'input'/],
+  ['the value sent to obid (…/secret)', /['"`][^'"`\s]*\/secret\b|browserTabPath\([^)]*'secret'/],
 ];
 
 describe('BROWSERAPP-10: what went with obid\'s own browser stays gone', () => {

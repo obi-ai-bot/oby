@@ -50,6 +50,73 @@ export function harden(prefs: Record<string, unknown>, params: { partition?: str
   return true;
 }
 
+/**
+ * What Fill in does to a page before it types into it, the owner's choice of 2026-11-21 (D2(a),
+ * BROWSERAPP-43): `reload`, the page loads again, so no script the agent ran in it is in the document
+ * the password goes into (what the page held, a typed name say, is lost). `none`: the page as it is.
+ */
+export const FILL_PREP: 'reload' | 'none' = 'reload';
+/** how long Fill in waits for the page to load again before it gives up */
+export const RELOAD_MS = 15_000;
+/** the values of the page's password fields, for main's own check of what it relays (never relayed) */
+export const PASSWORDS = '[...document.querySelectorAll(\'input[type="password" i]\')].map((e) => e.value)';
+const IS_PASSWORD = 'function () { return this instanceof HTMLInputElement && this.type.toLowerCase() === \'password\'; }';
+/** how many characters the focused field holds: Fill in reads back only that, never the value */
+export const FIELD_LENGTH = '(() => { const el = document.activeElement; return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? [...el.value].length : -1; })()';
+/**
+ * The page's own JavaScript that puts the keyboard on the field an ask names (a CSS selector), only
+ * when it's an input or a text area: true once it has focus. The selector goes in as a string
+ * literal; the value never goes into any script (Fill in types it, Input.insertText).
+ */
+export const focusField = (field: string) =>
+  `(() => { const el = document.querySelector(${JSON.stringify(field)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false; el.focus(); return document.activeElement === el; })()`;
+/** the parts of a tab's webview Fill in types through: its WebContents, or a fake one (browserFill.test.ts) */
+export type FillPage = {
+  debugger: { sendCommand(method: string, params?: object): Promise<unknown> };
+  reload(): void;
+  focus(): void;
+  insertText(text: string): Promise<void>;
+  once(event: 'did-finish-load', listener: () => void): unknown;
+  off(event: 'did-finish-load', listener: () => void): unknown;
+};
+
+// the page loaded again, from the start (Fill in's reload): true once it has, false past RELOAD_MS
+function reloaded(wc: FillPage): Promise<boolean> {
+  return new Promise((done) => {
+    const timer = setTimeout(() => { wc.off('did-finish-load', ok); done(false); }, RELOAD_MS);
+    const ok = () => { clearTimeout(timer); done(true); };
+    wc.once('did-finish-load', ok);
+    wc.reload();
+  });
+}
+
+/**
+ * Fill in (BROWSERAPP-12 and 43): the value typed into the field of the tab's own page, through its
+ * debugger, as keys typed there would; it goes to no script, no log and never to obid. Only into the
+ * owner's own agents' tabs, never another Oby's box. Null once typed, else why not.
+ */
+export async function typeInto(wc: FillPage, k: TabKey, partition: string | undefined, host: Pick<RelayHost, 'fillStarts' | 'fillEnds' | 'filled'>, field: string, value: string): Promise<string | null> {
+  if (!partition?.startsWith('persist:oby-agent-')) return 'This page isn’t open in the window.';
+  // the agent's script doesn't run on the page from here: not while it reloads, nor once it's filled
+  host.fillStarts(k);
+  const read = async (expression: string) => ((await wc.debugger.sendCommand('Runtime.evaluate', { expression, returnByValue: true })) as { result?: { value?: unknown } } | undefined)?.result?.value;
+  try {
+    if (FILL_PREP === 'reload' && !(await reloaded(wc))) { host.fillEnds(k); return 'The page didn’t load again in time.'; }
+    // the guest gets the keyboard first, as T3's Take control gives it (preview/Manager.ts:2482)
+    wc.focus();
+    if (await read(focusField(field)) !== true) { host.fillEnds(k); return 'That field isn’t on the page.'; }
+    await wc.debugger.sendCommand('Input.insertText', { text: value });
+    // only its length is read back, never the value: typed once more as the guest's own input if
+    // CDP's didn't land (T3: preview/GuestInput.ts:199-200)
+    if (await read(FIELD_LENGTH) === 0) await wc.insertText(value);
+    host.filled(k, value);
+    return (await read(FIELD_LENGTH)) === [...value].length ? null : 'The page didn’t take what you typed.';
+  } catch (err) {
+    host.fillEnds(k);
+    return `Oby couldn’t fill the page: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 const keyed = new Map<number, TabKey>();
 const folders = new Map<number, string | null>();
 const ready = new WeakSet<Session>();
@@ -188,6 +255,17 @@ function asGuest(wc: WebContents): Guest {
       if (keyCode) wc.sendInputEvent({ type, keyCode });
     },
     downloadsTo: (folder) => folders.set(wc.id, folder),
+    // main's own reads, through the same debugger, never relayed: what the page's password fields hold
+    passwords: async () => {
+      const r = await wc.debugger.sendCommand('Runtime.evaluate', { expression: PASSWORDS, returnByValue: true }) as { result?: { value?: unknown } };
+      return Array.isArray(r?.result?.value) ? r.result.value.filter((v): v is string => typeof v === 'string' && v.length > 0) : [];
+    },
+    isPassword: async (objectId) => {
+      try {
+        const r = await wc.debugger.sendCommand('Runtime.callFunctionOn', { objectId, functionDeclaration: IS_PASSWORD, returnByValue: true }) as { result?: { value?: unknown } };
+        return r?.result?.value === true;
+      } catch { return false; }
+    },
   };
 }
 
@@ -345,6 +423,14 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       } catch (e) {
         return (e as Error).message;
       }
+    },
+    /** Fill in on obid's tab, in this window's webview for it (typeInto): null once typed, else why not */
+    type(tabId: string, field: string, value: string): Promise<string | null> {
+      const id = [...keyed.entries()].find(([, k]) => k.tabId === tabId)?.[0];
+      const wc = id === undefined ? undefined : webContents.fromId(id);
+      if (!wc || wc.isDestroyed() || wc.hostWebContents !== win.webContents || !wc.debugger.isAttached()) return Promise.resolve('This page isn’t open in the window.');
+      const k = keyed.get(wc.id)!;
+      return typeInto(wc, k, named(k), host, field, value);
     },
   };
 }
