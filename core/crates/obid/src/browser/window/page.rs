@@ -95,6 +95,12 @@ fn key_of(key: &str) -> (String, String, i64) {
     (key.to_string(), code, upper as i64)
 }
 
+/// Whether a URL is a `javascript:` one, read as the browser reads it (WHATWG URL,
+/// `reqwest::Url`: ` JavaScript:` and `java\tscript:` too).
+fn runs_script(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| u.scheme() == "javascript")
+}
+
 impl WindowDriver {
     /// One CDP command for `tab`'s page, within what is left of `until`.
     async fn send(&self, tab: &str, method: &str, params: Value, until: Until) -> Step<Value> {
@@ -231,9 +237,15 @@ impl WindowDriver {
     async fn navigate(&self, job: &str, tab: &str, url: &str, until: Until) -> Step<Value> {
         self.enable(job, tab, until).await?;
         let mut events = self.relay.page_events();
-        let r = self
-            .send(tab, "Page.navigate", json!({"url": url}), until)
-            .await?;
+        let params = json!({"url": url});
+        // A `javascript:` URL runs the agent's own script in the page: marked (BROWSER-33).
+        let r = if runs_script(url) {
+            self.relay
+                .cdp_agent(tab, "Page.navigate", params, until.left())
+                .await?
+        } else {
+            self.send(tab, "Page.navigate", params, until).await?
+        };
         if let Some(e) = r["errorText"].as_str().filter(|e| !e.is_empty()) {
             return Err(Stop::Failed(format!("{url}: {e}")));
         }
@@ -851,7 +863,8 @@ mod tests {
         (frame["method"].as_str().unwrap().to_string(), agent_code)
     }
 
-    /// BROWSER-33: only the agent's own script (`eval`) goes out marked; obid's own reads don't.
+    /// BROWSER-33: only the agent's own script (`eval`, a `javascript:` URL it opens) goes out
+    /// marked; obid's own reads don't.
     #[tokio::test]
     async fn browser_33_only_evaluate_sends_agent_code() {
         let relay = Arc::new(Relay::new());
@@ -894,5 +907,36 @@ mod tests {
             answer(&relay, &mut rx, json!({"nodes": []}))
         );
         assert_eq!(sent, ("Accessibility.getFullAXTree".to_string(), false));
+
+        // A `javascript:` URL the agent opens is its own script too; a page's address isn't.
+        // The first open enables the tab's page (two frames), then navigates and reads the page.
+        let (js, web) = (
+            words(&["open", "javascript:1"]),
+            words(&["open", "https://a/"]),
+        );
+        let (_, sent) = tokio::join!(d.call("j1", &js, limit), async {
+            let mut sent = Vec::new();
+            for _ in 0..4 {
+                sent.push(answer(&relay, &mut rx, json!({})).await);
+            }
+            sent
+        });
+        assert!(
+            sent.contains(&("Page.navigate".to_string(), true)),
+            "{sent:?}"
+        );
+        let (_, sent) = tokio::join!(d.call("j1", &web, limit), async {
+            let mut sent = Vec::new();
+            for _ in 0..2 {
+                sent.push(answer(&relay, &mut rx, json!({})).await);
+            }
+            sent
+        });
+        assert!(
+            sent.contains(&("Page.navigate".to_string(), false)),
+            "{sent:?}"
+        );
+        assert!(runs_script(" JavaScript:1") && runs_script("java\tscript:1"));
+        assert!(!runs_script("https://a/") && !runs_script("about:blank"));
     }
 }

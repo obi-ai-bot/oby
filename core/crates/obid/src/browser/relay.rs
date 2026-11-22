@@ -251,8 +251,9 @@ impl Relay {
         self.cdp_call(tab, method, params, within, false).await
     }
 
-    /// [`Relay::cdp`] for the agent's own script (`oby_browser_evaluate`): its frame goes out
-    /// marked `agentCode`, so the window may refuse it (BROWSER-33).
+    /// [`Relay::cdp`] for the agent's own script (`oby_browser_evaluate`'s expression, a
+    /// `javascript:` URL it opens): its frame goes out marked `agentCode`, so the window may
+    /// refuse it (BROWSER-33).
     pub async fn cdp_agent(
         &self,
         tab: &str,

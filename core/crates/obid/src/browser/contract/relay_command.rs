@@ -24,8 +24,9 @@ pub enum RelayCommand {
         thread_id: String,
         tab_id: String,
         message: String,
-        /// The frame is the agent's own script (`oby_browser_evaluate`), sent as `true`; a window
-        /// may refuse it. Left out for obid's own frames (BROWSER-33).
+        /// The frame is the agent's own script (`oby_browser_evaluate`'s expression, a
+        /// `javascript:` URL it opens), sent as `true`; a window may refuse it. Left out for
+        /// obid's own frames (BROWSER-33).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         agent_code: bool,
     },
