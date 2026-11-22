@@ -12,6 +12,7 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -733,6 +734,56 @@ impl AgentTab {
             .unwrap_or(Value::Null)
     }
 
+    /// The agent's navigate, on a thread of its own: it says `act` on `done` once answered.
+    fn navigate_on_thread(&self, done: mpsc::Sender<&'static str>) -> JoinHandle<(u16, Value)> {
+        let (port, token) = (self.obid.port, self.token.clone());
+        std::thread::spawn(move || {
+            let bearer = format!("Bearer {token}");
+            let answer = raw_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_navigate", "arguments": {"url": PAGE}}}),
+            );
+            done.send("act").unwrap();
+            answer
+        })
+    }
+
+    /// The owner's signed take, on a thread of its own: it says `take` on `done` once answered.
+    /// Its words are signed here: the thread has no obid of its own to sign with.
+    fn take_on_thread(&self, done: mpsc::Sender<&'static str>) -> JoinHandle<(u16, Value)> {
+        let (port, path) = (self.obid.port, self.path("take"));
+        let header = words_header(&self.obid, "POST", &path, Some(&json!({})));
+        std::thread::spawn(move || {
+            let auth = format!("Bearer {TOKEN}");
+            let answer = raw_at(
+                port,
+                "POST",
+                &path,
+                &[("Authorization", &auth), ("X-Oby-Words", &header)],
+                &json!({}),
+            );
+            done.send("take").unwrap();
+            answer
+        })
+    }
+
+    /// Holds back the page's answer to the next navigate until `go` is set; `page` hears when it
+    /// goes.
+    fn hold_navigate(&self, go: &Arc<AtomicBool>, page: mpsc::Sender<&'static str>) {
+        let (go, page) = (go.clone(), Mutex::new(page));
+        self.window.hold("Page.navigate", move || {
+            let going = go.load(Ordering::SeqCst);
+            if going {
+                page.lock().unwrap().send("page").unwrap();
+            }
+            going
+        });
+    }
+
     fn stop(mut self) {
         stop_with_no_browser_left(&mut self.obid);
     }
@@ -834,52 +885,13 @@ fn browser_6_a_take_during_an_act_answers_once_the_act_ends() {
     let go = Arc::new(AtomicBool::new(false));
     let (done, order) = mpsc::channel();
     // The act ends when the page answers its navigate: the stand-in says so, then answers.
-    let (let_go, page) = (go.clone(), Mutex::new(done.clone()));
-    agent.window.hold("Page.navigate", move || {
-        let going = let_go.load(Ordering::SeqCst);
-        if going {
-            page.lock().unwrap().send("page").unwrap();
-        }
-        going
-    });
+    agent.hold_navigate(&go, done.clone());
     let navigates = agent.window.sent("Page.navigate");
-    let acting = {
-        let (port, token, done) = (agent.obid.port, agent.token.clone(), done.clone());
-        std::thread::spawn(move || {
-            let bearer = format!("Bearer {token}");
-            let answer = raw_at(
-                port,
-                "POST",
-                "/v1/browser/mcp",
-                &[("Authorization", &bearer)],
-                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                    "params": {"name": "oby_browser_navigate", "arguments": {"url": PAGE}}}),
-            );
-            done.send("act").unwrap();
-            answer
-        })
-    };
+    let acting = agent.navigate_on_thread(done.clone());
     within(30, "the act reaches the page", || {
         (agent.window.sent("Page.navigate") > navigates).then_some(())
     });
-    // The take's signed words, made here: the thread has no obid of its own to sign with.
-    let path = agent.path("take");
-    let header = words_header(&agent.obid, "POST", &path, Some(&json!({})));
-    let taking = {
-        let port = agent.obid.port;
-        std::thread::spawn(move || {
-            let auth = format!("Bearer {TOKEN}");
-            let answer = raw_at(
-                port,
-                "POST",
-                &path,
-                &[("Authorization", &auth), ("X-Oby-Words", &header)],
-                &json!({}),
-            );
-            done.send("take").unwrap();
-            answer
-        })
-    };
+    let taking = agent.take_on_thread(done);
     let device = device(&agent.obid);
     within(30, "the tab shows held while the act runs", || {
         (agent.shown()["heldBy"] == device.as_str()).then_some(())
@@ -901,6 +913,46 @@ fn browser_6_a_take_during_an_act_answers_once_the_act_ends() {
         "the take answers after the act: {order:?}"
     );
     assert!(at("page") < at("act"), "{order:?}");
+    agent.stop();
+}
+
+/// T3's epoch check (`SessionControl.take`): a give back while the device's own take still waits
+/// for the agent's act ends that take, so the engine is never left holding a tab the API shows free.
+#[test]
+fn browser_6_a_give_back_while_its_take_waits_leaves_the_agent_free() {
+    let agent = AgentTab::open("browser-6-give-back-waiting");
+    let go = Arc::new(AtomicBool::new(false));
+    let (done, order) = mpsc::channel();
+    agent.hold_navigate(&go, done.clone());
+    let navigates = agent.window.sent("Page.navigate");
+    let acting = agent.navigate_on_thread(done.clone());
+    within(30, "the act reaches the page", || {
+        (agent.window.sent("Page.navigate") > navigates).then_some(())
+    });
+    let taking = agent.take_on_thread(done);
+    let device = device(&agent.obid);
+    within(30, "the tab shows held while the act runs", || {
+        (agent.shown()["heldBy"] == device.as_str()).then_some(())
+    });
+    let given = agent.signed("giveBack");
+    assert_eq!(given.status, 200, "{}", given.text);
+    assert_eq!(given.body["heldBy"], Value::Null, "{}", given.text);
+    assert!(order.try_recv().is_err(), "nothing answered yet");
+    go.store(true, Ordering::SeqCst);
+    let (status, act) = acting.join().unwrap();
+    assert_eq!(status, 200, "{act}");
+    assert_eq!(act["result"]["structuredContent"]["ok"], true, "{act}");
+    let (status, taken) = taking.join().unwrap();
+    assert_eq!(
+        (status, taken["reason"].as_str()),
+        (409, Some("control_changed")),
+        "{taken}"
+    );
+    assert_eq!(agent.shown()["heldBy"], Value::Null);
+    let navigates = agent.window.sent("Page.navigate");
+    let next = agent.navigate();
+    assert_eq!(next["ok"], true, "{next}");
+    assert_eq!(agent.window.sent("Page.navigate"), navigates + 1);
     agent.stop();
 }
 

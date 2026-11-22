@@ -257,7 +257,8 @@ fn sse_of(e: &c::Event) -> SseEvent {
 
 /// The owner's device takes a tab (BROWSER-5, 6, T3's `take`): signed first, so nothing is held on
 /// a refusal; from then no act of the agent's is let through, and the take answers once the acts
-/// already running end.
+/// already running end. A handover while it waited (a give back) ends it `control_changed`, T3's
+/// epoch check, so the engine never holds a tab the API shows free.
 async fn take(
     State(shared): State<Arc<Shared>>,
     Path(tab): Path<String>,
@@ -271,9 +272,12 @@ async fn take(
         Err(e) => return refused(e),
     };
     let service = &shared.browser;
-    let first = service.api(|a| a.take(&device, &tab));
+    let first = service.api(|a| {
+        let first = a.take(&device, &tab)?;
+        Ok::<_, Refused>((first, a.hold_of(&tab)?.hold_generation))
+    });
     service.flush();
-    let first = match first {
+    let (first, generation) = match first {
         Ok(t) => t,
         Err(e) => return refused(e),
     };
@@ -285,12 +289,26 @@ async fn take(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
-    let engine = service
-        .window()
-        .core()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take(&device, &tab);
+    // Checked under the engine's lock: a give back either ended the hold before this look, or
+    // finds the engine held by this device and releases it.
+    let engine = {
+        let mut core = service
+            .window()
+            .core()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let still = service.api(|a| a.hold_of(&tab)).is_ok_and(|h| {
+            h.held_by.as_deref() == Some(device.as_str()) && h.hold_generation == generation
+        });
+        if !still {
+            return refused(Refused::new(
+                409,
+                "control_changed",
+                "Control of this tab changed while the take waited for the agent's act, so nothing is held. Take control again.",
+            ));
+        }
+        core.take(&device, &tab)
+    };
     if let Err(r) = engine {
         return refused(Refused::engine(r.code(), &r.message()));
     }
@@ -321,13 +339,18 @@ async fn give_back(
         Ok(h) => h,
         Err(e) => return refused(e),
     };
-    let engine = service
+    // The engine is held only once a take's wait ended: given back while that take still waited,
+    // there is nothing to release, and the take ends itself `control_changed`.
+    let mut core = service
         .window()
         .core()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .release(&device, &tab);
-    if let Err(r) = engine {
+        .unwrap_or_else(|e| e.into_inner());
+    if core
+        .tab(&tab)
+        .is_some_and(|t| t.person.as_deref() == Some(device.as_str()))
+        && let Err(r) = core.release(&device, &tab)
+    {
         return refused(Refused::engine(r.code(), &r.message()));
     }
     ok(&given)
