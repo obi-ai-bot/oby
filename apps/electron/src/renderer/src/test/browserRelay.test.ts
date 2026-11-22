@@ -30,7 +30,7 @@ function fakeGuest(over: Partial<Guest> = {}): FakeGuest {
     key: (p: Record<string, unknown>) => { g.keys.push(p); },
     downloadsTo: (f: string | null) => { g.folder = f; },
     onPage: [], passwordObjects: new Set<string>(),
-    passwords: async () => g.onPage,
+    passwordFields: async () => g.onPage,
     isPassword: async (id: string) => g.passwordObjects.has(id),
     ...over,
   };

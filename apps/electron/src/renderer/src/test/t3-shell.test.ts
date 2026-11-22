@@ -86,7 +86,7 @@ vi.mock('electron', async () => {
 });
 vi.mock('../../../main/obid', () => ({ bridge() {}, startObid() {}, obid: async () => ({ status: 200, text: '{"owner":"me"}' }) }));
 vi.mock('../../../main/live', () => ({ living() {} }));
-vi.mock('../../../main/device', () => ({ confirming() {}, ownersWords() {}, keptKey() {} }));
+vi.mock('../../../main/device', () => ({ confirming() {}, ownersWords() {}, keptKey() {}, typeInPages() {} }));
 vi.mock('../../../main/words', () => ({ input() {}, space() {}, picked() {}, takeInput: () => false }));
 vi.mock('../../../main/notify', () => ({ notifying() {}, windowLeft() {}, windowSeen() {} }));
 vi.mock('../../../main/updates', () => ({ updating() {} }));

@@ -96,7 +96,7 @@ export interface Guest {
   /** where its downloads go, as obid named it (or nowhere, null) */
   downloadsTo(folder: string | null): void;
   /** the values of the page's password fields now, read by main itself and never relayed */
-  passwords(): Promise<string[]>;
+  passwordFields(): Promise<string[]>;
   /** whether a CDP object of the page is a password input, asked by main itself */
   isPassword(objectId: string): Promise<boolean>;
 }
@@ -234,7 +234,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       } else result = await t.guest.send(method, params);
       // nothing of a password leaves for obid: those main filled, and those on the page now
       const said = JSON.stringify(result ?? {});
-      if (carries(said, filledIn.get(key(t.k)) ?? []) || (/^(Runtime|DOM|Accessibility)\./.test(method) && carries(said, await t.guest.passwords().catch(() => [])))) {
+      if (carries(said, filledIn.get(key(t.k)) ?? []) || (/^(Runtime|DOM|Accessibility)\./.test(method) && carries(said, await t.guest.passwordFields().catch(() => [])))) {
         return reply(t, { id, error: { code: -32000, message: NOT_PASSED } });
       }
       reply(t, { id, result: result ?? {} });

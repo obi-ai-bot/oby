@@ -256,7 +256,7 @@ function asGuest(wc: WebContents): Guest {
     },
     downloadsTo: (folder) => folders.set(wc.id, folder),
     // main's own reads, through the same debugger, never relayed: what the page's password fields hold
-    passwords: async () => {
+    passwordFields: async () => {
       const r = await wc.debugger.sendCommand('Runtime.evaluate', { expression: PASSWORDS, returnByValue: true }) as { result?: { value?: unknown } };
       return Array.isArray(r?.result?.value) ? r.result.value.filter((v): v is string => typeof v === 'string' && v.length > 0) : [];
     },
