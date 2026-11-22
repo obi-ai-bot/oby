@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 import { session, webContents, type BrowserWindow, type Session, type WebContents } from 'electron';
-import { partitionOk, type Guest, type RelayHost, type TabKey } from './browserRelay';
+import { BOX_PROXY, partitionOk, type BoxCommand, type Guest, type RelayHost, type TabKey } from './browserRelay';
 export { PARTITION, partitionOk } from './browserRelay';
 import { pageOk } from './pageRule';
 export { pageOk } from './pageRule';
@@ -8,12 +8,18 @@ export { pageOk } from './pageRule';
 // Each agent tab's `<webview>` in the window, as T3 Code hosts them (apps/desktop/src/window/
 // DesktopWindow.ts, preview/Manager.ts; docs/plans/browser-t3.md): hardened when it attaches, in
 // the partition obid named for its tab and no other, its debugger attached ("1.3") and handed to
-// the relay once its first page settled, and given back when DevTools takes it.
+// the relay once its first page settled, and given back when DevTools takes it. A foreign job's box
+// partition (`oby-box-<job>`) has its session made before its guest attaches, as T3's getSession
+// makes a partition's (apps/desktop/src/preview/BrowserSession.ts:578-683): every request waits for
+// its job's egress door, the proxy obid hands main alone (`box`), and the box is cleared with its
+// last tab (BrowserSession.ts:689-740).
 
 /** how long the first page may take to settle before the tab is announced anyway (T3: 5 s) */
 export const SETTLE_MS = 5_000;
 /** the permissions a page gets (T3's list, less geolocation and the loopback network): no others */
 export const PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', 'pointerLock']);
+/** how long a box page's request waits for its job's door before it's cancelled */
+export const BOX_HOLD_MS = 10_000;
 /** how long a page may take to answer before main leaves it anyway, stuck in a script (T3: Manager.ts:139) */
 export const BUSY_PAGE_PROBE_MS = 1_000;
 /** the owner's Back, Forward, Reload and Stop loading on a tab's own page */
@@ -34,9 +40,19 @@ export function harden(prefs: Record<string, unknown>, params: { partition?: str
 const keyed = new Map<number, TabKey>();
 const folders = new Map<number, string | null>();
 const ready = new WeakSet<Session>();
+const isBox = (partition: string) => partition.startsWith('oby-box-');
+// each box session's partition, and each box's door once its session's proxy is set
+const boxes = new WeakMap<Session, string>();
+const doors = new Map<string, { port: number; token: string }>();
+// each box's requests waiting for its door
+const waiting = new Map<string, Set<() => void>>();
 
-// One partition's session, set up once: its permissions and where its downloads go
-function prepare(s: Session) {
+/**
+ * One partition's session, set up once: its permissions and where its downloads go; for a box, every
+ * request held until its job's door is set, cancelled after BOX_HOLD_MS without one (T3: getSession,
+ * BrowserSession.ts:578-683, its handlers at 618-643). Run before its guest attaches.
+ */
+export function prepare(s: Session, partition: string) {
   if (ready.has(s)) return;
   ready.add(s);
   s.setPermissionRequestHandler((_wc, permission, done) => done(PERMISSIONS.has(permission)));
@@ -47,6 +63,54 @@ function prepare(s: Session) {
     if (!folder) { item.cancel(); return; }
     item.setSavePath(join(folder, basename(item.getFilename()) || 'download'));
   });
+  if (!isBox(partition)) return;
+  boxes.set(s, partition);
+  s.webRequest.onBeforeRequest((_details, callback) => {
+    if (doors.has(partition)) return callback({});
+    const held = waiting.get(partition) ?? new Set<() => void>();
+    waiting.set(partition, held);
+    const go = () => { clearTimeout(timer); held.delete(go); callback({}); };
+    const timer = setTimeout(() => { held.delete(go); callback({ cancel: true }); }, BOX_HOLD_MS);
+    held.add(go);
+  });
+}
+
+/** obid's `box`: the box's session made ready, its proxy set to the job's door, then its held requests let go */
+export async function boxDoor(c: BoxCommand) {
+  const door = BOX_PROXY.exec(c.proxy);
+  if (!door) return;
+  const s = session.fromPartition(c.partition);
+  prepare(s, c.partition);
+  const port = Number(door[2]);
+  await s.setProxy({ mode: 'fixed_servers', proxyRules: `127.0.0.1:${port}`, proxyBypassRules: '<-loopback>' });
+  doors.set(c.partition, { port, token: door[1] });
+  for (const go of [...(waiting.get(c.partition) ?? [])]) go();
+}
+
+/**
+ * What main does with a partition as obid's tabs name it and let it go (`drop`, namedPartitions'):
+ * a box's session is made ready when a tab names it, and cleared once none does
+ */
+export function boxing(drop: (k: TabKey) => string | null) {
+  const last = (partition: string) => { void clearBox(partition).catch(() => undefined); };
+  return {
+    kept: (partition: string) => { if (isBox(partition)) prepare(session.fromPartition(partition), partition); },
+    last,
+    released: (k: TabKey) => { const was = drop(k); if (was) last(was); },
+  };
+}
+
+/** a box's last tab went: its storage, cache and logins cleared (T3: BrowserSession.ts:689-740), then its door forgotten */
+export async function clearBox(partition: string) {
+  if (!isBox(partition)) return;
+  const s = session.fromPartition(partition);
+  const cleared = Promise.all([
+    s.clearStorageData({ storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] }),
+    s.clearCache(),
+    s.clearAuthCache(),
+  ]);
+  doors.delete(partition);
+  await cleared;
 }
 
 function asGuest(wc: WebContents): Guest {
@@ -97,10 +161,22 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     report({ threadId: k.threadId, tabId: k.tabId, url: wc.getURL(), canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame(), failed: failedLoad.get(wc.id) ?? null });
   };
   win.webContents.on('will-attach-webview', (e, prefs, params) => {
-    if (!harden(prefs as Record<string, unknown>, params)) e.preventDefault();
+    if (!harden(prefs as Record<string, unknown>, params)) { e.preventDefault(); return; }
+    prepare(session.fromPartition(params.partition!), params.partition!);
   });
   win.webContents.on('did-attach-webview', (_e, wc) => {
-    prepare(wc.session);
+    const box = boxes.get(wc.session);
+    if (box) {
+      // a box page's connections go only through its door: no WebRTC beside the proxy
+      wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+      // the door's own login, only to that door; any other login a box page meets gets none
+      wc.on('login', (ev, _details, authInfo, callback) => {
+        ev.preventDefault();
+        const door = doors.get(box);
+        if (door && authInfo.isProxy && authInfo.host === '127.0.0.1' && authInfo.port === door.port) callback('oby', door.token);
+        else callback();
+      });
+    }
     // a page of the web stays on the web: no window of its own, no file:, javascript: or data:
     wc.setWindowOpenHandler(({ url }) => { if (pageOk(url)) void wc.loadURL(url); return { action: 'deny' }; });
     wc.on('will-navigate', (ev, url) => { if (!pageOk(url)) ev.preventDefault(); });

@@ -387,6 +387,25 @@ describe('BROWSERAPP-24: a webview lives only in the partition obid named, harde
     expect(p.heard('tab', tab('oby-box-j1'))).toBe('kept');
   });
 
+  it('browserapp_24: drop forgets a tab, and names its partition only once no other tab names it; a second drop names nothing', () => {
+    const p = namedPartitions();
+    const tab = (id: string) => JSON.stringify({ seq: 1, type: 'tab', tab: { id, owner: { kind: 'agent', job: 'j1', agent: 'codex' }, url: 'https://example.test/', partition: 'oby-box-j1' } });
+    const kept: string[] = [], last: string[] = [];
+    const on = { kept: (x: string) => kept.push(x), last: (x: string) => last.push(x) };
+    expect(p.heard('tab', tab('t1'), on)).toBe('kept');
+    expect(p.heard('tab', tab('t2'), on)).toBe('kept');
+    expect(kept).toEqual(['oby-box-j1', 'oby-box-j1']);
+    expect(p.drop(K)).toBeNull();
+    expect(p.of(K)).toBeUndefined();
+    expect(p.drop(K)).toBeNull();
+    // the box's last tab closing goes the same way, its return value unchanged
+    expect(p.heard('tabClosed', JSON.stringify({ seq: 2, type: 'tabClosed', tabId: 't2' }), on)).toBeNull();
+    expect(last).toEqual(['oby-box-j1']);
+    expect(p.heard('tab', tab('t1'), on)).toBe('kept');
+    expect(p.drop(K)).toBe('oby-box-j1');
+    expect(p.drop(K)).toBeNull();
+  });
+
   it('browserapp_24: its preferences are sandboxed with no Node and no preload, whatever the page asked; a page off the web isn\'t attached', () => {
     const prefs: Record<string, unknown> = { preload: 'file:///evil.js', preloadURL: 'file:///evil.js', nodeIntegration: true, nodeIntegrationInSubFrames: true, sandbox: false, contextIsolation: false, webSecurity: false };
     expect(harden(prefs, { partition: 'persist:oby-agent-codex', src: 'https://example.test/' })).toBe(true);
@@ -414,5 +433,47 @@ describe('BROWSERAPP-25: an agent\'s downloads go only where obid says, inside i
     expect(g.folder).toBeNull();
     expect(g.sent).toEqual([]);
     expect(replies(o.all()).map((r) => [r.id, r.error ? 'refused' : 'kept'])).toEqual([[1, 'kept'], [2, 'refused'], [3, 'kept']]);
+  });
+});
+
+describe('BROWSERAPP-39: a foreign job\'s door reaches main alone, in its one shape', () => {
+  const token = 'a'.repeat(64);
+  const door = (over: Record<string, unknown> = {}) => JSON.stringify({ type: 'box', threadId: 'j1', partition: 'oby-box-j1', proxy: `http://oby:${token}@127.0.0.1:50123`, ...over });
+
+  it('browserapp_39: relayCommand takes box only for its own job\'s box partition and a loopback door with a 64-hex token', () => {
+    expect(relayCommand('box', door())).toEqual({ type: 'box', threadId: 'j1', partition: 'oby-box-j1', proxy: `http://oby:${token}@127.0.0.1:50123` });
+    expect(relayCommand('box', door({ proxy: `http://oby:${token}@127.0.0.1:65535` }))).not.toBeNull();
+    for (const over of [
+      { partition: 'oby-box-j2' },
+      { partition: 'persist:oby-agent-codex' },
+      { proxy: `http://oby:${token}@10.0.0.1:50123` },
+      { proxy: `https://oby:${token}@127.0.0.1:50123` },
+      { proxy: `http://me:${token}@127.0.0.1:50123` },
+      { proxy: 'http://oby:@127.0.0.1:50123' },
+      { proxy: `http://oby:${'a'.repeat(63)}@127.0.0.1:50123` },
+      { proxy: `http://oby:${token}@127.0.0.1:0` },
+      { proxy: `http://oby:${token}@127.0.0.1:65536` },
+      { proxy: `http://oby:${token}@127.0.0.1:50123/` },
+      { proxy: undefined },
+      { type: 'release' },
+    ]) expect(relayCommand('box', door(over)), JSON.stringify(over)).toBeNull();
+  });
+
+  it('browserapp_39: a box command reaches only its box option: never obid, the pointer or a console line', async () => {
+    const said = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m));
+    const o = fakeObid();
+    const boxes: unknown[] = [], drawn: unknown[] = [];
+    const host = relayHost(o.post, { home: HOME, pointer: (p) => drawn.push(p), box: (c) => boxes.push(c) });
+    host.attach(K, fakeGuest());
+    const c = relayCommand('box', door())!;
+    host.command(c);
+    await settle();
+    expect(boxes).toEqual([c]);
+    expect(drawn).toEqual([]);
+    expect(JSON.stringify(o.all())).not.toContain(token);
+    for (const spy of said) {
+      expect(JSON.stringify(spy.mock.calls)).not.toContain(token);
+      spy.mockRestore();
+    }
   });
 });

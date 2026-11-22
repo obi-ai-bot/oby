@@ -3,7 +3,8 @@ import { appPage, pageOk } from './pageRule';
 
 // The relay between obid's agents and the page in the window (docs/plans/browser-t3.md, as T3 Code
 // does it: packages/contracts/src/desktopBrowser.ts). obid sends page-level CDP for a tab on its
-// relay stream, GET /v1/browser/relay (`cdp`, `release`, `pointer`, `turn`; no ids, no replay); main runs each command on that tab's
+// relay stream, GET /v1/browser/relay (`cdp`, `release`, `pointer`, `turn`, and `box`, a foreign job's door for its box
+// partition, main's alone; no ids, no replay); main runs each command on that tab's
 // `<webview>` debugger and sends the replies and the page's events back, in order, with what
 // happened to the tab (`attached`, `detached`, `loadFailed`, `shown`), on POST /v1/browser/relay.
 // No Electron here: main/browserGuest.ts hands each webview in as a Guest, so this is all tested
@@ -22,18 +23,32 @@ export const partitionOk = (p: unknown): p is string => typeof p === 'string' &&
 /**
  * The partition obid named for each agent tab, read from its `tab` events on /v1/browser/events: the
  * only one that tab's webview may use. The first one named stands: a later `tab` event naming
- * another for the same tab is refused, and the tab's `tabClosed` forgets it.
+ * another for the same tab is refused, and the tab's `tabClosed` forgets it, as `drop` does.
  */
 export function namedPartitions() {
   const named = new Map<string, string>();
   const at = (k: TabKey) => `${k.threadId}\0${k.tabId}`;
+  // the tab forgotten: its partition when no other tab names it (a box's last tab), else null
+  const dropAt = (a: string): string | null => {
+    const p = named.get(a);
+    if (p === undefined) return null;
+    named.delete(a);
+    return [...named.values()].includes(p) ? null : p;
+  };
   return {
-    /** an events-stream message: 'kept', 'refused' (another partition than the first), or null (not one) */
-    heard(name: string, data: string): 'kept' | 'refused' | null {
+    /**
+     * an events-stream message: 'kept', 'refused' (another partition than the first), or null (not
+     * one); `on.kept` hears the partition a kept tab names, `on.last` one no tab names any more
+     */
+    heard(name: string, data: string, on: { kept?: (partition: string) => void; last?: (partition: string) => void } = {}): 'kept' | 'refused' | null {
       let e: { tab?: { id?: unknown; owner?: { kind?: unknown; job?: unknown }; partition?: unknown }; tabId?: unknown };
       try { e = JSON.parse(data); } catch { return null; }
       if (name === 'tabClosed' && typeof e.tabId === 'string') {
-        for (const k of named.keys()) if (k.endsWith(`\0${e.tabId}`)) named.delete(k);
+        for (const k of [...named.keys()]) {
+          if (!k.endsWith(`\0${e.tabId}`)) continue;
+          const last = dropAt(k);
+          if (last) on.last?.(last);
+        }
         return null;
       }
       const t = e.tab;
@@ -43,11 +58,17 @@ export function namedPartitions() {
       const was = named.get(k);
       if (was !== undefined && was !== t.partition) return 'refused';
       named.set(k, t.partition);
+      on.kept?.(t.partition);
       return 'kept';
     },
     of: (k: TabKey) => named.get(at(k)),
+    /** obid released the tab: forgotten, and its partition when no other tab names it, else null */
+    drop: (k: TabKey) => dropAt(at(k)),
   };
 }
+
+/** a foreign job's browser door as obid hands it: `http://oby:<token>@127.0.0.1:<port>` */
+export const BOX_PROXY = /^http:\/\/oby:([0-9a-f]{64})@127\.0\.0\.1:([1-9][0-9]{0,4})$/;
 export type RelayEvent = TabKey & (
   | { type: 'attached' }
   | { type: 'detached' }
@@ -58,7 +79,9 @@ export type RelayCommand =
   | (TabKey & { type: 'cdp'; message: string })
   | (TabKey & { type: 'release' })
   | (TabKey & { type: 'pointer'; phase: 'move' | 'click'; x: number; y: number })
-  | { type: 'turn'; threadId: string; active: boolean };
+  | { type: 'turn'; threadId: string; active: boolean }
+  | { type: 'box'; threadId: string; partition: string; proxy: string };
+export type BoxCommand = Extract<RelayCommand, { type: 'box' }>;
 
 // One webview, as the relay uses it: its debugger, and the few things CDP can't do on a guest.
 export interface Guest {
@@ -105,7 +128,7 @@ export function insideDownloads(home: string, path: unknown): path is string {
 
 type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; broken: boolean };
 
-export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, options: { home: string; pointer?: (c: Extract<RelayCommand, { type: 'pointer' }>) => void; wait?: (ms: number) => Promise<void> }) {
+export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, options: { home: string; pointer?: (c: Extract<RelayCommand, { type: 'pointer' }>) => void; box?: (c: BoxCommand) => void; released?: (k: TabKey) => void; wait?: (ms: number) => Promise<void> }) {
   const tabs = new Map<string, Tab>();
   // what was said of a tab before it attached (a first load's failure, whether it shows): sent on attach
   const early = new Map<string, { failed: RelayEvent | null; shown: boolean | null }>();
@@ -226,10 +249,13 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
         for (const t of tabs.values()) if (t.k.threadId === c.threadId && t.attached) void t.guest.send('Emulation.setFocusEmulationEnabled', { enabled: c.active }).catch(() => undefined);
         return;
       }
+      // a box's door is main's alone: never posted, drawn or put where the page reads
+      if (c.type === 'box') { options.box?.(c); return; }
       const t = tabs.get(key(c));
       if (c.type === 'pointer') { if (t?.attached) options.pointer?.(c); return; }
-      // release drops only obid's use of the tab: its debugger stays, and the next command uses it again
-      if (c.type === 'release') { if (t) t.mouse = Promise.resolve(); return; }
+      // release drops only obid's use of the tab: its debugger stays, and the next command uses it
+      // again; a box's last tab clears its storage (browser.ts)
+      if (c.type === 'release') { if (t) t.mouse = Promise.resolve(); options.released?.({ threadId: c.threadId, tabId: c.tabId }); return; }
       if (!t?.attached || t.broken) {
         let id: unknown;
         try { id = JSON.parse(c.message).id; } catch { return; }
@@ -259,13 +285,19 @@ export type RelayHost = ReturnType<typeof relayHost>;
 
 /** obid's relay command from GET /v1/browser/relay (`event:` its type, `data:` its JSON), or null for another shape */
 export function relayCommand(name: string, data: string): RelayCommand | null {
-  if (!['cdp', 'release', 'pointer', 'turn'].includes(name)) return null;
+  if (!['cdp', 'release', 'pointer', 'turn', 'box'].includes(name)) return null;
   let e: Record<string, unknown>;
   try { e = JSON.parse(data); } catch { return null; }
   const str = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 256;
   if (e.type !== undefined && e.type !== name) return null;
   if (!str(e.threadId)) return null;
   if (name === 'turn') return typeof e.active === 'boolean' ? { type: 'turn', threadId: e.threadId, active: e.active } : null;
+  if (name === 'box') {
+    // only its own job's box, and only a door on loopback with a token of obid's shape
+    if (e.partition !== `oby-box-${e.threadId}` || !partitionOk(e.partition)) return null;
+    const door = typeof e.proxy === 'string' ? BOX_PROXY.exec(e.proxy) : null;
+    return door && Number(door[2]) <= 65535 ? { type: 'box', threadId: e.threadId, partition: e.partition, proxy: e.proxy as string } : null;
+  }
   if (!str(e.tabId)) return null;
   const k = { threadId: e.threadId, tabId: e.tabId };
   if (name === 'release') return { ...k, type: 'release' };
