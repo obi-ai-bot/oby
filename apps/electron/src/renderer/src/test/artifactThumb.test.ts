@@ -229,3 +229,27 @@ describe('ARTIFACTSAPP-18: a card’s picture', () => {
     expect(the.relays).toBe(1);
   });
 });
+
+describe('ARTIFACTSAPP-20: the pane’s Reload', () => {
+  it('artifactsapp_20_reload_runs_the_version_on_view_again', async () => {
+    const m = await main();
+    const reload = () => the.handlers.get('artifact-reload')!({}) as Promise<null>;
+    const preview = (ask: object | null) => the.handlers.get('artifact-preview')!({}, ask);
+    const scripts = () => the.views.flatMap((v) => v.scripts).filter((js) => js === 'window.obyReload?.()');
+    // none on view: nothing runs anywhere
+    expect(await reload()).toBeNull();
+    expect(the.views).toEqual([]);
+    expect(await preview({ id: id('a'), version: 1, bounds: { x: 0, y: 0, width: 10, height: 10 } })).toEqual({ shown: true });
+    const [pane] = the.views;
+    expect(pixels(await answer(m.ask('b')))).toBe('b');
+    const thumb = the.views[1];
+    expect(await reload()).toBeNull();
+    expect(pane.scripts.at(-1)).toBe('window.obyReload?.()');
+    expect(thumb.scripts).not.toContain('window.obyReload?.()');
+    expect(scripts()).toHaveLength(1);
+    // the pane's preview taken away: nothing runs again
+    await preview(null);
+    expect(await reload()).toBeNull();
+    expect(scripts()).toHaveLength(1);
+  });
+});
