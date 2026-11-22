@@ -10,9 +10,11 @@
 // - Api::take there, plus the wait in `take` in core/crates/obid/src/browser/routes.rs: the device holds the tab (the
 //   generation up when nobody held it, refused `held_by_other` when another device does) and its call waits while
 //   `inflight` is above 0 (take);
-// - the take route answering once `inflight` is 0 (takeAnswers);
-// - Api::give_back in state.rs, called by `give_back` in routes.rs: only the holder gives the tab back, the
-//   generation up (giveBack);
+// - the take route once `inflight` is 0, with T3's epoch check (SessionControl.take): it answers holding the tab, and
+//   takes the engine core's hold, only while the tab is still held by its device at the generation read right after
+//   Api::take; otherwise it answers `control_changed` and holds nothing (takeAnswers);
+// - Api::give_back in state.rs, called by `give_back` in routes.rs, at any time, a take of the device's still waiting
+//   too: only the holder gives the tab back, the generation up (giveBack);
 // - plus a stutter.
 // An act is idle, let through (at the generation it was leased at), running, or refused; a refused act may be leased
 // again. startedWhileHeld is a ghost flag, set when a commit succeeds while the tab is held.
@@ -22,11 +24,14 @@
 // Their witnesses, each expected to be violated, so a pass is not vacuous: neverHeldWithAnActLetThrough, violated by a
 // lease followed by a take (the race noActStartsWhileHeld guards); takeNeverWaits, violated by a take made while an act
 // runs (the race takeAnswersOnlyWithNoActRunning guards).
+// answered stands for a take that answered holding the tab, and so for the engine core's hold the route took then.
 // The limit: a model checks the design, not that state.rs and routes.rs implement it; nothing here replays a trace
 // against the code. It leaves out the wait's time bound (engine::MAX_DEADLINE_MS + 5000 ms: an act's own deadline
-// ends it first), the device's signature (signed() in routes.rs, covered by tests/browser_api.rs), the engine core's
-// own hold (Browsers::take and release) and the agent's refs (stale_ref, covered by the Rust tests). A give back while
-// its device's own take still waits isn't modelled.
+// ends it first, but Api::done runs from no drop guard in tools.rs, so an act whose call is dropped mid-run keeps
+// `inflight` up and the take answers at the bound), the device's signature (signed() in routes.rs, covered by
+// tests/browser_api.rs), the engine core's own checks (Browsers::take, release and may_start) and the agent's refs
+// (stale_ref, covered by the Rust tests). One take waits at a time: a second take by the holding device while its
+// first waits isn't modelled.
 module browser_hold {
   pure val ACTS = Set(1, 2)
   pure val DEVICES = Set(1, 2)
@@ -36,8 +41,9 @@ module browser_hold {
   var act: int -> str
   var leasedAt: int -> int
   var inflight: int
-  // The device whose take waits to answer, 0 for none.
+  // The device whose take waits to answer, 0 for none, and the generation it read right after Api::take.
   var taking: int
+  var takenAt: int
   var answered: bool
   var startedWhileHeld: bool
   action init = all {
@@ -47,6 +53,7 @@ module browser_hold {
     leasedAt' = ACTS.mapBy(a => 0),
     inflight' = 0,
     taking' = 0,
+    takenAt' = 0,
     answered' = false,
     startedWhileHeld' = false,
   }
@@ -58,6 +65,7 @@ module browser_hold {
     generation' = generation,
     inflight' = inflight,
     taking' = taking,
+    takenAt' = takenAt,
     answered' = answered,
     startedWhileHeld' = startedWhileHeld,
   }
@@ -72,6 +80,7 @@ module browser_hold {
     generation' = generation,
     leasedAt' = leasedAt,
     taking' = taking,
+    takenAt' = takenAt,
     answered' = answered,
   }
   action done(a: int): bool = all {
@@ -82,6 +91,7 @@ module browser_hold {
     generation' = generation,
     leasedAt' = leasedAt,
     taking' = taking,
+    takenAt' = takenAt,
     answered' = answered,
     startedWhileHeld' = startedWhileHeld,
   }
@@ -91,6 +101,7 @@ module browser_hold {
     heldBy' = d,
     generation' = if (heldBy == 0) generation + 1 else generation,
     taking' = d,
+    takenAt' = if (heldBy == 0) generation + 1 else generation,
     act' = act,
     leasedAt' = leasedAt,
     inflight' = inflight,
@@ -101,7 +112,8 @@ module browser_hold {
     taking != 0,
     inflight == 0,
     taking' = 0,
-    answered' = true,
+    takenAt' = 0,
+    answered' = (answered or (heldBy == taking and generation == takenAt)),
     heldBy' = heldBy,
     generation' = generation,
     act' = act,
@@ -111,11 +123,11 @@ module browser_hold {
   }
   action giveBack(d: int): bool = all {
     heldBy == d,
-    taking == 0,
     heldBy' = 0,
     generation' = generation + 1,
     answered' = false,
     taking' = taking,
+    takenAt' = takenAt,
     act' = act,
     leasedAt' = leasedAt,
     inflight' = inflight,
@@ -128,6 +140,7 @@ module browser_hold {
     leasedAt' = leasedAt,
     inflight' = inflight,
     taking' = taking,
+    takenAt' = takenAt,
     answered' = answered,
     startedWhileHeld' = startedWhileHeld,
   }
