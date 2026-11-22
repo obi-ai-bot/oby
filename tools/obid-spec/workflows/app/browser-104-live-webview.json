@@ -2,7 +2,7 @@
   "schemaVersion": "2",
   "name": "App live: an agent opens a page and it is a real webview in Oby's window, driven through obid's relay (board 2, live)",
   "version": "1.0.0",
-  "description": "The browser as T3 Code has it (docs/plans/browser-t3.md, W2): a stand-in Codex job calls oby_browser_open on a scratch obid that has no Chrome of its own. obid names the tab's partition, the real app mounts a <webview> at its address in that partition, main attaches its debugger and relays it (BROWSERAPP-22 to 26). The page shows in the panel's slot; the agent's snapshot, its typing into the page's Name box and its evaluate of that box's value all run on the window's own webview, through POST /v1/browser/relay and the events stream.",
+  "description": "The browser as T3 Code has it (docs/plans/browser-t3.md, W2): a stand-in Codex job calls oby_browser_open on a scratch obid that has no Chrome of its own. obid names the tab's partition, the real app mounts a <webview> at its address in that partition, main attaches its debugger and relays it (BROWSERAPP-22 to 26). The page shows in the panel's slot; the agent's snapshot, its typing into the page's Name box and its evaluate of that box's value all run on the window's own webview, through POST /v1/browser/relay and the events stream. Over the live page the panel is see-through (its page area paints nothing) and the webview takes the pointer there, while the panel's Ran a script mark stays over it (BROWSERAPP-41).",
   "trigger": {
     "manual": {}
   },
@@ -172,6 +172,42 @@
       }
     },
     {
+      "id": "see-through",
+      "use": "runtime.rust:app.read",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br [data-browser=view]"
+        },
+        "styles": {
+          "background-color": null
+        },
+        "within": 10,
+        "expect": {
+          "paths": {
+            "styles.background-color.value": "rgba(0, 0, 0, 0)"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSERAPP-41"
+        ]
+      }
+    },
+    {
+      "id": "page-on-top",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "[data-browser=webview] webview"
+        },
+        "hover": true,
+        "timeout": 5000
+      }
+    },
+    {
       "id": "snap",
       "use": "runtime.rust:browser-mcp",
       "inputs": {
@@ -240,6 +276,18 @@
         "proves": [
           "BROWSERAPP-23"
         ]
+      }
+    },
+    {
+      "id": "mark-over-page",
+      "use": "runtime.rust:app.click",
+      "inputs": {
+        "app": "${state.app}",
+        "target": {
+          "css": "aside.br [data-browser=view] .ran"
+        },
+        "hover": true,
+        "timeout": 10000
       }
     },
     {

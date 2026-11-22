@@ -2187,7 +2187,7 @@
             "BROWSERAPP-38": "the Electron main's box partition, held to its foreign job's browser door (main/browserGuest.ts prepare, boxDoor, clearBox; main/browserRelay.ts box; as T3 Code's getSession and clear make a partition's session): browserBox.test.ts; obid's half is BROWSER-18 (egress.rs's browser door, relay.rs's box)",
             "BROWSERAPP-39": "the Electron main's box partition, held to its foreign job's browser door (main/browserGuest.ts prepare, boxDoor, clearBox; main/browserRelay.ts box; as T3 Code's getSession and clear make a partition's session): browserRelay.test.ts; obid's half is BROWSER-18 (egress.rs's browser door, relay.rs's box)",
             "BROWSERAPP-40": "the Electron app's keyboard and ring on Take control and Give back (browser/store.tsx, browser/live.ts, browser/Webviews.tsx focusPage, browser/browser.css), as T3 Code's Take control focuses the page: browserHold.test.tsx; the live hold in the real window (build.md of W01-19); no obid API of its own",
-            "BROWSERAPP-41": "the Electron app's keyboard and ring on Take control and Give back (browser/store.tsx, browser/live.ts, browser/Webviews.tsx focusPage, browser/browser.css), as T3 Code's Take control focuses the page: browserHold.test.tsx; the live hold in the real window (build.md of W01-19); no obid API of its own"
+            "BROWSERAPP-41": "the Electron app's ring and pointer on a held tab, Give back's keyboard, and the live page seen through the panel (browser/store.tsx, browser/live.ts, browser/Webviews.tsx, browser/browser.css), as T3 Code keeps its overlays over its webview: browserHold.test.tsx; in the real app workflows/app/browser-104-live-webview.json; no obid API of its own"
           }
         },
         "computers-app.md": {
