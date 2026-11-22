@@ -77,7 +77,7 @@ As LibreChat does, the `static` template always opens `index.html`:
 - **The view:**
   - It has its own partition, `oby-artifact-preview`, in memory only. It shares no cookie, storage, cache or service worker with the window's page.
   - It has no preload, no Node in its frames or workers, Chromium's sandbox and context isolation. The page's bridge (`window.app`) and obid aren't there.
-  - A second view, never shown and never in the window, takes the cards' pictures (`preview.html?thumb`). It is built the same way, in the same partition, on the same locked session and the same relay, and its session lets go of nothing more.
+  - A second view, never shown and never in the window, takes the cards' pictures (`preview.html?thumb`). It is built the same way, in the same partition, on the same locked session and the same relay, and its session lets go of nothing more. A view whose picture passes its 10 seconds is closed, and the next picture gets a new one, made the same way on the same session and relay.
 - **What its session lets go:** its host page (this build's `preview.html` and its assets), the relay on its port, `data:` and `blob:`.
   - Every other request is cancelled before it leaves.
   - It opens no window, downloads nothing, and is granted no permission.
@@ -197,6 +197,10 @@ As LibreChat does, the `static` template always opens `index.html`:
   - main sends the picture of its latest version, and the card's top is that picture, filling it; until it comes, when main answers none, or with no bridge (the mock), the board's blocks;
   - a new version asks for its own picture, and a late picture of the one before never shows on it;
   - main answers only `{ id, version }`, a lower-case UUID and a version from 1, and refuses anything else, another key included, with `null`, asking obid nothing;
-  - main takes the picture in its preview's second view, never shown: a 720-wide PNG of the page's first screen, sent as a `data:` URL; taking it reaches nothing but the host page and the pane's own relay, and is refused nothing the pane's view isn't.
+  - main takes the picture in its preview's second view, never shown: a 1280x370 PNG of the page's first screen drawn 640 CSS px wide at scale 2, sent as a `data:` URL; the pane's own view stays at zoom 1; taking it reaches nothing but the host page and the pane's own relay, and is refused nothing the pane's view isn't;
+  - main takes one picture at a time and waits for the preview's own "drawn" (the host page's frame loaded), at most 4 seconds;
+  - a picture is never another version's: one that passes 10 seconds answers none and its view is closed, the next taken in a fresh one, and a late one answers nothing;
+  - an ask still waiting its turn when its card has asked for a newer version answers none, obid not asked;
+  - a picture asked as the window closes answers none and leaves nothing running: no view and no relay.
 
-  Unit tests: `artifactsapp_18_the_card_shows_the_versions_picture_once_main_sends_it`, `artifactsapp_18_the_card_keeps_the_boards_blocks_until_then_and_on_none`, `artifactsapp_18_a_new_version_asks_for_its_own_picture` (`artifactsPane.test.tsx`), `artifactsapp_18_the_channel_refuses_a_bad_ask` (`ipc.test.ts`). Mac: `artifactsapp_18_the_cards_picture_is_the_artifacts_first_screen`, `artifactsapp_18_taking_the_picture_reaches_nothing_new`.
+  Unit tests: `artifactsapp_18_the_card_shows_the_versions_picture_once_main_sends_it`, `artifactsapp_18_the_card_keeps_the_boards_blocks_until_then_and_on_none`, `artifactsapp_18_a_new_version_asks_for_its_own_picture` (`artifactsPane.test.tsx`), `artifactsapp_18_the_channel_refuses_a_bad_ask` (`ipc.test.ts`), `artifactsapp_18_a_slow_picture_never_answers_another_card`, `artifactsapp_18_a_picture_waits_for_the_preview_not_a_fixed_time`, `artifactsapp_18_the_picture_is_drawn_at_half_width`, `artifactsapp_18_a_picture_asked_as_the_window_closes_starts_nothing` (`artifactThumb.test.ts`). Mac: `artifactsapp_18_the_cards_picture_is_the_artifacts_first_screen` (1280x370), `artifactsapp_18_the_picture_is_drawn_at_half_width` (its page 640x185, the heading at least 24 rows, the pane at zoom 1), `artifactsapp_18_taking_the_picture_reaches_nothing_new`, `artifactsapp_18_a_picture_waits_for_the_preview_not_a_fixed_time` (three fresh cards' pictures within 6 s, one picture's view at most left).

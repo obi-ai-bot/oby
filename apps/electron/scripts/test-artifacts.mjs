@@ -21,9 +21,11 @@
 //   ARTIFACTSAPP-3: the preview reaches nothing off its origin (another site, obid, the relay by
 //                   127.0.0.1), by fetch, image, script or navigation, while its own files load; and
 //                   it is sandboxed in its own partition, with no preload, no Node and no bridge.
-//   ARTIFACTSAPP-18: the page's card shows its first screen, a 720-wide PNG main took in the preview's
-//                   second, never-shown view (preview.html?thumb); taking it sent nothing but to its
-//                   host page and the pane's own relay, and refused nothing the pane's view didn't.
+//   ARTIFACTSAPP-18: the page's card shows its first screen, a 1280x370 PNG main took in the preview's
+//                   second, never-shown view (preview.html?thumb), the page drawn 640x185 at scale 2 and
+//                   the pane's at zoom 1; taking it sent nothing but to its host page and the pane's own
+//                   relay, and refused nothing the pane's view didn't; three fresh cards all have their
+//                   pictures within 6 s, and one picture's view at most is left.
 // Screenshots go to OBY_ARTIFACTS_SHOTS (a folder) when it's set: the window, with the preview laid
 // where main lays it.
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts
@@ -126,6 +128,9 @@ const TRIES = (obidPort) => `(async () => {
 const shot = async (page, name) => {
   if (!shots) return;
   mkdirSync(shots, { recursive: true });
+  // every card in the page with its picture first (ARTIFACTSAPP-18)
+  await until(`every card's picture before ${name}`, () => page.evaluate(() => [...document.querySelectorAll('button.art-card')]
+    .every((c) => { const i = c.querySelector('img.art-thumb-img'); return i?.complete && i.naturalWidth > 0; })), 30_000);
   // the window's page, with main's preview view drawn where main lays it (a page screenshot holds only the page)
   const png = await app.evaluate(async ({ BrowserWindow, webContents }) => {
     const win = BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().endsWith('/preview.html'));
@@ -233,17 +238,25 @@ async function main() {
     const g = c.getContext('2d');
     g.drawImage(img, 0, 0);
     const { data } = g.getImageData(0, 0, c.width, Math.floor(c.height / 2));
-    let drawn = 0;
-    // an opaque pixel that isn't the page's white: the teal heading
-    for (let i = 0; i < data.length; i += 4) if (data[i + 3] === 255 && (data[i] < 240 || data[i + 1] < 240 || data[i + 2] < 240)) drawn++;
-    return { width: img.naturalWidth, height: img.naturalHeight, png: img.src.startsWith('data:image/png;base64,'), drawn };
+    let drawn = 0, first = -1, last = -1;
+    // an opaque pixel that isn't the page's white; and the rows the teal heading spans
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] === 255 && (data[i] < 240 || data[i + 1] < 240 || data[i + 2] < 240)) drawn++;
+      if (data[i] < 80 && data[i + 1] > 90 && data[i + 2] > 90 && Math.abs(data[i + 1] - data[i + 2]) < 40) { const row = Math.floor(i / 4 / c.width); if (first < 0) first = row; last = row; }
+    }
+    return { width: img.naturalWidth, height: img.naturalHeight, png: img.src.startsWith('data:image/png;base64,'), drawn, heading: first < 0 ? 0 : last - first + 1 };
   });
-  assert.equal(pic.width, 720, `artifactsapp_18: the picture is 720 wide: ${JSON.stringify(pic)}`);
+  assert.deepEqual([pic.width, pic.height], [1280, 370], `artifactsapp_18: the picture is 1280x370: ${JSON.stringify(pic)}`);
   assert.ok(pic.png, 'artifactsapp_18: the picture is a PNG data: URL');
   assert.ok(pic.drawn > 0, `artifactsapp_18: the picture's top half holds the page, not only its white: ${JSON.stringify(pic)}`);
   await card.scrollIntoViewIfNeeded();
   await shot(page, '1-card-picture');
   console.log(`ok artifactsapp_18_the_cards_picture_is_the_artifacts_first_screen (${pic.width}x${pic.height}, ${pic.drawn} drawn pixels in its top half)`);
+  // drawn at half width and scale 2: the 32 px heading spans twice the ~12 rows a 720-wide picture of
+  // a 1280-wide page gave it
+  const thumbSize = await app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html?thumb'))?.executeJavaScript('[innerWidth, innerHeight]'));
+  assert.deepEqual(thumbSize, [640, 185], `artifactsapp_18: the picture's page is drawn 640x185: ${JSON.stringify(thumbSize)}`);
+  assert.ok(pic.heading >= 24, `artifactsapp_18: the heading spans at least 24 rows: ${JSON.stringify(pic)}`);
   await shot(page, '1-card');
   await card.click();
   await until('the pane', async () => (await page.locator(`[data-artifact-view="${pageArtifact.id}"]`).count()) > 0);
@@ -269,6 +282,10 @@ async function main() {
   const box = await page.locator(`[data-artifact-view="${pageArtifact.id}"]`).boundingBox();
   assert.ok(visible?.visible, 'artifactsapp_1: main’s view shows');
   for (const k of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(visible.bounds[k] - box[k]) <= 1, `artifactsapp_1: the view lies on the pane’s box (${k}: ${visible.bounds[k]} vs ${box[k]})`);
+  // the pane stays at zoom 1 whatever the picture's view draws at (ARTIFACTSAPP-18)
+  const paneWidth = await inHost('innerWidth');
+  assert.equal(paneWidth, visible.bounds.width, `artifactsapp_18: the pane draws at zoom 1: ${paneWidth} CSS px in a ${visible.bounds.width} wide view`);
+  console.log(`ok artifactsapp_18_the_picture_is_drawn_at_half_width (640x185 at scale 2, the heading ${pic.heading} rows; the pane ${paneWidth} wide at zoom 1)`);
   await shot(page, '2-preview');
   const requests = await app.evaluate(() => globalThis.__previewRequests);
   assert.ok(requests.length > 0, 'the preview made requests');
@@ -388,11 +405,11 @@ async function main() {
   // the pane there. Published with the conversation's own oby_artifact from its room, which any obid
   // with artifacts takes (a version across a conversation's jobs, ARTIFACTS-7, is newer than the
   // installed one this may run on)
-  const room = join(s.home, 'conversations', made.conversation, 'room', 'site');
-  const publish = async (h1, artifact) => {
+  const publish = async (h1, artifact, path = 'site') => {
+    const room = join(s.home, 'conversations', made.conversation, 'room', path);
     mkdirSync(room, { recursive: true });
     writeFileSync(join(room, 'index.html'), `<!doctype html><h1>${h1}</h1>`);
-    const said = await s.call('POST', '/v1/plans', { said: `OBY oby_artifact ${JSON.stringify({ title: 'site', path: 'site', ...(artifact ? { artifact } : {}) })}`, conversation: made.conversation });
+    const said = await s.call('POST', '/v1/plans', { said: `OBY oby_artifact ${JSON.stringify({ title: path, path, ...(artifact ? { artifact } : {}) })}`, conversation: made.conversation });
     assert.match(said.text ?? '', /Published artifact /, `the conversation published it: ${said.text}`);
     return said;
   };
@@ -531,6 +548,21 @@ async function main() {
   await shot(page, '10-row-open');
   console.log('ok artifactsapp_17: a new version puts a New dot on the row under its conversation, and the row opens it, lit, the dot gone');
 
+  // ARTIFACTSAPP-18: three artifacts no card showed before, published one after the other: once their
+  // cards are in the page, all three have their pictures within 6 s
+  const fresh = [];
+  for (const n of ['fresh-1', 'fresh-2', 'fresh-3']) fresh.push(/Published artifact ([0-9a-f-]{36})/.exec((await publish(n, undefined, n)).text)[1]);
+  const freshCards = fresh.map((f) => page.locator(`button.art-card[data-artifact="${f}"]`));
+  await until('the three fresh cards', async () => (await Promise.all(freshCards.map((c) => c.count()))).every((n) => n === 1), 60_000);
+  const since = Date.now();
+  await until('their three pictures', async () => (await Promise.all(freshCards.map((c) => c.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; })))).every(Boolean), 6_000);
+  const took = Date.now() - since;
+  await freshCards[2].scrollIntoViewIfNeeded();
+  await shot(page, '11-three-fresh-cards');
+  console.log(`ok artifactsapp_18_a_picture_waits_for_the_preview_not_a_fixed_time (three fresh cards' pictures in ${took} ms)`);
+  // one picture's view at most is left
+  const thumbViews = await app.evaluate(({ webContents }) => webContents.getAllWebContents().filter((w) => w.getURL().endsWith('/preview.html?thumb')).length);
+  assert.ok(thumbViews <= 1, `artifactsapp_18: one picture's view at most: ${thumbViews}`);
 
   // Close takes it away
   await page.getByRole('button', { name: 'Close the artifact' }).click();
