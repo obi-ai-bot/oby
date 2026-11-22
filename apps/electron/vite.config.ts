@@ -5,6 +5,8 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 // @ts-expect-error a plain script, shared with electron.vite.config.ts
 import { localOnly } from './scripts/local-only.mjs';
+// @ts-expect-error a plain script
+import { sandpackConsoleIsolation } from './scripts/sandpack-isolation.mjs';
 
 // Oby lives in design/oby (Sangam's playground copy, ahead of character/) and
 // stays standalone. In dev it's served at /oby/; a build copies the page and
@@ -57,7 +59,7 @@ function sandpackStatic(): string {
 export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
   base: './',
-  plugins: [localOnly(), react(), oby(), csp()],
+  plugins: [localOnly(), sandpackConsoleIsolation(), react(), oby(), csp()],
   resolve: { alias: { 'oby-sandpack-static': sandpackStatic() } },
   server: { port: Number(process.env.PORT) || 5175, strictPort: true },
   // the favicons, from Oby's icon folder (apps/icon/exports/web): served in dev, copied by a build
@@ -66,5 +68,6 @@ export default defineConfig({
   // a test's first import of the app (a cold transform, a busy Mac) can outlast vitest's 5 s, and
   // what the timed-out test goes on to call lands in the next test's (#1839); a beforeAll that does
   // that first import (personCard's) gets as long, past vitest's 10 s for hooks
-  test: { testTimeout: 30_000, hookTimeout: 30_000 },
+  // Sandpack's static chunk goes through this config's plugins in tests too, as the build has it
+  test: { testTimeout: 30_000, hookTimeout: 30_000, server: { deps: { inline: ['@codesandbox/sandpack-client'] } } },
 });
