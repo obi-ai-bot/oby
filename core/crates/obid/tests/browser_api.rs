@@ -2,13 +2,17 @@
 //! easily show: the agents' server refusing a missing, made-up or ended job's token (BROWSER-16),
 //! the switches kept across a restart (BROWSER-15), a refused call reading its whole 401, never a
 //! reset (BROWSER-28), the window's relay taking only obid's runner token and the routes the window
-//! does now answering 410 (BROWSER-30, 31). A Codex job sleeping as its agent hands back its broker
-//! token (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
+//! does now answering 410 (BROWSER-30, 31), and the owner's signed take and give back of an agent's
+//! tab, driven through a stand-in window on the relay (BROWSER-5, 6). A Codex job sleeping as its
+//! agent hands back its broker token (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
 mod support;
 
-use std::io::{Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -66,8 +70,19 @@ fn raw(
     headers: &[(&str, &str)],
     body: &Value,
 ) -> (u16, Value) {
+    raw_at(obid.port, method, path, headers, body)
+}
+
+/// [`raw`] to the obid on `port`, for a thread that has no `Obid` of its own.
+fn raw_at(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> (u16, Value) {
     let body = body.to_string();
-    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(120)))
         .unwrap();
@@ -469,13 +484,11 @@ fn relay_only_the_runner_token_reaches_the_windows_relay() {
 /// uses the webview itself, and Fill in is the window's. Each route stays, answering 410 with
 /// `retired`, so an app that still calls one is told, never left hanging (the add-only API).
 #[test]
-fn relay_the_routes_the_window_does_now_answer_410_retired() {
+fn browser_30_input_secret_and_stream_still_answer_410_retired() {
     let folder = Folder::new("relay-retired");
     let mut obid = browser_obid(&folder);
     let auth = format!("Bearer {TOKEN}");
     for (method, path, body) in [
-        ("POST", "/v1/browser/tabs/tab-1/take", json!({})),
-        ("POST", "/v1/browser/tabs/tab-1/giveBack", json!({})),
         (
             "POST",
             "/v1/browser/tabs/tab-1/input",
@@ -496,4 +509,526 @@ fn relay_the_routes_the_window_does_now_answer_410_retired() {
         );
     }
     stop_with_no_browser_left(&mut obid);
+}
+
+/// The address every page of the stand-in window is at.
+const PAGE: &str = "https://example.com/";
+
+/// An answer the stand-in window keeps back: for the first frame of this method, until the test's
+/// condition holds.
+type Hold = (&'static str, Box<dyn Fn() -> bool + Send>);
+
+/// A stand-in for Oby's window on the relay (`browser/relay.rs`): it follows `GET
+/// /v1/browser/relay`, answers each CDP frame by its id as a page at [`PAGE`] with one button would,
+/// and records every method it was sent. One answer may be held back ([`Window::hold`]).
+struct Window {
+    port: u16,
+    methods: Arc<Mutex<Vec<String>>>,
+    hold: Arc<Mutex<Option<Hold>>>,
+}
+
+impl Window {
+    /// The window, following the relay before this returns.
+    fn follow(obid: &Obid) -> Window {
+        let window = Window {
+            port: obid.port,
+            methods: Arc::default(),
+            hold: Arc::default(),
+        };
+        let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+        write!(
+            stream,
+            "GET /v1/browser/relay HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+        let (port, methods, hold) = (window.port, window.methods.clone(), window.hold.clone());
+        std::thread::spawn(move || {
+            while {
+                line.clear();
+                reader.read_line(&mut line).unwrap_or(0) > 0
+            } {
+                let Some(command) = line
+                    .trim()
+                    .strip_prefix("data: ")
+                    .and_then(|d| serde_json::from_str::<Value>(d).ok())
+                    .filter(|c| c["type"] == "cdp")
+                else {
+                    continue;
+                };
+                let frame: Value =
+                    serde_json::from_str(command["message"].as_str().unwrap()).unwrap();
+                let method = frame["method"].as_str().unwrap_or_default().to_string();
+                methods.lock().unwrap().push(method.clone());
+                let events = page_answers(&command, &frame);
+                let held = {
+                    let mut hold = hold.lock().unwrap();
+                    match hold.take() {
+                        Some((m, until)) if m == method => Some(until),
+                        other => {
+                            *hold = other;
+                            None
+                        }
+                    }
+                };
+                match held {
+                    Some(until) => {
+                        std::thread::spawn(move || {
+                            within(60, "the test lets the held answer go", || {
+                                until().then_some(())
+                            });
+                            relay_post(port, events);
+                        });
+                    }
+                    None => relay_post(port, events),
+                }
+            }
+        });
+        window
+    }
+
+    /// Posts `attached` for `job`'s new tab, once `GET /v1/browser` shows it: its id.
+    fn attach(&self, obid: &Obid, job: &str) -> String {
+        let tab = within(30, "the job's new tab shows", || {
+            let tabs = call(obid, "GET", "/v1/browser", None).body;
+            tabs["tabs"]
+                .as_array()?
+                .iter()
+                .find(|t| t["owner"]["job"] == job)
+                .and_then(|t| t["id"].as_str().map(str::to_string))
+        });
+        relay_post(
+            self.port,
+            vec![json!({"type": "attached", "threadId": job, "tabId": tab})],
+        );
+        tab
+    }
+
+    /// How many frames of `method` the window was sent.
+    fn sent(&self, method: &str) -> usize {
+        self.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == method)
+            .count()
+    }
+
+    /// Holds back the answer to the next frame of `method` until `until` holds.
+    fn hold(&self, method: &'static str, until: impl Fn() -> bool + Send + 'static) {
+        *self.hold.lock().unwrap() = Some((method, Box::new(until)));
+    }
+}
+
+/// What a page at [`PAGE`] with one button answers a CDP `frame`: its answer by id, and for a
+/// navigate, its load after.
+fn page_answers(command: &Value, frame: &Value) -> Vec<Value> {
+    let result = match frame["method"].as_str().unwrap_or_default() {
+        "Runtime.evaluate" => json!({"result": {"value": {"url": PAGE, "title": "A page"}}}),
+        "Page.navigate" => json!({"frameId": "f1", "loaderId": "l1"}),
+        "Accessibility.getFullAXTree" => {
+            json!({"nodes": [{"nodeId": "1", "role": {"value": "button"},
+            "name": {"value": "Go"}, "backendDOMNodeId": 7, "childIds": []}]})
+        }
+        "DOM.getContentQuads" => json!({"quads": [[10, 10, 30, 10, 30, 20, 10, 20]]}),
+        _ => json!({}),
+    };
+    let cdp = |message: Value| {
+        json!({"type": "cdp", "threadId": command["threadId"], "tabId": command["tabId"],
+               "message": message.to_string()})
+    };
+    let mut events = vec![cdp(json!({"id": frame["id"], "result": result}))];
+    if frame["method"] == "Page.navigate" {
+        events.push(cdp(
+            json!({"method": "Page.loadEventFired", "params": {"timestamp": 1}}),
+        ));
+    }
+    events
+}
+
+/// The window's events, posted to obid's relay in order.
+fn relay_post(port: u16, events: Vec<Value>) {
+    let auth = format!("Bearer {TOKEN}");
+    let (status, body) = raw_at(
+        port,
+        "POST",
+        "/v1/browser/relay",
+        &[("Authorization", &auth)],
+        &json!({ "events": events }),
+    );
+    assert_eq!(status, 204, "{body}");
+}
+
+/// A sleeping job's agent with a tab of its own in the stand-in window (BROWSER-5, 6).
+struct AgentTab {
+    obid: Obid,
+    window: Window,
+    token: String,
+    tab: String,
+    _folder: Folder,
+}
+
+impl AgentTab {
+    fn open(name: &str) -> AgentTab {
+        let folder = Folder::new(name);
+        let obid = browser_obid(&folder);
+        let (job, token) = sleeping_job(&obid);
+        let window = Window::follow(&obid);
+        let opening = {
+            let (port, token) = (obid.port, token.clone());
+            std::thread::spawn(move || {
+                let bearer = format!("Bearer {token}");
+                raw_at(
+                    port,
+                    "POST",
+                    "/v1/browser/mcp",
+                    &[("Authorization", &bearer)],
+                    &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "oby_browser_open", "arguments": {"url": PAGE}}}),
+                )
+            })
+        };
+        let tab = window.attach(&obid, &job);
+        let (status, opened) = opening.join().unwrap();
+        assert_eq!(status, 200, "{opened}");
+        let opened = &opened["result"]["structuredContent"];
+        assert_eq!(opened["ok"], true, "{opened}");
+        AgentTab {
+            obid,
+            window,
+            token,
+            tab,
+            _folder: folder,
+        }
+    }
+
+    fn tool(&self, name: &str, args: Value) -> Value {
+        tool(&self.obid, &self.token, name, args)
+    }
+
+    fn navigate(&self) -> Value {
+        self.tool("oby_browser_navigate", json!({"url": PAGE}))
+    }
+
+    fn path(&self, verb: &str) -> String {
+        format!("/v1/browser/tabs/{}/{verb}", self.tab)
+    }
+
+    /// The owner's signed take or give back.
+    fn signed(&self, verb: &str) -> Answer {
+        call_signed(&self.obid, "POST", &self.path(verb), Some(&json!({})))
+    }
+
+    /// The tab as `GET /v1/browser` shows it.
+    fn shown(&self) -> Value {
+        let tabs = call(&self.obid, "GET", "/v1/browser", None).body;
+        tabs["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == self.tab.as_str())
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    /// The agent's navigate, on a thread of its own: it says `act` on `done` once answered.
+    fn navigate_on_thread(&self, done: mpsc::Sender<&'static str>) -> JoinHandle<(u16, Value)> {
+        let (port, token) = (self.obid.port, self.token.clone());
+        std::thread::spawn(move || {
+            let bearer = format!("Bearer {token}");
+            let answer = raw_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_navigate", "arguments": {"url": PAGE}}}),
+            );
+            done.send("act").unwrap();
+            answer
+        })
+    }
+
+    /// The owner's signed take, on a thread of its own: it says `take` on `done` once answered.
+    /// Its words are signed here: the thread has no obid of its own to sign with.
+    fn take_on_thread(&self, done: mpsc::Sender<&'static str>) -> JoinHandle<(u16, Value)> {
+        let (port, path) = (self.obid.port, self.path("take"));
+        let header = words_header(&self.obid, "POST", &path, Some(&json!({})));
+        std::thread::spawn(move || {
+            let auth = format!("Bearer {TOKEN}");
+            let answer = raw_at(
+                port,
+                "POST",
+                &path,
+                &[("Authorization", &auth), ("X-Oby-Words", &header)],
+                &json!({}),
+            );
+            done.send("take").unwrap();
+            answer
+        })
+    }
+
+    /// Holds back the page's answer to the next navigate until `go` is set; `page` hears when it
+    /// goes.
+    fn hold_navigate(&self, go: &Arc<AtomicBool>, page: mpsc::Sender<&'static str>) {
+        let (go, page) = (go.clone(), Mutex::new(page));
+        self.window.hold("Page.navigate", move || {
+            let going = go.load(Ordering::SeqCst);
+            if going {
+                page.lock().unwrap().send("page").unwrap();
+            }
+            going
+        });
+    }
+
+    fn stop(mut self) {
+        stop_with_no_browser_left(&mut self.obid);
+    }
+}
+
+/// The test owner's device, which signs the owner's words.
+fn device(obid: &Obid) -> String {
+    let header = words_header(obid, "GET", "/", None);
+    header.split(' ').next().unwrap().to_string()
+}
+
+/// The first event `GET /v1/browser/events` holds, from its start, that `matches`.
+fn browser_event(obid: &Obid, matches: impl Fn(&Value) -> bool) -> Value {
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /v1/browser/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+    )
+    .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line).unwrap_or(0);
+        assert!(read > 0, "no such browser event");
+        if let Some(event) = line
+            .trim()
+            .strip_prefix("data: ")
+            .and_then(|d| serde_json::from_str::<Value>(d).ok())
+            .filter(|e| matches(e))
+        {
+            return event;
+        }
+    }
+}
+
+#[test]
+fn browser_5_a_signed_take_refuses_the_agents_act_human_control() {
+    let agent = AgentTab::open("browser-5-take");
+    let before = agent.shown()["holdGeneration"].as_u64().unwrap();
+    let taken = agent.signed("take");
+    assert_eq!(taken.status, 200, "{}", taken.text);
+    assert_eq!(taken.body["tabId"], agent.tab.as_str());
+    assert_eq!(taken.body["heldBy"], device(&agent.obid));
+    assert!(
+        taken.body["holdGeneration"].as_u64().unwrap() > before,
+        "{}",
+        taken.text
+    );
+    let navigates = agent.window.sent("Page.navigate");
+    let refused = agent.navigate();
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["error"]["code"], "human_control", "{refused}");
+    assert_eq!(
+        agent.window.sent("Page.navigate"),
+        navigates,
+        "no navigate reached the page"
+    );
+    browser_event(&agent.obid, |e| {
+        e["type"] == "action"
+            && e["tool"] == "oby_browser_navigate"
+            && e["outcome"] == "refused"
+            && e["reason"] == "human_control"
+    });
+    agent.stop();
+}
+
+#[test]
+fn browser_5_while_the_owner_holds_a_tab_the_agents_reads_still_answer() {
+    let agent = AgentTab::open("browser-5-reads");
+    let taken = agent.signed("take");
+    assert_eq!(taken.status, 200, "{}", taken.text);
+    let read = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(read["ok"], true, "{read}");
+    agent.stop();
+}
+
+#[test]
+fn browser_5_give_back_lets_the_agents_next_act_run() {
+    let agent = AgentTab::open("browser-5-give-back");
+    let taken = agent.signed("take");
+    assert_eq!(taken.status, 200, "{}", taken.text);
+    let given = agent.signed("giveBack");
+    assert_eq!(given.status, 200, "{}", given.text);
+    assert_eq!(given.body["heldBy"], Value::Null, "{}", given.text);
+    let navigates = agent.window.sent("Page.navigate");
+    let act = agent.navigate();
+    assert_eq!(act["ok"], true, "{act}");
+    assert_eq!(agent.window.sent("Page.navigate"), navigates + 1);
+    agent.stop();
+}
+
+#[test]
+fn browser_6_a_take_during_an_act_answers_once_the_act_ends() {
+    let agent = AgentTab::open("browser-6-wait");
+    let go = Arc::new(AtomicBool::new(false));
+    let (done, order) = mpsc::channel();
+    // The act ends when the page answers its navigate: the stand-in says so, then answers.
+    agent.hold_navigate(&go, done.clone());
+    let navigates = agent.window.sent("Page.navigate");
+    let acting = agent.navigate_on_thread(done.clone());
+    within(30, "the act reaches the page", || {
+        (agent.window.sent("Page.navigate") > navigates).then_some(())
+    });
+    let taking = agent.take_on_thread(done);
+    let device = device(&agent.obid);
+    within(30, "the tab shows held while the act runs", || {
+        (agent.shown()["heldBy"] == device.as_str()).then_some(())
+    });
+    assert!(order.try_recv().is_err(), "nothing answered yet");
+    go.store(true, Ordering::SeqCst);
+    let (status, act) = acting.join().unwrap();
+    assert_eq!(status, 200, "{act}");
+    assert_eq!(act["result"]["structuredContent"]["ok"], true, "{act}");
+    let (status, taken) = taking.join().unwrap();
+    assert_eq!(status, 200, "{taken}");
+    assert_eq!(taken["heldBy"], device.as_str(), "{taken}");
+    // The act counts as ended once the page answered it (`Api::done`), before its own answer is
+    // shaped and sent: the take answers after the page's answer, the act's answer either side.
+    let order: Vec<&str> = order.iter().take(3).collect();
+    let at = |what| order.iter().position(|o| *o == what).unwrap();
+    assert!(
+        at("page") < at("take"),
+        "the take answers after the act: {order:?}"
+    );
+    assert!(at("page") < at("act"), "{order:?}");
+    agent.stop();
+}
+
+/// T3's epoch check (`SessionControl.take`): a give back while the device's own take still waits
+/// for the agent's act ends that take, so the engine is never left holding a tab the API shows free.
+#[test]
+fn browser_6_a_give_back_while_its_take_waits_leaves_the_agent_free() {
+    let agent = AgentTab::open("browser-6-give-back-waiting");
+    let go = Arc::new(AtomicBool::new(false));
+    let (done, order) = mpsc::channel();
+    agent.hold_navigate(&go, done.clone());
+    let navigates = agent.window.sent("Page.navigate");
+    let acting = agent.navigate_on_thread(done.clone());
+    within(30, "the act reaches the page", || {
+        (agent.window.sent("Page.navigate") > navigates).then_some(())
+    });
+    let taking = agent.take_on_thread(done);
+    let device = device(&agent.obid);
+    within(30, "the tab shows held while the act runs", || {
+        (agent.shown()["heldBy"] == device.as_str()).then_some(())
+    });
+    let given = agent.signed("giveBack");
+    assert_eq!(given.status, 200, "{}", given.text);
+    assert_eq!(given.body["heldBy"], Value::Null, "{}", given.text);
+    assert!(order.try_recv().is_err(), "nothing answered yet");
+    go.store(true, Ordering::SeqCst);
+    let (status, act) = acting.join().unwrap();
+    assert_eq!(status, 200, "{act}");
+    assert_eq!(act["result"]["structuredContent"]["ok"], true, "{act}");
+    let (status, taken) = taking.join().unwrap();
+    assert_eq!(
+        (status, taken["reason"].as_str()),
+        (409, Some("control_changed")),
+        "{taken}"
+    );
+    assert_eq!(agent.shown()["heldBy"], Value::Null);
+    let navigates = agent.window.sent("Page.navigate");
+    let next = agent.navigate();
+    assert_eq!(next["ok"], true, "{next}");
+    assert_eq!(agent.window.sent("Page.navigate"), navigates + 1);
+    agent.stop();
+}
+
+#[test]
+fn browser_5_an_unsigned_wrongly_signed_or_job_token_take_is_refused_and_nothing_is_held() {
+    let agent = AgentTab::open("browser-5-refused");
+    let free = |why: &str| {
+        assert_eq!(agent.shown()["heldBy"], Value::Null, "{why}: nothing held");
+        let act = agent.navigate();
+        assert_eq!(act["ok"], true, "{why}: {act}");
+    };
+    for verb in ["take", "giveBack"] {
+        let path = agent.path(verb);
+        let unsigned = call(&agent.obid, "POST", &path, Some(&json!({})));
+        assert_eq!(
+            (unsigned.status, unsigned.body["reason"].as_str()),
+            (401, Some("unsigned")),
+            "{verb}: {}",
+            unsigned.text
+        );
+        free("unsigned");
+        let other = words_header(&agent.obid, "POST", &path, Some(&json!({"other": true})));
+        let wrong = call_with_headers(
+            &agent.obid,
+            TOKEN,
+            "POST",
+            &path,
+            Some(&json!({})),
+            &[("X-Oby-Words", &other)],
+        );
+        assert_eq!(
+            (wrong.status, wrong.body["reason"].as_str()),
+            (401, Some("bad_signature")),
+            "{verb}: {}",
+            wrong.text
+        );
+        free("signed over another body");
+        let words = words_header(&agent.obid, "POST", &path, Some(&json!({})));
+        let job = call_with_headers(
+            &agent.obid,
+            &agent.token,
+            "POST",
+            &path,
+            Some(&json!({})),
+            &[("X-Oby-Words", &words)],
+        );
+        assert_eq!(
+            (job.status, job.body["reason"].as_str()),
+            (401, Some("bad_token")),
+            "{verb}: {}",
+            job.text
+        );
+        free("the job's token");
+    }
+    agent.stop();
+}
+
+#[test]
+fn browser_5_a_ref_from_before_a_take_is_stale_after_give_back() {
+    let agent = AgentTab::open("browser-5-stale-ref");
+    let snapshot = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let click = json!({"action": "click", "ref": "e1"});
+    for verb in ["take", "giveBack"] {
+        let answer = agent.signed(verb);
+        assert_eq!(answer.status, 200, "{verb}: {}", answer.text);
+    }
+    let clicks = agent.window.sent("Input.dispatchMouseEvent");
+    let stale = agent.tool("oby_browser_act", click.clone());
+    assert_eq!(stale["ok"], false, "{stale}");
+    assert_eq!(stale["error"]["code"], "stale_ref", "{stale}");
+    assert_eq!(agent.window.sent("Input.dispatchMouseEvent"), clicks);
+    let snapshot = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let act = agent.tool("oby_browser_act", click);
+    assert_eq!(act["ok"], true, "{act}");
+    assert!(agent.window.sent("Input.dispatchMouseEvent") > clicks);
+    agent.stop();
 }

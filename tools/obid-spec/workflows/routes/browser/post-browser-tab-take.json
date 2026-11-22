@@ -1,8 +1,8 @@
 {
   "schemaVersion": "2",
-  "name": "obid's browser: POST /v1/browser/tabs/{id}/take is retired with obid's own browser and answers 410",
+  "name": "obid's browser: POST /v1/browser/tabs/{id}/take is the owner's signed act: unsigned is refused, and a signed take of a tab that doesn't exist is refused",
   "version": "1.0.0",
-  "description": "BROWSER-30 (docs/plans/browser-t3.md, the window's browser): Take control: it is clicking the page in the window. The route stays, answering 410 with `retired`, so an app that still calls it is told, never left hanging (the add-only API).",
+  "description": "BROWSER-5 (core/crates/obid/src/browser/routes.rs, take): Take control is signed by one of the owner's devices. With no signed words it is refused 401 `unsigned`, and nothing is held; signed by a paired device, a take of `tab-1`, which doesn't exist, is refused 404 `no_such_tab`. The held tab, the agent's refused acts and its reads are in tests/browser_api.rs.",
   "trigger": {
     "http": {
       "method": "POST",
@@ -20,7 +20,15 @@
       }
     },
     {
-      "id": "retired",
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "unsigned",
       "use": "runtime.rust:call",
       "inputs": {
         "obid": "${state.o}",
@@ -28,19 +36,39 @@
         "path": "/v1/browser/tabs/tab-1/take",
         "as": "owner",
         "expect": {
-          "status": 410,
+          "status": 401,
           "paths": {
-            "reason": "retired",
-            "error": {
-              "$contains": "Oby's window does this now"
-            }
+            "reason": "unsigned"
           }
         },
         "body": {}
       },
       "ui": {
         "proves": [
-          "BROWSER-30"
+          "BROWSER-5"
+        ]
+      }
+    },
+    {
+      "id": "no-such-tab",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/browser/tabs/tab-1/take",
+        "expect": {
+          "status": 404,
+          "paths": {
+            "reason": "no_such_tab"
+          }
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {}
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-5"
         ]
       }
     }

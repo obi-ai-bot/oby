@@ -2,13 +2,14 @@
 //! every path of the contract's `ROUTES`, merged into obid's router. obid's gate checks the owner
 //! token first (and, for the agents' route, admits a job's broker token); the owner's acts here
 //! also carry the device's signed words (`X-Oby-Words`, `crate::approval`): `PUT settings`, Save a
-//! copy, an answer, take, give back, a secret, the person's input (BROWSER-7: only from the device
-//! that holds the tab) and their ways out of a page state (reload, back, a dialog answered:
-//! BROWSER-26, only on a tab their device holds). The agents' MCP server is `POST /v1/browser/mcp`,
-//! its caller's job from its broker token (`crate::connections`), its plumbing `crate::mcp`'s.
+//! copy, an answer, take and give back of a tab (BROWSER-5, 6: while their device holds it, the
+//! agent's acts wait and its reads go on) and their ways out of a page state (reload, back, a
+//! dialog answered: BROWSER-26). A secret, the person's input and the live stream are retired
+//! (BROWSER-30). The agents' MCP server is `POST /v1/browser/mcp`, its caller's job from its broker
+//! token (`crate::connections`), its plumbing `crate::mcp`'s.
 //!
-//! It owns no state: the browser's is [`super::Service`]'s. It writes nothing; a secret's value is
-//! never logged, evented or answered (obid logs no request body, and this module none of its own).
+//! It owns no state: the browser's is [`super::Service`]'s. It writes nothing, and logs no request
+//! body.
 
 use std::convert::Infallible;
 use std::path::PathBuf;
@@ -26,7 +27,7 @@ use axum::routing::{get, post};
 use futures_util::stream::{self, StreamExt};
 use serde_json::{Value, json};
 
-use super::api::Refused;
+use super::api::{Refused, Take};
 use super::contract as c;
 use crate::api::{ApiError, Shared};
 
@@ -44,12 +45,12 @@ pub fn router() -> Router<Arc<Shared>> {
         .route("/v1/browser/downloads", get(downloads))
         .route("/v1/browser/downloads/{id}/saveCopy", post(save_copy))
         .route("/v1/browser/asks/{id}/answer", post(answer))
+        .route("/v1/browser/tabs/{id}/take", post(take))
+        .route("/v1/browser/tabs/{id}/giveBack", post(give_back))
         // Retired with obid's own browser (the window's browser, docs/plans/browser-t3.md): the
         // person uses the webview itself, and Fill in is the window's. Kept, answering 410.
         .route("/v1/browser/tabs/{id}/stream", get(retired))
         .route("/v1/browser/tabs/{id}/input", post(retired))
-        .route("/v1/browser/tabs/{id}/take", post(retired))
-        .route("/v1/browser/tabs/{id}/giveBack", post(retired))
         .route("/v1/browser/tabs/{id}/secret", post(retired))
         .route("/v1/browser/tabs/{id}/reload", post(reload))
         .route("/v1/browser/tabs/{id}/back", post(back))
@@ -252,6 +253,107 @@ fn sse_of(e: &c::Event) -> SseEvent {
         .id(e.seq.to_string())
         .event(e.body.kind())
         .data(serde_json::to_string(e).unwrap_or_default())
+}
+
+/// The owner's device takes a tab (BROWSER-5, 6, T3's `take`): signed first, so nothing is held on
+/// a refusal; from then no act of the agent's is let through, and the take answers once the acts
+/// already running end. A handover while it waited (a give back) ends it `control_changed`, T3's
+/// epoch check, so the engine never holds a tab the API shows free.
+async fn take(
+    State(shared): State<Arc<Shared>>,
+    Path(tab): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let device = match signed(&shared, &method, &uri, &headers, &body) {
+        Ok(d) => d,
+        Err(e) => return refused(e),
+    };
+    let service = &shared.browser;
+    let first = service.api(|a| {
+        let first = a.take(&device, &tab)?;
+        Ok::<_, Refused>((first, a.hold_of(&tab)?.hold_generation))
+    });
+    service.flush();
+    let (first, generation) = match first {
+        Ok(t) => t,
+        Err(e) => return refused(e),
+    };
+    // Acts already running finish first; no new one is let through meanwhile.
+    if let Take::Wait(_) = first {
+        let until = tokio::time::Instant::now()
+            + Duration::from_millis(super::engine::MAX_DEADLINE_MS + 5000);
+        while service.api(|a| a.inflight(&tab)) > 0 && tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    // Checked under the engine's lock: a give back either ended the hold before this look, or
+    // finds the engine held by this device and releases it.
+    let engine = {
+        let mut core = service
+            .window()
+            .core()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let still = service.api(|a| a.hold_of(&tab)).is_ok_and(|h| {
+            h.held_by.as_deref() == Some(device.as_str()) && h.hold_generation == generation
+        });
+        if !still {
+            return refused(Refused::new(
+                409,
+                "control_changed",
+                "Control of this tab changed while the take waited for the agent's act, so nothing is held. Take control again.",
+            ));
+        }
+        core.take(&device, &tab)
+    };
+    if let Err(r) = engine {
+        return refused(Refused::engine(r.code(), &r.message()));
+    }
+    match service.api(|a| a.hold_of(&tab)) {
+        Ok(h) => ok(&h),
+        Err(e) => refused(e),
+    }
+}
+
+/// The holding device gives the tab back (BROWSER-5, T3's `release`): the agent's next act runs,
+/// from a new snapshot.
+async fn give_back(
+    State(shared): State<Arc<Shared>>,
+    Path(tab): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let device = match signed(&shared, &method, &uri, &headers, &body) {
+        Ok(d) => d,
+        Err(e) => return refused(e),
+    };
+    let service = &shared.browser;
+    let given = service.api(|a| a.give_back(&device, &tab));
+    service.flush();
+    let given = match given {
+        Ok(h) => h,
+        Err(e) => return refused(e),
+    };
+    // The engine is held only once a take's wait ended: given back while that take still waited,
+    // there is nothing to release, and the take ends itself `control_changed`.
+    let mut core = service
+        .window()
+        .core()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if core
+        .tab(&tab)
+        .is_some_and(|t| t.person.as_deref() == Some(device.as_str()))
+        && let Err(r) = core.release(&device, &tab)
+    {
+        return refused(Refused::engine(r.code(), &r.message()));
+    }
+    ok(&given)
 }
 
 /// A route retired with obid's own browser: the window's browser does it now.
