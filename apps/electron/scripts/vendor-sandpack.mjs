@@ -6,7 +6,10 @@
 // react.mjs keeps `react` external (client.mjs and recharts.mjs `react-dom` too), so a preview's
 // frame has one React. Beside each built folder's files go its package's LICENSE and
 // THIRD_PARTY_LICENSES, every package the build took in with its licence, read from the build's
-// module ids; those lists are printed as one line of JSON. The same packages give the same bytes.
+// module ids; those lists are printed as one line of JSON. shadcn/ is one build of many entries,
+// LibreChat's components in resources/shadcn-src/ with the Radix parts they import, their shared code
+// in chunks/ and the seven names a page's map holds kept external. The same packages give the same
+// bytes.
 //   npm run vendor:sandpack [-- <folder>]
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -31,6 +34,8 @@ const BUILT = [
   ['tailwind-merge', 'tailwind-merge.mjs', 'tailwind-merge', ['react']],
   ['class-variance-authority', 'class-variance-authority.mjs', 'class-variance-authority', ['react']],
 ];
+/** What shadcn/'s modules import and a page's map holds, each its one vendored copy. */
+const SHADCN_EXTERNAL = ['react', 'react-dom', 'react/jsx-runtime', 'lucide-react', 'clsx', 'tailwind-merge', 'class-variance-authority'];
 /** Each package's licence file, by the folder its LICENSE goes in. */
 const LICENSES = [
   ['react', 'react'],
@@ -64,31 +69,51 @@ async function entry(module, exports) {
   return `import m from '${module}';\nexport default m;\nexport const { ${names.join(', ')} } = m;\n`;
 }
 
-async function built(module, external) {
-  const id = `\0vendor:${module}`;
+/** One Vite library build (ES, minified, NODE_ENV production, nothing written): its chunks, each minified again. */
+async function chunks(lib, external, plugins = [], output = {}) {
   const out = await build({
     configFile: false,
     root: app,
     logLevel: 'silent',
     mode: 'production',
     define: { 'process.env.NODE_ENV': '"production"' },
-    // lib mode resolves its entry from the root: that path is this module's entry, written here
-    plugins: [{ name: 'oby-vendor-entry', enforce: 'pre', resolveId: (s) => (s === join(app, 'vendor-entry') ? id : null), async load(i) {
-      if (i !== id) return null;
-      // the ES module's own exports, as this build resolves and reads it
-      return entry(module, async () => (await this.load(await this.resolve(module, i))).exports ?? []);
-    } }],
+    plugins,
     build: {
       write: false,
       minify: 'esbuild',
-      lib: { entry: 'vendor-entry', formats: ['es'], fileName: () => 'out.mjs' },
-      rollupOptions: { external },
+      lib: { ...lib, formats: ['es'] },
+      rollupOptions: { external, output },
     },
   });
-  const [{ output }] = Array.isArray(out) ? out : [out];
-  const chunk = output.find((o) => o.type === 'chunk' && o.isEntry);
+  const [{ output: written }] = Array.isArray(out) ? out : [out];
   // Vite's lib mode keeps an ES build's whitespace: its own esbuild takes it out
-  return { code: (await transformWithEsbuild(chunk.code, 'out.mjs', { minify: true, format: 'esm' })).code, ids: chunk.moduleIds };
+  return Promise.all(written.filter((o) => o.type === 'chunk').map(async (c) => ({ ...c, code: (await transformWithEsbuild(c.code, c.fileName, { minify: true, format: 'esm' })).code })));
+}
+
+async function built(module, external) {
+  const id = `\0vendor:${module}`;
+  // lib mode resolves its entry from the root: that path is this module's entry, written here
+  const plugin = { name: 'oby-vendor-entry', enforce: 'pre', resolveId: (s) => (s === join(app, 'vendor-entry') ? id : null), async load(i) {
+    if (i !== id) return null;
+    // the ES module's own exports, as this build resolves and reads it
+    return entry(module, async () => (await this.load(await this.resolve(module, i))).exports ?? []);
+  } };
+  const chunk = (await chunks({ entry: 'vendor-entry', fileName: () => 'out.mjs' }, external, [plugin])).find((c) => c.isEntry);
+  return { code: chunk.code, ids: chunk.moduleIds };
+}
+
+/** shadcn/: every component of shadcn-src/ and its `cn` as entries of one build, so Radix's shared modules are in one chunk each. */
+async function shadcn(into) {
+  const src = join(app, 'resources', 'shadcn-src');
+  const ui = readdirSync(join(src, 'components', 'ui')).filter((f) => f.endsWith('.tsx')).sort();
+  const entries = Object.fromEntries([...ui.map((f) => [`ui/${f.slice(0, -4)}`, join(src, 'components', 'ui', f)]), ['lib/utils', join(src, 'lib', 'utils.ts')]]);
+  const out = await chunks({ entry: entries, fileName: (_, name) => `${name}.mjs` }, SHADCN_EXTERNAL, [], { chunkFileNames: 'chunks/[name]-[hash].mjs' });
+  for (const c of out) {
+    mkdirSync(dirname(join(into, 'shadcn', c.fileName)), { recursive: true });
+    writeFileSync(join(into, 'shadcn', c.fileName), c.code);
+  }
+  copyFileSync(join(src, 'LICENSE'), join(into, 'shadcn', 'LICENSE'));
+  return out.flatMap((c) => c.moduleIds);
 }
 
 /** A module's package: the folder of its nearest package.json with a name and a version (none off node_modules). */
@@ -104,8 +129,15 @@ function packageOf(id) {
   return null;
 }
 
+/** A package version whose npm files hold no licence: its repository's LICENSE, kept in resources/licences/. */
+const KEPT = {
+  // ponytail: its repository added LICENSE (MIT, as its package.json says) at 7301c16, after 2.3.8 was published
+  'react-remove-scroll-bar@2.3.8': join(app, 'resources', 'licences', 'react-remove-scroll-bar', 'LICENSE'),
+};
+
 /** A package folder's licence file (`LICENSE`, `license`, `LICENSE.md`, …): the first by name. */
 function licenceIn(dir, name) {
+  if (KEPT[name]) return KEPT[name];
   const file = readdirSync(dir).filter((f) => /^licen[cs]e/i.test(f)).sort()[0];
   if (!file) throw new Error(`${name} has no licence file in ${dir}: it can't be vendored without one.`);
   return join(dir, file);
@@ -118,13 +150,17 @@ function thirdParty(packages) {
 
 export async function vendor(into = join(app, 'resources', 'sandpack-vendor')) {
   const taken = {};
+  const take = (folder, ids) => {
+    taken[folder] ??= new Map();
+    for (const p of ids.map(packageOf)) if (p) taken[folder].set(`${p.name}@${p.version}`, p);
+  };
   for (const [folder, file, module, external] of BUILT) {
     mkdirSync(join(into, folder), { recursive: true });
     const { code, ids } = await built(module, external);
     writeFileSync(join(into, folder, file), code);
-    taken[folder] ??= new Map();
-    for (const p of ids.map(packageOf)) if (p) taken[folder].set(`${p.name}@${p.version}`, p);
+    take(folder, ids);
   }
+  take('shadcn', await shadcn(into));
   const listed = {};
   for (const [folder, packages] of Object.entries(taken)) {
     const sorted = [...packages.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
