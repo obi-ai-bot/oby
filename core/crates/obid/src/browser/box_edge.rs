@@ -8,6 +8,35 @@
 use super::api::Refused;
 use super::contract::Origin;
 
+/// Whether a foreign job (another Oby's task, one marked `untrusted`, Oby's own review) gets a
+/// browser: off, the owner's decision. Its box is built and runs once on: the job's browser door
+/// (crate::egress), its `box` on the relay, and the window's box session held to that door. It
+/// stays off because a box page can still write the owner's clipboard on an agent's click:
+/// `document.open()` wipes every listener of the page's window, main's clipboard guard's too, in
+/// every world, so no guard inside the page holds. It turns on when a follow-up keeps a box page off
+/// the clipboard by a means the page can't undo. Until then `jobs::reach` gives such a job no
+/// browser server and every tool refuses it ([`not_yet`]); the tests that fail if this breaks are
+/// `browser_api.rs` `browser_18_a_foreign_job_gets_no_browser_while_the_box_is_off` and
+/// `jobs_api.rs` `lanes_23_*` (an untrusted run loads no server). A debug build's test turns it on
+/// with `OBID_TEST_FOREIGN_BROWSER=1`, to drive the box.
+pub fn foreign_browser() -> bool {
+    #[cfg(debug_assertions)]
+    if std::env::var("OBID_TEST_FOREIGN_BROWSER").is_ok_and(|v| v == "1") {
+        return true;
+    }
+    false
+}
+
+/// A foreign job's browser tool while the box is off ([`foreign_browser`]): it finishes without
+/// one.
+pub fn not_yet() -> Refused {
+    Refused::new(
+        403,
+        "browser_off",
+        "A task from another Oby, or one marked untrusted, gets no browser on this Oby yet. Finish without a browser, and say so in your summary.",
+    )
+}
+
 /// How many of the Sphere's latest exchanges [`origin_of`] looks through for the one that brought
 /// a job: a running job's is among them.
 pub const EXCHANGES_LOOKED: usize = 500;

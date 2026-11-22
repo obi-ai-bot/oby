@@ -22,6 +22,9 @@
         "owner": "ana",
         "agent": "fake-harness-jobs",
         "browser": true,
+        "env": {
+          "OBID_TEST_FOREIGN_BROWSER": "1"
+        },
         "config": {
           "gateway": "127.0.0.1:0"
         }

@@ -258,10 +258,9 @@ mod tests {
     use super::*;
 
     /// An own job the browser already knows, later found foreign in obid's records, is foreign
-    /// from its next call: its origin is never only the first one heard, and its tabs open in its
-    /// box (BROWSER-18).
+    /// from its next call: its origin is never only the first one heard (BROWSER-18).
     #[tokio::test]
-    async fn browser_18_a_job_that_becomes_foreign_browses_in_its_box() {
+    async fn browser_18_a_job_that_becomes_foreign_loses_its_browser() {
         let home = std::env::temp_dir().join(format!("oby-browser-18-{}", std::process::id()));
         let service = Service::open(&home).await;
         service.ensure_job("j1", "claude", c::Origin::Own);
@@ -270,12 +269,11 @@ mod tests {
             service.api(|a| a.job("j1").map(|j| j.origin.clone())),
             Some(c::Origin::Untrusted)
         );
-        // Its tools run, in the window's browser (none here).
         let answer = service
             .call_tool("j1", &home, "oby_browser_snapshot", &json!({}))
             .await;
         assert_eq!(
-            answer["structuredContent"]["error"]["code"], "no_window",
+            answer["structuredContent"]["error"]["code"], "browser_off",
             "{answer}"
         );
         // A job found foreign never goes back to its agent's partition.

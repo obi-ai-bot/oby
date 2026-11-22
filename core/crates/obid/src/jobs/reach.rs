@@ -21,14 +21,17 @@ impl Jobs {
 
     /// obid's browser server for `job`'s agent, with its broker token (BROWSER-17), while "Agents
     /// can use the browser" is on. An own run reaches it on loopback, as Oby's other servers
-    /// (LANES-26). Another Oby's task, one marked `untrusted` or Oby's own review browses in its
-    /// box partition (BROWSER-18): a boxed run behind obid's egress proxy gets the job's browser
-    /// door, which the window sets on that partition, and the host's listeners it refuses. Any
-    /// other run opens no door, so its box pages reach nothing (the window holds their requests,
-    /// then cancels them).
+    /// (LANES-26). Another Oby's task, one marked `untrusted` or Oby's own review gets none while
+    /// the box is off (`box_edge::foreign_browser`, BROWSER-18). With it on, it browses in its box
+    /// partition: a boxed run behind obid's egress proxy gets the job's browser door, which the
+    /// window sets on that partition, and the host's listeners it refuses. Any other run opens no
+    /// door, so its box pages reach nothing (the window holds their requests, then cancels them).
     pub(super) fn browser_server(&self, job: &Job) -> Option<crate::browser::AgentServer> {
         use crate::browser::box_edge;
         let origin = box_edge::origin_of(job, &Value::Null, |id| self.get(id));
+        if origin.foreign() && !box_edge::foreign_browser() {
+            return None;
+        }
         let browser = self.browser.get()?;
         browser.api(|api| api.tools_allowed()).ok()?;
         let server = self.connections.get()?.open_browser(&job.id);

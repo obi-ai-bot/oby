@@ -184,9 +184,18 @@ fn browser_16_no_token_a_made_up_one_the_owners_or_an_ended_jobs_is_refused() {
     stop_with_no_browser_left(&mut obid);
 }
 
-/// A Codex job that stays running, its file written before obid starts as `mark` leaves it, and
-/// its broker token.
-fn seeded_job(folder: &Folder, id: &str, mark: impl FnOnce(&mut obid::job::Job)) -> (Obid, String) {
+/// The box switched on, for a test that drives it: off, a foreign job gets no browser
+/// (`box_edge::foreign_browser`, BROWSER-18).
+const BOX_ON: &[(&str, &str)] = &[("OBID_TEST_FOREIGN_BROWSER", "1")];
+
+/// A Codex job that stays running, its file written before obid starts as `mark` leaves it, with
+/// `env` (`BOX_ON`, or none), and its broker token.
+fn seeded_job(
+    folder: &Folder,
+    id: &str,
+    env: &[(&str, &str)],
+    mark: impl FnOnce(&mut obid::job::Job),
+) -> (Obid, String) {
     let config = browser_config(folder);
     let mut job = obid::job::Job::new(
         id.into(),
@@ -205,7 +214,7 @@ fn seeded_job(folder: &Folder, id: &str, mark: impl FnOnce(&mut obid::job::Job))
         serde_json::to_vec(&job).unwrap(),
     )
     .unwrap();
-    let obid = start_with(&folder.0, &config, None, &[]);
+    let obid = start_with(&folder.0, &config, None, env);
     let file = obid.home.join(format!("worktrees/{id}/.obi/mcp-token"));
     let token = within(90, "the job hands back its token", || {
         std::fs::read_to_string(&file)
@@ -214,6 +223,26 @@ fn seeded_job(folder: &Folder, id: &str, mark: impl FnOnce(&mut obid::job::Job))
             .filter(|t| t.len() == 64)
     });
     (obid, token)
+}
+
+/// While the box is off, a job marked `untrusted` gets no browser: its agent, which holds its
+/// broker token, has every tool refused `browser_off`, its navigate to obid's own API on loopback
+/// too (BROWSER-18, `box_edge::foreign_browser`). Written before obid starts, as a foreign job is.
+#[test]
+fn browser_18_a_foreign_job_gets_no_browser_while_the_box_is_off() {
+    let folder = Folder::new("browser-18-off");
+    let (mut obid, token) = seeded_job(&folder, "aaaa1818", &[], |job| job.untrusted = true);
+    let url = format!("http://127.0.0.1:{}/v1/jobs", obid.port);
+    for (name, args) in [
+        ("oby_browser_navigate", json!({"url": url})),
+        ("oby_browser_snapshot", json!({})),
+    ] {
+        let refused = tool(&obid, &token, name, args);
+        assert_eq!(refused["error"]["code"], "browser_off", "{refused}");
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("no browser on this Oby yet"), "{refused}");
+    }
+    stop_with_no_browser_left(&mut obid);
 }
 
 /// A foreign job's tab, opened by its agent in the stand-in window, is in its box partition
@@ -256,25 +285,25 @@ fn browses_in_its_box(obid: &Obid, token: &str, job: &str) {
     assert_eq!(refused["error"]["code"], "outside_box", "{refused}");
 }
 
-/// A job marked `untrusted` gets the browser in its box (BROWSER-18): its agent's tab opens in
+/// With the box on, a job marked `untrusted` gets the browser in its box (BROWSER-18): its agent's tab opens in
 /// `oby-box-<job>`, and its navigate to obid's own API is refused. Written before obid starts, as
 /// a foreign job is.
 #[test]
 fn browser_18_a_foreign_jobs_tabs_open_in_its_box_and_its_navigate_to_obid_is_outside_box() {
     let folder = Folder::new("browser-18");
-    let (mut obid, token) = seeded_job(&folder, "bbbb1818", |job| job.untrusted = true);
+    let (mut obid, token) = seeded_job(&folder, "bbbb1818", BOX_ON, |job| job.untrusted = true);
     browses_in_its_box(&obid, &token, "bbbb1818");
     stop_with_no_browser_left(&mut obid);
 }
 
-/// A foreign job's worktree is its box's to write, links included: its screenshot goes into obid's
+/// With the box on, a foreign job's worktree is its box's to write, links included: its screenshot goes into obid's
 /// own folder for the job, never through a linked `screens`, and an upload of a link, or of a path
 /// through a linked folder, to a file outside the room is refused `upload_outside_room`
 /// (BROWSER-18).
 #[test]
 fn browser_18_a_foreign_jobs_screenshot_and_upload_go_through_no_link() {
     let folder = Folder::new("browser-18-links");
-    let (mut obid, token) = seeded_job(&folder, "ffff1818", |job| job.untrusted = true);
+    let (mut obid, token) = seeded_job(&folder, "ffff1818", BOX_ON, |job| job.untrusted = true);
     browses_in_its_box(&obid, &token, "ffff1818");
     let outside = folder.0.join("outside");
     std::fs::create_dir_all(&outside).unwrap();
@@ -314,13 +343,13 @@ fn browser_18_a_foreign_jobs_screenshot_and_upload_go_through_no_link() {
 }
 
 /// A follow-up whose earlier job is gone (a received review the owner deleted, then obid
-/// restarted) can't show where its line came from: it browses in its box, never the owner's
+/// restarted) can't show where its line came from: with the box on it browses in its box, never the owner's
 /// partition (BROWSER-18). It carries the `foreign` mark obid gives a follow-up of someone else's
 /// job.
 #[test]
 fn browser_18_a_follow_up_whose_earlier_job_is_gone_browses_in_its_box() {
     let folder = Folder::new("browser-18-gone");
-    let (mut obid, token) = seeded_job(&folder, "cccc1818", |job| {
+    let (mut obid, token) = seeded_job(&folder, "cccc1818", BOX_ON, |job| {
         job.follow_up_of = Some("dddd1818".into());
         job.foreign = Some(
             "it follows up a job whose check got none of them (another Oby asked for this job)"
@@ -332,12 +361,12 @@ fn browser_18_a_follow_up_whose_earlier_job_is_gone_browses_in_its_box() {
 }
 
 /// The owner's review saved by an obid from before its start mark (`someone_elses_code`), marked
-/// `foreign` alone, is someone else's code once read again: it browses in its box, whether or not
+/// `foreign` alone, is someone else's code once read again: with the box on it browses in its box, whether or not
 /// its worktree is there to find who wrote it (BROWSER-18).
 #[test]
 fn browser_18_a_review_saved_before_its_start_mark_browses_in_its_box() {
     let folder = Folder::new("browser-18-saved-review");
-    let (mut obid, token) = seeded_job(&folder, "eeee1818", |job| {
+    let (mut obid, token) = seeded_job(&folder, "eeee1818", BOX_ON, |job| {
         job.kind = "review".into();
         job.foreign = Some("as it started, someone else wrote in pull request #90".into());
     });

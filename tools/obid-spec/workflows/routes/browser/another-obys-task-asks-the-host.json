@@ -21,7 +21,10 @@
         "name": "owner-a",
         "owner": "ana",
         "agent": "fake-harness-jobs",
-        "browser": true
+        "browser": true,
+        "env": {
+          "OBID_TEST_FOREIGN_BROWSER": "1"
+        }
       }
     },
     {

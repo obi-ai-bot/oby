@@ -31,6 +31,7 @@
           }
         },
         "env": {
+          "OBID_TEST_FOREIGN_BROWSER": "1",
           "OBID_FOLLOW_SECONDS": "1"
         }
       }
