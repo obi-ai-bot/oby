@@ -9,7 +9,7 @@ import { mayConfirm, signedHeader, takeInput, wordsHeader } from './words';
 import { ipc } from './ipc';
 import { FINISH_WORDS } from '../shared/finish';
 import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
-import { browserAskPath, browserTabPath } from '../shared/obid-wire';
+import { BROWSER_PATH, browserAskPath, browserTabPath, type BrowserTabsAnswer } from '../shared/obid-wire';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept in the app's own folder as a 0600 file,
@@ -192,25 +192,56 @@ export async function ownersWords(method: string, path: string, body: unknown, o
   return r;
 }
 
+// Who types into the window's pages: the webviews' host (browserGuest.ts), handed in by browser.ts.
+// `code`: the ask is for a one-time code, which may go into a text box; anything else is a password,
+// typed only into a password input (BROWSERAPP-43)
+type PageTyper = (tab: string, field: string, value: string, code: boolean) => Promise<string | null>;
+let typer: PageTyper | null = null;
+export const typeInPages = (t: PageTyper) => { typer = t; };
+
 // Fetch and verify the current options before signing; the revision and destination are covered.
 // A password or a code typed in Oby's card, put straight into the page's field (docs/contracts/browser-app.md,
-// BROWSERAPP-12), on the owner's own press of Fill in (the preload saw it, `clicked`) and a real click
-// or Enter main saw itself: one input, one fill. Main puts the value in (`…/secret`) and answers
-// the ask it was for, each request signed. The value goes to obid once and nowhere else: never logged, kept or
-// answered back; a refusal says obid's words, which never carry it. Null once filled, else why not.
+// BROWSERAPP-12 and 42), on the owner's own press of Fill in (the preload saw it, `clicked`) and a real click
+// or Enter main saw itself: one input, one fill. Main holds the tab (takes it unless this device
+// holds it already), types the value into the tab's own webview (browserGuest.ts), answers the ask
+// and gives back only the hold it took, each request signed and with an empty body. A take obid
+// refuses, or one that names another device, types nothing. The value is in no request, header or
+// log, and is never kept; a refusal says obid's or main's words, which never carry it. Null once
+// filled, else why not.
 export async function fillSecret(tab: string, field: string, value: string, ask: string | undefined, clicked: boolean): Promise<string | null> {
   if (!clicked || !takeInput()) return 'Filling in takes your own click.';
   const refused = (a: Answer) => {
     if (a.status >= 200 && a.status < 300) return null;
     try { return (JSON.parse(a.text) as { error?: string }).error ?? `obid answered ${a.status}.`; } catch { return a.status ? `obid answered ${a.status}.` : a.text; }
   };
+  const type = typer;
+  if (!type) return 'The window isn’t up yet.';
   try {
     const id = (device ??= await register());
-    const send = (path: string, body: unknown) => obid('POST', path, body, signedHeader(deviceKey(), id, 'POST', path, body));
-    // no hold around the fill: whether Fill in holds the tab is the Fill in task's call, on the webview
-    const filled = refused(await send(browserTabPath(tab, 'secret'), { field, value }));
-    if (!filled && ask) await send(browserAskPath(ask), {});
-    return filled;
+    const send = (path: string) => obid('POST', path, {}, signedHeader(deviceKey(), id, 'POST', path, {}));
+    const heldBy = (a: Answer) => { try { return (JSON.parse(a.text) as { heldBy?: unknown }).heldBy; } catch { return null; } };
+    // who holds the tab, and the ask's kind, as obid has them, never as the page says
+    let holder: unknown = null, code = false;
+    try {
+      const t = (JSON.parse((await obid('GET', BROWSER_PATH)).text) as BrowserTabsAnswer).tabs?.find((x) => x.id === tab);
+      holder = t?.heldBy ?? null;
+      code = !!ask && t?.ask?.id === ask && t.ask.kind === 'code';
+    } catch { /* unreadable: nobody holds it, and it's a password */ }
+    const took = holder !== id;
+    if (took) {
+      const taken = await send(browserTabPath(tab, 'take'));
+      const why = refused(taken);
+      if (why) return why;
+      if (heldBy(taken) !== id) return 'held_by_other';
+    }
+    try {
+      const typed = await type(tab, field, value, code);
+      if (typed) return typed;
+      return ask ? refused(await send(browserAskPath(ask))) : null;
+    } finally {
+      // a give back obid refuses leaves the tab held, which the owner's Give back ends
+      if (took) await send(browserTabPath(tab, 'giveBack')).catch(() => undefined);
+    }
   } catch (err) {
     return `Oby couldn’t sign the fill: ${err instanceof Error ? err.message : String(err)}`;
   }

@@ -22,6 +22,9 @@ describe('BROWSERAPP-40, 41: Take control puts the keyboard on the page, Give ba
   // what obid answers: the take's and the give back's status, and who holds the tab after
   let obid: { take: number; give: number; heldBy: string | null };
   let browser: Browser;
+  // obid's events for the window, as main passes them on; and main's Fill in, held until a test lets it end
+  let heard: ((e: { name: string; data: string }) => void) | null = null;
+  let filled: ((why: string | null) => void) | null = null;
   const calls: string[] = [];
   function Spy() { browser = useBrowser(); return null; }
   beforeEach(() => {
@@ -45,7 +48,7 @@ describe('BROWSERAPP-40, 41: Take control puts the keyboard on the page, Give ba
     };
     (window as unknown as { app: unknown }).app = {
       obid: { call },
-      browser: { follow: () => () => {}, fill: async () => null, reveal: async () => true, navState: () => () => {}, register: async () => null, shown: () => {}, pointer: (fn: typeof pointer) => { pointer = fn; return () => { pointer = null; }; } },
+      browser: { follow: (fn: typeof heard) => { heard = fn; return () => {}; }, fill: () => new Promise<string | null>((done) => { filled = done; }), reveal: async () => true, navState: () => () => {}, register: async () => null, shown: () => {}, pointer: (fn: typeof pointer) => { pointer = fn; return () => { pointer = null; }; } },
     };
     await act(async () => { root.render(<BrowserProvider board={null} live><Spy /><BrowserGlobe /><BrowserPane width={640} /><BrowserWebviews /></BrowserProvider>); });
     await settle();
@@ -123,5 +126,26 @@ describe('BROWSERAPP-40, 41: Take control puts the keyboard on the page, Give ba
     await click('Take control');
     expect(hosted().classList.contains('is-held')).toBe(true);
     expect(drawn()).toBeNull();
+  });
+
+  it('browserapp_12_board_8s_strip_shows_for_the_whole_fill_with_nothing_to_click', async () => {
+    await live();
+    await open();
+    await act(async () => { browser.setUi({ card: 'password' }); });
+    const strip = () => host.querySelector('[data-browser="control"]')!.textContent;
+    expect(strip()).toBe('You’re filling the password. Codex waits.');
+    // Fill in pressed: main takes the tab and types; obid says this device holds it meanwhile
+    let fill!: Promise<void>;
+    await act(async () => { fill = browser.api.secret('t1', '#pw', 'hold-test-value-77', 'a1'); });
+    obid.heldBy = 'device-1';
+    await act(async () => { heard?.({ name: 'open', data: '' }); });
+    await settle();
+    expect(strip()).toBe('You’re filling the password. Codex waits.');
+    expect(button('Give back')).toBeUndefined();
+    expect(button('Take control')).toBeUndefined();
+    // main has filled: the card goes
+    await act(async () => { filled?.(null); await fill; });
+    expect(browser.ui.card).toBeNull();
+    expect(browser.ui.filled).toEqual({ tab: 't1', field: '#pw', length: 18 });
   });
 });

@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { confirming, deviceKey, fillSecret, notificationWords, ownersWords } from '../../../main/device';
+import { confirming, deviceKey, fillSecret, notificationWords, ownersWords, typeInPages } from '../../../main/device';
 import { input, picked, takeInput } from '../../../main/words';
 
 // Main's Confirm as the window reaches it (docs/contracts/peer-thread.md, PEER-17): what it signs,
@@ -24,6 +24,8 @@ const the = vi.hoisted(() => ({
   asked: [] as { message: string; detail: string }[],
   // a finishing action (WORKSPACE-4): obid's sentence for it, read by main itself
   finish: 'Commit 1 change in /Users/me/a/api on main: api/todo.md (new).',
+  // obid's answer to a take of a browser tab (BROWSERAPP-42): the hold, or a refusal
+  take: { status: 200, text: '{"tabId":"t1","heldBy":"d1","holdGeneration":1}' },
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => mkdtempSync(join(tmpdir(), 'oby-device-')) },
@@ -39,6 +41,7 @@ vi.mock('../../../main/obid', () => ({
     if (path === '/v1/inbox') return { status: 200, text: JSON.stringify([the.item]) };
     if (path === '/v1/devices') return { status: 200, text: JSON.stringify({ id: 'd1' }) };
     if (path === '/v1/projects') return the.projects;
+    if (path.startsWith('/v1/browser/tabs/') && path.endsWith('/take')) return the.take;
     if (path === '/v1/browser') return { status: 200, text: (the as { browserList?: string }).browserList ?? '{"tabs":[]}' };
     if (path === '/v1/jobs/j1/undo' && method === 'GET') return { status: 200, text: JSON.stringify({ action: the.undo }) };
     if (path.startsWith('/v1/conversations/c1/workspace?') && method === 'GET') return { status: 200, text: JSON.stringify({ action: the.finish }) };
@@ -313,27 +316,85 @@ describe('obid-finish', () => {
   });
 });
 
-// A password typed in Oby's card, filled by main on the owner's press of Fill in (BROWSERAPP-12)
-describe('BROWSERAPP-12: main fills the page\'s field on the owner\'s own Fill in', () => {
+// A password typed in Oby's card, typed by main into the tab's own webview on the owner's press of
+// Fill in, the tab held around it (BROWSERAPP-12, 42): obid hears the take, the ask's answer and the
+// give back, never the value
+describe('BROWSERAPP-12: main holds the tab and types the password into its own page on the owner\'s own Fill in, never through obid', () => {
   const SECRET = 'device-test-secret-4417';
-  it('browserapp_12_fill_takes_the_owners_click_signs_each_request_and_never_logs_the_value', async () => {
-    const errors = vi.spyOn(console, 'error');
-    // no press of Fill in, or no input main saw: nothing reaches obid
+  const typed: [string, string, string][] = [];
+  const kinds: boolean[] = [];
+  const consoles = () => (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m));
+  const posts = (from: number) => the.calls.slice(from).filter((c) => c.method === 'POST' && c.path !== '/v1/devices');
+  const tabs = (heldBy: string | null, ask: { id: string; kind: string } | null = null) => { (the as { browserList?: string }).browserList = JSON.stringify({ tabs: [{ id: 't1', heldBy, ask }], settings: {} }); };
+  beforeEach(() => {
+    typed.length = 0; kinds.length = 0;
+    typeInPages(async (tab, field, value, code) => { typed.push([tab, field, value]); kinds.push(code); return null; });
+    the.take = { status: 200, text: '{"tabId":"t1","heldBy":"d1","holdGeneration":1}' };
+    tabs(null);
+  });
+  afterEach(() => { vi.restoreAllMocks(); delete (the as { browserList?: string }).browserList; });
+
+  it('browserapp_12_fill_takes_the_owners_click_holds_the_tab_and_never_sends_the_value', async () => {
+    const spies = consoles();
+    // no press of Fill in, or no input main saw: nothing is typed, nothing reaches obid
     let before = the.calls.length;
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', false)).toBe('Filling in takes your own click.');
-    takeInput(); takeInput();
+    while (takeInput()) { /* other tests' */ }
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBe('Filling in takes your own click.');
-    expect(the.calls.length).toBe(before);
-    // with both: the secret, then the ask answered, each signed; no take or give back around it
+    expect([typed, the.calls.length - before]).toEqual([[], 0]);
+    // with both, and nobody holding the tab: take, type, the ask's answer, give back, each signed
     input();
     before = the.calls.length;
     expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBeNull();
-    const sent = the.calls.slice(before).filter((c) => c.method === 'POST');
-    expect(sent.map((c) => [c.path, c.body])).toEqual([
-      ['/v1/browser/tabs/t1/secret', { field: '#pw', value: SECRET }],
+    expect(typed).toEqual([['t1', '#pw', SECRET]]);
+    expect(posts(before).map((c) => [c.path, c.body])).toEqual([
+      ['/v1/browser/tabs/t1/take', {}],
       ['/v1/browser/asks/a1/answer', {}],
+      ['/v1/browser/tabs/t1/giveBack', {}],
     ]);
-    expect(sent.every((c) => /^d1 \S+ \S+$/.test(c.words ?? ''))).toBe(true);
-    expect(errors.mock.calls.flat().join(' ')).not.toContain(SECRET);
+    expect(posts(before).every((c) => /^d1 \S+ \S+$/.test(c.words ?? ''))).toBe(true);
+    // this device holds it already: only the ask's answer, and no give back of a hold it didn't take
+    tabs('d1');
+    input();
+    before = the.calls.length;
+    expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBeNull();
+    expect(posts(before).map((c) => c.path)).toEqual(['/v1/browser/asks/a1/answer']);
+    // the page refuses the fill after a take: no ask answered, the tab still given back
+    tabs(null);
+    typeInPages(async () => 'That field isn’t on the page.');
+    input();
+    before = the.calls.length;
+    expect(await fillSecret('t1', '#nope', SECRET, 'a1', true)).toBe('That field isn’t on the page.');
+    expect(posts(before).map((c) => c.path)).toEqual(['/v1/browser/tabs/t1/take', '/v1/browser/tabs/t1/giveBack']);
+    // the value goes to obid in no request at all, and to no console
+    expect(JSON.stringify(the.calls)).not.toContain(SECRET);
+    expect(JSON.stringify(spies.map((s) => s.mock.calls))).not.toContain(SECRET);
+  });
+
+  it('browserapp_43_whether_it_is_a_code_is_obids_ask_never_the_pages', async () => {
+    // obid's ask for this tab is a one-time code: a text box may take it; anything else is a password
+    for (const [ask, code] of [[{ id: 'a1', kind: 'code' }, true], [{ id: 'a1', kind: 'signIn' }, false], [{ id: 'a2', kind: 'code' }, false], [null, false]] as const) {
+      tabs(null, ask);
+      input();
+      expect(await fillSecret('t1', '#otp', SECRET, 'a1', true)).toBeNull();
+    }
+    (the as { browserList?: string }).browserList = 'not json';
+    input();
+    expect(await fillSecret('t1', '#otp', SECRET, 'a1', true)).toBeNull();
+    expect(kinds).toEqual([true, false, false, false, false]);
+  });
+
+  it('browserapp_42_a_fill_types_only_while_this_device_holds_the_tab', async () => {
+    for (const take of [
+      { status: 409, text: '{"error":"held_by_other"}' },
+      { status: 200, text: '{"tabId":"t1","heldBy":"d2","holdGeneration":2}' },
+    ]) {
+      the.take = take;
+      input();
+      const before = the.calls.length;
+      expect(await fillSecret('t1', '#pw', SECRET, 'a1', true)).toBe('held_by_other');
+      expect(typed).toEqual([]);
+      expect(posts(before).map((c) => c.path)).toEqual(['/v1/browser/tabs/t1/take']);
+    }
   });
 });

