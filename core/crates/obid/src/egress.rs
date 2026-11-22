@@ -15,6 +15,12 @@
 //! A foreign job's box pages in the window get a door of their own, the browser's
 //! ([`Egress::open_browser`]): its sites are decided as the agent's are, and it reaches none of the
 //! host's own network, the address checked once the name resolves ([`door_refuses`]).
+//!
+//! A computer of the owner's gets a door of its own too ([`Egress::open_computer`],
+//! docs/contracts/remote.md, COMPUTERS-27), on a listener apart from the jobs' proxy
+//! ([`Egress::start_computers`]): it takes only loopback names ([`loopback_name`]) and dials
+//! nothing itself; each connection goes to the [`Carrier`] it was started with, which carries it
+//! to that computer.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -40,7 +46,27 @@ pub struct Egress {
     unknown: Arc<tokio::sync::Semaphore>,
     /// The proxy obid itself is behind, as last read ([`Upstream::now`]).
     upstream: Mutex<(Option<Instant>, Option<Upstream>)>,
+    /// What carries a computer door's connections: only the computers' listener has one.
+    carrier: Option<Carrier>,
 }
+
+/// What a computer's door hands on (crate::remote::preview_tunnel, COMPUTERS-27): an accepted
+/// connection, the computer and the loopback port it's for, and what goes there first.
+pub struct Carried {
+    pub client: TcpStream,
+    pub computer: String,
+    pub port: u16,
+    /// A `CONNECT`'s early bytes; or a plain request's head as it goes on ([`forwarded`]) and its
+    /// body's first bytes.
+    pub first: Vec<u8>,
+    /// A plain request's body still to come from the client, after which only the answer comes
+    /// back; none for a `CONNECT`.
+    pub rest: Option<u64>,
+}
+
+/// Carries a computer door's connection there, for as long as it lasts.
+pub type Carrier =
+    Arc<dyn Fn(Carried) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
 
 /// One job worker's way out: whose it is, its tunnels open now, and what it may reach.
 struct Door {
@@ -52,13 +78,14 @@ struct Door {
 }
 
 /// Whose a door is: the job's agent's, its repository's setup's ([`Egress::open_setup`]: what it
-/// reaches is a reach only), or its box pages' in the window ([`Egress::open_browser`]), with the
-/// host's listener ports it refuses on any address.
+/// reaches is a reach only), its box pages' in the window ([`Egress::open_browser`]), with the
+/// host's listener ports it refuses on any address, or a computer's ([`Egress::open_computer`]).
 #[derive(Clone, Debug, PartialEq)]
 enum Kind {
     Agent,
     Setup,
     Browser(Vec<u16>),
+    Computer(String),
 }
 
 impl Kind {
@@ -126,6 +153,17 @@ impl Egress {
     /// Starts the proxy on `127.0.0.1`, on a port of its own, deciding for `jobs`, on the Tokio
     /// runtime this is called in.
     pub fn start(jobs: &Arc<Jobs>) -> std::io::Result<Arc<Egress>> {
+        Egress::listen(Arc::downgrade(jobs), None)
+    }
+
+    /// Starts the computers' doors' listener (COMPUTERS-27) on `127.0.0.1`, apart from the jobs'
+    /// proxy: it decides nothing for a job, and each connection a door lets through goes to
+    /// `carrier`.
+    pub fn start_computers(carrier: Carrier) -> std::io::Result<Arc<Egress>> {
+        Egress::listen(Weak::new(), Some(carrier))
+    }
+
+    fn listen(jobs: Weak<Jobs>, carrier: Option<Carrier>) -> std::io::Result<Arc<Egress>> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let listener = TcpListener::from_std(listener)?;
@@ -135,8 +173,9 @@ impl Egress {
             room: Arc::new(tokio::sync::Semaphore::new(MOST_TUNNELS)),
             unknown: Arc::new(tokio::sync::Semaphore::new(MOST_UNKNOWN)),
             upstream: Mutex::new((None, None)),
+            carrier,
         });
-        let (weak, jobs) = (Arc::downgrade(&egress), Arc::downgrade(jobs));
+        let weak = Arc::downgrade(&egress);
         tokio::spawn(async move {
             loop {
                 let client = match listener.accept().await {
@@ -183,6 +222,22 @@ impl Egress {
     /// address ([`door_refuses`]). It lets nothing through once [`Egress::close`] ran.
     pub fn open_browser(&self, id: &str, listeners: Vec<u16>) -> String {
         self.door(id, Kind::Browser(listeners))
+    }
+
+    /// The proxy a page's `localhost` on computer `id` goes through (COMPUTERS-27), which main sets
+    /// on that computer's tabs: a token of its own, learned as a secret, the same door each time;
+    /// only loopback names pass, each connection carried to that computer and never dialed here.
+    /// It lets nothing through once [`Egress::close_computer`] ran.
+    pub fn open_computer(&self, id: &str) -> String {
+        self.door(id, Kind::Computer(id.to_owned()))
+    }
+
+    /// Computer `id` is forgotten: its door's token lets nothing through any more.
+    pub fn close_computer(&self, id: &str) {
+        let kind = Kind::Computer(id.to_owned());
+        self.doors()
+            .retain(|_, door| door.job != id || !door.kind.is(&kind));
+        crate::secrets::known().forget(&secret_name(id, &kind));
     }
 
     fn door(&self, id: &str, kind: Kind) -> String {
@@ -417,7 +472,7 @@ impl Egress {
         // A box page's plain http:// request that's refused gets no answer: Chromium shows a
         // proxy's answer to one as the page itself, so the load fails instead and the window shows
         // its failed state. A tunnel's refusal fails the load either way.
-        let silent = !tunnel && matches!(kind, Kind::Browser(_));
+        let silent = !tunnel && matches!(kind, Kind::Browser(_) | Kind::Computer(_));
         let Some(_opened) = self.opened(&token) else {
             refuse_as(
                 &mut client,
@@ -440,6 +495,36 @@ impl Egress {
             return;
         };
         drop(unknown);
+        // A computer's door decides nothing for a job: a loopback name's connection goes to the
+        // computer, and nothing is dialed here.
+        if let Kind::Computer(computer) = kind {
+            if !loopback_name(&host) {
+                tracing::debug!("egress: computer {computer}'s door refused a host off loopback");
+                let why = "A computer's door reaches only that computer's own localhost.";
+                refuse_as(&mut client, silent, "403 Forbidden", why).await;
+                return;
+            }
+            // The jobs' proxy has no carrier: a computer's door is never on it.
+            let Some(carrier) = &self.carrier else { return };
+            let (first, rest) = match tunnel {
+                true => (early, None),
+                false => {
+                    let length = content_length(&head);
+                    let body = early.len().min(length);
+                    let mut first = origin_form(&forwarded(&head)).into_bytes();
+                    first.extend_from_slice(&early[..body]);
+                    (first, Some((length - body) as u64))
+                }
+            };
+            let carried = Carried {
+                client,
+                computer,
+                port,
+                first,
+                rest,
+            };
+            return carrier(carried).await;
+        }
         let Some(jobs) = jobs.upgrade() else { return };
         let allowed = match jobs.reach_now(&job, &host, port) {
             Some(now) => now,
@@ -465,6 +550,8 @@ impl Egress {
                 .connect(&host, port)
                 .await
                 .ok_or(Unconnected::Unreached),
+            // Carried to its computer above, never dialed here.
+            Kind::Computer(_) => return,
         };
         let (mut upstream, before) = match connected {
             Ok(connected) => connected,
@@ -663,6 +750,31 @@ fn host_network(ip: IpAddr) -> bool {
                     || first == 0xff
             }
         },
+    }
+}
+
+/// Whether `ip` is loopback: `127.0.0.0/8`, `::1`, or `127.0.0.0/8` written as IPv6
+/// (`::ffff:127.x.y.z`).
+fn loopback_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.octets()[0] == 127,
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.octets()[0] == 127)
+        }
+    }
+}
+
+/// Whether a computer's door takes `host` (COMPUTERS-27): `localhost`, a name under `.localhost`,
+/// or a loopback address ([`loopback_ip`]), IPv6 in brackets. Nothing is resolved.
+fn loopback_name(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&host);
+    match bare.parse::<IpAddr>() {
+        Ok(ip) => loopback_ip(ip),
+        Err(_) => bare == "localhost" || bare.ends_with(".localhost"),
     }
 }
 
@@ -1180,6 +1292,26 @@ fn forwarded(head: &str) -> String {
     out
 }
 
+/// A forwarded plain request's head with its request line in origin form (`GET /x?y HTTP/1.1`),
+/// as a browser sends it to a server it reaches straight: what a computer's door sends on, since a
+/// dev server reads its path from that line. [`plain`] read its target as `http://<host>…`.
+fn origin_form(head: &str) -> String {
+    let (line, rest) = head.split_once("\r\n").unwrap_or((head, ""));
+    let mut words = line.splitn(3, ' ');
+    let (method, target, version) = (
+        words.next().unwrap_or_default(),
+        words.next().unwrap_or_default(),
+        words.next().unwrap_or_default(),
+    );
+    let after = target.get(7..).unwrap_or_default();
+    let path = match after.find(['/', '?']) {
+        Some(at) if after[at..].starts_with('/') => after[at..].to_owned(),
+        Some(at) => format!("/{}", &after[at..]),
+        None => "/".to_owned(),
+    };
+    format!("{method} {path} {version}\r\n{rest}")
+}
+
 /// [`refuse`], or, when `silent`, no answer at all: the connection closes.
 async fn refuse_as(client: &mut TcpStream, silent: bool, status: &str, why: &str) {
     if !silent {
@@ -1372,6 +1504,7 @@ fn secret_name(id: &str, kind: &Kind) -> String {
         Kind::Setup => format!("job {id} setup proxy token"),
         Kind::Agent => format!("job {id} proxy token"),
         Kind::Browser(_) => format!("job {id} browser proxy token"),
+        Kind::Computer(_) => format!("computer {id} door token"),
     }
 }
 
@@ -1978,6 +2111,79 @@ mod tests {
         assert_eq!(asked.await.unwrap(), "403");
         assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
+
+    /// COMPUTERS-27: a computer's door takes only a loopback name, as `target` or `plain` gives it;
+    /// nothing is resolved.
+    #[test]
+    fn computers_27_a_computers_door_takes_only_loopback_names() {
+        for host in [
+            "localhost",
+            "LOCALHOST.",
+            "app.localhost",
+            "127.0.0.1",
+            "127.255.0.9",
+            "[::1]",
+            "[::ffff:127.0.0.1]",
+        ] {
+            assert!(loopback_name(host), "{host}");
+        }
+        for host in [
+            "example.com",
+            "localhost.example.com",
+            "192.168.1.20",
+            "0.0.0.0",
+            "[::]",
+            "[::127.0.0.1]",
+            "[fe80::1]",
+        ] {
+            assert!(!loopback_name(host), "{host}");
+        }
+    }
+
+    /// COMPUTERS-27: a plain request goes on to a computer's server in origin form, without the
+    /// door's login.
+    #[test]
+    fn computers_27_a_plain_request_goes_on_in_origin_form() {
+        let head = "GET http://localhost:3000/src/main.ts?v=1 HTTP/1.1\r\nHost: localhost:3000\r\nProxy-Authorization: Basic b2J5OnQ=";
+        assert_eq!(
+            origin_form(&forwarded(head)),
+            "GET /src/main.ts?v=1 HTTP/1.1\r\nHost: localhost:3000\r\nConnection: close\r\n\r\n"
+        );
+        for (target, path) in [
+            ("http://localhost", "/"),
+            ("http://127.0.0.1:8765", "/"),
+            ("http://localhost?q=1", "/?q=1"),
+            ("http://[::1]:80/a", "/a"),
+        ] {
+            let said = origin_form(&forwarded(&format!("POST {target} HTTP/1.1")));
+            assert!(
+                said.starts_with(&format!("POST {path} HTTP/1.1\r\n")),
+                "{said}"
+            );
+        }
+    }
+
+    /// COMPUTERS-27: a computer's door is the same each time it's asked for, in the shape main
+    /// takes, its token learned as `computer <id> door token` and forgotten once it's closed.
+    #[tokio::test]
+    async fn computers_27_a_computers_door_is_kept_until_its_computer_goes() {
+        let carrier: Carrier = Arc::new(|_| Box::pin(async {}));
+        let egress = Egress::start_computers(carrier).unwrap();
+        let proxy = egress.open_computer("c27");
+        assert_eq!(proxy, egress.open_computer("c27"));
+        let token = proxy
+            .strip_prefix("http://oby:")
+            .and_then(|rest| rest.split_once('@'))
+            .map(|(token, _)| token.to_owned())
+            .unwrap();
+        assert_eq!(token.len(), 64, "{proxy}");
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()), "{proxy}");
+        let said = format!("the proxy is {proxy}");
+        assert!(!crate::secrets::known().redact(&said).contains(&token));
+        egress.close_computer("c27");
+        assert_eq!(crate::secrets::known().redact(&said), said);
+        assert_ne!(egress.open_computer("c27"), proxy, "a new door");
+    }
 }
 
 #[cfg(test)]
@@ -2053,5 +2259,21 @@ mod proofs {
                 || listeners[1] == port
                 || listeners[2] == port
         );
+    }
+
+    /// PROOF-2, COMPUTERS-27: a computer's door takes exactly the loopback addresses, from the
+    /// address's bytes alone: IPv4 `127.0.0.0/8`, IPv6 `::1` and `::ffff:127.0.0.0/104`.
+    #[kani::proof]
+    fn computers_27_the_computers_door_takes_only_a_loopback_address() {
+        let (ip, v4, b) = any_ip();
+        let expected = if v4 {
+            b[0] == 127
+        } else {
+            let zero_to_9 = b[0] | b[1] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7] | b[8] | b[9];
+            let zero_to_14 = zero_to_9 | b[10] | b[11] | b[12] | b[13] | b[14];
+            (zero_to_14 == 0 && b[15] == 1)
+                || (zero_to_9 == 0 && b[10] == 0xff && b[11] == 0xff && b[12] == 127)
+        };
+        assert_eq!(loopback_ip(ip), expected);
     }
 }

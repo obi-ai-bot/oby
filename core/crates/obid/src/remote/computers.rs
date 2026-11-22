@@ -4,9 +4,10 @@
 //! `oby.computer.<id>`, so every answer, log line and push has them taken out; never in
 //! `home/computers.json` (0600) or an answer.
 //!
-//! It owns that file, the tokens' names, and each computer's [`Supervisor`] and SSH tunnels
-//! (crate::remote::tunnels) while obid runs. It never talks to a computer itself:
-//! crate::remote::reach does, with what it hands out.
+//! It owns that file, the tokens' names, and each computer's [`Supervisor`], SSH tunnels
+//! (crate::remote::tunnels) and door (crate::egress, COMPUTERS-27) while obid runs, the doors in
+//! memory only. It never talks to a computer itself: crate::remote::reach does, with what it hands
+//! out.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,8 @@ pub struct Computers {
     changes: tokio::sync::watch::Sender<u64>,
     /// The SSH tunnels to them, while obid runs.
     pub tunnels: super::tunnels::Tunnels,
+    /// The listener their doors are on, started the first time one is asked for.
+    doors: Mutex<Option<Arc<crate::egress::Egress>>>,
 }
 
 /// The vault name of computer `id`'s device token.
@@ -101,6 +104,7 @@ impl Computers {
             supervisors: Mutex::new(HashMap::new()),
             changes: tokio::sync::watch::channel(0).0,
             tunnels: super::tunnels::Tunnels::default(),
+            doors: Mutex::new(None),
         }
     }
 
@@ -222,9 +226,37 @@ impl Computers {
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
         self.tunnels.forget(id);
+        if let Some(doors) = &*self.doors.lock().unwrap_or_else(|e| e.into_inner()) {
+            doors.close_computer(id);
+        }
         self.changed();
         self.vault.remove(&token_name(id))?;
         Ok(true)
+    }
+
+    /// The proxy a page's `localhost` on computer `id` goes through (COMPUTERS-27), the same each
+    /// time, until [`Computers::forget`]: none when there's no such computer. Its listener starts
+    /// with `carrier` the first time any door is asked for.
+    pub fn door(
+        &self,
+        id: &str,
+        carrier: impl FnOnce() -> crate::egress::Carrier,
+    ) -> Result<Option<String>, String> {
+        // Held while the door opens, so a forget that comes now closes it.
+        let saved = self.lock();
+        if !saved.computers.iter().any(|c| c.id == id) {
+            return Ok(None);
+        }
+        let mut doors = self.doors.lock().unwrap_or_else(|e| e.into_inner());
+        let egress = match &*doors {
+            Some(egress) => egress.clone(),
+            None => {
+                let started = crate::egress::Egress::start_computers(carrier())
+                    .map_err(|e| format!("Oby couldn't open a door to that computer: {e}"))?;
+                doors.insert(started).clone()
+            }
+        };
+        Ok(Some(egress.open_computer(id)))
     }
 
     /// The routes to try for `id` now, best first: the one in use and those above it, as the

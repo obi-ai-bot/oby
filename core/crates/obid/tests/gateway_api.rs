@@ -2605,3 +2605,20 @@ async fn pairing_11_a_gap_resets_and_frees() {
     phone.hello_again().await;
     status_within_a_second(&mut phone, &token, tokio::time::Instant::now()).await;
 }
+
+/// COMPUTERS-26 and 28: a request through the Obysphere reaches neither a computer's preview tunnel
+/// nor a computer's door, sealed or not: both are the gateway's unlisted `404` through the relay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn computers_26_and_28_the_relay_reaches_no_tunnel_and_no_door() {
+    let folder = Folder::new("gateway-relay-tunnel");
+    let (sphere, obid) = joined(&folder).await;
+    let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+    for (method, path) in [
+        ("GET", "/v1/preview/tunnel?port=1"),
+        ("POST", "/v1/computers/x/door"),
+    ] {
+        let (status, body) = phone.call(method, path, Some(&token), None).await;
+        assert_eq!(status, 404, "{path}: {body}");
+        assert!(body.get("proxy").is_none(), "{path}: {body}");
+    }
+}

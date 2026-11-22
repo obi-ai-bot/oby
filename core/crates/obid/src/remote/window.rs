@@ -1,7 +1,7 @@
 //! The window's routes for its computers (docs/contracts/remote.md, COMPUTERS-19 to 24;
 //! docs/api/remote.md, "This Mac's computers"), on this Mac's loopback API only: the list and which
-//! one the window is on, reading a link, adding a computer with a code, renaming, trying again and
-//! removing. Adding and removing are the owner's acts: their words, signed by a registered device's
+//! one the window is on, reading a link, adding a computer with a code, renaming, trying again,
+//! its door for a page's `localhost` (COMPUTERS-28) and removing. Adding and removing are the owner's acts: their words, signed by a registered device's
 //! key, go with them (crate::routes::signed_by), and adding registers that device's key there, so
 //! its words count through that computer's token (COMPUTERS-15).
 //!
@@ -261,6 +261,41 @@ pub async fn retry(
     }
     changed(&shared);
     Ok(axum::Json(shared.computers.listed(&computer)).into_response())
+}
+
+/// `POST /v1/computers/{id}/door` (COMPUTERS-28): the proxy main sets on that computer's tabs,
+/// `{"proxy": "http://oby:<token>@127.0.0.1:<port>"}`, the same door each time
+/// (crate::remote::preview_tunnel). No signed words: it hands out a way, not an owner's act. Only
+/// the window gets one: never a request through the gateway or the relay, which obid's layers
+/// don't send here either.
+pub async fn door(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    extensions: axum::http::Extensions,
+) -> Result<Response, ApiError> {
+    if extensions.get::<crate::gateway::PairedDevice>().is_some()
+        || extensions.get::<crate::gateway::Relayed>().is_some()
+    {
+        return Err(refused(
+            StatusCode::FORBIDDEN,
+            "Only Oby's window on this Mac gets a computer's door.",
+            "not_the_window",
+        ));
+    }
+    let carrier = || super::preview_tunnel::carrier(Arc::downgrade(&shared));
+    match shared.computers.door(&id, carrier) {
+        Ok(Some(proxy)) => Ok(axum::Json(json!({"proxy": proxy})).into_response()),
+        Ok(None) => Err(refused(
+            StatusCode::NOT_FOUND,
+            "That computer isn't one this Mac works on.",
+            "no_such_computer",
+        )),
+        Err(why) => Err(refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            why,
+            "not_started",
+        )),
+    }
 }
 
 /// `DELETE /v1/computers/{id}`, the owner's act: this Mac's pairing there ends with its own token

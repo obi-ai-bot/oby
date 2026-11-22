@@ -535,18 +535,18 @@ pub async fn serve(
     // Oby's browser, browsers a stopped obid left reaped first (crate::browser, BROWSER-25).
     let browser = browser::Service::open(&config.home).await;
     // The box's edge for another Oby's task's browser: obid's own port, its gateway's and the
-    // `direct` listeners' (BROWSER-18).
+    // `direct` listeners' (BROWSER-18); a preview tunnel refuses the same (COMPUTERS-26).
     let gateway_port = gateway
         .as_ref()
         .and_then(|l| l.local_addr().ok())
         .map(|a| a.port());
-    browser.set_host_ports(
-        [Some(bound.port()), gateway_port]
-            .into_iter()
-            .flatten()
-            .chain(answering.direct.iter().map(|a| a.port()))
-            .collect(),
-    );
+    let host_ports: Vec<u16> = [Some(bound.port()), gateway_port]
+        .into_iter()
+        .flatten()
+        .chain(answering.direct.iter().map(|a| a.port()))
+        .collect();
+    paired.set_own_ports(host_ports.clone());
+    browser.set_host_ports(host_ports);
     jobs.use_browser(browser.clone());
     let tetrix = tetrix::Tetrix::open(
         &config.home,
