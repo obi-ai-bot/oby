@@ -17,6 +17,9 @@ const VENDORED: Record<string, string> = {
   'react-dom/client': '/__csb_vendor/react-dom/client.mjs',
   'lucide-react': '/__csb_vendor/lucide-react/lucide-react.mjs',
   recharts: '/__csb_vendor/recharts/recharts.mjs',
+  clsx: '/__csb_vendor/clsx/clsx.mjs',
+  'tailwind-merge': '/__csb_vendor/tailwind-merge/tailwind-merge.mjs',
+  'class-variance-authority': '/__csb_vendor/class-variance-authority/class-variance-authority.mjs',
 };
 /** An error's words wrap and sit inset from the frame's edge, never cut off at it. */
 const ERROR = 'padding:16px;margin:0;white-space:pre-wrap';

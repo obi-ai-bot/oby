@@ -27,8 +27,11 @@ const BUILT = [
   ['react-dom', 'client.mjs', 'react-dom/client', ['react', 'react-dom']],
   ['lucide-react', 'lucide-react.mjs', 'lucide-react', ['react']],
   ['recharts', 'recharts.mjs', 'recharts', ['react', 'react-dom']],
+  ['clsx', 'clsx.mjs', 'clsx', ['react']],
+  ['tailwind-merge', 'tailwind-merge.mjs', 'tailwind-merge', ['react']],
+  ['class-variance-authority', 'class-variance-authority.mjs', 'class-variance-authority', ['react']],
 ];
-/** Each package's LICENSE, by the folder it goes in. */
+/** Each package's licence file, by the folder its LICENSE goes in. */
 const LICENSES = [
   ['react', 'react'],
   ['react-dom', 'react-dom'],
@@ -36,6 +39,9 @@ const LICENSES = [
   ['lucide-react', 'lucide-react'],
   ['tailwindcss-browser', '@tailwindcss/browser'],
   ['recharts', 'recharts'],
+  ['clsx', 'clsx'],
+  ['tailwind-merge', 'tailwind-merge'],
+  ['class-variance-authority', 'class-variance-authority'],
 ];
 
 // ponytail: npm puts every devDependency at the top of node_modules; a package's exports may hide its package.json from require
@@ -91,13 +97,16 @@ function packageOf(id) {
   return null;
 }
 
+/** A package folder's licence file (`LICENSE`, `license`, `LICENSE.md`, …): the first by name. */
+function licenceIn(dir, name) {
+  const file = readdirSync(dir).filter((f) => /^licen[cs]e/i.test(f)).sort()[0];
+  if (!file) throw new Error(`${name} has no licence file in ${dir}: it can't be vendored without one.`);
+  return join(dir, file);
+}
+
 /** THIRD_PARTY_LICENSES: a section per package, by name, each with its own licence file's text. */
 function thirdParty(packages) {
-  return packages.map(({ name, version, license, dir }) => {
-    const file = readdirSync(dir).filter((f) => /^licen[cs]e/i.test(f)).sort()[0];
-    if (!file) throw new Error(`${name}@${version} has no licence file in ${dir}: it can't be vendored without one.`);
-    return `--- ${name}@${version} (${license}) ---\n\n${readFileSync(join(dir, file), 'utf8').trimEnd()}\n\n`;
-  }).join('');
+  return packages.map(({ name, version, license, dir }) => `--- ${name}@${version} (${license}) ---\n\n${readFileSync(licenceIn(dir, `${name}@${version}`), 'utf8').trimEnd()}\n\n`).join('');
 }
 
 export async function vendor(into = join(app, 'resources', 'sandpack-vendor')) {
@@ -119,7 +128,7 @@ export async function vendor(into = join(app, 'resources', 'sandpack-vendor')) {
   copyFileSync(require.resolve('@tailwindcss/browser'), join(into, 'tailwindcss-browser', 'index.global.js'));
   for (const [folder, name] of LICENSES) {
     mkdirSync(join(into, folder), { recursive: true });
-    copyFileSync(join(packageDir(name), 'LICENSE'), join(into, folder, 'LICENSE'));
+    copyFileSync(licenceIn(packageDir(name), name), join(into, folder, 'LICENSE'));
   }
   return listed;
 }
