@@ -5,8 +5,10 @@
 //!
 //! It owns, in memory only: the tabs the window was asked to open and whether each is attached,
 //! the CDP calls waiting for their answers (each by its id, which obid assigns), the page
-//! events the tools wait on, and each foreign job's door for its box partition (BROWSER-18), sent
-//! again to a window that follows anew and when a tab of that job's is made, never logged. With
+//! events the tools wait on, each tab's last agent input (the time obid last sent it an input, a
+//! navigate or a script, BROWSER-34), and each foreign job's door for its box partition
+//! (BROWSER-18), sent again to a window that follows anew and when a tab of that job's is made,
+//! never logged. With
 //! nobody following the stream there is no window: a call is refused `no_window` at once, never
 //! run elsewhere. It writes nothing to disk.
 
@@ -24,6 +26,25 @@ use super::contract::{PointerPhase, RelayCommand, RelayEvent};
 const COMMANDS: usize = 1024;
 /// How many page events the tools' waits may fall behind.
 const PAGE_EVENTS: usize = 1024;
+/// A download on a tab no agent input reached for this long is the person's (BROWSER-34): T3
+/// Code's `AGENT_INPUT_WINDOW_MS` (pingdotgg/t3code@304cf149:apps/desktop/src/preview/DesktopBrowserHost.ts:29).
+pub const AGENT_INPUT_WINDOW: Duration = Duration::from_secs(5);
+
+/// Whether a CDP method obid sends a tab is the agent's input, as T3's `AGENT_INPUT_COMMAND`.
+// ponytail: the owner's signed reload and back go out as `Page.reload` and
+// `Page.navigateToHistoryEntry`, so they stamp as agent input too; a download they start in the
+// next 5 s stays the agent's, the safe side.
+fn agent_input(method: &str) -> bool {
+    method.starts_with("Input.")
+        || matches!(
+            method,
+            "Page.navigate"
+                | "Runtime.evaluate"
+                | "Runtime.callFunctionOn"
+                | "Page.reload"
+                | "Page.navigateToHistoryEntry"
+        )
+}
 
 /// Why a CDP call has no answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +86,9 @@ pub struct PageEvent {
     pub tab: String,
     pub method: String,
     pub params: Value,
+    /// For a download's start (`Page.downloadWillBegin`), whether the person started it
+    /// ([`Relay::person_started`] as the event came, before any later input or `shown`).
+    pub person_started: bool,
 }
 
 /// What obid knows of one tab the window was asked to open.
@@ -74,6 +98,8 @@ struct RelayTab {
     attached: bool,
     shown: Option<bool>,
     load_failed: Option<(String, i64, String)>,
+    /// When obid last sent the tab an agent's input ([`agent_input`]).
+    agent_input: Option<tokio::time::Instant>,
 }
 
 /// A CDP call waiting for its answer.
@@ -100,6 +126,8 @@ pub struct Relay {
     next_id: AtomicU64,
     /// How many follow the stream now (the window's main, normally one).
     following: AtomicUsize,
+    /// How long after obid's last agent input a tab's download is still the agent's.
+    agent_input_window: Duration,
 }
 
 impl Default for Relay {
@@ -110,6 +138,11 @@ impl Default for Relay {
 
 impl Relay {
     pub fn new() -> Relay {
+        Relay::with_agent_input_window(AGENT_INPUT_WINDOW)
+    }
+
+    /// A relay whose tabs' downloads are the person's `window` after the last agent input.
+    pub fn with_agent_input_window(window: Duration) -> Relay {
         Relay {
             commands: broadcast::channel(COMMANDS).0,
             page: broadcast::channel(PAGE_EVENTS).0,
@@ -117,6 +150,7 @@ impl Relay {
             state: Mutex::new(State::default()),
             next_id: AtomicU64::new(1),
             following: AtomicUsize::new(0),
+            agent_input_window: window,
         }
     }
 
@@ -190,6 +224,8 @@ impl Relay {
             tab.into(),
             RelayTab {
                 job: job.into(),
+                // Its first load is the agent's.
+                agent_input: Some(tokio::time::Instant::now()),
                 ..RelayTab::default()
             },
         );
@@ -240,6 +276,23 @@ impl Relay {
             .unwrap_or(true)
     }
 
+    /// Whether a download beginning on the tab now is the person's (T3's `humanStartedDownload`):
+    /// a tab obid knows, on screen, that no agent input reached for the relay's window.
+    // ponytail: a page script on a timer that starts a download past the window passes for the
+    // person; T3's rule has the same ceiling.
+    pub fn person_started(&self, tab: &str) -> bool {
+        self.state().tabs.get(tab).is_some_and(|t| {
+            t.shown.unwrap_or(true)
+                && t.agent_input
+                    .is_none_or(|at| at.elapsed() >= self.agent_input_window)
+        })
+    }
+
+    /// The job a tab obid knows is for.
+    pub fn job_of(&self, tab: &str) -> Option<String> {
+        self.state().tabs.get(tab).map(|t| t.job.clone())
+    }
+
     /// One CDP command for the tab's page: its `result`, or why there is none within `within`.
     pub async fn cdp(
         &self,
@@ -279,8 +332,13 @@ impl Relay {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let job = {
             let mut state = self.state();
-            let job = match state.tabs.get(tab) {
-                Some(t) if t.attached => t.job.clone(),
+            let job = match state.tabs.get_mut(tab) {
+                Some(t) if t.attached => {
+                    if agent_input(method) {
+                        t.agent_input = Some(tokio::time::Instant::now());
+                    }
+                    t.job.clone()
+                }
                 _ => return Err(RelayError::Detached),
             };
             state.pending.insert(
@@ -422,10 +480,12 @@ impl Relay {
             {
                 t.load_failed = None;
             }
+            let person_started = method == "Page.downloadWillBegin" && self.person_started(tab);
             let _ = self.page.send(PageEvent {
                 tab: tab.into(),
                 method: method.into(),
                 params: frame["params"].clone(),
+                person_started,
             });
         }
     }
@@ -787,6 +847,68 @@ mod tests {
         }
         let obids: Value = serde_json::from_str(&lines[1]).unwrap();
         assert!(obids.get("agentCode").is_none(), "{}", lines[1]);
+    }
+
+    /// One CDP call on `tab-1`, answered by the window.
+    async fn answered(
+        relay: &Arc<Relay>,
+        rx: &mut broadcast::Receiver<RelayCommand>,
+        method: &'static str,
+    ) {
+        let call = {
+            let relay = relay.clone();
+            tokio::spawn(async move { relay.cdp("tab-1", method, json!({}), SOON).await })
+        };
+        let RelayCommand::Cdp { message, .. } = rx.recv().await.unwrap() else {
+            panic!("a cdp command");
+        };
+        let id = serde_json::from_str::<Value>(&message).unwrap()["id"].clone();
+        relay.receive(vec![RelayEvent::Cdp {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+            message: json!({"id": id, "result": {}}).to_string(),
+        }]);
+        assert_eq!(call.await.unwrap(), Ok(json!({})));
+    }
+
+    /// BROWSER-34: a download on a tab no agent input reached for 5 s is the person's (T3's
+    /// `humanStartedDownload`); every input, navigate or script obid sends restarts the 5 s, a read
+    /// doesn't, and a tab off screen or unknown is never the person's.
+    #[tokio::test(start_paused = true)]
+    async fn browser_34_a_tab_with_no_agent_input_for_5_s_is_the_persons() {
+        let relay = Arc::new(Relay::new());
+        let (mut rx, _following) = relay.follow();
+        relay.expect("j1", "tab-1").unwrap();
+        attached(&relay, "j1", "tab-1");
+        assert!(
+            !relay.person_started("tab-1"),
+            "a tab just made is the agent's"
+        );
+        assert_eq!(relay.job_of("tab-1").as_deref(), Some("j1"));
+        for method in [
+            "Input.dispatchMouseEvent",
+            "Page.navigate",
+            "Runtime.evaluate",
+            "Runtime.callFunctionOn",
+            "Page.reload",
+            "Page.navigateToHistoryEntry",
+        ] {
+            answered(&relay, &mut rx, method).await;
+            tokio::time::advance(Duration::from_millis(4_900)).await;
+            assert!(!relay.person_started("tab-1"), "{method} at 4.9 s");
+            tokio::time::advance(Duration::from_millis(100)).await;
+            assert!(relay.person_started("tab-1"), "{method} at 5 s");
+        }
+        answered(&relay, &mut rx, "Accessibility.getFullAXTree").await;
+        assert!(relay.person_started("tab-1"), "a read is no agent input");
+        relay.receive(vec![RelayEvent::Shown {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+            shown: false,
+        }]);
+        assert!(!relay.person_started("tab-1"), "a tab off screen");
+        assert!(!relay.person_started("tab-2"), "a tab obid doesn't know");
+        assert_eq!(relay.job_of("tab-2"), None);
     }
 
     #[test]

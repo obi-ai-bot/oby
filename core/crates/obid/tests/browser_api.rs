@@ -768,41 +768,54 @@ struct AgentTab {
     obid: Obid,
     window: Window,
     token: String,
+    job: String,
     tab: String,
-    _folder: Folder,
+    folder: Folder,
+}
+
+/// `job`'s agent opens a tab at [`PAGE`] in the stand-in window: its id.
+fn open_tab(obid: &Obid, window: &Window, token: &str, job: &str) -> String {
+    let opening = {
+        let (port, token) = (obid.port, token.to_string());
+        std::thread::spawn(move || {
+            let bearer = format!("Bearer {token}");
+            raw_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_open", "arguments": {"url": PAGE}}}),
+            )
+        })
+    };
+    let tab = window.attach(obid, job);
+    let (status, opened) = opening.join().unwrap();
+    assert_eq!(status, 200, "{opened}");
+    let opened = &opened["result"]["structuredContent"];
+    assert_eq!(opened["ok"], true, "{opened}");
+    tab
 }
 
 impl AgentTab {
     fn open(name: &str) -> AgentTab {
+        AgentTab::open_with(name, &[])
+    }
+
+    /// [`AgentTab::open`] on an obid with `env`.
+    fn open_with(name: &str, env: &[(&str, &str)]) -> AgentTab {
         let folder = Folder::new(name);
-        let obid = browser_obid(&folder);
+        let obid = start_with(&folder.0, &browser_config(&folder), None, env);
         let (job, token) = sleeping_job(&obid);
         let window = Window::follow(&obid);
-        let opening = {
-            let (port, token) = (obid.port, token.clone());
-            std::thread::spawn(move || {
-                let bearer = format!("Bearer {token}");
-                raw_at(
-                    port,
-                    "POST",
-                    "/v1/browser/mcp",
-                    &[("Authorization", &bearer)],
-                    &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                        "params": {"name": "oby_browser_open", "arguments": {"url": PAGE}}}),
-                )
-            })
-        };
-        let tab = window.attach(&obid, &job);
-        let (status, opened) = opening.join().unwrap();
-        assert_eq!(status, 200, "{opened}");
-        let opened = &opened["result"]["structuredContent"];
-        assert_eq!(opened["ok"], true, "{opened}");
+        let tab = open_tab(&obid, &window, &token, &job);
         AgentTab {
             obid,
             window,
             token,
+            job,
             tab,
-            _folder: folder,
+            folder,
         }
     }
 
@@ -1132,4 +1145,211 @@ fn browser_5_a_ref_from_before_a_take_is_stale_after_give_back() {
     assert_eq!(act["ok"], true, "{act}");
     assert!(agent.window.sent("Input.dispatchMouseEvent") > clicks);
     agent.stop();
+}
+
+/// A debug build's window after the last agent input in which a tab's download is still the
+/// agent's: 2 s, not T3's 5 (`OBID_TEST_BROWSER_AGENT_INPUT_MS`, BROWSER-34).
+const AGENT_INPUT_2_S: (&str, &str) = ("OBID_TEST_BROWSER_AGENT_INPUT_MS", "2000");
+
+/// How long apart a test's download rounds start: past an earlier round's 5 s watch.
+const ROUND: Duration = Duration::from_secs(6);
+
+/// The page's CDP event `method` with `params`, as the window posts it for `job`'s `tab`.
+fn page_event(job: &str, tab: &str, method: &str, params: Value) -> Value {
+    json!({"type": "cdp", "threadId": job, "tabId": tab,
+           "message": json!({"method": method, "params": params}).to_string()})
+}
+
+/// A download starting on the tab: its `Page.downloadWillBegin`.
+fn will_begin(job: &str, tab: &str, guid: &str, name: &str) -> Value {
+    page_event(
+        job,
+        tab,
+        "Page.downloadWillBegin",
+        json!({"frameId": "f1", "guid": guid, "url": format!("{PAGE}{name}"),
+               "suggestedFilename": name}),
+    )
+}
+
+/// A download's end: its `Page.downloadProgress` in `state`.
+fn progress(job: &str, tab: &str, guid: &str, state: &str) -> Value {
+    page_event(
+        job,
+        tab,
+        "Page.downloadProgress",
+        json!({"guid": guid, "totalBytes": 3, "receivedBytes": 3, "state": state}),
+    )
+}
+
+/// The file main saved for `job`'s download `name`, in the job's own folder.
+fn save_download(obid: &Obid, job: &str, name: &str) {
+    let folder = obid.home.join("browser/downloads").join(job);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(name), b"pdf").unwrap();
+}
+
+/// The window's `shown` for the tab.
+fn shown(job: &str, tab: &str, shown: bool) -> Value {
+    json!({"type": "shown", "threadId": job, "tabId": tab, "shown": shown})
+}
+
+/// `GET /v1/browser/downloads`'s listing of `name`, if any.
+fn listed(obid: &Obid, name: &str) -> Option<Value> {
+    call(obid, "GET", "/v1/browser/downloads", None).body["downloads"]
+        .as_array()?
+        .iter()
+        .find(|d| d["name"] == name)
+        .cloned()
+}
+
+/// The person's Downloads of the test's obid (its `HOME`'s).
+fn person_downloads(folder: &Folder) -> std::path::PathBuf {
+    folder.0.join("env-home/Downloads")
+}
+
+/// The owner's download `name` on the agent's tab, started again with a fresh guid every
+/// [`ROUND`] until it is listed (the first may come within the agent's window): its listing.
+fn owner_download(agent: &AgentTab, name: &str) -> Value {
+    let (job, tab) = (agent.job.as_str(), agent.tab.as_str());
+    let (mut round, mut next) = (0, std::time::Instant::now());
+    within(60, "the owner's download is listed", || {
+        if std::time::Instant::now() >= next {
+            round += 1;
+            next = std::time::Instant::now() + ROUND;
+            let guid = format!("{name}-{round}");
+            relay_post(agent.obid.port, vec![will_begin(job, tab, &guid, name)]);
+            save_download(&agent.obid, job, name);
+            relay_post(
+                agent.obid.port,
+                vec![progress(job, tab, &guid, "completed")],
+            );
+        }
+        listed(&agent.obid, name)
+    })
+}
+
+/// BROWSER-34: a download the owner starts on their own job's tab, no agent input past the
+/// window, is listed `person` / `delivered` and moved into their Downloads.
+#[test]
+fn browser_34_a_download_the_owner_starts_is_delivered_into_their_downloads() {
+    let agent = AgentTab::open_with("browser-34-owner", &[AGENT_INPUT_2_S]);
+    let name = "statement-oct.pdf";
+    let download = owner_download(&agent, name);
+    assert_eq!(
+        (download["startedBy"].as_str(), download["place"].as_str()),
+        (Some("person"), Some("delivered")),
+        "{download}"
+    );
+    assert!(person_downloads(&agent.folder).join(name).is_file());
+    let profile = agent.obid.home.join("browser/downloads").join(&agent.job);
+    assert!(
+        !profile.join(name).exists(),
+        "moved out of the job's folder"
+    );
+    agent.stop();
+}
+
+/// BROWSER-35: a download right after the agent's act is the agent's: the act's own watch lists
+/// it `agent` / `profile` (BROWSER-13), it stays in the job's folder and never reaches Downloads,
+/// even once the owner's own download on the same tab, the witness, is delivered.
+#[test]
+fn browser_35_a_download_right_after_the_agents_act_stays_the_agents() {
+    let agent = AgentTab::open_with("browser-35-act", &[AGENT_INPUT_2_S]);
+    let (job, tab) = (agent.job.as_str(), agent.tab.as_str());
+    let name = "agent-report.pdf";
+    let snapshot = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let act = agent.tool("oby_browser_act", json!({"action": "click", "ref": "e1"}));
+    assert_eq!(act["ok"], true, "{act}");
+    relay_post(agent.obid.port, vec![will_begin(job, tab, "guid-1", name)]);
+    save_download(&agent.obid, job, name);
+    relay_post(
+        agent.obid.port,
+        vec![progress(job, tab, "guid-1", "completed")],
+    );
+    let download = within(30, "the act's watch lists the agent's download", || {
+        listed(&agent.obid, name)
+    });
+    assert_eq!(
+        (download["startedBy"].as_str(), download["place"].as_str()),
+        (Some("agent"), Some("profile")),
+        "{download}"
+    );
+    let witness = owner_download(&agent, "owner.pdf");
+    assert_eq!(witness["place"], "delivered", "{witness}");
+    assert!(person_downloads(&agent.folder).join("owner.pdf").is_file());
+    let profile = agent.obid.home.join("browser/downloads").join(job);
+    assert!(profile.join(name).is_file(), "it stays in the job's folder");
+    assert!(!person_downloads(&agent.folder).join(name).exists());
+    agent.stop();
+}
+
+/// BROWSER-35: in the round the owner's witness `b.pdf` is delivered, a download on their tab
+/// while it was off screen, one cancelled, and one on an `untrusted` job's tab are not: none is
+/// in Downloads or listed `person`, and each stays in its job's folder.
+#[test]
+fn browser_35_a_download_on_a_tab_not_shown_or_cancelled_is_not_delivered() {
+    let folder = Folder::new("browser-35-not");
+    let env = [BOX_ON[0], AGENT_INPUT_2_S];
+    let (mut obid, foreign_token) =
+        seeded_job(&folder, "cccc3535", &env, |job| job.untrusted = true);
+    let (own, own_token) = sleeping_job(&obid);
+    let window = Window::follow(&obid);
+    let own_tab = open_tab(&obid, &window, &own_token, &own);
+    let foreign_tab = open_tab(&obid, &window, &foreign_token, "cccc3535");
+    let (mut round, mut next) = (0, std::time::Instant::now());
+    let witness = within(60, "the owner's witness download is delivered", || {
+        if std::time::Instant::now() >= next {
+            round += 1;
+            next = std::time::Instant::now() + ROUND;
+            let guid = |n: &str| format!("{n}-{round}");
+            relay_post(
+                obid.port,
+                vec![
+                    shown(&own, &own_tab, false),
+                    will_begin(&own, &own_tab, &guid("a"), "a.pdf"),
+                    shown(&own, &own_tab, true),
+                    will_begin(&own, &own_tab, &guid("c"), "c.pdf"),
+                    progress(&own, &own_tab, &guid("c"), "canceled"),
+                    will_begin(&own, &own_tab, &guid("b"), "b.pdf"),
+                    will_begin("cccc3535", &foreign_tab, &guid("d"), "d.pdf"),
+                ],
+            );
+            for name in ["a.pdf", "b.pdf", "c.pdf"] {
+                save_download(&obid, &own, name);
+            }
+            save_download(&obid, "cccc3535", "d.pdf");
+            relay_post(
+                obid.port,
+                vec![
+                    progress(&own, &own_tab, &guid("a"), "completed"),
+                    progress(&own, &own_tab, &guid("c"), "completed"),
+                    progress(&own, &own_tab, &guid("b"), "completed"),
+                    progress("cccc3535", &foreign_tab, &guid("d"), "completed"),
+                ],
+            );
+        }
+        listed(&obid, "b.pdf")
+    });
+    assert_eq!(
+        (witness["startedBy"].as_str(), witness["place"].as_str()),
+        (Some("person"), Some("delivered")),
+        "{witness}"
+    );
+    let downloads = person_downloads(&folder);
+    assert!(downloads.join("b.pdf").is_file());
+    for (job, name) in [
+        (own.as_str(), "a.pdf"),
+        (own.as_str(), "c.pdf"),
+        ("cccc3535", "d.pdf"),
+    ] {
+        assert!(!downloads.join(name).exists(), "{name} isn't delivered");
+        assert_eq!(listed(&obid, name), None, "{name} isn't listed");
+        let profile = obid.home.join("browser/downloads").join(job);
+        assert!(
+            profile.join(name).is_file(),
+            "{name} stays in its job's folder"
+        );
+    }
+    stop_with_no_browser_left(&mut obid);
 }

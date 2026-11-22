@@ -340,7 +340,7 @@ describe('BROWSERAPP-29: the methods main runs are the ones obid sends', () => {
   it('browserapp_29: METHODS is every CDP method obid\'s browser sends, plus main\'s own focus emulation, and nothing else', () => {
     const { sent, events, unread } = obidSends(browserSources());
     expect(unread).toEqual([]);
-    expect([...events].sort()).toEqual(['Page.frameNavigated', 'Page.javascriptDialogOpening', 'Page.loadEventFired', 'Page.navigatedWithinDocument']);
+    expect([...events].sort()).toEqual(['Page.downloadProgress', 'Page.downloadWillBegin', 'Page.frameNavigated', 'Page.javascriptDialogOpening', 'Page.loadEventFired', 'Page.navigatedWithinDocument']);
     expect(sent.has('Page.navigate')).toBe(true);
     expect([...METHODS].sort()).toEqual([...sent, 'Emulation.setFocusEmulationEnabled'].sort());
   });
@@ -623,10 +623,17 @@ describe('BROWSERAPP-44: after a fill only the agent\'s own script waits, and no
     host.event(K, 'Runtime.consoleAPICalled', { args: [{ value: PW }] });
     host.event(K, 'Network.requestWillBeSent', { request: { postData: `pw=${encodeURIComponent(PW)}` } });
     host.event(K, 'Page.loadEventFired', { timestamp: 2 });
+    // the download events obid reads (BROWSER-34) are page events like any other: one carrying it is dropped
+    host.event(K, 'Page.downloadWillBegin', { guid: 'dl-pw', url: `http://127.0.0.1/?pw=${encodeURIComponent(PW)}`, suggestedFilename: 'report.pdf' });
+    host.event(K, 'Page.downloadProgress', { guid: 'dl-pw', state: 'completed', note: PW });
+    host.event(K, 'Page.downloadWillBegin', { guid: 'dl-ok', url: 'http://127.0.0.1/report.pdf', suggestedFilename: 'report.pdf' });
+    host.event(K, 'Page.downloadProgress', { guid: 'dl-ok', state: 'completed' });
     await settled();
     const all = JSON.stringify(o.all());
     for (const form of [...ways, 'typed-by-the-owner-1']) expect(all).not.toContain(form);
     expect(all).toContain('Page.loadEventFired');
+    expect(all).not.toContain('dl-pw');
+    expect(all.match(/dl-ok/g)).toHaveLength(2);
     // a few characters aren't looked for: they'd match almost anything
     expect(forms('abc')).toEqual([]);
   });
