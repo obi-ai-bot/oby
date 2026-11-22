@@ -1058,4 +1058,225 @@ mod tests {
         assert_eq!(text, "the value is [redacted: api-token] and more\n");
         assert!(!text.contains(head) && !text.contains(tail), "{text}");
     }
+
+    /// One text of LOGS-1's bounded-exhaustive tests (.claude/skills/verify-redaction): A learned
+    /// as `x` and B, if any, as `y`, both over `a` and `b`, padded with `c`.
+    struct Case {
+        family: &'static str,
+        a: String,
+        b: Option<String>,
+        text: String,
+    }
+
+    /// Every text of `len` bytes over `a` and `b`.
+    fn words(len: usize) -> Vec<String> {
+        (0..1u32 << len)
+            .map(|bits| {
+                (0..len)
+                    .map(|i| if bits >> i & 1 == 1 { 'b' } else { 'a' })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// (a) A and B overlap by k = 1 to 7 bytes: `c` + A + B[k..] + `c`.
+    fn overlapping() -> Vec<Case> {
+        let mut cases = Vec::new();
+        for a in words(8) {
+            for k in 1..8 {
+                for rest in words(8 - k) {
+                    let b = format!("{}{rest}", &a[8 - k..]);
+                    if b != a {
+                        cases.push(Case {
+                            family: "(a) overlap",
+                            text: format!("c{a}{rest}c"),
+                            a: a.clone(),
+                            b: Some(b),
+                        });
+                    }
+                }
+            }
+        }
+        cases
+    }
+
+    /// (b) B is the first or the last 8 bytes of a 9-byte A: `c` + A + `c`.
+    fn holding() -> Vec<Case> {
+        let mut cases = Vec::new();
+        for a in words(9) {
+            for b in [&a[..8], &a[1..]] {
+                cases.push(Case {
+                    family: "(b) one holds the other",
+                    text: format!("c{a}c"),
+                    b: Some(b.to_owned()),
+                    a: a.clone(),
+                });
+            }
+        }
+        cases
+    }
+
+    /// (c) B right after A: `c` + A + B + `c`.
+    fn adjacent() -> Vec<Case> {
+        let mut cases = Vec::new();
+        for a in words(8) {
+            for b in words(8) {
+                if b != a {
+                    cases.push(Case {
+                        family: "(c) adjacent",
+                        text: format!("c{a}{b}c"),
+                        a: a.clone(),
+                        b: Some(b),
+                    });
+                }
+            }
+        }
+        cases
+    }
+
+    /// (d) A alone, twice: `cAcAc`.
+    fn repeated() -> Vec<Case> {
+        words(8)
+            .into_iter()
+            .map(|a| Case {
+                family: "(d) repeated",
+                text: format!("c{a}c{a}c"),
+                a,
+                b: None,
+            })
+            .collect()
+    }
+
+    impl Case {
+        fn secrets(&self) -> Secrets {
+            let secrets = Secrets::default();
+            secrets.learn("x", &self.a);
+            match &self.b {
+                Some(b) => secrets.learn("y", b),
+                None => secrets.forget("y"),
+            }
+            secrets
+        }
+
+        /// What each of the three ways to redact makes of `text`.
+        fn outputs(&self, secrets: &Secrets, text: &str) -> [(&'static str, String); 3] {
+            [
+                ("redact", secrets.redact(text)),
+                (
+                    "try_redact",
+                    secrets
+                        .try_redact(text)
+                        .expect("nothing else holds the set"),
+                ),
+                ("snapshot", secrets.snapshot().redact(text)),
+            ]
+        }
+
+        fn b(&self) -> &str {
+            self.b.as_deref().unwrap_or("none")
+        }
+    }
+
+    /// Property 1: no form `needles_for` makes of either value is left whole, in the plain text
+    /// and, with `encoded`, in the whole text encoded each way.
+    fn no_form_survives(cases: &[Case], encoded: bool) {
+        let encodings: [(&str, fn(&str) -> String); 5] = [
+            ("plain", |text| text.to_owned()),
+            ("base64", |text| b64(text.as_bytes())),
+            ("url-safe base64", |text| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text)
+            }),
+            ("hex", |text| hex::encode(text)),
+            ("url-encoded", |text| {
+                text.bytes().map(|b| format!("%{b:02X}")).collect()
+            }),
+        ];
+        let encodings = if encoded {
+            &encodings[..]
+        } else {
+            &encodings[..1]
+        };
+        for case in cases {
+            let secrets = case.secrets();
+            let mut forms = needles_for("x", case.a.as_bytes());
+            if let Some(b) = &case.b {
+                forms.extend(needles_for("y", b.as_bytes()));
+            }
+            for (encoding, encode) in encodings {
+                let text = encode(&case.text);
+                for (function, output) in case.outputs(&secrets, &text) {
+                    let lower = output.to_ascii_lowercase();
+                    for needle in &forms {
+                        let left = if needle.any_case {
+                            lower.contains(&needle.text.to_ascii_lowercase())
+                        } else {
+                            output.contains(&needle.text)
+                        };
+                        assert!(
+                            !left,
+                            "{}, {function}, {encoding}: A {}, B {}, text {text:?}, output \
+                             {output:?}: {needle:?} survived",
+                            case.family,
+                            case.a,
+                            case.b(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Property 2: with every `[redacted: …]` marker taken out, no `a` or `b` is left.
+    fn no_byte_left(cases: &[Case]) {
+        for case in cases {
+            let secrets = case.secrets();
+            for (function, output) in case.outputs(&secrets, &case.text) {
+                let mut left = String::new();
+                let mut rest = output.as_str();
+                while let Some(start) = rest.find("[redacted: ") {
+                    left.push_str(&rest[..start]);
+                    rest = match rest[start..].find(']') {
+                        Some(end) => &rest[start + end + 1..],
+                        None => "",
+                    };
+                }
+                left.push_str(rest);
+                assert!(
+                    !left.contains(['a', 'b']),
+                    "{}, {function}, plain: A {}, B {}, text {:?}, output {output:?}: {left:?} \
+                     is left outside the markers",
+                    case.family,
+                    case.a,
+                    case.b(),
+                    case.text,
+                );
+            }
+        }
+    }
+
+    /// LOGS-1, bounded-exhaustive: no form of either of two values is left whole, however they
+    /// overlap, hold or touch each other, or one repeats, plain or the whole text encoded.
+    #[test]
+    fn logs_1_no_form_of_a_value_survives_overlap_nesting_adjacency_or_repeats() {
+        no_form_survives(&overlapping(), true);
+        no_form_survives(&holding(), true);
+        no_form_survives(&adjacent(), false);
+        no_form_survives(&repeated(), true);
+    }
+
+    /// LOGS-1, bounded-exhaustive: no byte of a value is left when one holds the other, they
+    /// touch, or one repeats.
+    #[test]
+    fn logs_1_no_part_of_a_value_is_left_when_one_holds_another_or_they_touch() {
+        no_byte_left(&holding());
+        no_byte_left(&adjacent());
+        no_byte_left(&repeated());
+    }
+
+    /// LOGS-1, bounded-exhaustive: no byte of either of two overlapping values is left.
+    #[test]
+    #[ignore = "finding V01-43"]
+    fn logs_1_no_part_of_overlapping_values_is_left() {
+        no_byte_left(&overlapping());
+    }
 }
