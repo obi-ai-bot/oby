@@ -1,0 +1,1 @@
+import{u as f}from"./index-CCKe-Mpx.mjs";import*as t from"react";var c=Object.defineProperty,a=(r,e)=>c(r,"name",{value:e,configurable:!0}),n=t[" useInsertionEffect ".trim().toString()];function o(r){const e=t.useRef(r);return typeof n=="function"?n(()=>{e.current=r}):f(()=>{e.current=r}),t.useMemo(()=>((...u)=>e.current?.(...u)),[])}a(o,"useCallbackRef");export{o as u};

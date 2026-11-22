@@ -1,0 +1,1 @@
+import{jsx as e}from"react/jsx-runtime";import{cn as o}from"../lib/utils.mjs";function s({className:a,...r}){return e("div",{className:o("animate-pulse rounded-md bg-gray-100 dark:bg-gray-800",a),...r})}export{s as Skeleton};

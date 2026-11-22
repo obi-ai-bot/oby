@@ -5,7 +5,7 @@ import { bytes, escaped, page, text, type Shown, type Version } from './showable
 // version with an App.tsx or App.jsx and no index.html, compiled here in the preview's host page,
 // as LibreChat's react-ts template draws one, but on what main's relay serves (/__csb_vendor/),
 // never a CDN. Each source becomes its `.js`; the written index.html's import map sends React's
-// names to the vendored builds and each file's own URL, with and without its extension, to its
+// names and shadcn's components to the vendored builds and each file's own URL, with and without its extension, to its
 // `.js`, so the artifact's imports run as they are written. A bare import outside the map is named
 // before anything runs, with what the preview has (ARTIFACTSAPP-28); a relative, absolute or URL one
 // is the browser's and the CSP's to answer.
@@ -21,6 +21,12 @@ const VENDORED: Record<string, string> = {
   clsx: '/__csb_vendor/clsx/clsx.mjs',
   'tailwind-merge': '/__csb_vendor/tailwind-merge/tailwind-merge.mjs',
   'class-variance-authority': '/__csb_vendor/class-variance-authority/class-variance-authority.mjs',
+};
+/** shadcn/ui's components, as LibreChat ships them (ARTIFACTSAPP-27), built into `shadcn/` beside their `cn`. */
+const SHADCN = ['accordion', 'alert', 'alert-dialog', 'avatar', 'badge', 'breadcrumb', 'button', 'card', 'checkbox', 'collapsible', 'dialog', 'dropdown-menu', 'input', 'label', 'menubar', 'navigation-menu', 'pagination', 'popover', 'progress', 'radio-group', 'select', 'separator', 'skeleton', 'slider', 'switch', 'table', 'tabs', 'textarea', 'toast', 'toaster', 'toggle', 'toggle-group', 'tooltip', 'use-toast'];
+const COMPONENTS: Record<string, string> = {
+  ...Object.fromEntries(SHADCN.map((n) => [`/components/ui/${n}`, `/__csb_vendor/shadcn/ui/${n}.mjs`])),
+  '/lib/utils': '/__csb_vendor/shadcn/lib/utils.mjs',
 };
 /** An error's words wrap and sit inset from the frame's edge, never cut off at it. */
 const ERROR = 'padding:16px;margin:0;white-space:pre-wrap';
@@ -57,7 +63,7 @@ const IMPORTED = [/(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g,
 const bare = (s: string) => !/^(?:\/|\.\.?\/|[a-z][a-z\d+.-]*:)/i.test(s);
 const names = Object.keys(VENDORED).filter((k) => !k.includes('/'));
 // ponytail: proposed words, for Sangam to change
-const missing = (gone: string[]) => `This preview has no ${gone.map((n) => `\`${n}\``).join(', ')}. It has: ${names.slice(0, -1).join(', ')} and ${names.at(-1)}.`;
+const missing = (gone: string[]) => `This preview has no ${gone.map((n) => `\`${n}\``).join(', ')}. It has: ${names.join(', ')} and shadcn/ui at /components/ui/<name>.`;
 
 // App's default export mounted in #root, committed at once, then the bridge told on a timer, as
 // LlamaCoder's page tells it (ARTIFACTSAPP-22); its errors are the bridge's to say, the page left as
@@ -71,7 +77,7 @@ import('/App.js').then((app) => { flushSync(() => { createRoot(document.getEleme
 /** The files the preview shows for a React artifact's version, every path from `/`. */
 export function reactShown(v: Version): Shown {
   const shown: Shown = {};
-  const imports: Record<string, string> = { ...VENDORED };
+  const imports: Record<string, string> = { ...VENDORED, ...COMPONENTS };
   const sheets: string[] = [];
   const asked: string[] = [];
   for (const p of Object.keys(v.files).sort()) {
@@ -98,6 +104,8 @@ export function reactShown(v: Version): Shown {
     const folder = /^(.+)\/index$/.exec(base);
     if (folder) imports[`/${folder[1]}`] = js;
   }
+  // ponytail: `@/` for shadcn's keys only, one key each, to the vendored file or the artifact's own
+  for (const k of Object.keys(COMPONENTS)) imports[`@${k}`] = imports[k];
   const gone = [...new Set(asked.filter((s) => !Object.hasOwn(imports, s)))];
   if (gone.length) return refused(v, missing(gone));
   if (sheets.length) shown[EMPTY] = { code: 'export {};\n' };

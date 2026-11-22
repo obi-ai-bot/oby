@@ -1,0 +1,1 @@
+import*as e from"react";import{u as i}from"./index-CCKe-Mpx.mjs";var u=Object.defineProperty,s=(r,t)=>u(r,"name",{value:t,configurable:!0}),f=e[" useId ".trim().toString()]||(()=>{}),m=0;function n(r){const[t,o]=e.useState(f());return i(()=>{r||o(a=>a??String(m++))},[r]),r||(t?`radix-${t}`:"")}s(n,"useId");export{n as u};
