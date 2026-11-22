@@ -160,36 +160,39 @@ impl Service {
         // ponytail: a page script on a timer passes for the person (relay's `person_started`), so
         // only the owner's own job's tab delivers, its one named file, quarantined, never opened.
         let own = |job: &str| self.api(|a| a.job(job).is_some_and(|j| j.origin == c::Origin::Own));
-        match (event.method.as_str(), p["state"].as_str()) {
-            ("Page.downloadWillBegin", _) => {
-                let Some(job) = self.relay.job_of(&event.tab) else {
-                    return;
-                };
-                if event.person_started && own(&job) {
-                    // Main saves it under the suggested name's last segment (`basename`).
-                    let name = p["suggestedFilename"]
-                        .as_str()
-                        .and_then(|n| n.rsplit('/').next())
-                        .filter(|n| !n.is_empty())
-                        .unwrap_or("download");
-                    persons.insert(guid.into(), (job, event.tab.clone(), name.into()));
+        // Compared as page events (`==`), as the relay's own are: BROWSERAPP-29 reads a bare literal
+        // as a method obid sends.
+        if event.method == "Page.downloadWillBegin" {
+            let Some(job) = self.relay.job_of(&event.tab) else {
+                return;
+            };
+            if event.person_started && own(&job) {
+                // Main saves it under the suggested name's last segment (`basename`).
+                let name = p["suggestedFilename"]
+                    .as_str()
+                    .and_then(|n| n.rsplit('/').next())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("download");
+                persons.insert(guid.into(), (job, event.tab.clone(), name.into()));
+            }
+        } else if event.method == "Page.downloadProgress" {
+            match p["state"].as_str() {
+                Some("canceled") => {
+                    persons.remove(guid);
                 }
-            }
-            ("Page.downloadProgress", Some("canceled")) => {
-                persons.remove(guid);
-            }
-            ("Page.downloadProgress", Some("completed")) => {
-                let Some((job, tab, name)) = persons.remove(guid) else {
-                    return;
-                };
-                if own(&job) {
-                    let holder = self
-                        .api(|a| a.tab(&tab).and_then(|t| t.held_by.clone()))
-                        .unwrap_or_else(|| THE_WINDOWS_PERSON.into());
-                    self.watch_downloads(&job, Some(tab), Actor::Person(holder), Some(name));
+                Some("completed") => {
+                    let Some((job, tab, name)) = persons.remove(guid) else {
+                        return;
+                    };
+                    if own(&job) {
+                        let holder = self
+                            .api(|a| a.tab(&tab).and_then(|t| t.held_by.clone()))
+                            .unwrap_or_else(|| THE_WINDOWS_PERSON.into());
+                        self.watch_downloads(&job, Some(tab), Actor::Person(holder), Some(name));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
