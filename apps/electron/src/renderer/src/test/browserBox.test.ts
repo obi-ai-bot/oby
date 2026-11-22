@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { namedPartitions, relayCommand, relayHost, type BoxCommand, type RelayHost } from '../../../main/browserRelay';
@@ -17,14 +20,17 @@ type FakeSession = {
   cache: number;
   auth: number;
   proxied: { resolve: () => void } | null;
+  preloads: { type: string; id?: string; filePath: string }[];
   asked: (permission: string) => boolean;
   checked: (permission: string) => boolean;
 };
-const the = vi.hoisted(() => ({ sessions: new Map<string, unknown>(), guests: new Map<number, unknown>() }));
+const the = vi.hoisted(() => ({ sessions: new Map<string, unknown>(), guests: new Map<number, unknown>(), userData: '' }));
 function fakeSession(partition: string) {
   const s = {
     partition, requests: [] as Handler[], proxies: [] as unknown[], cleared: [] as unknown[], cache: 0, auth: 0,
     proxied: null as { resolve: () => void } | null,
+    preloads: [] as { type: string; id?: string; filePath: string }[],
+    registerPreloadScript: (p: { type: string; id?: string; filePath: string }) => { s.preloads.push(p); return p.id ?? ''; },
     asked: (_p: string) => false, checked: (_p: string) => false,
     setPermissionRequestHandler(h: (wc: unknown, p: string, done: (ok: boolean) => void) => void) { s.asked = (p) => { let ok = false; h(null, p, (v) => { ok = v; }); return ok; }; },
     setPermissionCheckHandler(h: (wc: unknown, p: string) => boolean) { s.checked = (p) => h(null, p); },
@@ -38,9 +44,11 @@ function fakeSession(partition: string) {
   return s;
 }
 vi.mock('electron', () => ({
+  app: { getPath: () => the.userData },
   session: { fromPartition: (p: string) => { if (!the.sessions.has(p)) the.sessions.set(p, fakeSession(p)); return the.sessions.get(p); } },
   webContents: { fromId: (id: number) => the.guests.get(id) ?? null },
 }));
+the.userData = mkdtempSync(join(tmpdir(), 'oby-box-guard-'));
 const { BOX_CLIPBOARD_GUARD, BOX_HOLD_MS, boxDoor, boxing, clearBox, hosting } = await import('../../../main/browserGuest');
 const { session } = await import('electron');
 const sessionOf = (p: string) => session.fromPartition(p) as unknown as FakeSession;
@@ -60,9 +68,9 @@ function aWindow(named: string | undefined = undefined) {
   const win = { webContents: new EventEmitter() };
   const host = { attach: vi.fn(), detach: vi.fn(), forget: vi.fn(), event: vi.fn(), shown: vi.fn(), loadFailed: vi.fn() };
   const h = hosting(win as unknown as BrowserWindow, host as unknown as RelayHost, () => named, () => {});
-  const attaching = (partition: string, src = 'https://example.com/') => {
+  const attaching = (partition: string, src = 'https://example.com/', prefs: Record<string, unknown> = {}) => {
     const e = { preventDefault: vi.fn() };
-    win.webContents.emit('will-attach-webview', e, {}, { partition, src });
+    win.webContents.emit('will-attach-webview', e, prefs, { partition, src });
     return e.preventDefault.mock.calls.length === 0;
   };
   const guest = (partition: string) => {
@@ -148,6 +156,26 @@ describe('BROWSERAPP-36: a box partition\'s session is made before its guest att
     for (const p of ['fullscreen', 'pointerLock']) expect([box.asked(p), box.checked(p)]).toEqual([true, true]);
     for (const p of ['clipboard-sanitized-write', 'clipboard-read', 'media']) expect([box.asked(p), box.checked(p)], p).toEqual([false, false]);
     expect([agent.asked('clipboard-sanitized-write'), agent.checked('clipboard-sanitized-write')]).toEqual([true, true]);
+  });
+
+  it('browserapp_36: a box session\'s preload is main\'s clipboard guard, in every frame, before its guest\'s first page; an agent\'s session has none', () => {
+    const box: Record<string, unknown> = {}, agent: Record<string, unknown> = {};
+    const w = aWindow();
+    expect(w.attaching('oby-box-b36j', 'https://example.com/', box)).toBe(true);
+    expect(w.attaching('persist:oby-agent-codex', 'https://example.com/', agent)).toBe(true);
+    const preloads = sessionOf('oby-box-b36j').preloads;
+    expect(preloads.map((p) => [p.type, p.id])).toEqual([['frame', 'oby-box-clipboard-guard']]);
+    expect(readFileSync(preloads[0].filePath, 'utf8')).toBe(BOX_CLIPBOARD_GUARD);
+    expect(preloads[0].filePath.startsWith(the.userData)).toBe(true);
+    // every frame runs it (sandboxed: no Node), where an agent page's frames run none
+    expect([box.nodeIntegrationInSubFrames, box.sandbox, box.nodeIntegration]).toEqual([true, true, false]);
+    expect(agent.nodeIntegrationInSubFrames).toBe(false);
+    expect(sessionOf('persist:oby-agent-codex').preloads).toEqual([]);
+    // the first tab event naming a box sets it up the same way, once
+    const p = namedPartitions();
+    p.heard('tab', tab('b36k', 't1'), boxing((k) => p.drop(k)));
+    w.attaching('oby-box-b36k');
+    expect(sessionOf('oby-box-b36k').preloads).toHaveLength(1);
   });
 
   it('browserapp_36: an agent partition\'s session gets no request handler and no proxy', () => {

@@ -1,5 +1,6 @@
+import { writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { session, webContents, type BrowserWindow, type Session, type WebContents } from 'electron';
+import { app, session, webContents, type BrowserWindow, type Session, type WebContents } from 'electron';
 import { BOX_PROXY, partitionOk, type BoxCommand, type Guest, type RelayHost, type TabKey } from './browserRelay';
 export { PARTITION, partitionOk } from './browserRelay';
 import { pageOk } from './pageRule';
@@ -61,6 +62,17 @@ const waiting = new Map<string, Set<() => void>>();
 // how many times each box was cleared: a door still being set when it was isn't kept
 const clears = new Map<string, number>();
 
+// the guard as a file, for a box session's preload: written once a run, where only the owner's
+// user writes (the app's own folder), never a box's
+let guardFile: string | null = null;
+function guardPreload(): string {
+  if (!guardFile) {
+    guardFile = join(app.getPath('userData'), 'box-clipboard-guard.js');
+    writeFileSync(guardFile, BOX_CLIPBOARD_GUARD, { mode: 0o600 });
+  }
+  return guardFile;
+}
+
 /**
  * One partition's session, set up once: its permissions and where its downloads go; for a box, every
  * request held until its job's door is set, cancelled after BOX_HOLD_MS without one (T3: getSession,
@@ -80,6 +92,9 @@ export function prepare(s: Session, partition: string) {
   });
   if (!isBox(partition)) return;
   boxes.set(s, partition);
+  // the clipboard guard as the session's preload: in every frame, in its own world, before the page's
+  // first script, its first document's too (the debugger's guard comes only once main attaches it)
+  s.registerPreloadScript({ type: 'frame', id: 'oby-box-clipboard-guard', filePath: guardPreload() });
   s.webRequest.onBeforeRequest((_details, callback) => {
     if (doors.has(partition)) return callback({});
     const held = waiting.get(partition) ?? new Set<() => void>();
@@ -196,6 +211,9 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
   win.webContents.on('will-attach-webview', (e, prefs, params) => {
     if (!harden(prefs as Record<string, unknown>, params)) { e.preventDefault(); return; }
     prepare(session.fromPartition(params.partition!), params.partition!);
+    // a box page's frames each run its session's preload (the clipboard guard), not only its top
+    // one: still sandboxed, so no Node in any of them
+    if (isBox(params.partition!)) (prefs as Record<string, unknown>).nodeIntegrationInSubFrames = true;
   });
   win.webContents.on('did-attach-webview', (_e, wc) => {
     const box = boxes.get(wc.session);
