@@ -34,6 +34,12 @@ impl Jobs {
         let server = self.connections.get()?.open_browser(&job.id);
         let own =
             matches!(self.job_account(job), Ok((tool, a)) if lanes::launches_own(job, tool, &a));
+        // Its worktree as it is now, before its agent starts: its uploads are read only from it.
+        if origin.foreign()
+            && let Some(worktree) = &job.worktree
+        {
+            browser.keep_room(&job.id, std::path::Path::new(worktree));
+        }
         if origin.foreign()
             && !own
             && self.confines_egress()

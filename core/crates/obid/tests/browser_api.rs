@@ -290,6 +290,17 @@ fn browser_18_a_foreign_jobs_screenshot_and_upload_go_through_no_link() {
     assert!(Path::new(path).starts_with(&own), "{shot}");
     let left: Vec<_> = std::fs::read_dir(&outside).unwrap().flatten().collect();
     assert_eq!(left.len(), 1, "nothing written through the link");
+    // A file of the worktree obid kept as the agent started is uploaded, as its copy.
+    std::fs::write(worktree.join("cv.txt"), "mine").unwrap();
+    let snapshot = tool(&obid, &token, "oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let uploaded = tool(
+        &obid,
+        &token,
+        "oby_browser_act",
+        json!({"action": "upload", "ref": "e1", "paths": [worktree.join("cv.txt")]}),
+    );
+    assert_eq!(uploaded["ok"], true, "{uploaded}");
     for linked in [worktree.join("leak"), worktree.join("linked/secret")] {
         let refused = tool(
             &obid,

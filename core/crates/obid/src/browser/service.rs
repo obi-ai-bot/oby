@@ -44,6 +44,9 @@ pub struct Service {
     /// edge a foreign job's browser stops at (BROWSER-18), on loopback for its navigate and on any
     /// address for its browser door. obid's start sets them ([`Service::set_host_ports`]).
     host_ports: Mutex<Vec<u16>>,
+    /// Each foreign job's worktree as its agent started (`box_files::room`): the folder its
+    /// uploads are read from, whatever its box puts in its place after.
+    rooms: Mutex<std::collections::HashMap<String, (u64, u64)>>,
 }
 
 impl Service {
@@ -63,7 +66,28 @@ impl Service {
             relay,
             home,
             host_ports: Mutex::new(Vec::new()),
+            rooms: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// A foreign job's worktree, kept the first time its agent is given the browser (before it
+    /// starts): later its box could have swapped it.
+    pub(crate) fn keep_room(&self, job: &str, worktree: &Path) {
+        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        if !rooms.contains_key(job)
+            && let Some(identity) = super::box_files::room(worktree)
+        {
+            rooms.insert(job.to_owned(), identity);
+        }
+    }
+
+    /// The worktree identity kept for a foreign job (`keep_room`), if any.
+    pub(super) fn room(&self, job: &str) -> Option<(u64, u64)> {
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(job)
+            .copied()
     }
 
     /// The host's own services' ports: obid's, its gateway's and the `direct` listeners'
@@ -195,6 +219,10 @@ impl Service {
 
     /// A job ended (BROWSER-25): its tabs are released on the relay and leave the list.
     pub async fn end_job(&self, job: &str) {
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(job);
         self.window.end(job);
         self.api(|a| a.end_job(job));
         self.flush();

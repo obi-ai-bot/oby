@@ -93,7 +93,7 @@ An error is `{"error": "<a sentence>", "reason": "<one of the reasons below>"}`.
 | `oby_browser_screenshot` | yes | A PNG of the tab, written into the agent's room; a foreign job's into obid's own folder for it (`<home>/browser/jobs/<job>/room/screens/`), never its worktree, which its box can write |
 | `oby_browser_wait_for` | yes | Waits for `text`, `selector` or `url`, up to `timeoutMs` |
 | `oby_browser_navigate` | no | Navigates the tab; its refs die |
-| `oby_browser_act` | no | click, type, hover, select, drag, upload (from the room only; a foreign job's file is copied into obid's own folder for it, every folder of its path and the file opened without following a link, and only the copy reaches the page: a link, or a path through one, is `upload_outside_room`), press, scroll, by ref |
+| `oby_browser_act` | no | click, type, hover, select, drag, upload (from the room only; a foreign job's file is copied into obid's own folder for it, read only from the very worktree obid kept as its agent started (opened from obid's own folder, never through a link: a worktree its box swapped for a link or another folder uploads nothing), every folder of its path and the file opened without following a link, and only a file of one name (no hard link); only the copy reaches the page, and anything else is `upload_outside_room`), press, scroll, by ref |
 | `oby_browser_evaluate` | no | Runs JavaScript in the page; its value comes back quoted |
 | `oby_browser_dialog` | no | Accepts or dismisses the page's dialog |
 | `oby_browser_ask_person` | yes | Asks the person (`kind`, `reason`, `choices`, `field`); changes nothing in the page |
