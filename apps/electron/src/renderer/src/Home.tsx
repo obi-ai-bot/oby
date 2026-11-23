@@ -619,7 +619,7 @@ export default function Home() {
       {onObid && <Connection />}
       <ComputerLine onHome={!away} />
       {/* another conversation needs you while the window is in front (ALERTS-21) */}
-      <NeedsYouNote open={top?.kind === 'talk' ? top.id : null} onOpen={(id) => start({ kind: 'talk', id })} />
+      <NeedsYouNote open={top?.kind === 'talk' ? top.id : null} onHome={!away} onOpen={(id) => start({ kind: 'talk', id })} />
       {/* asking Oby: a new conversation, opened at once */}
       <Composer
         home

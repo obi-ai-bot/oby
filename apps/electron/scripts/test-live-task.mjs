@@ -263,7 +263,8 @@ async function main() {
   await until('it asks', async () => (await s.call('GET', `/v1/jobs/${asking.id}`)).permission, 30_000);
   const drawer = page.locator('.chat-layer:not(.is-leaving) .decision-bar');
   await until('the drawer over the box', () => drawer.count(), 15_000);
-  assert.match(await drawer.locator('.tc-ask-line').innerText(), /^Permission\s+The ask/);
+  // Sangam's card: a plain question naming its agent, the command once, on its own line under it
+  assert.match(await drawer.locator('.tc-ask-line').innerText(), /^Permission\s+Let Claude Code run a command\?\s+·\s+The ask/);
   assert.equal(await drawer.locator('.tc-ask-command', { hasText: 'curl https://example.invalid' }).count(), 1, 'its command on one line');
   assert.equal(await entry('The ask').locator('.tc-ask, .tc-option').count(), 0, 'the card and what is under it stay lean');
   assert.match(await card('The ask').locator('.msg-task-meta').first().innerText(), /^Needs you · /);
@@ -295,6 +296,19 @@ async function main() {
   assert.equal(await drawer.count(), 0, 'the drawer goes');
   await shot('10-answered');
   ok('LIVETASK-27 answered, one line stays under its card');
+
+  // LIVETASK-19, -21, -24: an edit is asked as an edit, never as a command
+  const editing = await dispatch('The edit', 'ASK: {"tool":"Edit","input":{"file_path":"notes.md","old_string":"a","new_string":"b"}}', talkBox);
+  await until('it asks', async () => (await s.call('GET', `/v1/jobs/${editing.id}`)).permission, 30_000);
+  await until('the drawer over the box', () => drawer.count(), 15_000);
+  assert.match(await drawer.locator('.tc-ask-line').innerText(), /^Permission\s+Let Claude Code edit notes\.md\?\s+·\s+The edit/);
+  await until('its row says it asks to edit a file', () => kid('The edit').filter({ hasText: 'asks to edit a file' }).count(), 15_000);
+  await until('its conversation says so', () => page.locator('.convo-row .connector-about', { hasText: 'Claude Code asks to edit a file' }).count(), 15_000);
+  await shot('11-edit');
+  await sleep(600);
+  await drawer.locator('.tc-option', { hasText: /^Deny$/ }).first().click();
+  await until('answered', async () => !(await s.call('GET', `/v1/jobs/${editing.id}`)).permission, 30_000);
+  ok('LIVETASK-21, -24 an edit is asked as an edit, in a plain question');
 
   assert.deepEqual(errors, [], 'no errors on the page');
 }

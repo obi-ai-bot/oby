@@ -25,7 +25,9 @@ export const newlyNeeding = (before: Set<string> | null, now: string[], open: st
 // whether the owner is looking at Oby's window: shown and focused, as ALERTS-8's rule reads it
 export const inFront = () => document.visibilityState === 'visible' && document.hasFocus();
 
-export default function NeedsYouNote({ open, onOpen }: { open: string | null; onOpen: (conversation: string) => void }) {
+// onHome: Home shows, nothing over it, its stack holding what waits on you already: no note on top
+// of it (the drive of 2026-11-23: a note over Oby's face, repeating the card right under it)
+export default function NeedsYouNote({ open, onHome = false, onOpen }: { open: string | null; onHome?: boolean; onOpen: (conversation: string) => void }) {
   useTasks();
   const profiles = useProfiles();
   const chats = profileChats(useChats(), profiles.list, profiles.kept);
@@ -36,7 +38,7 @@ export default function NeedsYouNote({ open, onOpen }: { open: string | null; on
   useEffect(() => {
     const fresh = newlyNeeding(seen.current, now, open);
     seen.current = new Set(now);
-    if (fresh.length && inFront()) setNote({ id: fresh[0], more: fresh.length - 1 });
+    if (fresh.length && inFront() && !onHome) setNote({ id: fresh[0], more: fresh.length - 1 });
   }, [key, open]);
   useEffect(() => {
     if (!note) return;
@@ -45,7 +47,7 @@ export default function NeedsYouNote({ open, onOpen }: { open: string | null; on
   }, [note]);
   const chat = note && chats.find((c) => c.id === note.id);
   // opened, answered (it no longer needs you) or gone: the note goes with it
-  if (!note || !chat || note.id === open || !now.includes(note.id)) return null;
+  if (!note || !chat || onHome || note.id === open || !now.includes(note.id)) return null;
   return (
     <div className="needs-note" role="status" aria-live="polite">
       <span className="needs-note-dot" aria-hidden />

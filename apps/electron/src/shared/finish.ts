@@ -11,6 +11,6 @@ export const FINISH_WORDS: Record<FinishAction, string> = {
   initializeGit: 'Initialize Git',
 };
 
-// Where a new conversation works: one checkbox, as Claude Code offers a worktree (the owner's choice,
+// Where a new conversation works: one checkbox, Worktree, as Claude Code offers one (the owner's choice,
 // 2026-11-23); unchecked, this folder
-export const WORKTREE_WORDS = 'New worktree';
+export const WORKTREE_WORDS = 'Worktree';

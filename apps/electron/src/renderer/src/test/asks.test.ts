@@ -54,6 +54,61 @@ describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
     expect(ask.detail).toBe('npm install');
   });
 
+  // Sangam's permission card (mock.ts): a plain question naming its agent, a sentence of why, then the
+  // command once (the drive of 2026-11-23: the raw command as the headline, and again under it)
+  it('LIVETASK-24: with its job\'s permission, the headline is a plain question, its why under it, the command once', () => {
+    const at = (tool: string, title: string, detail: string, more: Partial<Job> = {}) =>
+      ({ id: 'j1', agent: 'codex', mode: 'ask', permission: { id: 'p1', tool, title, detail, rule: null, always: null }, ...more }) as unknown as Job;
+    const command = 'git add docs/oby-ask.md && git -c commit.gpgsign=false commit -m "docs: record owner answer"';
+    const run = item('permission', { title: 'Add docs/oby-ask.md word', text: `Run ${command}`, options: ['Allow', 'Deny'] });
+    const ask = live.itemAsk(run, command, null, at('Bash', `Run ${command}`, command));
+    expect(ask).toMatchObject({ kind: 'permission', headline: 'Let Codex run a command?', text: 'Ask mode: Asks before it edits a file or runs a command.', detail: command, tool: 'Bash' });
+    // the command is said once, under the question
+    expect(ask.headline).not.toContain('git');
+    const edit = item('permission', { title: 'Add docs/oby-ask.md word', text: 'Edit oby-ask.md', options: ['Allow', 'Always allow', 'Deny'] });
+    expect(live.itemAsk(edit, 'docs/oby-ask.md', null, at('Edit', 'Edit oby-ask.md', 'docs/oby-ask.md', { agent: 'claude' }))).toMatchObject({ headline: 'Let Claude Code edit oby-ask.md?', tool: 'Edit' });
+    // obid's own why leads, when it gives one
+    const fetch = at('WebFetch', 'Fetch example.com', 'https://example.com', { mode: 'bypass' });
+    fetch.permission!.why = 'It reaches the network beyond the model\'s API.';
+    expect(live.itemAsk(item('permission', { text: 'Fetch example.com' }), undefined, null, fetch)).toMatchObject({ headline: 'Let Codex fetch example.com?', text: 'It reaches the network beyond the model\'s API.' });
+    // through askOf, as the drawer and Home's card show it
+    const s = live.liveState();
+    s.jobs.j1 = { ...at('Bash', `Run ${command}`, command), status: 'running' } as Job;
+    s.inbox = [run];
+    expect(live.askOf(s, s.jobs.j1)).toMatchObject({ headline: 'Let Codex run a command?', detail: command });
+    s.inbox = [];
+  });
+
+  // every permission title obid sends (permissions.rs `card`, jobs/permission_asks.rs) and its
+  // headline: one question, the agent named once, never "Let Cursor let Cursor …" (review of #2887)
+  it('LIVETASK-24: each permission title obid sends reads as one question', () => {
+    const hooks = "Let Cursor run this repository's hooks: npm run lint, npm test";
+    const allows = "Let Cursor run what this repository's .cursor/cli.json allows: git status";
+    const cases: [agent: string, tool: string, title: string, detail: string, headline: string][] = [
+      ['codex', 'Bash', 'Run npm test', 'npm test -- --watch=false', 'Let Codex run a command?'],
+      ['codex', 'Bash', 'Run git add a && git commit -m x', 'git add a && git commit -m x', 'Let Codex run a command?'],
+      ['claude', 'Edit', 'Edit notes.md', 'notes.md', 'Let Claude Code edit notes.md?'],
+      ['claude', 'Write', 'Write notes.md', 'notes.md', 'Let Claude Code write notes.md?'],
+      ['claude', 'MultiEdit', 'Edit 2 files', 'a.md, b.md', 'Let Claude Code edit 2 files?'],
+      ['claude', 'WebFetch', 'Fetch example.com', 'https://example.com', 'Let Claude Code fetch example.com?'],
+      ['claude', 'WebFetch', 'Fetch a web page', '', 'Let Claude Code fetch a web page?'],
+      ['codex', 'WebSearch', 'Search the web', '', 'Let Codex search the web?'],
+      ['claude', 'Read', 'Use Read', '/etc/hosts', 'Let Claude Code use Read?'],
+      ['claude', 'mcp__x__y', 'Use mcp__x__y', '', 'Let Claude Code use mcp__x__y?'],
+      ['cursor', 'RepositoryHooks', hooks, '', `${hooks}?`],
+      ['cursor', 'RepositoryHooks', allows, '', `${allows}?`],
+      ['cursor', 'RepositoryHooks', `${hooks.slice(0, 40)}…`, '', `${hooks.slice(0, 40)}…?`],
+      ['codex', 'Foo', 'Use the vault for this?', '', 'Use the vault for this?'],
+    ];
+    for (const [agent, tool, title, detail, headline] of cases) {
+      const j = { id: 'j1', agent, permission: { id: 'p1', tool, title, detail, rule: null, always: null } } as unknown as Job;
+      const ask = live.itemAsk(item('permission', { text: title }), detail, null, j);
+      expect(ask.headline, title).toBe(headline);
+      expect(ask.headline.match(/\?/g), title).toHaveLength(1);
+      expect(ask.headline, title).not.toMatch(/Let \S+( \S+)? let /);
+    }
+  });
+
   // obid's permission item: its title the task's, its text the permission's own title (docs/api/inbox.md)
   it('LIVETASK-24: a permission\'s headline is what it asks, in obid\'s words, never its task\'s title (#2788)', () => {
     const write = item('permission', { title: 'Create docs/hello.md word', text: 'Edit hello.md', options: ['Allow', 'Always allow', 'Deny'] });
@@ -194,6 +249,19 @@ describe('a task’s card is never lost: words more words followed keep what the
     expect(cards([words('u1', 1)], { ...forThem, words: { c1: 'On it' } })).toEqual({ u1: [] });
     expect(cards([words('u1', 1)], { ...forThem, pace: { c1: { to: 'On it', n: 1 } } })).toEqual({ u1: [] });
     expect(cards([words('u1', 1), oby('o1', 2)], { pace: { c1: { to: 'o1', n: 1, turn: 'o1' } } })).toEqual({ u1: [] });
+  });
+
+  // the drive of 2026-11-23: up to 107 s of "Starting a task" while the side panel already listed the task
+  it('LIVETASK-5: a task the words being answered started shows its card at once, where the answer will be, and stays there once it lands', () => {
+    const forThem = { on: { c1: 'u1' }, working: { c1: 'Starting a task' } };
+    const chat = live.chatOf({ ...live.liveState(), jobs: { j }, turns: { c1: [words('u1', 1)] }, ...forThem } as never, convo);
+    expect(chat.said.map((m) => [m.who, m.text, m.jobs ?? [], !!m.streaming])).toEqual([['you', 'u1', [], false], ['oby', '', ['j'], true]]);
+    // what Oby is on still shows under it
+    expect([chat.typing, chat.step]).toEqual([true, 'Starting a task']);
+    // its words so far above the card
+    expect(live.chatOf({ ...live.liveState(), jobs: { j }, turns: { c1: [words('u1', 1)] }, ...forThem, words: { c1: 'On it' } } as never, convo).said.at(-1)).toMatchObject({ text: 'On it', jobs: ['j'], streaming: true });
+    // landed: under the answer, once
+    expect(cards([words('u1', 1), oby('o1', 2)])).toEqual({ u1: [], o1: ['j'] });
   });
 
   it('with_no_answer_on_its_way_the_last_words_keep_the_card_even_when_its_report_comes (#1788)', () => {

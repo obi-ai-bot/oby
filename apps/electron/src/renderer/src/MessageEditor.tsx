@@ -33,8 +33,10 @@ export type EditorHandle = {
 // path: COMPOSER-14)
 const AT = /(?:^|\s)@([\w./-]*)$/;
 
-export default function MessageEditor({ placeholder, label, autoFocus = false, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, onBackAtStart, history, handle }: {
+export default function MessageEditor({ placeholder, hint, label, autoFocus = false, onText, onEnter, onHeight, onPasteFiles, onMention, onMentionKey, onBackAtStart, history, handle }: {
   placeholder: string;
+  // words shown after what's typed, as a placeholder is (`/`, then "Type to filter": COMPOSER-25)
+  hint?: { after: string; text: string };
   label: string;
   autoFocus?: boolean;
   onText: (text: string) => void;       // after every change
@@ -62,6 +64,7 @@ export default function MessageEditor({ placeholder, label, autoFocus = false, o
           }
           ErrorBoundary={LexicalErrorBoundary}
         />
+        {hint && <div className="composer-placeholder composer-hint" aria-hidden="true"><span className="composer-hint-typed">{hint.after}</span>{hint.text}</div>}
         <GlidingCaret />
       </div>
       {/* next to the text, not in it, so the text's fade doesn't fade it */}
@@ -100,7 +103,8 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
     // (Cmd+Z doesn't take a draft back out)
     setText: (text) => editor.update(() => $putText(text), { tag: 'history-merge' }),
     quote: (text) => editor.update(() => $quoteAtCaret(text)),
-    focus: () => editor.focus(),
+    // the box first, at once (Lexical's own focus waits for its next update), then its cursor
+    focus: () => { editor.getRootElement()?.focus({ preventScroll: true }); editor.focus(); },
     // no cursor left behind to put back, so the editor doesn't take focus again
     blur: () => { editor.update(() => $setSelection(null)); editor.blur(); },
     mention: (name) => editor.update(() => {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { agentOf, ago } from './view';
+import { agentOf, ago, asksWords } from './view';
 import { useChats } from './chats';
 import { allowWaiting, answerWaiting, approvingTools, homeAsk, itemAsk, mergeWaiting, prChecksOf, projectOf, questionOf, reviewOf, shownId, useLive, waitingOf } from './live';
 import { ReviewBlock } from './ReviewRequestCard';
@@ -79,7 +79,7 @@ export default function WaitingView({ leaving, covered = false, onClose, onGone,
 function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOpenTask: (id: string) => void; onOpenTalk: (id: string) => void }) {
   const s = useLive();
   const j = s.jobs[i.job];
-  const ask = { ...itemAsk(i, undefined, j?.permission?.question), ...prChecksOf(s, i) };
+  const ask = { ...itemAsk(i, undefined, j?.permission?.question, j), ...prChecksOf(s, i) };
   const kind = kindOf(i);
   const project = projectOf(s, i);
   const talk = i.conversation ?? j?.conversation;
@@ -116,7 +116,7 @@ function WaitingRow({ item: i, onOpenTask, onOpenTalk }: { item: InboxItem; onOp
     if (talk) return onOpenTalk(shownId(talk));
     void answerWaiting(i, start);
   };
-  const meta = [project ? name(project) : 'No project', where, kind === 'permission' ? (j?.permission?.detail ? 'asks to run a command' : 'asks for permission') : ago((Date.now() - Date.parse(i.created)) / 60_000)].filter(Boolean).join(' · ');
+  const meta = [project ? name(project) : 'No project', where, kind === 'permission' ? asksWords(j?.permission?.tool, j?.permission?.detail) : ago((Date.now() - Date.parse(i.created)) / 60_000)].filter(Boolean).join(' · ');
   return (
     <li className={`waiting-row${start ? ' is-startable' : ''}`} aria-label={j?.title ?? i.title} onClick={onRow}>
       {j && <BrandMark brand={agentOf(j.agent).brand} size={16} mono />}
