@@ -87,7 +87,8 @@ function driver(page, record, state) {
   const shown = () => page.evaluate(() => document.body.innerText);
   const t = {
     // app: the window as main holds it, only for what a person does to the window itself (maximize)
-    page, app, repo, state, shown,
+    // out: the run's folder, for a file a scenario keeps (an artifact's download, saved there)
+    page, app, repo, state, shown, out,
     step(label) { record.steps.push({ label, at: Date.now() - record.started }); },
     note(text) { record.notes.push(text); },
     async shot(name) {
@@ -95,6 +96,22 @@ function driver(page, record, state) {
       const file = `${record.id}-${String(record.shots.length + 1).padStart(2, '0')}-${name}.png`;
       await page.screenshot({ path: join(out, file) });
       record.shots.push(file);
+      // main's artifact preview is a view of its own laid over the page, which a page screenshot
+      // doesn't hold (docs/contracts/artifacts-app.md, "The view"): while it shows, its picture too
+      const preview = await app.evaluate(async ({ BrowserWindow, webContents }) => {
+        const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+        const win = BrowserWindow.getAllWindows().find((w) => w.contentView.children.some((c) => c.webContents === wc));
+        const view = win?.contentView.children.find((c) => c.webContents === wc);
+        if (!view?.getVisible()) return null;
+        // bounded, as inHost and inFrame are: a capture that hangs gives no picture, never a stalled run
+        const png = await Promise.race([wc.capturePage().then((i) => i.toPNG().toString('base64')), new Promise((done) => setTimeout(() => done(null), 5_000))]);
+        return png;
+      }).catch(() => null);
+      if (preview) {
+        const also = file.replace(/\.png$/, '-preview.png');
+        writeFileSync(join(out, also), Buffer.from(preview, 'base64'));
+        record.shots.push(also);
+      }
       return file;
     },
     // waits until the window shows this (a string or a RegExp), and gives what matched
@@ -148,6 +165,9 @@ function driver(page, record, state) {
     // evidence only: the newest job in this run's repository since then (by default, since the
     // scenario started), not one of Oby's own reviews; never another repository's
     newestJob: (after = record.started) => jobsSince(after).filter((j) => j.kind !== 'review').sort((a, b) => b.created - a.created)[0],
+    // evidence only: every job in this run's repository since then, newest first, not Oby's reviews;
+    // which of them is this run's is the scenario's to tie (its card in its conversation)
+    jobsSince: (after = record.started) => jobsSince(after).filter((j) => j.kind !== 'review').sort((a, b) => b.created - a.created),
     gh,
   };
   return t;
