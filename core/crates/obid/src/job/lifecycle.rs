@@ -583,6 +583,33 @@ mod proofs {
         job
     }
 
+    /// A job with nothing of [`ROUND_CLEARS`] filled, in any status, round, count of rounds and
+    /// tries, run unproxied or not, with or without a session and as the owner's or another Obi's;
+    /// every other field at its default. Its mark is set in the literal, so the grep for a writer
+    /// of `ran_unproxied` (.claude/skills/verify-lane-secrets) finds only obid's own.
+    fn any_bare_job() -> Job {
+        let mut job = Job {
+            ran_unproxied: kani::any(),
+            ..Job::default()
+        };
+        job.status = any_status();
+        job.round = kani::any();
+        job.rounds = kani::any();
+        job.recovery.tries = kani::any();
+        if kani::any() {
+            job.session = Some("s".into());
+        }
+        if kani::any() {
+            job.obi = Some(ObiRef {
+                correlation_id: "c".into(),
+                from: "f".into(),
+                from_owner: "o".into(),
+                request_id: "r".into(),
+            });
+        }
+        job
+    }
+
     /// An end of `kind` with a next step or none, any resume and any time.
     fn any_end(kind: EndKind) -> Command {
         Command::RunEnded(Ended {
@@ -638,5 +665,35 @@ mod proofs {
             }
             std::mem::forget((job, cmd));
         });
+    }
+
+    /// LANES-6 (LANE-3a's mark): no command, in any status, clears a job's `ran_unproxied`, as
+    /// `Change::apply` writes it and `Job::upgrade` loads it, so its check never gets the declared
+    /// secrets back.
+    #[kani::proof]
+    fn lane_3a_no_lifecycle_change_clears_ran_unproxied() {
+        any_command(|cmd| {
+            let mut job = any_bare_job();
+            let before = job.ran_unproxied;
+            if let Ok(change) = transition(&job, &cmd) {
+                change.apply(&mut job);
+                job.upgrade();
+                std::mem::forget(change);
+            }
+            assert!(!before || job.ran_unproxied);
+            std::mem::forget((job, cmd));
+        });
+    }
+
+    /// LANES-6 (LANE-3a's mark): what words that opened a round answer keeps `ran_unproxied`
+    /// whenever the job read after them (`now`) had it, whether or not the round is taken back.
+    #[kani::proof]
+    fn lane_3a_words_answered_as_opened_keep_ran_unproxied() {
+        let opened = any_bare_job();
+        let now = any_bare_job();
+        let kept = now.ran_unproxied;
+        let answered = as_opened(&opened, now);
+        assert!(!kept || answered.ran_unproxied);
+        std::mem::forget((opened, answered));
     }
 }
