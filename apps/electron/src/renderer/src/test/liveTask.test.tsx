@@ -472,6 +472,24 @@ describe('a task at work', () => {
     vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j1' } as never);
     await page.boxes['Tell the agent about Fix the login test'].onSend('thanks', {});
     expect(followed).toHaveBeenCalledTimes(1);
+    // stopped at its safety limit (interrupted, its Confirm showing: needs you): obid decides, and its
+    // follow-up opens all the same (RECOVERY-18)
+    const box = async (status: 'running' | 'needs', more: Partial<JobView>) => {
+      page.obid = false;
+      replaceTasks([await taskOf('j1', more, status)]);
+      renderToStaticMarkup(<ChatView kind="task" id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onFollowUp={followed} />);
+      page.obid = true;
+      return page.boxes['Tell the agent about Fix the login test'];
+    };
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j10' } as never);
+    await (await box('needs', { status: 'interrupted' })).onSend('go on past it', {});
+    expect(followed).toHaveBeenCalledTimes(2);
+    expect(followed).toHaveBeenLastCalledWith('j10');
+    // running: its words reach it, obid answers with the task itself, and nothing opens
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j1' } as never);
+    await (await box('running', {})).onSend('also the docs', {});
+    expect(live.tellJob).toHaveBeenLastCalledWith('j1', 'also the docs', undefined, true, undefined);
+    expect(followed).toHaveBeenCalledTimes(2);
   });
 
   it('LIVETASK-29: the card is progress only: its ⋯ and a right-click open its menu, which tells its agent or stops it', async () => {

@@ -274,9 +274,10 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       if (!sent) { setTo(null); return; }
       return sent.then((took) => { if (took) setTo(null); return took; });
     }
-    // told something once it has finished, from its own thread: obid starts a follow-up in its conversation,
-    // which opens there at the follow-up's card (LIVETASK-22, -30)
-    if ('job' in at && kind === 'task' && task?.status === 'done' && onFollowUp && onObid) {
+    // told something from its own thread: when obid starts a follow-up for it (it had finished, or stopped
+    // at its safety limit: obid decides, RECOVERY-18), that opens in its conversation at the follow-up's
+    // card (LIVETASK-22, -30); words that reach the task itself open nothing
+    if ('job' in at && kind === 'task' && onFollowUp && onObid) {
       return tellJob(at.job, text, att?.files, true, att?.skill).then((j) => { if (j && j.id !== at.job) onFollowUp(j.id); return j !== undefined; });
     }
     return 'job' in at ? tell(at.job, text, att) : 'oby' in at ? (at.oby === WELCOME && typedFirst(text)) || tellChat(at.oby, text, att) : say(at.peer, text, att);
