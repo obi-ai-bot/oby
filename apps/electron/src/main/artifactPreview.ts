@@ -212,7 +212,7 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     const since = refusals;
     const kind = await kindOf(id, version);
     if (wanted !== key) return { shown: true };
-    if (typeof kind !== 'string') { current?.view.setVisible(false); designView?.view.setVisible(false); return kind; }
+    if (typeof kind !== 'string') { designs.clear(); current?.view.setVisible(false); designView?.view.setVisible(false); return kind; }
     if (kind === 'design') return showDesign(key, id, version, since);
     const { view, loaded, relay } = current!;
     const read = await readVersion(id, version);
@@ -220,7 +220,8 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     if (typeof read !== 'string') overlay(read.files, edits);
     // another version, or none, was asked for while this one read: that ask decides
     if (wanted !== key) return { shown: true };
-    if (typeof read === 'string') { view.setVisible(false); return { error: read }; }
+    // nothing shows, not the page nor a design before it
+    if (typeof read === 'string') { designs.clear(); designView?.view.setVisible(false); view.setVisible(false); return { error: read }; }
     await loaded;
     await view.webContents.executeJavaScript(shownAs({ ...read, bundler: relay.origin }));
     const status = await statusOf(view);

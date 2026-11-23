@@ -61,6 +61,8 @@ vi.mock('../../../main/obid', () => ({
       const design = id.endsWith('d');
       return ok({ json: async () => ({ kind: design ? 'design' : 'html', title: design ? 'Boards' : 'Page', versions: [1, 2].map((version) => ({ version, files: [design ? 'canvas.json' : 'index.html'] })) }) });
     }
+    // an id ending in e: a page whose files can't be read
+    if (id.endsWith('e')) return Object.setPrototypeOf({ ok: false, status: 500 }, Response.prototype) as Response;
     return ok({ arrayBuffer: async () => new TextEncoder().encode('<h1>Hello</h1>').buffer });
   },
 }));
@@ -183,6 +185,18 @@ describe('ARTIFACTSAPP-29: a design drawn in the pane', () => {
     go();
     expect(await next).toEqual({ shown: true });
     expect(shownLast(design)).toBe(true);
+    m.stop();
+  });
+
+  it('artifactsapp_29_a_page_that_cant_be_read_after_a_design_shows_neither', async () => {
+    const m = await main();
+    await m.preview(DESIGN, 1);
+    const answer = await m.preview('00000000-0000-4000-8000-00000000000e', 1);
+    expect(answer).toEqual({ error: 'index.html couldn’t be read.' });
+    const [page, design] = the.views;
+    expect(shownLast(design)).toBe(false);
+    expect(page.visible).not.toContain(true);
+    expect(the.designs!.shown(DESIGN, 1)).toBe(false);
     m.stop();
   });
 

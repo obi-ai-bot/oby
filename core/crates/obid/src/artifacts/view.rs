@@ -171,12 +171,10 @@ pub fn support_js() -> String {
 }
 
 /// `__canvas.html`: the canvas host with this version's `canvas.json` in it, as data a script
-/// reads (`</` and `<!--` can't end or open anything in the block).
+/// reads: every `<` written `\u003c` (it is only ever inside a JSON string), so nothing in it can
+/// end or open anything in the block, and `JSON.parse` reads it back as it was.
 pub fn canvas_html(canvas: &Value) -> String {
-    let data = canvas
-        .to_string()
-        .replace("</", "<\\/")
-        .replace("<!--", "<\\!--");
+    let data = canvas.to_string().replace('<', "\\u003c");
     CANVAS.replace("{{CANVAS_JSON}}", &data)
 }
 
@@ -252,7 +250,17 @@ mod tests {
     fn canvas_json_can_not_end_the_hosts_block() {
         let host = canvas_html(&json!({"title": "</script><script>alert(1)</script><!--"}));
         assert!(!host.contains("</script><script>alert(1)"));
-        assert!(host.contains("<\\/script>"));
+        assert!(!host.contains("<!--\""));
+    }
+
+    #[test]
+    fn canvas_json_in_the_host_reads_back_as_it_was() {
+        let canvas = json!({"title": "a </script> <!-- b --> <\\/c>", "notes": {"n": {"text": "x < y"}}});
+        let host = canvas_html(&canvas);
+        let start = host.find("id=\"oby-canvas\">").expect("the block") + "id=\"oby-canvas\">".len();
+        let end = start + host[start..].find("</script>").expect("its end");
+        let read: Value = serde_json::from_str(&host[start..end]).expect("JSON.parse reads it");
+        assert_eq!(read, canvas);
     }
 
     use super::super::tests::{Temp, what};
@@ -391,7 +399,7 @@ mod tests {
             (HTML, HOST_POLICY, false)
         );
         let text = String::from_utf8(host.bytes).unwrap();
-        assert!(text.contains("View design <\\/script><\\!--"), "{text}");
+        assert!(text.contains("View design \\u003c/script>\\u003c!--"), "{text}");
         assert!(!text.contains("{{CANVAS_JSON}}"));
         assert!(text.contains("sandbox: 'allow-scripts'"));
         assert!(store.served(&id, "2", "__canvas.html").is_none());

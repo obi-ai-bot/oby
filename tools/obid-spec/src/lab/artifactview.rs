@@ -237,10 +237,9 @@ pub fn support_js(rules: &Rules) -> String {
 /// `__canvas.html`: the canvas host with this version's `canvas.json` in it, as data a script
 /// reads (`</` can't end the block early).
 pub fn canvas_html(canvas: &Value) -> String {
-    let data = canvas
-        .to_string()
-        .replace("</", "<\\/")
-        .replace("<!--", "<\\!--");
+    // every `<` written `\u003c` (only ever inside a JSON string): nothing ends or opens in the
+    // block, and JSON.parse reads it back as it was
+    let data = canvas.to_string().replace('<', "\\u003c");
     CANVAS.replace("{{CANVAS_JSON}}", &data)
 }
 
