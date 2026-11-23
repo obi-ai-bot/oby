@@ -262,6 +262,9 @@ pub async fn start(run: &Run, input: StartInput) -> Result<Value> {
         // `security` (OBID_SECURITY_BIN), never the person's.
         "claudeKeychain": cfg!(target_os = "macos"),
         "cursorKeychain": false,
+        // Local-network reach off unless a workflow gives `direct` (COMPUTERS-31): a workflow's
+        // obid binds nothing but loopback by itself.
+        "direct": [],
         // Every tool pinned to a stand-in by absolute path: obid looks for a tool named bare on
         // its PATH, its login shell's and the usual install folders (`/opt/homebrew/bin` among
         // them), where the person's real CLIs live.

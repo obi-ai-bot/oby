@@ -278,6 +278,9 @@ struct Pending {
     /// The registered key `obid pair-computer` named, owned invitations only: redeeming binds it to
     /// the pairing it makes (COMPUTERS-15).
     key: Option<String>,
+    /// A one link's (COMPUTERS-29, 30): it redeems with its secret alone, never the code nobody
+    /// was shown.
+    secret_only: bool,
 }
 
 /// A paired device, kept in `home/gateway-devices.json` under its token's digest.
@@ -495,6 +498,27 @@ impl Gateway {
         )
     }
 
+    /// This Mac's one link's invitation, made by its owner in the window (COMPUTERS-30): a computer's
+    /// invitation, owned, that redeems with its 128-bit secret alone, never a code.
+    pub fn invite_computer_link(
+        &self,
+        url: &str,
+        name: &str,
+        hostname: &str,
+        now: SystemTime,
+    ) -> Invitation {
+        let invitation = self.make(url, name, hostname, now, None, true, Some(None));
+        if let Some(open) = self
+            .computer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            open.secret_only = true;
+        }
+        invitation
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn make(
         &self,
@@ -535,6 +559,7 @@ impl Gateway {
             owned,
             computer: computer.is_some(),
             key: computer.flatten(),
+            secret_only: false,
         });
         let relay = relay
             .map(|r| json!({"sphere": r.sphere, "id": r.relay, "token": r.token, "key": r.key}));
@@ -558,8 +583,8 @@ impl Gateway {
 
     /// The name of the computer's open invitation `credential` is the secret of (COMPUTERS-29): a
     /// one link's holder asks before adding, so the person sees who they add. Its code says
-    /// nothing, nor does a relay; a wrong secret counts as a wrong try, as redeeming's does. It
-    /// uses nothing up.
+    /// nothing, nor does a relay; a wrong secret counts as a wrong try against the computer's
+    /// invitation alone, never a phone's. It uses nothing up.
     pub fn peek(
         &self,
         credential: &str,
@@ -567,7 +592,6 @@ impl Gateway {
         via: Option<&str>,
     ) -> Result<String, (StatusCode, &'static str)> {
         let given = digest(credential);
-        let mut phone = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let mut computer = self.computer.lock().unwrap_or_else(|e| e.into_inner());
         if computer.as_ref().is_some_and(|p| now > p.expires) {
             *computer = None;
@@ -581,7 +605,8 @@ impl Gateway {
         if computer.is_none() {
             return Err((StatusCode::GONE, GONE));
         }
-        missed(&mut computer, &mut phone);
+        // Only the computer's: a peek can't reach a phone's invitation, so it can't use one up.
+        missed(&mut computer, &mut None);
         Err((
             StatusCode::UNAUTHORIZED,
             "That link isn't this computer's invitation.",
@@ -615,7 +640,7 @@ impl Gateway {
             let matches = |p: &Pending| {
                 p.relay.as_deref() == via
                     && (crate::token::same(&given, &p.secret)
-                        || crate::token::same(&given, &p.code))
+                        || (!p.secret_only && crate::token::same(&given, &p.code)))
             };
             if computer.as_ref().is_some_and(matches) {
                 computer.take().expect("checked above")
@@ -924,10 +949,7 @@ pub async fn invite(
             owned,
             request.device,
         );
-        let link = shared
-            .gateway_state
-            .as_ref()
-            .and_then(|state| crate::remote::invite::link(&name, &state["direct"]));
+        let link = crate::remote::invite::link(&name, &crate::remote::direct::offered(&shared));
         invitation.computer_one_link = link
             .as_ref()
             .and_then(|link| crate::remote::invite::one_link(&invitation.secret, link));
@@ -2096,6 +2118,28 @@ mod tests {
                 .secret
                 .len(),
             43
+        );
+        // A computer link's wrong tries are the computer invitation's alone: an open phone
+        // invitation outlives them and still pairs.
+        let phone = gateway.invite(url, "Mac", "mac", now, None, false);
+        let _computer = gateway.invite_computer(url, "Studio", "10.0.0.2", now, true, None);
+        for _ in 0..ATTEMPTS {
+            let wrong = gateway.peek("AAAAAAAAAAAAAAAAAAAAAA", now, None);
+            assert_eq!(wrong.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        }
+        assert!(gateway.redeem(&phone.code, "iPhone", now, None).is_ok());
+        // The window's one link redeems with its secret alone: the code nobody was shown is a
+        // wrong try, and the secret still works, once.
+        let one = gateway.invite_computer_link(url, "Studio", "10.0.0.2", now);
+        assert_eq!(
+            gateway.redeem(&one.code, "x", now, None).unwrap_err().0,
+            StatusCode::UNAUTHORIZED
+        );
+        let paired = gateway.redeem(&one.secret, "Laptop", now, None).unwrap();
+        assert!(gateway.may_add_key(&paired.device_id, now), "owned");
+        assert_eq!(
+            gateway.redeem(&one.secret, "x", now, None).unwrap_err().0,
+            StatusCode::GONE
         );
     }
 

@@ -129,8 +129,9 @@ const V6: u8 = 6;
 const OWN_PIN: u8 = 0x80;
 
 impl OneLink {
-    /// At most this many routes go in a one-link, to keep it short: an IPv6 address of a kind an
-    /// IPv4 one already covers stays out.
+    /// At most this many routes go in a one-link, to keep it short: the IPv4 ones first, then the
+    /// IPv6 ones as fallbacks, never left out because an IPv4 one is of the same kind (one network
+    /// may carry only one of the two).
     pub const MOST: usize = 4;
 
     /// `oby-computer:` and base64url of: 2, the secret, the first route's pin, then each route as
@@ -172,21 +173,19 @@ impl OneLink {
         ))
     }
 
-    /// A one-link for `secret` from version 1's routes, in their order: IPv4 first within a kind,
-    /// at most [`OneLink::MOST`]. `None` without a route to carry.
+    /// A one-link for `secret` from version 1's routes: the IPv4 ones, then the IPv6 ones, each in
+    /// their order, at most [`OneLink::MOST`], with room for one IPv6 fallback whenever there is
+    /// one. `None` without a route to carry.
     pub fn of(secret: [u8; 16], routes: &[Route]) -> Option<OneLink> {
         let is_v6 = |r: &Route| matches!(&r.via, Via::Https { host, .. } if host.contains(':'));
-        let mut kept: Vec<Route> = Vec::new();
-        for route in routes {
-            if is_v6(route)
-                && routes
-                    .iter()
-                    .any(|other| other.kind == route.kind && !is_v6(other))
-            {
-                continue;
-            }
-            kept.push(route.clone());
-        }
+        let v6: Vec<Route> = routes.iter().filter(|r| is_v6(r)).cloned().collect();
+        let mut kept: Vec<Route> = routes
+            .iter()
+            .filter(|r| !is_v6(r))
+            .take(Self::MOST - usize::from(!v6.is_empty()))
+            .cloned()
+            .collect();
+        kept.extend(v6);
         kept.truncate(Self::MOST);
         (!kept.is_empty()).then_some(OneLink {
             secret,
@@ -392,32 +391,49 @@ mod tests {
     #[test]
     fn computers_29_a_one_link_keeps_ipv4_first_and_at_most_four_routes() {
         let pin = Pin([1; 32]);
-        let routes: Vec<Route> = [
+        let direct = |urls: &[&str]| -> Vec<Route> {
+            urls.iter()
+                .enumerate()
+                .map(|(i, url)| Route::direct(&format!("d{i}"), url, pin, None).unwrap())
+                .collect()
+        };
+        let described =
+            |one: OneLink| -> Vec<String> { one.routes.iter().map(Route::describe).collect() };
+        // An IPv6 address is a fallback of its own, never stood in for by an IPv4 one of its kind:
+        // the IPv4 ones first, then the IPv6 ones, each in the owner's order.
+        let routes = direct(&[
+            "https://192.168.1.2:8443",
+            "https://[fd00::2]:8443",
+            "https://100.64.0.2:8443",
+            "https://[fd7a:115c:a1e0::2]:8443",
+        ]);
+        assert_eq!(
+            described(OneLink::of([9; 16], &routes).unwrap()),
+            [
+                "lan https://192.168.1.2:8443",
+                "tailnet https://100.64.0.2:8443",
+                "lan https://[fd00::2]:8443",
+                "tailnet https://[fd7a:115c:a1e0::2]:8443"
+            ]
+        );
+        // At most four, the IPv4 ones first, with room kept for an IPv6 fallback.
+        let many = direct(&[
             "https://192.168.1.2:8443",
             "https://[fd00::2]:8443",
             "https://10.0.0.2:8443",
             "https://100.64.0.2:8443",
-            "https://[fd7a:115c:a1e0::2]:8443",
             "https://203.0.113.2:8443",
-            "https://198.51.100.2:8443",
-        ]
-        .iter()
-        .enumerate()
-        .map(|(i, url)| Route::direct(&format!("d{i}"), url, pin, None).unwrap())
-        .collect();
-        let one = OneLink::of([9; 16], &routes).unwrap();
-        let kept: Vec<String> = one.routes.iter().map(Route::describe).collect();
+        ]);
         assert_eq!(
-            kept,
+            described(OneLink::of([9; 16], &many).unwrap()),
             [
                 "lan https://192.168.1.2:8443",
                 "lan https://10.0.0.2:8443",
                 "tailnet https://100.64.0.2:8443",
-                "public https://203.0.113.2:8443"
+                "lan https://[fd00::2]:8443"
             ]
         );
         assert!(OneLink::of([9; 16], &[]).is_none());
-        // An IPv6 address alone of its kind stays.
         let v6 = OneLink::of([9; 16], &routes[1..2]).unwrap();
         assert_eq!(v6.routes.len(), 1);
     }

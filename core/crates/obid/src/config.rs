@@ -86,9 +86,10 @@ struct File {
     #[serde(default)]
     gateway: Option<String>,
     /// Where the gateway is also served over HTTPS, for the owner's other computers
-    /// (crate::remote::direct); left out, nowhere.
+    /// (crate::remote::direct); left out, this machine's own local-network and tailnet addresses
+    /// (COMPUTERS-31); `[]`, nowhere.
     #[serde(default)]
-    direct: Vec<String>,
+    direct: Option<Vec<String>>,
     /// Whether obid copies Claude Code's login from the macOS Keychain (crate::jobs, keychain_login);
     /// left out, obid decides when it starts (crate::jobs::keychain_wanted).
     #[serde(default)]
@@ -270,8 +271,16 @@ pub struct Config {
     /// `direct`: the addresses, on any of this machine's interfaces, where the gateway is also
     /// served over HTTPS with this computer's own certificate, pinned by the owner's other
     /// computers (crate::remote::direct, docs/contracts/remote.md, COMPUTERS-10). Empty when left
-    /// out; it needs a `gateway`.
+    /// out or `[]`; it needs a `gateway`.
     pub direct: Vec<SocketAddr>,
+    /// `direct` left out: obid serves the gateway by itself on this machine's own private and
+    /// tailnet addresses, never a public or wildcard one, on port 8443 or the next free one
+    /// (crate::remote::direct::Auto; the owner's word of 2026-11-23, COMPUTERS-31); with no
+    /// `gateway`, one on 127.0.0.1 at a port the system picks. `"direct": []` turns it off.
+    pub direct_auto: bool,
+    /// The gateway is local-network reach's own, the configuration naming none: it isn't printed on
+    /// stdout, which a launcher reads only so far (crate::run).
+    pub gateway_auto: bool,
     /// `claudeKeychain`: obid copies Claude Code's macOS Keychain login into a boxed run's place
     /// for it (crate::jobs, keychain_login). `Some` as the owner set it; `None` when it's left out,
     /// and then obid turns it on by itself on macOS when Claude Code's default login is only in the
@@ -491,7 +500,10 @@ impl Config {
                 }
             }
         };
+        let direct_auto = file.direct.is_none();
+        let gateway_auto = direct_auto && file.gateway.is_none();
         let gateway = match file.gateway.as_deref().map(str::parse::<SocketAddr>) {
+            None if direct_auto => Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
             None => None,
             Some(Ok(address)) if address.ip() == Ipv4Addr::LOCALHOST => Some(address),
             Some(_) => {
@@ -502,7 +514,7 @@ impl Config {
             }
         };
         let mut direct = Vec::new();
-        for text in &file.direct {
+        for text in file.direct.iter().flatten() {
             match text.parse::<SocketAddr>() {
                 Ok(address) => direct.push(address),
                 Err(_) => {
@@ -606,6 +618,8 @@ impl Config {
             job_token_budget,
             gateway,
             direct,
+            direct_auto,
+            gateway_auto,
             claude_keychain: file.claude_keychain,
             ignored: file.ignored.into_keys().chain(inside).collect(),
             cursor_keychain: file.cursor_keychain,
@@ -1024,8 +1038,15 @@ mod tests {
     #[test]
     fn the_gateway_is_only_ever_on_127_0_0_1() {
         assert_eq!(
-            Config::parse(&with(serde_json::json!({}))).unwrap().gateway,
+            Config::parse(&with(serde_json::json!({"direct": []})))
+                .unwrap()
+                .gateway,
             None
+        );
+        // Left out with `direct`: local-network reach's own, on 127.0.0.1 too (COMPUTERS-31).
+        assert_eq!(
+            Config::parse(&with(serde_json::json!({}))).unwrap().gateway,
+            Some("127.0.0.1:0".parse().unwrap())
         );
         let config =
             Config::parse(&with(serde_json::json!({"gateway": "127.0.0.1:8810"}))).unwrap();
@@ -1039,7 +1060,7 @@ mod tests {
     #[test]
     fn computers_10_direct_addresses_are_any_interfaces_and_need_a_gateway() {
         assert!(
-            Config::parse(&with(serde_json::json!({})))
+            Config::parse(&with(serde_json::json!({"direct": []})))
                 .unwrap()
                 .direct
                 .is_empty()
@@ -1064,6 +1085,27 @@ mod tests {
             ))
             .contains("more than 8")
         );
+    }
+
+    #[test]
+    fn computers_31_local_network_reach_is_on_unless_direct_says_otherwise() {
+        // Left out: on by itself, with a gateway on 127.0.0.1 where the system picks.
+        let auto = Config::parse(&with(serde_json::json!({}))).unwrap();
+        assert!(auto.direct_auto && auto.direct.is_empty());
+        assert_eq!(auto.gateway, Some("127.0.0.1:0".parse().unwrap()));
+        let kept = Config::parse(&with(serde_json::json!({"gateway": "127.0.0.1:8810"}))).unwrap();
+        assert!(kept.direct_auto);
+        assert_eq!(kept.gateway, Some("127.0.0.1:8810".parse().unwrap()));
+        // `[]`: off, and no gateway but one given.
+        let off = Config::parse(&with(serde_json::json!({"direct": []}))).unwrap();
+        assert!(!off.direct_auto && off.direct.is_empty() && off.gateway.is_none());
+        // A list: as given, nothing by itself.
+        let listed = Config::parse(&with(
+            serde_json::json!({"gateway": "127.0.0.1:8810", "direct": ["192.168.1.20:8443"]}),
+        ))
+        .unwrap();
+        assert!(!listed.direct_auto);
+        assert_eq!(listed.direct, ["192.168.1.20:8443".parse().unwrap()]);
     }
 
     #[test]

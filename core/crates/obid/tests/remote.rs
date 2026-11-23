@@ -2141,3 +2141,68 @@ fn computers_29_and_30_a_mac_is_added_with_one_link_once() {
         none.text
     );
 }
+
+/// COMPUTERS-31: with `direct` left out, local-network reach is on by itself: a gateway on
+/// 127.0.0.1, and the gateway over HTTPS on this machine's own private and tailnet addresses only,
+/// never a public or wildcard one, on 8443 or the next free port; a link can be made at once, and
+/// it carries those addresses and that port. (`"direct": []`, off, is COMPUTERS-30's refusal.)
+#[test]
+fn computers_31_local_network_reach_is_on_when_direct_is_left_out() {
+    use obid::remote::direct::{AUTO_PORT, private, private_addresses};
+    let folder = Folder::new("remote-reach-on");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    config["direct"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    let status = call(&obid, "GET", "/v1/status", None);
+    let gateway = &status.body["gateway"];
+    assert_eq!(gateway["state"], "listening", "{}", status.text);
+    assert!(
+        gateway["address"]
+            .as_str()
+            .unwrap()
+            .starts_with("127.0.0.1:"),
+        "{gateway}"
+    );
+    let ours = private_addresses();
+    let served: Vec<std::net::SocketAddr> = gateway["direct"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|d| d["address"].as_str().unwrap().parse().unwrap())
+        .collect();
+    for address in &served {
+        assert!(
+            private(address.ip()) && !address.ip().is_unspecified(),
+            "never a public or wildcard address: {address}"
+        );
+        assert!(
+            (AUTO_PORT..AUTO_PORT + 10).contains(&address.port()),
+            "{address}"
+        );
+    }
+    let made = call_signed(&obid, "POST", "/v1/computers/invite", Some(&json!({})));
+    if ours.is_empty() {
+        // A machine on no local network has nothing to offer, and says so.
+        assert_eq!(made.status, 409, "{}", made.text);
+        return;
+    }
+    assert!(!served.is_empty(), "{}", status.text);
+    assert_eq!(made.status, 200, "{}", made.text);
+    let link = made.body["link"].as_str().unwrap();
+    let obid::remote::link::Read::One(one) = obid::remote::link::Read::decode(link).unwrap() else {
+        panic!("a one link: {link}");
+    };
+    for route in &one.routes {
+        let obid::remote::route::Via::Https { host, port, .. } = &route.via else {
+            panic!("{route:?}");
+        };
+        let ip: std::net::IpAddr = host.trim_matches(['[', ']']).parse().unwrap();
+        assert!(private(ip), "{host}");
+        assert!(
+            served.contains(&std::net::SocketAddr::new(ip, *port)),
+            "{host}:{port} in {served:?}"
+        );
+    }
+}

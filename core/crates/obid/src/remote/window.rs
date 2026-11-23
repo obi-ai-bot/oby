@@ -119,24 +119,18 @@ pub async fn invite(
         return Err(crate::routes::needs_the_owners_app());
     }
     let name = shared.host.clone();
-    let Some(link) = shared
-        .gateway_state
-        .as_ref()
-        .and_then(|state| super::invite::link(&name, &state["direct"]))
-    else {
+    let Some(link) = super::invite::link(&name, &super::direct::offered(&shared)) else {
         return Err(refused(StatusCode::CONFLICT, NO_ADDRESS, "no_address"));
     };
     let first = &link.routes[0];
     let Via::Https { host, port, pin } = &first.via else {
         return Err(refused(StatusCode::CONFLICT, NO_ADDRESS, "no_address"));
     };
-    let invitation = shared.gateway.invite_computer(
+    let invitation = shared.gateway.invite_computer_link(
         &format!("https://{host}:{port}"),
         &name,
         host,
         std::time::SystemTime::now(),
-        true,
-        None,
     );
     let Some(one) = super::invite::one_link(&invitation.secret, &link) else {
         return Err(refused(StatusCode::CONFLICT, NO_ADDRESS, "no_address"));
@@ -162,8 +156,9 @@ pub async fn invite(
     .into_response())
 }
 
-/// Why this Mac has no link to give: obid's configuration names no direct address.
-pub const NO_ADDRESS: &str = "This Mac has no address another computer can reach. Turn it on in obid's configuration: \"gateway\" and \"direct\", like \"direct\": [\"0.0.0.0:8443\"], then restart Oby. Or add this Mac over SSH instead.";
+/// Why this Mac has no link to give: it's on no local network or tailnet, or obid's configuration
+/// turned local-network reach off (`"direct": []`, COMPUTERS-31).
+pub const NO_ADDRESS: &str = "This Mac has no address another computer can reach. Join a local network or a tailnet; if obid's configuration has \"direct\": [], take it out (or list addresses there) and restart Oby. Or add this Mac over SSH instead.";
 
 /// `POST /v1/computers` `{"link", "code"}`, or a one link alone `{"link"}` (COMPUTERS-29): adds the
 /// computer the link names, as the owner's act. The device that signed it registers its key there.

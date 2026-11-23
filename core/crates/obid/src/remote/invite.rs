@@ -115,7 +115,7 @@ pub fn one_link(secret: &str, link: &Link) -> Option<String> {
 
 /// This machine's own addresses another computer could reach: no loopback, no IPv6 link-local
 /// (it needs a scope a link can't carry); IPv6 too when `v6` (a `::` listener takes both).
-fn interface_addresses(v6: bool) -> Vec<IpAddr> {
+pub(crate) fn interface_addresses(v6: bool) -> Vec<IpAddr> {
     let Ok(all) = nix::ifaddrs::getifaddrs() else {
         return Vec::new();
     };
