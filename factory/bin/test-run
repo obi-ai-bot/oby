@@ -91,12 +91,13 @@ in a command changes nothing (REMOTE-50).
 What is sent: the base's SHA, which is on origin, and the SHA of the worktree's
 tree, written from an index of its own (seeded from HEAD, then `git add -A`, so
 nothing ignored is in it; the worktree's own index is untouched), and on ssh's
-standard input a line with the size of `git diff --binary --full-index <base>
-<tree>`, then that diff, after `gitleaks stdin` with the main checkout's
-.gitleaks.toml passed the same change read as text, from outgoing.py beside it,
-whatever .gitattributes, an external diff, a textconv, a colour setting or a
-replace ref say. A finding, a scanner that can't run, or a git that can't write
-that copy keeps the run here.
+standard input a line with the size of the change from <base> to <tree>, then
+that change, a binary diff as git stores it (outgoing.py beside it: no external
+diff, textconv, colour setting or replace ref changes it), after `gitleaks
+stdin`, run from the main checkout with its .gitleaksignore and .gitleaks.toml,
+passed the same change read as text, whatever .gitattributes say. A finding, a
+scanner that can't run, or a git that can't write either copy keeps the run
+here.
 Standard input then stays open until the run ends. Nothing else goes: no
 environment variable, CARGO_TARGET_DIR, token, login or file. The call is `ssh
 <the gate's ssh options> -l <builder_user> <ssh_host> oby-remote-gate --run
@@ -283,17 +284,18 @@ def to_send(gate, command, vm, mac):
         raise Here(f"its folder, {folder}, can't be named to the {'Mac worker' if why else 'VM'}")
     if not (gate.SHA.fullmatch(base) and gate.SHA.fullmatch(tree)):
         raise Here(f"the base or the tree isn't a full SHA: {base} {tree}")
-    payload = git("diff", "--binary", "--full-index", base, tree, cwd=top, text=False)
-    # gitleaks reads the same change as text, so no .gitattributes line, external diff, textconv or colour setting
-    # hides a line from it; only the payload is sent (REMOTE-66).
+    # gitleaks reads the change as text, so no .gitattributes line hides a line from it, and the payload is the same
+    # stored change, so it holds nothing the scan didn't read (REMOTE-66).
     try:
+        payload = outgoing.payload(top, base, tree)
         text = outgoing.as_text(top, base, tree)
     except outgoing.Failed as e:
         raise Here(f"`git diff` failed: {e}")
     scan = [str(gate.REPO / ".gitleaks.toml")]
     try:
+        # From the main checkout, whose .gitleaksignore applies, never the branch's in the run's own folder.
         found = subprocess.run(["gitleaks", "stdin", "--config", *scan, "--no-banner", "--redact"], input=text,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=gate.REPO)
     except OSError as e:
         raise Here(f"the secret scan couldn't run: {e}")
     if found.returncode != 0:

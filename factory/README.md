@@ -143,14 +143,14 @@ user `oby-builder` and its `/srv/oby-builder`) and set `builder_slots` in `remot
 "builder_slots": 8` on the 64-core VM; `slots`, by default 4, sizes the gates' slots). `bin/test-run` keeps
 the run here, saying `on this Mac: <why>`, when it is a Swift, Xcode or whole-check run, when the worktree's
 changes touch macOS-only code by the gate's own rule, or when its `--test` is a macOS-only one; otherwise it
-sends the base's SHA and the binary diff to the worktree's current tree (nothing ignored; gitleaks first reads
-the same change as text, `git --no-replace-objects diff --text --no-ext-diff --no-textconv --no-color`, whatever
-`.gitattributes`, an external diff, a textconv, a colour setting or a replace ref say) with `ssh -l oby-builder
-oby-gate oby-remote-gate --run …`, and the VM runs the same command line in a builder slot of its own, at nice 15,
-offline, with its own Cargo folder. Its output and exit code come back; anything that stops it before it starts
-there (the VM unreachable, no builder user, every builder slot busy for 10 minutes) says `fell back to this Mac:
-<why>` and runs here as before. Its use of the VM
-is recorded in the main checkout's `jobs/remote-gate/state.json` like a gate's.
+sends the base's SHA and the binary diff to the worktree's current tree as git stores it (nothing ignored; `git
+--no-replace-objects diff --no-ext-diff --no-textconv --no-color`, so no external diff, textconv, colour setting or
+replace ref changes it; gitleaks, run from the main checkout, first reads the same change as text, whatever
+`.gitattributes` say) with `ssh -l oby-builder oby-gate oby-remote-gate --run …`, and the VM runs the same command
+line in a builder slot of its own, at nice 15, offline, with its own Cargo folder. Its output and exit code come
+back; anything that stops it before it starts there (the VM unreachable, no builder user, every builder slot busy
+for 10 minutes) says `fell back to this Mac: <why>` and runs here as before. Its use of the VM is recorded in the
+main checkout's `jobs/remote-gate/state.json` like a gate's.
 With `builder_slots` in `mac_worker` too (after `remote/setup-mac.sh` again), a run that stays here only because it
 needs macOS (macOS-only code, or a macOS-only `--test`) goes to the Mac worker instead, saying `to the Mac worker
 <host>: <why>`: `ssh oby-mac-pro oby-worker/bin/oby-remote-gate --mac --run …` runs it in a builder slot of its
@@ -172,13 +172,13 @@ that job's lock: a command that changes a job (`create`, `advance`, `merge`, `an
 `agents`, `sync`, and `queue` for a queued or merged job) holds it while it reads, decides and saves, and lets it
 go when it ends, a refusal included; a save outside the lock is refused. When merging `dev` into a job's branch brings
 `queue/tasks/<KEY>.md` back next to its `queue/done/<KEY>.md`, `job advance <job> gate` closes the task again in a
-commit of its own, with `dev`'s text of the task. It pushes that only when origin already had the branch at
-its head, and only once gitleaks, as `bin/test-run` runs it, passed the commit's diff read as text
-(`--no-replace-objects diff --text --no-ext-diff --no-textconv --no-color`, whatever `.gitattributes`, an
-external diff, a textconv, a colour setting or a replace ref say): a finding, a scanner that can't run, or a git
-that can't write that diff refuses the advance and pushes nothing. An
-unpushed branch keeps the commit and is refused as unpushed, for the builder to push. A branch with no `done/`
-copy, or one whose `tasks/` file differs from `dev`'s, is refused as before.
+commit of its own, with `dev`'s text of the task. It pushes that, and no tag, only when origin already had the
+branch at its head, and only once gitleaks, as `bin/test-run` runs it, passed the commit's diff read as text
+(`--no-replace-objects diff --text --no-ext-diff --no-textconv --no-color`, whatever `.gitattributes`, an external
+diff, a textconv, a colour setting or a replace ref say): a finding, a scanner that can't run, or a git that can't
+write that diff refuses the advance and pushes nothing. An unpushed branch keeps the commit and is refused as
+unpushed, for the builder to push. A branch with no `done/` copy, or one whose `tasks/` file differs from `dev`'s,
+is refused as before.
 
 Oby's factory (`bin/oby-feed`, building on the factory's own obid) starts each task as the Claude Code factory
 does: an intake job first, then a spec job, then the build, told to build against that spec (FEEDSPEC in
