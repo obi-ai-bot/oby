@@ -252,6 +252,20 @@ class TaskClose(unittest.TestCase):
         self.push()
         self.assert_scan_refused_the_push(self.env, "the secret scan found a secret")
 
+    def test_taskclose_1_a_replacement_object_hides_no_secret_from_the_re_close_scan(self):
+        # A replace ref shows a harmless blob in place of the task's, while the push sends the real one.
+        token = "ghp_" + hashlib.sha256(b"taskclose").hexdigest()[:36]
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it(TASK + f"token = {token}\n")
+        self.push()
+        real = self.git(self.wt, "rev-parse", f"origin/dev:{TODO}").strip()
+        harmless = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.wt, env=self.env, input=TASK,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        self.git(self.wt, "replace", real, harmless)
+        self.assert_scan_refused_the_push(self.env, "the secret scan found a secret")
+
     def test_taskclose_1_a_git_that_cant_write_the_scans_copy_refuses_the_push(self):
         self.write("code.txt", "the change\n")
         self.write(DONE, EARLIER)
