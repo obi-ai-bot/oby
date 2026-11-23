@@ -168,7 +168,8 @@ async function main() {
   await shot('3-row-opens-own-thread');
   ok('LIVETASK-22 a nested row opens the task’s own thread, its row lit, all it did shown');
   await back();
-  await card('The list').locator('.msg-task-title').click();
+  // a part of the card that is no button of its own (its title is one: below, from the keyboard)
+  await card('The list').locator('.msg-task-meta').first().click();
   await until('its own thread again', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
   await sleep(400);  // its way in over
   await shot('3b-card-opens-own-thread');
@@ -179,7 +180,41 @@ async function main() {
   await page.keyboard.press('Enter');
   await until('its own thread from the keyboard', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
   ok('LIVETASK-22 Enter on its card’s title opens its own thread');
+  // LIVETASK-20 with the row lit: the twist still folds the conversation's rows
+  const kids = page.locator('.convo-nest', { has: page.locator('.convo-row .connector-name', { hasText: talk }) }).locator('.convo-kids');
+  await until('its rows shown, the lit one among them', async () => (await kids.count()) === 1, 10_000);
+  await page.getByRole('button', { name: `Hide ${talk}’s agents` }).click();
+  await until('folded while lit', async () => (await kids.count()) === 0, 10_000);
+  await sleep(300);
+  await shot('3c-twist-folds-while-lit');
+  ok('LIVETASK-20 the twist folds the rows while its task’s own thread shows');
+  // opening the thread again (its card) shows them once, the lit row among them
   await back();
+  await card('The list').locator('.msg-task-meta').first().click();
+  await until('its own thread again, its rows shown again', async () => (await own.count()) === 1 && (await page.locator('.convo-kid.is-active', { hasText: 'The list' }).count()) === 1, 10_000);
+  await sleep(400);
+  await shot('3d-card-reveals-rows');
+  ok('LIVETASK-22 opening its own thread from its card shows its folded rows once, its row lit');
+  await back();
+  // from the keyboard: its title focused lights the card, as hovered
+  const title = card('The list').getByRole('button', { name: 'Open The list' });
+  await title.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await until('its title focused from the keyboard', () => title.evaluate((el) => el.matches(':focus-visible')), 5_000);
+  await sleep(400);  // the card's own fade
+  const lit = await card('The list').evaluate((el) => { const c = getComputedStyle(el); return { border: c.borderColor, background: c.backgroundColor }; });
+  await page.mouse.move(2, 2);
+  await page.keyboard.press('Tab');
+  await sleep(400);
+  const away = await card('The list').evaluate((el) => { const c = getComputedStyle(el); return { border: c.borderColor, background: c.backgroundColor }; });
+  assert.notDeepEqual(lit, away, `the card lit while its title has focus (${JSON.stringify(lit)} vs ${JSON.stringify(away)})`);
+  await title.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await sleep(300);
+  await shot('3e-title-focused');
+  ok('LIVETASK-22 its title focused from the keyboard lights the card');
 
   // LIVETASK-4, -31: ended, the card says so; under it, its last words with its lines folded
   await until('it ends', async () => ended(await s.call('GET', `/v1/jobs/${job.id}`)), 60_000);

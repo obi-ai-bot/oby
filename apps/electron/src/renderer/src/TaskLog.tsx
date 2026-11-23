@@ -26,14 +26,15 @@ export default function TaskLog({ task, said, whole = false }: { task: Task; sai
   const atWork = task.status === 'running' || task.status === 'needs';
   const live = useLiveLines(entries, atWork);
   const j = task.job, agent = agentOf(j.agent);
-  const plan = atWork ? entries.filter((e) => e.kind === 'plan').at(-1) : undefined;
+  // whole (its own thread): its whole session in order, its lists and what it was told where they came
+  const plan = atWork && !whole ? entries.filter((e) => e.kind === 'plan').at(-1) : undefined;
   // what it was told to start with is the conversation's already (Oby's answer that started it): the
   // words told it since stay, but those the thread shows as the owner's message already
-  const all = entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start' && !(e.kind === 'you' && said?.has(e.text.trim())));
-  const told = all.findIndex((e) => e.kind !== 'you');
+  const all = whole ? entries : entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start' && !(e.kind === 'you' && said?.has(e.text.trim())));
+  const told = whole ? 0 : all.findIndex((e) => e.kind !== 'you');
   const lines = told < 0 ? [] : all.slice(told);
-  // ended: its last words are its result, shown whole; the rest folds
-  const last = atWork ? -1 : lines.map((e) => e.kind).lastIndexOf('said');
+  // ended: its last words are its result, shown whole; the rest folds (its own thread: where it said them)
+  const last = atWork || whole ? -1 : lines.map((e) => e.kind).lastIndexOf('said');
   const result = last >= 0 ? (lines[last] as Extract<Entry, { kind: 'said' }>) : undefined;
   const steps = result ? lines.filter((_, i) => i !== last) : lines;
   const extra = whole ? 0 : Math.max(0, steps.length - (atWork ? SHOWN : 0));

@@ -28,6 +28,7 @@ vi.mock('../Menu', async (original) => ({ ...await original<typeof import('../Me
 vi.mock('../chats', async (original) => ({ ...await original<typeof import('../chats')>(), useChats: () => page.chats, tellChat: vi.fn() }));
 vi.mock('../tasks', async (original) => ({ ...await original<typeof import('../tasks')>(), tell: vi.fn() }));
 vi.mock('../lean', async (original) => ({ ...await original<typeof import('../lean')>(), get onObid() { return page.obid; } }));
+vi.mock('../live', async (original) => ({ ...await original<typeof import('../live')>(), tellJob: vi.fn() }));
 const read = (html: string) => html.replaceAll('<!-- -->', '');
 function stub() {
   vi.stubGlobal('location', { search: '' });
@@ -415,6 +416,43 @@ describe('a task at work', () => {
     expect(tasks.tell).toHaveBeenCalledTimes(1);
     expect(tasks.tell).toHaveBeenCalledWith('j2', 'go on', {});
     expect(chats.tellChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('LIVETASK-22: in a task\'s own thread, all its session in order: what it was told, its lists, its words where it said them', async () => {
+    const said = (text: string): Entry => ({ kind: 'said', text, at: '1:50 PM' });
+    await views([{ kind: 'you', text: 'Fix the flaky login test', at: '1:40 PM' } as Entry, plan, tool('Read', 'a.ts'), said('Found the timer.'), tool('Edited', 'b.ts')], { finished: 1 }, 'done');
+    const { default: TaskLog } = await import('../TaskLog');
+    const task = await taskOf('j1', { finished: 1 }, 'done');
+    const whole = read(renderToStaticMarkup(<TaskLog task={task} whole />));
+    // (the agent's words, a word to a span)
+    const at = ['Fix the flaky login test', 'Replace the timer', 'a.ts', '>timer.<', 'b.ts'].map((w) => whole.indexOf(w));
+    expect(at.every((i) => i >= 0), `each shows: ${at}`).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    // in the conversation, as before: what it was told and its list left out, its last words its result, last
+    const compact = read(renderToStaticMarkup(<TaskLog task={task} />));
+    expect(compact).not.toContain('Fix the flaky login test');
+    expect(compact).toContain('>timer.<');
+    expect(compact).toContain('>Show 2 more<');
+    expect(compact).not.toContain('Replace the timer');
+  });
+
+  it('LIVETASK-22: told something in a finished task\'s own thread, the follow-up obid starts is opened (onFollowUp); words for a running one start none', async () => {
+    stub();
+    const live = await import('../live');
+    const { default: ChatView } = await import('../ChatView');
+    const { replaceTasks } = await import('../tasks');
+    replaceTasks([await taskOf('j1', { finished: 1 }, 'done')]);
+    const followed = vi.fn();
+    renderToStaticMarkup(<ChatView kind="task" id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onFollowUp={followed} />);
+    page.obid = true;
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j9' } as never);
+    await page.boxes['Tell the agent about Fix the login test'].onSend('and the docs', {});
+    expect(live.tellJob).toHaveBeenCalledWith('j1', 'and the docs', undefined, true, undefined);
+    expect(followed).toHaveBeenCalledWith('j9');
+    // obid answered with the task itself (no follow-up): nothing to open
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j1' } as never);
+    await page.boxes['Tell the agent about Fix the login test'].onSend('thanks', {});
+    expect(followed).toHaveBeenCalledTimes(1);
   });
 
   it('LIVETASK-29: the card is progress only: its ⋯ and a right-click open its menu, which tells its agent or stops it', async () => {

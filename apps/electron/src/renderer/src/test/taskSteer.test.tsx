@@ -81,7 +81,8 @@ describe('a task in its conversation', () => {
     await act(async () => root.render(<ChatView kind="oby" id="c1" leaving={false} onOpenTask={opened} onBack={() => {}} onGone={() => {}} />));
     await click(button('More for Fix the login test'));
     expect(opened).not.toHaveBeenCalled();
-    await click(host.querySelector('[data-task="j1"] .msg-task-title'));
+    // a part of the card that is no button of its own: the card's own click
+    await click(host.querySelector('[data-task="j1"] .msg-task-meta'));
     expect(opened).toHaveBeenCalledTimes(1);
     expect(opened).toHaveBeenCalledWith('j1');
   });

@@ -27,6 +27,7 @@ import { outOfSphere, useSpheres } from './spheres';
 import { chatFirst, everything, onObid, welcome } from './lean';
 import { realId, shownId, talkReady, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
+import { revealKids } from './nested';
 import { askOby, chatOfTask, latestChat, moveChat, renameChat, restingChat, tellAbout, useChats } from './chats';
 import { useProjectsOn } from './projects';
 import { ProjectChip } from './ProjectSheet';
@@ -220,7 +221,8 @@ export default function Home() {
   // its card in a conversation, or its nested row: the task's own thread, all it did as it happens and
   // its box telling its agent, over the conversation that started it (back returns there), its row lit
   // (LIVETASK-22)
-  const openOwn = (id: string) => { const c = chatOfTask(id); start(...(c ? [{ kind: 'talk', id: c.id } as Step] : []), { kind: 'thread', id }); };
+  const openOwn = (id: string) => { const c = chatOfTask(id); if (c) revealKids(c.id); start(...(c ? [{ kind: 'talk', id: c.id } as Step] : []), { kind: 'thread', id }); };
+  const openOwnOver = (id: string) => { const c = chatOfTask(id); if (c) revealKids(c.id); push({ kind: 'thread', id }); };
   // chat first, a task opens in its conversation; Home's earlier design (?home) keeps its page
   const openTask = (id: string) => (chatFirst ? openAt(id, push) : push({ kind: 'task', id }));
   const goToConversation = (id: string) => push(conversationOf(id));
@@ -662,7 +664,7 @@ export default function Home() {
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         // opened at a task: the conversation on top lights its card
         const at = flash && i === live.length - 1 && kind !== 'peer' ? flash : undefined;
-        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} onOpenTask={(id) => push({ kind: 'thread', id })} />;
+        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} onOpenTask={openOwnOver} onFollowUp={(id) => openAt(id)} />;
       })}
       {/* chat first: nothing over a conversation but its own: what it and its tasks ask waits in the
           drawer over its box (ChatView, DecisionBar), what other conversations ask on their rows and

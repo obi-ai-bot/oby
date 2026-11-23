@@ -15,14 +15,16 @@ const seen = vi.hoisted(() => ({
   open: null as null | ((place: { job?: string; conversation?: string }) => void),
   chat: {} as Record<string, (id: string) => void>,
   back: {} as Record<string, () => void>,
+  followUp: {} as Record<string, (id: string) => void>,
 }));
 vi.mock('../ChatView', async () => {
   const { useEffect } = await import('react');
   // gone once it leaves, as the real one says after its way out
-  const ChatView = ({ id, kind, leaving, flash, onGone, onBack, onOpenTask }: { id: string; kind: string; leaving: boolean; flash?: { task: string }; onGone: () => void; onBack: () => void; onOpenTask?: (id: string) => void }) => {
+  const ChatView = ({ id, kind, leaving, flash, onGone, onBack, onOpenTask, onFollowUp }: { id: string; kind: string; leaving: boolean; flash?: { task: string }; onGone: () => void; onBack: () => void; onOpenTask?: (id: string) => void; onFollowUp?: (id: string) => void }) => {
     useEffect(() => { if (leaving) onGone(); }, [leaving, onGone]);
     if (onOpenTask) seen.chat[id] = onOpenTask;
     seen.back[id] = onBack;
+    if (onFollowUp) seen.followUp[id] = onFollowUp;
     return leaving ? null : <div data-chat={id} data-kind={kind} data-at={flash?.task} />;
   };
   return { default: ChatView, clock: () => '' };
@@ -96,6 +98,34 @@ describe('every way to a task opens its conversation at its card', () => {
     await act(async () => seen.back.r1());
     await settle();
     expect(trail()).toEqual(['oby:c-route']);
+  });
+
+  it('LIVETASK-22: opening a task\'s own thread shows its conversation\'s rows once, even folded by the owner before', async () => {
+    try {
+      localStorage.setItem('oby.kidsShown', JSON.stringify({ 'c-route': false, other: false }));
+      await act(async () => seen.sidebar.onOpenAgent('r1'));
+      await settle();
+      expect(JSON.parse(localStorage.getItem('oby.kidsShown')!)).toEqual({ other: false });
+      localStorage.setItem('oby.kidsShown', JSON.stringify({ 'c-route': false }));
+      await act(async () => seen.sidebar.onOpenTalk('c-route'));
+      await settle();
+      await act(async () => seen.chat['c-route']('r1'));
+      await settle();
+      expect(JSON.parse(localStorage.getItem('oby.kidsShown')!)).toEqual({});
+    } finally {
+      localStorage.removeItem('oby.kidsShown');
+    }
+  });
+
+  it('LIVETASK-22: a finished task\'s follow-up, started from its own thread, opens its conversation at the follow-up\'s card', async () => {
+    await act(async () => seen.sidebar.onOpenAgent('r1'));
+    await settle();
+    expect(trail()).toEqual(['oby:c-route', 'task:r1']);
+    // obid started the follow-up in r1's conversation (here r1 stands for it)
+    await act(async () => seen.followUp.r1('r1'));
+    await settle();
+    expect(trail()).toEqual(['oby:c-route']);
+    expect(top()?.dataset).toMatchObject({ chat: 'c-route', at: 'r1' });
   });
 
   it('LIVETASK-22: a task deleted while its own thread shows takes that thread with it, back to its conversation', async () => {

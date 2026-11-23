@@ -32,7 +32,7 @@ import { historyOf } from './recall';
 import SetupCard, { onlyPicks } from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst, useSetup } from './onboarding';
-import { openConversation, realId, takesWorkspace, talkReady, useLimitAsks, useLive } from './live';
+import { openConversation, realId, takesWorkspace, talkReady, tellJob, useLimitAsks, useLive } from './live';
 import { api, ApiError, type Artifact, type FinishAction, type WorkspaceAnswer } from './obid';
 import { FINISH_WORDS } from '../../shared/finish';
 import { onObid } from './lean';
@@ -74,7 +74,7 @@ type Entry = Message;
 // to a task opens here at its card (flash, LIVETASK-28). The
 // message box at the foot talks to Oby, or to one card's agent once its menu's
 // "Tell Claude Code…" has put that task's chip on it (replyTarget, LIVETASK-17).
-export default function ChatView({ id, kind = 'task', leaving, covered = false, flash, onFlashed, onBack, onGone, onOpenMember, onOpenTask }: {
+export default function ChatView({ id, kind = 'task', leaving, covered = false, flash, onFlashed, onBack, onGone, onOpenMember, onOpenTask, onFollowUp }: {
   id: string;
   kind?: 'task' | 'oby' | 'peer';
   leaving: boolean;
@@ -85,6 +85,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   onGone: () => void;
   onOpenMember?: (owner: string) => void;  // a question's card: that person's thread
   onOpenTask?: (id: string) => void;  // a task's card clicked: its own thread, over this conversation (LIVETASK-22)
+  onFollowUp?: (id: string) => void;  // a task's own thread: the follow-up its finished task started, in its conversation (LIVETASK-22, -30)
 }) {
   const tasks = useTasks();
   const chats = useChats();
@@ -272,6 +273,11 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       const sent = tell(at.job, text, att);
       if (!sent) { setTo(null); return; }
       return sent.then((took) => { if (took) setTo(null); return took; });
+    }
+    // told something once it has finished, from its own thread: obid starts a follow-up in its conversation,
+    // which opens there at the follow-up's card (LIVETASK-22, -30)
+    if ('job' in at && kind === 'task' && task?.status === 'done' && onFollowUp && onObid) {
+      return tellJob(at.job, text, att?.files, true, att?.skill).then((j) => { if (j && j.id !== at.job) onFollowUp(j.id); return j !== undefined; });
     }
     return 'job' in at ? tell(at.job, text, att) : 'oby' in at ? (at.oby === WELCOME && typedFirst(text)) || tellChat(at.oby, text, att) : say(at.peer, text, att);
   };

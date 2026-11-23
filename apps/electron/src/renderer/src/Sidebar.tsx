@@ -36,7 +36,7 @@ import ProfileMenu, { EditProfileModal, NewProfileModal } from './ProfileMenu';
 import { useProjects, useProjectsOn } from './projects';
 import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
-import { kidLine, kidTitle, kidsLine, kidsOf } from './nested';
+import { keepKids, keptKids, kidLine, kidTitle, kidsLine, kidsOf, onRevealKids } from './nested';
 
 import { AGENTS_SHOWN } from './panelFlags';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
@@ -334,14 +334,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // A conversation's tasks, nested under its row (LIVETASK-19 to 21): shown for the open conversation,
   // the one holding the open task and one whose task needs you, unless the owner folded it; what the
   // owner chose is kept (oby.kidsShown: conversation id to shown or not)
-  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(() => {
-    try { const kept: unknown = JSON.parse(localStorage.getItem('oby.kidsShown') ?? '{}'); return kept && typeof kept === 'object' && !Array.isArray(kept) ? Object.fromEntries(Object.entries(kept).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean> : {}; } catch { return {}; }
-  });
+  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(keptKids);
   const showKids = (id: string, shown: boolean) => {
     const next = { ...kidsShown, [id]: shown };
     setKidsShown(next);
-    try { localStorage.setItem('oby.kidsShown', JSON.stringify(next)); } catch { /* not remembered, that's all */ }
+    keepKids(next);
   };
+  // a task's own thread opened: its conversation's rows show once, even folded (revealKids, LIVETASK-22)
+  useEffect(() => onRevealKids((chat) => setKidsShown((k) => { const { [chat]: _, ...rest } = k; return rest; })), []);
   const chatIdOf = (taskId: string) => chatOfTask(taskId)?.id;
   // the chats are searched, never the agents (Agents has no search)
   const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
@@ -416,9 +416,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
     const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
     const nested = kids.length + arts.length > 0;
-    // one of its tasks' own thread showing: its row lit, so its rows show, even folded by the owner before
+    // one of its tasks' own thread showing: its row lit, so its rows show unless the owner folded them
+    // (opening that thread unfolds them once: revealKids)
     const lit = kids.some((k) => k.id === active);
-    const shown = nested && (lit || (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs'))));
+    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
     return (
     <div key={c.id} className={`convo-nest${nested ? ' has-kids' : ''}`}>
     {nested && (

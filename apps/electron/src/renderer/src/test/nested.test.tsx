@@ -175,12 +175,21 @@ describe('a conversation\'s tasks, nested under it', () => {
     // its own thread on top (the conversation under it): its row lit, so its conversation's rows show
     const own = nestOf(side({ active: 'j2' }), 'Two fixes for today');
     expect(own).toMatch(/<button class="convo-kid is-active" aria-current="true" title="Fix iOS signing on Deskree Team"/);
-    // folded by the owner earlier, its task's own thread showing still shows its rows, the lit one among them
-    kept['oby.kidsShown'] = JSON.stringify({ c1: false });
-    const folded = await on(TWO);
-    expect(nestOf(folded.side(), 'Two fixes for today')).not.toContain('convo-kids');
-    expect(nestOf(folded.side({ active: 'j2' }), 'Two fixes for today')).toContain('convo-kid is-active');
-    delete kept['oby.kidsShown'];
+    try {
+      // folded by the owner earlier, opening its task's own thread (its card) shows its rows once, the lit one among them
+      kept['oby.kidsShown'] = JSON.stringify({ c1: false });
+      const folded = await on(TWO);
+      expect(nestOf(folded.side(), 'Two fixes for today')).not.toContain('convo-kids');
+      const { revealKids } = await import('../nested');
+      revealKids('c1');
+      expect(nestOf(folded.side({ active: 'j2' }), 'Two fixes for today')).toContain('convo-kid is-active');
+      // the twist still folds them while the row is lit (LIVETASK-20), and that is kept
+      clicks['Hide Two fixes for today’s agents']();
+      expect(JSON.parse(kept['oby.kidsShown'])).toEqual({ c1: false });
+      expect(nestOf(folded.side({ active: 'j2' }), 'Two fixes for today')).not.toContain('convo-kids');
+    } finally {
+      delete kept['oby.kidsShown'];
+    }
   });
 });
 
