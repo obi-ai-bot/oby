@@ -174,6 +174,12 @@ async function main() {
   await shot('3b-card-opens-own-thread');
   ok('LIVETASK-22 a click on its card in the conversation opens its own thread');
   await back();
+  // from the keyboard: its title is a button
+  await card('The list').getByRole('button', { name: 'Open The list' }).focus();
+  await page.keyboard.press('Enter');
+  await until('its own thread from the keyboard', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
+  ok('LIVETASK-22 Enter on its card’s title opens its own thread');
+  await back();
 
   // LIVETASK-4, -31: ended, the card says so; under it, its last words with its lines folded
   await until('it ends', async () => ended(await s.call('GET', `/v1/jobs/${job.id}`)), 60_000);
