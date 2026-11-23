@@ -165,6 +165,9 @@ function driver(page, record, state) {
     // evidence only: the newest job in this run's repository since then (by default, since the
     // scenario started), not one of Oby's own reviews; never another repository's
     newestJob: (after = record.started) => jobsSince(after).filter((j) => j.kind !== 'review').sort((a, b) => b.created - a.created)[0],
+    // evidence only: every job in this run's repository since then, newest first, not Oby's reviews;
+    // which of them is this run's is the scenario's to tie (its card in its conversation)
+    jobsSince: (after = record.started) => jobsSince(after).filter((j) => j.kind !== 'review').sort((a, b) => b.created - a.created),
     gh,
   };
   return t;

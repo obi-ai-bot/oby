@@ -28,15 +28,16 @@ async function home(t) {
   await t.see('What do you want me to work on?', { label: 'the empty chat' });
 }
 
-// the task the words just said started: its job (obid's evidence, which says which one: only ever
-// one in this run's repository, never the owner's other work) and its card, as the conversation
-// shows it. Its kind must be one of `kinds`.
+// the task the words just said started, and only it: a job in this run's repository whose card is in
+// the conversation the words were said in (data-task), never merely the newest job there, which may be
+// the owner's own started meanwhile (its pull request and branch would be this run's to clean up). Its
+// kind must be one of `kinds`.
 async function newTask(t, since, kinds = ['build', 'fix']) {
-  const deadline = Date.now() + 5 * MIN;
+  const deadline = Date.now() + 7 * MIN;
   let job;
-  while (!(job = t.newestJob(since))) {
-    if (Date.now() > deadline) throw new Error(`no task started in ${t.repo} in 5 minutes`);
-    await sleep(500);
+  while (!(job = (await tiedJobs(t, since))[0])) {
+    if (Date.now() > deadline) throw new Error(`no task's card in this conversation in 7 minutes (jobs in ${t.repo} since: ${t.jobsSince(since).map((j) => `${j.id} “${j.title}”`).join(', ') || 'none'}, none of them in it)`);
+    await sleep(1000);
   }
   if (job.repo.toLowerCase() !== t.repo || !kinds.includes(job.kind)) throw new Error(`the task Oby started is a ${job.kind} in ${job.repo}, not a ${kinds.join(' or ')} in ${t.repo}`);
   // this run's, for the cleanup at its end
@@ -44,6 +45,14 @@ async function newTask(t, since, kinds = ['build', 'fix']) {
   await t.see(job.title, { ms: 2 * MIN, label: `its card, “${job.title}”` });
   await t.shot('task-card');
   return { title: job.title, job };
+}
+
+// the jobs in this run's repository since then whose card is in the open conversation (data-task):
+// the only ones a scenario may take as its own
+async function tiedJobs(t, since) {
+  const chat = t.page.locator('.chat-layer:not(.is-leaving):not(.is-covered)').last(), mine = [];
+  for (const j of t.jobsSince(since)) if (await chat.locator(`[data-task="${j.id}"]`).count().catch(() => 0)) mine.push(j);
+  return mine;
 }
 
 // Home's cards for the tasks this run started, answered in one click each until `done`: a card counts
@@ -177,9 +186,12 @@ async function rebaseThenMerge(t, url, merged) {
   await confirmMerge(t, url, ref).catch(() => t.note('no Confirm under its answer'));
   await home(t);
   // its rebase: a task it starts for it is this run's (its cards answered, its branch cleaned up)
+  // (only a job obid's record ties to this run: in the task's conversation, or following up one of
+  // this run's jobs; never another job of the owner's started meanwhile)
+  const convo = t.state.task.job.conversation;
   const rebased = () => {
-    const job = t.newestJob(since);
-    if (job && !t.state.jobs.includes(job.id)) {
+    for (const job of t.jobsSince(since)) {
+      if (t.state.jobs.includes(job.id) || !((convo && job.conversation === convo) || t.state.jobs.includes(job.followUpOf))) continue;
       t.state.jobs.push(job.id);
       track(t, job);
       t.note(`it started a task for the rebase: ${job.id}, a ${job.kind}, “${job.title}”`);
@@ -224,12 +236,13 @@ async function answerBar(t) {
   return true;
 }
 
-// the job the words just said started in this run's repository, Oby asked once to start it if it
-// asks first (as the owner would say yes); null when none by `ms`
+// the job the words just said started in this run's repository, its card in this conversation
+// (tiedJobs), Oby asked once to start it if it asks first (as the owner would say yes); null when none
+// by `ms`
 async function startedJob(t, since, { ms = 5 * MIN, yes = 'Yes, start it.' } = {}) {
   const deadline = Date.now() + ms;
   let job, nudged = false;
-  while (!(job = t.newestJob(since)) && Date.now() < deadline) {
+  while (!(job = (await tiedJobs(t, since))[0]) && Date.now() < deadline) {
     const busy = await t.page.locator('.msg.is-streaming, .msg-step').count();
     const last = (await openChat(t).locator(REPLY).count()) ? (await openChat(t).locator(REPLY).last().innerText()).trim() : '';
     if (!nudged && !busy && /\?\s*$/.test(last)) {
@@ -244,6 +257,21 @@ async function startedJob(t, since, { ms = 5 * MIN, yes = 'Yes, start it.' } = {
 
 // a job as obid keeps it, or null once its file is gone (deleted)
 const jobOrNone = (t, id) => { try { return t.job(id); } catch { return null; } };
+
+// in the preview's frame: its Count button (its centre, in the frame) and the numbers the page shows
+const COUNTER = `(() => {
+  const b = [...document.querySelectorAll('button')].find((x) => /^\\s*count\\s*$/i.test(x.textContent));
+  const values = [...document.querySelectorAll('body *')].filter((e) => !e.children.length && /^\\s*\\d+\\s*$/.test(e.textContent)).map((e) => e.textContent.trim());
+  const r = b?.getBoundingClientRect();
+  return { button: b ? b.textContent.trim() : null, values, x: r ? r.left + r.width / 2 : 0, y: r ? r.top + r.height / 2 : 0 };
+})()`;
+// in the preview's host page: where the artifact's frame sits (not Sandpack's hidden relay frame)
+const FRAME_AT = `(() => {
+  const f = [...document.querySelectorAll('iframe')].filter((i) => !i.src.includes('/__csb_relay/') && i.getBoundingClientRect().width > 0)
+    .sort((a, b) => b.getBoundingClientRect().width * b.getBoundingClientRect().height - a.getBoundingClientRect().width * a.getBoundingClientRect().height)[0];
+  const r = f?.getBoundingClientRect();
+  return r ? { x: r.left, y: r.top } : null;
+})()`;
 
 // main's artifact preview (a view of main's own over the pane), asked through main: evidence only
 const inHost = (t, js) => t.app.evaluate(async ({ webContents }, js) => {
@@ -749,6 +777,8 @@ export default [
         await answerBar(t);
         await sleep(1000);
       }
+      // Oby's replies so far: its answer is one that comes after (the task is running, its tab open)
+      const repliesBefore = await openChat(t).locator(REPLY).count();
       t.note(`the globe: “${await label()}”`);
       await t.shot('globe');
       await globe.click();
@@ -808,11 +838,13 @@ export default [
       const job = t.job(id);
       if (!ended(job)) throw new Error('the task didn’t end in 10 minutes');
       t.note(`it ended ${job.status}, ${job.commits ?? 0} commits, ${job.published ?? 'nothing published'}; its summary: ${(job.summary ?? '').replace(/\n+/g, ' ').slice(0, 300)}`);
-      const answer = await until(t, async () => (await openChat(t).locator('.msg.is-oby, .msg-task').allInnerTexts()).find((m) => HEADING.test(m)), 3 * MIN).catch(() => null);
+      // its answer: a reply of Oby's that came after the tab showed (the task's report), never an
+      // earlier message, nor the task's card or its log
+      const answer = await until(t, async () => (await openChat(t).locator(REPLY).allInnerTexts()).slice(repliesBefore).find((m) => HEADING.test(m)), 3 * MIN).catch(() => null);
       await t.shot('answer');
       t.note(`after it ended the globe says “${await label()}”, the panel shows ${(await panel.count()) ? `“${(await panel.locator('.br-tabs').innerText().catch(() => '')).replace(/\n+/g, ' · ')}”` : 'nothing'}`);
       if (await t.page.getByRole('button', { name: 'Hide the browser' }).count()) await t.click('Hide the browser');
-      if (!answer) throw new Error(`the conversation doesn't name the heading (“Example Domain”)${HEADING.test(job.summary ?? '') ? ', though the task’s summary does' : ''}`);
+      if (!answer) throw new Error(`no reply of Oby's after the task names the heading (“Example Domain”)${HEADING.test(job.summary ?? '') ? ', though the task’s summary does' : ''}`);
       t.note(`its answer: …${answer.replace(/\n+/g, ' ').match(/[^.]{0,160}Example Domain[^.]{0,80}/i)?.[0] ?? ''}…`);
     },
   },
@@ -830,8 +862,8 @@ export default [
       let nudged = false;
       while (!(await card.isVisible().catch(() => false))) {
         if (Date.now() > deadline) throw new Error(`no artifact card in the conversation in 10 minutes; Oby said: ${((await chat.locator(REPLY).allInnerTexts()).at(-1) ?? 'nothing').replace(/\n+/g, ' ').slice(0, 300)}`);
-        const job = t.newestJob(since);
-        if (job && !(t.state.jobs ?? []).includes(job.id)) { (t.state.jobs ??= []).push(job.id); track(t, job); t.note(`Oby started a task for it: ${job.id}, a ${job.kind}, “${job.title}”`); }
+        // a task Oby started for it: only one whose card is in this conversation (never the owner's own)
+        for (const job of await tiedJobs(t, since)) if (!(t.state.jobs ?? []).includes(job.id)) { (t.state.jobs ??= []).push(job.id); track(t, job); t.note(`Oby started a task for it: ${job.id}, a ${job.kind}, “${job.title}”`); }
         const busy = await t.page.locator('.msg.is-streaming, .msg-step').count();
         const last = (await chat.locator(REPLY).count()) ? (await chat.locator(REPLY).last().innerText()).trim() : '';
         if (!nudged && !busy && /\?\s*$/.test(last)) { t.note(`Oby asked first: ${last.replace(/\n+/g, ' ')}`); await t.say('Yes, make it.'); nudged = true; }
@@ -864,7 +896,45 @@ export default [
       if (pageError) t.note(`the pane's error strip: ${pageError.replace(/\n+/g, ' · ')}`);
       await t.shot('preview');
       if (!status?.drawn || status.error) problems.push(`the preview didn't draw: ${JSON.stringify(status)}`);
-      else if (!/Count/i.test(text ?? '')) problems.push(`the preview drew no Count button: “${text}”`);
+      else {
+        // the counter the words asked for: its Count button, 0 beside it, and 1 after one click, a real
+        // mouse press main sends the preview's view (the view is main's, out of the page's reach)
+        const counter = await inFrame(t, COUNTER);
+        t.note(`its counter: ${JSON.stringify(counter)}`);
+        if (!counter?.button) problems.push(`the preview drew no Count button: “${text}”`);
+        else if (!counter.values.includes('0')) problems.push(`the preview shows no 0 beside its button: ${JSON.stringify(counter.values)}`);
+        else {
+          const at = await inHost(t, FRAME_AT);
+          // the view focused, then a press and a release a moment apart, as a person's click is
+          const clicked = at && await t.app.evaluate(async ({ webContents }, p) => {
+            const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+            if (!wc) return false;
+            const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+            wc.focus();
+            wc.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y });
+            await pause(100);
+            wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 });
+            await pause(80);
+            wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 });
+            return true;
+          }, { x: Math.round(at.x + counter.x), y: Math.round(at.y + counter.y) });
+          t.step('clicked its Count button');
+          const one = async () => { const c = await inFrame(t, COUNTER); return c?.values.includes('1') && c; };
+          const after = clicked ? await until(t, one, 5000).catch(() => null) : null;
+          t.note(`after one click: ${after ? JSON.stringify(after.values) : (clicked ? 'no 1' : 'no frame to click')}`);
+          await t.shot('counted');
+          if (!after) {
+            // the page's own button, clicked by script: tells a press that didn't reach the view from a page that doesn't count
+            await inFrame(t, `[...document.querySelectorAll('button')].find((x) => /^\\s*count\\s*$/i.test(x.textContent))?.click(), true`);
+            // (main's press into a hidden window's preview has been seen to hover the button and not click
+            // it: whether a person's click in a shown window reaches it isn't known from here, so that is a
+            // note; a page that doesn't count when its own button is clicked is a failure)
+            const scripted = await until(t, one, 3000).then(() => true, () => false);
+            if (scripted) t.note('OPEN: main\'s press into the preview didn\'t count, its button clicked by script did (0 → 1): whether a person\'s click in a shown window reaches the preview isn\'t proved here');
+            else problems.push('the page doesn\'t count: neither a press nor its own button clicked by script made it 1');
+          }
+        }
+      }
       // Code: its files as tabs, index.html first, the one picked shown (ARTIFACTSAPP-5)
       await t.page.getByRole('tab', { name: 'Code', exact: true }).click();
       t.step('clicked “Code”');
