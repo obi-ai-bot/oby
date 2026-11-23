@@ -29,6 +29,9 @@ const the = vi.hoisted(() => ({
   lastPicture: undefined as unknown,
   // a picture read held until it's let go
   holdRead: null as Promise<void> | null,
+  // how many picture reads reached the Sphere; held: the one read now held
+  reads: 0,
+  held: false,
 }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
@@ -114,8 +117,11 @@ vi.mock('../../../shared/sphere', async (original) => ({
   addSignin: async () => { the.invites++; return { linked: true }; },
   readPicture: async (_c: unknown, _k: unknown, _h: unknown, last: unknown) => {
     the.lastPicture = last;
+    the.reads++;
     const held = the.holdRead;
-    if (held) { await held; return { sphere: 'demo', sha256: 'a'.repeat(64), image: 'data:image/png;base64,OLD', refused: null, why: null }; }
+    // the first read while held waits and answers the older picture; any read after it, the newer at once
+    if (held && !the.held) { the.held = true; await held; return { sphere: 'demo', sha256: 'a'.repeat(64), image: 'data:image/png;base64,OLD', refused: null, why: null }; }
+    if (held) return { sphere: 'demo', sha256: 'b'.repeat(64), image: 'data:image/png;base64,NEW', refused: null, why: null };
     return { sphere: 'demo', sha256: null, image: null, refused: null, why: null };
   },
   setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null) => { the.invites++; return { sphere: 'demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null }; },
@@ -624,7 +630,26 @@ describe('SPHEREAPP-16 and 17', () => {
       the.holdRead = null;
       await call('sphere-picture', own());
       expect(the.lastPicture).toMatchObject({ image: null });
-    } finally { the.holdRead = null; letGo(); }
+    } finally { the.holdRead = null; the.held = false; letGo(); }
+  });
+
+  it('sphereapp_15: a picture read that finishes after a newer one never puts its older picture back', async () => {
+    let letGo = () => {};
+    the.holdRead = new Promise((r) => { letGo = r; });
+    const before = the.reads;
+    try {
+      const older = call('sphere-picture', own());
+      const newer = call('sphere-picture', own());
+      letGo();
+      const [a, b] = await Promise.all([older, newer]);
+      // the next read starts from the newest answer main gave, never an older one put back after it
+      the.holdRead = null;
+      await call('sphere-picture', own());
+      expect(the.lastPicture).toEqual(b);
+      // one read reached the Sphere for the two requests, and both have its answer
+      expect(b).toEqual(a);
+      expect(the.reads).toBe(before + 2);
+    } finally { the.holdRead = null; the.held = false; letGo(); }
   });
 
   it('sphereapp_17_the_picture_is_removed_only_right_after_a_click_main_saw', async () => {

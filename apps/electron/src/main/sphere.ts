@@ -288,13 +288,17 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // owner's admin token. The page sends no bytes: main reads the file the owner picked.
   const pictured = (a: PictureAnswer) => { if (a.refused === null) { picture = a; changed++; } return a; };
   // a read: dropped for what main holds now when a set, removal or membership change came meanwhile
-  const read = async (): Promise<PictureAnswer> => {
+  // One read at a time: a request while one is out shares it, so an older read can never finish after
+  // a newer one and put its picture back
+  let reading: Promise<PictureAnswer> | null = null;
+  const readOnce = async (): Promise<PictureAnswer> => {
     const at = changed;
     const a = await readPicture(obid, ownerKey, fetch, picture);
     if (at !== changed) return picture ?? { sphere: null, sha256: null, image: null, refused: 'failed', why: 'The Obysphere changed meanwhile.' };
     if (a.refused === null) picture = a;
     return a;
   };
+  const read = () => (reading ??= readOnce().finally(() => { reading = null; }));
   const noPicture = (why: string): PictureAnswer => ({ sphere: null, sha256: null, image: null, refused: 'failed', why });
   ipc(trusted).handle('sphere-picture', [], read, null);
   ipc(trusted).handle('sphere-set-picture', [], async (e): Promise<PictureAnswer | null> => {
