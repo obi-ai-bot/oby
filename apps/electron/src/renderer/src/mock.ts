@@ -1,7 +1,7 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
 import type { Helper, Profile, Project, Repo, RoomPost, Routine, SkillsAnswer } from '../../shared/obid-wire';
-import { agentOf, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
+import { hasIt, type Archived, type GitHubItem, type Job, type Message, type Peer, type PeerConvo, type Place, type Share, type Stage, type StageId, type StageState, type Turn } from './view';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
 // app on dev (Engine/Jobs.swift Job, Engine/Conversation.swift Turn,
@@ -528,10 +528,7 @@ export function threadOf(j: Job): Message[] {
     ? { who: 'you', text: asked.text, ago: asked.at }
     : { who: j.from ? SOURCE.get(j.from) ?? 'Oby' : 'you', text: j.request, ago: j.created };
   // nothing said in the chat about it (it came from elsewhere): Oby's word when it started it
-  if (!replies.length) {
-    const repo = j.repo.includes('/') ? ` in ${j.repo.split('/')[1]}` : '';
-    replies.push({ who: 'oby', text: `On it. ${agentOf(j.agent).name} has it${repo} on ${j.account}.`, ago: j.created, jobs: [j.id] });
-  }
+  if (!replies.length) replies.push({ who: 'oby', text: `On it. ${hasIt(j)}.`, ago: j.created, jobs: [j.id] });
   // done: the agent's report, unless Oby already said it in the chat
   if (j.summary && j.finished != null && !replies.some((r) => r.ago <= j.finished!)) {
     replies.push({ who: 'oby', text: j.summary, ago: j.finished });

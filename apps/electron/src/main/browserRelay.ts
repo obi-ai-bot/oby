@@ -1,7 +1,5 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import { appPage, pageOk } from './pageRule';
-import { PARTITION, windowPartition } from '../shared/browserPartition';
-export { PARTITION } from '../shared/browserPartition';
 
 // The relay between obid's agents and the page in the window (docs/plans/browser-t3.md, as T3 Code
 // does it: packages/contracts/src/desktopBrowser.ts). obid sends page-level CDP for a tab on its
@@ -14,16 +12,10 @@ export { PARTITION } from '../shared/browserPartition';
 
 export type TabKey = { threadId: string; tabId: string };
 
-/**
- * Whether a webview may live in partition `p` while `computer` is in use (null: This Mac): only a
- * name windowPartition gives for that computer, so `-on-<id>` only for the id in use, never on This
- * Mac (BROWSERAPP-45).
- */
-export function partitionOk(p: unknown, computer: string | null): p is string {
-  if (typeof p !== 'string') return false;
-  const on = computer === null ? '' : `-on-${computer}`;
-  return p.endsWith(on) && windowPartition(p.slice(0, p.length - on.length), computer) === p;
-}
+// The partitions obid names for its agents' tabs, as the window opens them on the computer in use
+// (shared with the page, which mounts only those)
+import { partitionOk, windowPartition } from '../shared/browser-own';
+export { PARTITION, partitionOk } from '../shared/browser-own';
 
 /**
  * The partition the window opens for each agent tab, from the one obid named in its `tab` events on
@@ -150,6 +142,19 @@ export const METHODS: ReadonlySet<string> = new Set([
 export const MAX_MESSAGE = 64 * 1024 * 1024;
 /** how long main waits before sending a relay again after obid didn't take it */
 export const AGAIN_MS = 1_000;
+/**
+ * How long a command for a tab whose webview hasn't attached yet in this window waits for its first
+ * attach (BROWSERAPP-49); they run one at a time, in order, once it attaches, else they're answered
+ * "isn't attached". A tab that was attached and detached answers at once: obid has already failed
+ * what it had sent it, and running it after would do an act twice if the agent tried again.
+ */
+export const ATTACH_WAIT_MS = 10_000;
+/** the most commands kept for one tab while it waits; the oldest are answered first */
+export const WAITING_MAX = 256;
+/** the most bytes (UTF-8) of commands kept for one tab while it waits; the oldest are answered first */
+export const WAITING_BYTES = 4 * 1024 * 1024;
+/** the most tabs whose commands wait at once; a command for one more is answered at once */
+export const WAITING_TABS = 64;
 /** the most events kept while obid doesn't answer; the oldest go first */
 export const KEPT = 10_000;
 
@@ -163,7 +168,10 @@ export function insideDownloads(home: string, path: unknown): path is string {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
-type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; queue: Promise<unknown>; broken: boolean };
+type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; queue: Promise<unknown>; broken: boolean; drain?: Drain | null };
+/** what waited for a tab's first attach, running one at a time: what's left, and whether it was called off */
+type Drain = { left: Extract<RelayCommand, { type: 'cdp' }>[]; off: boolean };
+const size = (c: { message: string }) => Buffer.byteLength(c.message, 'utf8');
 
 /** a page's address with none of these values in it: no query or fragment, and no path if that holds one */
 function bare(url: string, values: string[]): string {
@@ -186,6 +194,10 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
   const filling = new Set<string>();
   // the fields main filled in each tab's document (CDP objects), until its main frame leaves
   const fields = new Map<string, string[]>();
+  // obid's commands for each tab not attached yet, in order, and the timer that gives up on them
+  const waiting = new Map<string, { commands: Extract<RelayCommand, { type: 'cdp' }>[]; bytes: number; timer: ReturnType<typeof setTimeout> }>();
+  // the tabs attached at some point in this window: one detached now answers at once
+  const everAttached = new Set<string>();
   const guarded = (k: TabKey) => noScript.has(key(k)) || filling.has(key(k));
   let outbox: RelayEvent[] = [];
   let sending = false;
@@ -220,6 +232,35 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     emit({ ...t.k, type: 'cdp', message: text });
   };
   const reply = (t: Tab, r: Reply) => cdp(t, r);
+  // a command that can't reach its tab: answered so, by its id
+  const unattached = (c: Extract<RelayCommand, { type: 'cdp' }>) => {
+    let id: unknown;
+    try { id = JSON.parse(c.message).id; } catch { return; }
+    if (typeof id === 'number') emit({ threadId: c.threadId, tabId: c.tabId, type: 'cdp', message: JSON.stringify({ id, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }) });
+  };
+  // the commands waiting for a tab, all answered "isn't attached" (it didn't attach in time, or it's gone)
+  const giveUp = (k: string) => {
+    const w = waiting.get(k);
+    if (!w) return;
+    clearTimeout(w.timer);
+    waiting.delete(k);
+    w.commands.forEach(unattached);
+  };
+  // a command for a tab not attached yet waits for its first attach, ATTACH_WAIT_MS at most, within
+  // WAITING_MAX commands and WAITING_BYTES for the tab and WAITING_TABS tabs (BROWSERAPP-49)
+  const hold = (c: Extract<RelayCommand, { type: 'cdp' }>) => {
+    const k = key(c);
+    if (size(c) > WAITING_BYTES || (!waiting.has(k) && waiting.size >= WAITING_TABS)) { unattached(c); return; }
+    const w = waiting.get(k) ?? { commands: [], bytes: 0, timer: setTimeout(() => giveUp(k), ATTACH_WAIT_MS) };
+    waiting.set(k, w);
+    w.commands.push(c);
+    w.bytes += size(c);
+    while (w.commands.length > WAITING_MAX || w.bytes > WAITING_BYTES) {
+      const old = w.commands.shift()!;
+      w.bytes -= size(old);
+      unattached(old);
+    }
+  };
   const refuse = (t: Tab, id: number, message: string) => reply(t, { id, error: { code: -32601, message } });
 
   // one command of obid's on its tab, as T3's relay and GuestInput.ts run it
@@ -245,7 +286,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       else if (method === 'Page.setDownloadBehavior') {
         // downloads go where obid says, inside its own folder, and nowhere else; with no folder of
         // this Mac's obid (another computer in use: the folder obid names is that computer's),
-        // nothing a page downloads is kept (BROWSERAPP-46)
+        // nothing a page downloads is kept (BROWSERAPP-51)
         if (options.home === null) t.guest.downloadsTo(null);
         else if (params?.behavior === 'allow' && insideDownloads(options.home, params.downloadPath)) t.guest.downloadsTo(resolve(params.downloadPath as string));
         else if (params?.behavior === 'deny') t.guest.downloadsTo(null);
@@ -271,7 +312,29 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     }
   }
 
-  return {
+  // a drain called off (its tab detached, or obid's relay connected again): what it hasn't run yet is
+  // answered "isn't attached", never run; the one running now can't be called back
+  const callOff = (t: Tab) => {
+    const d = t.drain;
+    if (!d) return;
+    d.off = true;
+    t.drain = null;
+    d.left.splice(0).forEach(unattached);
+  };
+  // one command on an attached tab: while guarded, the tab's commands run one at a time, so no act of
+  // the agent's runs between a read and main's check of what it read; a page dialog's answer never
+  // waits behind a read it holds up. Settles once it has run.
+  function dispatch(t: Tab, c: Extract<RelayCommand, { type: 'cdp' }>): Promise<void> {
+    if (!t.attached) { unattached(c); return Promise.resolve(); }
+    let method: unknown;
+    try { method = JSON.parse(c.message).method; } catch { /* run refuses it */ }
+    const go = () => run(t, c.message, c.agentCode === true);
+    const one = guarded(t.k) && method !== 'Page.handleJavaScriptDialog' ? t.queue.then(go) : go();
+    t.queue = Promise.all([t.queue, one]).then(() => undefined, () => undefined);
+    return one.then(() => undefined, () => undefined);
+  }
+
+  const self = {
     /** a webview whose debugger is attached and whose first page settled: obid may drive it */
     attach(k: TabKey, guest: Guest) {
       const before = early.get(key(k));
@@ -283,15 +346,35 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       if (t.failed) emit(t.failed);
       t.failed = null;
       if (turns.has(k.threadId)) void guest.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
+      everAttached.add(key(k));
+      // what obid sent before it attached runs now, one at a time in the order it came; what comes
+      // meanwhile runs after it
+      const w = waiting.get(key(k));
+      if (w) {
+        clearTimeout(w.timer);
+        waiting.delete(key(k));
+        const d: Drain = { left: [...w.commands], off: false };
+        t.drain = d;
+        void (async () => {
+          while (!d.off && d.left.length) await dispatch(t, d.left.shift()!);
+          // nothing awaited between the last check and this: a command that came meanwhile is in `left`
+          if (t.drain === d) t.drain = null;
+        })();
+      }
     },
     /** the webview went: closed, crashed, swapped, or DevTools took its debugger */
     detach(k: TabKey) {
       const t = tabs.get(key(k));
       if (!t) return;
       tabs.delete(key(k));
+      // obid fails what it had sent this tab when it hears `detached`: nothing of it runs after, even
+      // on a reattach within the debugger's 250 ms
+      const was = t.attached;
+      t.attached = false;
+      callOff(t);
       // whether it shows outlives a detach (DevTools, a crash): it's said again when it attaches again
       early.set(key(k), { failed: null, shown: t.shown });
-      if (t.attached) emit({ ...k, type: 'detached' });
+      if (was) emit({ ...k, type: 'detached' });
     },
     /** a CDP event of the page's: to obid as it came, unless it carries a password the owner filled */
     event(k: TabKey, method: string, params: unknown) {
@@ -345,22 +428,19 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       // release drops only obid's use of the tab: its debugger stays, and the next command uses it
       // again; a box's last tab clears its storage (browser.ts)
       if (c.type === 'release') { if (t) t.mouse = Promise.resolve(); options.released?.({ threadId: c.threadId, tabId: c.tabId }); return; }
-      if (!t?.attached || t.broken) {
-        let id: unknown;
-        try { id = JSON.parse(c.message).id; } catch { return; }
-        if (typeof id === 'number') emit({ threadId: c.threadId, tabId: c.tabId, type: 'cdp', message: JSON.stringify({ id, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }) });
-        return;
-      }
-      // while guarded, the tab's commands run one at a time, so no act of the agent's runs between a
-      // read and main's check of what it read; a page dialog's answer never waits behind a read it holds up
-      let method: unknown;
-      try { method = JSON.parse(c.message).method; } catch { /* run refuses it */ }
-      const go = () => run(t, c.message, c.agentCode === true);
-      const one = guarded(t.k) && method !== 'Page.handleJavaScriptDialog' ? t.queue.then(go) : go();
-      t.queue = Promise.all([t.queue, one]).then(() => undefined, () => undefined);
+      // a tab not attached yet waits for its first attach; one that was (detached, or its relay ended
+      // on a message too big) is answered at once
+      if (!t?.attached) { if (everAttached.has(key(c))) unattached(c); else hold(c); return; }
+      // behind what waited for its first attach, still running
+      if (t.drain) { t.drain.left.push(c); return; }
+      void dispatch(t, c);
     },
     /** obid's relay stream (re)connected: every live tab is announced again (T3's announceAll); no command runs again */
     reconnected() {
+      // a restarted obid names its tabs anew, and the last stream's calls are failed: nothing it sent
+      // waits for them, nor runs from a drain
+      for (const k of [...waiting.keys()]) giveUp(k);
+      for (const t of tabs.values()) callOff(t);
       for (const t of tabs.values()) {
         if (!t.attached) continue;
         emit({ ...t.k, type: 'attached' });
@@ -368,12 +448,13 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       }
     },
     /** the webview is gone for good: nothing of it is kept */
-    forget(k: TabKey) { early.delete(key(k)); filledIn.delete(key(k)); noScript.delete(key(k)); filling.delete(key(k)); fields.delete(key(k)); },
+    forget(k: TabKey) { giveUp(key(k)); everAttached.delete(key(k)); early.delete(key(k)); filledIn.delete(key(k)); noScript.delete(key(k)); filling.delete(key(k)); fields.delete(key(k)); },
     /** for tests and the window's close: what's attached */
     attached: () => [...tabs.values()].filter((t) => t.attached).map((t) => t.k),
     /** the events not yet taken by obid */
     pending: () => outbox.length + (sending ? 1 : 0),
   };
+  return self;
 }
 
 export type RelayHost = ReturnType<typeof relayHost>;

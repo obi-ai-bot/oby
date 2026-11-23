@@ -942,7 +942,7 @@ fn conversation_agent_40_a_dispatch_routed_elsewhere_says_why() {
     let answer = said(&obid, json!({"said": words, "conversation": id}));
     let words = text(&answer);
     assert!(
-        words.contains("On it. Codex is building fixture-app on Codex stub. Claude Code is at 97% of its week until ")
+        words.contains("On it. Codex is building fixture-app in Sandbox mode, on the account Codex stub. Claude Code is at 97% of its week until ")
             && words.contains(", so this runs on Codex · Codex stub."),
         "{}",
         answer.text

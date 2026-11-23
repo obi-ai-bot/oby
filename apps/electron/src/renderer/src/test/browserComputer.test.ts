@@ -5,10 +5,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { namedPartitions, relayCommand, relayHost, type BoxCommand, type Guest, type RelayEvent, type RelayHost } from '../../../main/browserRelay';
-import { windowPartition } from '../../../shared/browserPartition';
+import { windowPartition } from '../../../shared/browser-own';
 
-// Another computer's browser in this Mac's window (docs/contracts/browser-app.md, BROWSERAPP-45 to
-// 47), as T3 Code routes a remote environment's preview: each agent partition one of that
+// Another computer's browser in this Mac's window (docs/contracts/browser-app.md, BROWSERAPP-50 to
+// 52), as T3 Code routes a remote environment's preview: each agent partition one of that
 // computer's own, its loopback only through that computer's door (main/browserGuest.ts), and board
 // 14's words for the computer in use (browser/live.ts), on fake sessions, a fake main and a fake obid.
 
@@ -88,8 +88,8 @@ function login(wc: EventEmitter, authInfo: { isProxy: boolean; host: string; por
 beforeEach(() => { the.computer = null; the.door = () => new Promise(() => {}); send.mockClear(); });
 afterEach(() => { vi.useRealTimers(); });
 
-describe('BROWSERAPP-45: another computer\'s agent tab opens in a partition of that computer\'s own', () => {
-  it('browserapp_45_another_computers_tab_opens_in_its_own_partition', () => {
+describe('BROWSERAPP-50: another computer\'s agent tab opens in a partition of that computer\'s own', () => {
+  it('browserapp_50_another_computers_tab_opens_in_its_own_partition', () => {
     const ID = '0123456789abcd45', OTHER = 'fedcba9876543245';
     // on devbox: obid's agent partition opens as devbox's own, named and checked at will-attach-webview
     the.computer = ID;
@@ -125,8 +125,8 @@ describe('BROWSERAPP-45: another computer\'s agent tab opens in a partition of t
   });
 });
 
-describe('BROWSERAPP-46: a computer partition\'s loopback goes only to that computer\'s door', () => {
-  it('browserapp_46_its_loopback_goes_only_to_the_computers_door', async () => {
+describe('BROWSERAPP-51: a computer partition\'s loopback goes only to that computer\'s door', () => {
+  it('browserapp_51_its_loopback_goes_only_to_the_computers_door', async () => {
     const ID = '0123456789abcd46', partition = `persist:oby-agent-codex-on-${ID}`;
     the.computer = ID;
     let answer!: (r: unknown) => void;
@@ -167,7 +167,7 @@ describe('BROWSERAPP-46: a computer partition\'s loopback goes only to that comp
     expect(s.proxies).toHaveLength(1);
   });
 
-  it('browserapp_46: with no door in BOX_HOLD_MS a request is cancelled, never let through; the same when the door call fails, and the next request asks again', async () => {
+  it('browserapp_51: with no door in BOX_HOLD_MS a request is cancelled, never let through; the same when the door call fails, and the next request asks again', async () => {
     vi.useFakeTimers();
     const ID = '0123456789abcd47';
     the.computer = ID;
@@ -199,8 +199,8 @@ describe('BROWSERAPP-46: a computer partition\'s loopback goes only to that comp
   });
 });
 
-describe('BROWSERAPP-46: another computer\'s downloads folder is that computer\'s', () => {
-  it('browserapp_46: with no folder of this Mac\'s obid, a page\'s downloads are kept nowhere here, and obid\'s setDownloadBehavior is answered', async () => {
+describe('BROWSERAPP-51: another computer\'s downloads folder is that computer\'s', () => {
+  it('browserapp_51: with no folder of this Mac\'s obid, a page\'s downloads are kept nowhere here, and obid\'s setDownloadBehavior is answered', async () => {
     const posted: RelayEvent[] = [];
     const folders: (string | null)[] = [];
     const guest = { send: vi.fn(async () => ({})), downloadsTo: (f: string | null) => { folders.push(f); }, passwordFields: async () => [] } as unknown as Guest;
@@ -222,6 +222,15 @@ describe('BROWSERAPP-46: another computer\'s downloads folder is that computer\'
   });
 });
 
+describe('BROWSERAPP-51: on another computer the local servers are that computer\'s', () => {
+  it('browserapp_51: on another computer no local server is listed, since an owner\'s tab would open this Mac\'s localhost; on This Mac they are', async () => {
+    const { runningServers } = await import('../browser/Servers');
+    const jobs = { j1: { id: 'j1', title: 'Dashboard', servers: [{ port: 3000, process: 'node' }] } } as unknown as Parameters<typeof runningServers>[0];
+    expect(runningServers(jobs, null).map((v) => v.port)).toEqual([3000]);
+    expect(runningServers(jobs, '0123456789abcd51')).toEqual([]);
+  });
+});
+
 // ---- the page: board 14's words for the computer in use ----
 
 const { BrowserProvider } = await import('../browser/store');
@@ -231,7 +240,7 @@ const { resetComputers, startComputers } = await import('../computers/store');
 type ComputersApi = Parameters<typeof startComputers>[0];
 type ComputerList = Awaited<ReturnType<NonNullable<ComputersApi>['list']>>;
 
-describe('BROWSERAPP-47: board 14\'s words show for the computer in use, whatever the tab says', () => {
+describe('BROWSERAPP-52: board 14\'s words show for the computer in use, whatever the tab says', () => {
   let root: Root, host: HTMLDivElement;
   beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -239,7 +248,7 @@ describe('BROWSERAPP-47: board 14\'s words show for the computer in use, whateve
   });
   afterEach(() => { act(() => root.unmount()); host.remove(); delete (window as unknown as { app?: unknown }).app; resetComputers(); });
 
-  it('browserapp_47_board_14s_words_show_for_the_computer_in_use', async () => {
+  it('browserapp_52_board_14s_words_show_for_the_computer_in_use', async () => {
     const ID = '0123456789abcd49';
     const devbox: ComputerList = { current: ID, computers: [{ id: ID, name: 'devbox', os: 'linux', state: 'connected' }] };
     let take: ((l: ComputerList) => void) | null = null;

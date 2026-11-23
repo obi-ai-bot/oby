@@ -224,7 +224,9 @@ class StandIns:
         self.calls.append(("run", *cmd))
         out, code = "", 0
         if cmd[:3] == ["gh", "pr", "view"]:
-            out = json.dumps({"headRefName": BRANCH, **self.view}) if self.view else ""
+            # gh counts every changed file in changedFiles, as the test's files list them unless it says otherwise.
+            view = {"changedFiles": len(self.view.get("files", [])), **self.view} if self.view else None
+            out = json.dumps({"headRefName": BRANCH, **view}) if view else ""
         elif cmd[:3] == ["gh", "api", "graphql"]:
             out = json.dumps(self.graphql) if self.graphql else ""
         elif cmd[:3] == ["gh", "pr", "merge"]:
@@ -468,6 +470,35 @@ class ObyFeed(unittest.TestCase):
         self.assertEqual(self.feed.may_arm(j, pr, None, "A00-99")[0], "wait")
         self.assertEqual(self.feed.may_arm({"approvals": approvals(OLD, "claude")}, pr, None, "A00-99"), ("pending", None))
         self.assertEqual(self.feed.may_arm(j, pr, OLD, "A00-99")[0], "wait")
+
+    def test_feed_6_a_head_gh_cant_list_whole_waits_as_a_security_path(self):
+        """gh lists at most 100 files and a rename by its new path only: such a head waits for the owner, as one that
+        touches a security path, even with no security path among the paths gh lists."""
+        self.feed.check_models = lambda files, head: None
+        self.feed.check_kani = lambda key, files, head: None
+        j = {"approvals": approvals(OLD, "claude", "codex")}
+        listed = [{"path": f"src/f{n}.py", "changeType": "MODIFIED"} for n in range(100)]
+        for pr in ({"headRefOid": OLD, "files": listed, "changedFiles": 101},
+                   {"headRefOid": OLD, "files": [{"path": "docs/retired.md", "changeType": "RENAMED"}], "changedFiles": 1}):
+            with self.subTest(changed=pr["changedFiles"]):
+                verdict, said = self.feed.may_arm(j, pr, None, "A00-99")
+                self.assertEqual(verdict, "wait")
+                self.assertTrue(said.startswith(self.feed.HELD + self.feed.SECURITY), said)
+                self.assertIn(self.feed.UNLISTED, said)
+        self.assertEqual(self.feed.may_arm(j, {"headRefOid": OLD, "files": listed, "changedFiles": 100}, None, "A00-99"),
+                         ("arm", ["claude", "codex"]))
+
+    def test_feed_6_a_security_list_read_in_part_counts_every_file(self):
+        """merge::SECURITY_PATHS with an entry factory/bin/job can't read is never taken for the whole list."""
+        repo = self.dir / "partial-repo"
+        (repo / "core/crates/obid/src").mkdir(parents=True)
+        (repo / "core/crates/obid/src/merge.rs").write_text(
+            'pub const SECURITY_PATHS: [&str; 3] = [\n    "AGENTS.md",\n    MORE,\n    ".claude/",\n];\n')
+        with mock.patch.object(self.feed.job, "REPO", repo):
+            self.assertEqual(self.feed.touches_security(["src/a.py", "AGENTS.md"]), ["src/a.py", "AGENTS.md"])
+            (repo / "core/crates/obid/src/merge.rs").write_text(
+                'pub const SECURITY_PATHS: [&str; 2] = [\n    "AGENTS.md", // the agents\' rules\n    ".claude/",\n];\n')
+            self.assertEqual(self.feed.touches_security(["src/a.py", "AGENTS.md"]), ["AGENTS.md"])
 
     def main(self, *argv, passes=None):
         """Runs main() with `argv`; each sleep is logged and `passes(n)` is called before the n-th one, from 1,
@@ -1308,7 +1339,7 @@ class ObyFeed(unittest.TestCase):
 
     def test_feedalive_5_a_dropped_verify_run_is_unreached_and_a_failing_invariant_holds(self):
         j = {"approvals": approvals(OLD, "claude", "codex")}
-        pr = {"headRefOid": OLD, "files": [{"path": PATH}]}
+        pr = {"headRefOid": OLD, "files": [{"path": PATH}], "changedFiles": 1}
         self.feed.touches_security = lambda files: []
         self.feed.check_models = lambda files, head: self.feed.Unreached("gave no verdict: it printed nothing (exit 255)")
         self.assertEqual(self.feed.may_arm(j, pr, None, "A00-99")[0], "retry")
@@ -2092,7 +2123,8 @@ class ObyFeed(unittest.TestCase):
         self.assertNotIn("surface_reviewers", OBY_FEED.read_text())  # imported, never copied
 
     def test_feedlens_1_route_main_prints_and_records_what_it_did(self):
-        """`route <job-id>` keeps its words: the reviewers line, and an unknown surface's error, through reviewers()."""
+        """`route <job-id> [--lenses]` keeps its words: the reviewers line, pstack's alone or with the lenses, and an
+        unknown surface's error, through reviewers(), lenses or not."""
         route = load_route()
         route.FACTORY = self.dir
         recorded = []
@@ -2105,19 +2137,23 @@ class ObyFeed(unittest.TestCase):
         route.subprocess = Namespace(run=run)
         folder = self.dir / "jobs" / "7-x"
         folder.mkdir(parents=True)
-        for surfaces in (["security", "model"], ["nope"]):
+        for surfaces, args in ((["security", "model"], []), (["security", "model"], ["--lenses"]), (["nope"], [])):
             (folder / "job.json").write_text(json.dumps({"intake": {"risk": "high", "surfaces": surfaces}}))
             out, err = io.StringIO(), io.StringIO()
             with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
                 try:
-                    route.main(["7-x"])
+                    route.main(["7-x", *args])
                 except SystemExit as e:
                     self.assertEqual(e.code, 1)
             if surfaces == ["nope"]:
                 self.assertTrue(err.getvalue().startswith("route: surface 'nope' isn't in config.json surface_reviewers ("), err.getvalue())
+            elif args:
+                self.assertEqual(out.getvalue(), "7-x: reviewers pstack builder, code sonnet, security opus, proofs opus\n")
             else:
-                self.assertEqual(out.getvalue(), "7-x: reviewers code sonnet, security opus, proofs opus\n")
-        self.assertEqual(recorded, [{"reviewers": {"code": "sonnet", "security": "opus", "proofs": "opus"}}])
+                self.assertEqual(out.getvalue(), "7-x: reviewers pstack builder\n")
+        self.assertEqual(recorded, [{"reviewers": {"pstack": "builder"}},
+                                    {"reviewers": {"pstack": "builder", "code": "sonnet", "security": "opus",
+                                                   "proofs": "opus"}}])
 
     def test_feedlens_1_a_high_risk_security_and_proofs_head_gets_one_job_per_lens(self):
         self.lensed(risk="high", files=(self.VAULT, "docs/proofs/A00-99.md"))
@@ -4063,7 +4099,7 @@ class CheckModels(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, "// verify: main=a invariants=safe\n" if cmd[0] == "gh" else HOLDS[0], "")
 
         item = {"key": "A00-95", "job": "j1", "state": "reviewing", "pr": 7}
-        pr = {"state": "OPEN", "headRefOid": HEAD, "files": [{"path": PATH}, {"path": bad}]}
+        pr = {"state": "OPEN", "headRefOid": HEAD, "files": [{"path": PATH}, {"path": bad}], "changedFiles": 2}
         approvals = [{"commit": HEAD, "verdict": "approved", "agent": tool} for tool in ("claude", "codex")]
         config = dict(feed.job.CONFIG, remote_gate={"ssh_host": "oby-gate"})
         with mock.patch.object(feed.subprocess, "run", side_effect=run), mock.patch.object(feed.job, "CONFIG", config), \

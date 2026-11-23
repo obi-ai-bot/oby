@@ -3,28 +3,34 @@
 // (17); and the globe at the title bar's end that shows and hides it (1). Built from the lab's
 // screens (tools/obid-spec/lab-ui/browser/src/scenes.tsx), whose conversations were the boards'
 // own: here the conversation is the app's.
-import { useLayoutEffect, useRef, useState } from 'react';
-import { CodeXml, Globe, Server, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CodeXml, Server } from 'lucide-react';
 import { Control, FileRow, Nav, Panel, Pointer, Tabs, View, YouPointer } from './Panel';
 import { Globe17, Logo, agentName } from './pieces';
 import { useBrowser } from './store';
+import { StartPage } from './Servers';
+import { isOwn } from './view';
 import { demoPage } from './demo';
 import { shown } from './live';
 import { useLive } from '../live';
+import { registerCommands, shortcutLabel } from '../shortcuts';
 import './browser.css';
 
 /** The globe at the bar's end: closed, it says how many tabs and who's using one; open, it hides the panel. */
 export function BrowserGlobe() {
   const { offered, ui, setUi, s } = useBrowser();
   const [tip, setTip] = useState(false);
-  if (!offered || !s.settings.agentsUseBrowser) return null;
+  const globe = offered && s.settings.agentsUseBrowser;
+  // ⇧⌘B (SHORTCUTS-12): the globe's own click, while there's a globe
+  useEffect(() => (globe ? registerCommands({ 'browser.show': () => setUi({ open: true }) }) : undefined), [globe]);
+  if (!globe) return null;
   if (ui.open) return <Globe17 on label="Hide the browser" onClick={() => setUi({ open: false, full: false })} />;
   const using = s.tabs.find((t) => t.holder === 'agent' && t.action);
   const who = using?.owner.kind === 'agent' ? `, ${agentName(using.owner.agent)} is using one` : '';
   return (
     <div style={{ position: 'relative' }} onMouseEnter={() => setTip(true)} onMouseLeave={() => setTip(false)}>
       <Globe17 label={`Show the browser, ${s.tabs.length} ${s.tabs.length === 1 ? 'tab' : 'tabs'}${who}`} badge={!!using} onClick={() => setUi({ open: true })} />
-      {tip && <span className="tip-under" role="tooltip">Show the browser<kbd>⇧⌘B</kbd></span>}
+      {tip && <span className="tip-under" role="tooltip">Show the browser<kbd>{shortcutLabel('browser.show')}</kbd></span>}
     </div>
   );
 }
@@ -44,22 +50,23 @@ export function BrowserPane({ width }: { width: number }) {
   });
   if (!offered || !ui.open) return null;
 
-  // 17: no pages yet
+  // 17: no pages yet; the address takes what the owner types, and the agents' servers show (BROWSERAPP-45, 47)
   if (!active) {
     return (
       <Panel width={width} label="Browser, no pages yet" resize={false}>
         <Tabs fullWidth={false} />
         <Nav set="off" />
-        <div className="br-view is-blank" style={{ borderTop: '1px solid var(--divider)' }} data-browser="view">
-          {!ui.tipClosed && (
-            <div className="br-tip" role="note">
-              <Globe size={15} strokeWidth={1.6} />
-              <p>Your agents can use this browser by themselves. You watch here and take control any time; passwords you type go straight to the page, never to them. Settings › General turns it off.</p>
-              <button className="icon-button is-28" aria-label="Close" onClick={() => setUi({ tipClosed: true })}><X size={13} strokeWidth={2} /></button>
-            </div>
-          )}
-          <p className="empty-words">No pages yet.{'\n'}When an agent opens one, you see it here, live.</p>
-        </div>
+        <StartPage />
+      </Panel>
+    );
+  }
+  // New tab: a blank tab of the owner's own, its address ready, the agents' servers under it
+  if (isOwn(active) && !active.src) {
+    return (
+      <Panel width={width} full={ui.full} label="Browser, new tab" resize={false}>
+        <Tabs full={ui.full} />
+        <Nav tab={active} set="off" />
+        <StartPage tab={active.id} />
       </Panel>
     );
   }

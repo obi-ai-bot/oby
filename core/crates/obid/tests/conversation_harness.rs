@@ -567,6 +567,60 @@ fn conversation_agent_25_a_claude_code_started_ahead_that_ran_its_hooks_takes_th
     );
 }
 
+/// CONVERSATION-AGENT-53 (docs/contracts/conversation-agent.md): a Claude Code whose listing of
+/// Oby's tools failed as it started (obid answered it past Claude Code's 30 s, which Claude Code
+/// never asks again) still has them on its turn: a new one's first turn, and the next new
+/// conversation's Claude Code, started ahead, on that conversation's first turn. The stand-in loses
+/// its first listing as Claude Code 2.1.325 does (tests/agents/fake-harness).
+#[test]
+fn conversation_agent_53_a_claude_code_that_lost_obys_tools_has_them_on_its_turn() {
+    let (_folder, obid) = obid_env(
+        "harness-agent-53",
+        true,
+        json!({"agent": "claude"}),
+        &[("OBID_PRESTART", "on")],
+        json!({}),
+    );
+    std::fs::write(obid.home.join("accounts/stub/oby-list-lost"), "").unwrap();
+    let has_tools = |answer: &Answer| {
+        let text = answer.body["text"].as_str().unwrap_or_default();
+        assert!(
+            text.starts_with("oby: ") && !text.contains("refused"),
+            "Oby's tools on the turn: {}",
+            answer.text
+        );
+    };
+    let first = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    has_tools(&first);
+    let one = first.body["conversation"].as_str().unwrap().to_owned();
+    let conversations = obid.home.join("conversations");
+    let (next, record) = within(30, "the next conversation's Claude Code started", || {
+        std::fs::read_dir(&conversations)
+            .ok()?
+            .flatten()
+            .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy() != one)
+            .find_map(|e| {
+                let line = std::fs::read_to_string(e.path().join("config/started.jsonl")).ok()?;
+                let record: Value = serde_json::from_str(line.lines().next()?).ok()?;
+                Some((e.file_name().to_string_lossy().into_owned(), record))
+            })
+    });
+    let second = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    assert_eq!(
+        second.body["conversation"],
+        next.as_str(),
+        "{}",
+        second.text
+    );
+    has_tools(&second);
+    let recorded = recorded(&conversations.join(format!("{next}/config/turns.jsonl")));
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(
+        recorded[0]["id"], record["id"],
+        "the turn went to the Claude Code started ahead"
+    );
+}
+
 /// A waiting Claude Code that wrote a line while it waited isn't given the next turn (the line
 /// would be taken for the turn's): a new one answers it.
 #[test]
