@@ -1878,7 +1878,8 @@
             "SHORTCUTS-8": "Electron keys.",
             "SHORTCUTS-9": "Electron keys.",
             "SHORTCUTS-10": "Electron main's menu bar (release build without developer items).",
-            "SHORTCUTS-11": "Electron side panel search (Settings and actions)."
+            "SHORTCUTS-11": "Electron side panel search (Settings and actions).",
+            "SHORTCUTS-12": "Electron keyboard shortcut (shortcuts_12 in shortcuts.test.tsx)."
           }
         },
         "help.md": {

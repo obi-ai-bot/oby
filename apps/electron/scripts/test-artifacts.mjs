@@ -154,6 +154,11 @@ const TRIES = (obidPort) => `(async () => {
   };
 })()`;
 
+// A card scrolled into view: the conversation re-renders its message while it updates, so the card
+// can be swapped for a moment between finding it and scrolling to it ("Element is not attached to
+// the DOM"); the locator finds it again, tried until it's attached, within 30 s
+const inView = (card) => until('the card attached and in view', async () => { await card.scrollIntoViewIfNeeded({ timeout: 5_000 }); return true; }, 30_000);
+
 const shot = async (page, name) => {
   if (!shots) return;
   mkdirSync(shots, { recursive: true });
@@ -278,7 +283,7 @@ async function main() {
   assert.deepEqual([pic.width, pic.height], [1280, 370], `artifactsapp_18: the picture is 1280x370: ${JSON.stringify(pic)}`);
   assert.ok(pic.png, 'artifactsapp_18: the picture is a PNG data: URL');
   assert.ok(pic.drawn > 0, `artifactsapp_18: the picture's top half holds the page, not only its white: ${JSON.stringify(pic)}`);
-  await card.scrollIntoViewIfNeeded();
+  await inView(card);
   await shot(page, '1-card-picture');
   console.log(`ok artifactsapp_18_the_cards_picture_is_the_artifacts_first_screen (${pic.width}x${pic.height}, ${pic.drawn} drawn pixels in its top half)`);
   // drawn at half width and scale 2: the 32 px heading spans twice the ~12 rows a 720-wide picture of
@@ -563,7 +568,7 @@ async function main() {
   await until('the pane closed', async () => (await page.locator('.art-strip-title').count()) === 0);
   await showPanel();
   await until('the row in view', async () => (await pageRow.isVisible()) && (await pageRow.boundingBox())?.x >= 0);
-  await card.scrollIntoViewIfNeeded();
+  await inView(card);
   assert.equal(await dot.count(), 1, 'artifactsapp_17: the dot stays until the page is opened');
   await shot(page, '8-card-in-message');
   await shot(page, '9-row-new');
@@ -586,7 +591,7 @@ async function main() {
   const since = Date.now();
   await until('their three pictures', async () => (await Promise.all(freshCards.map((c) => c.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; })))).every(Boolean), 6_000);
   const took = Date.now() - since;
-  await freshCards[2].scrollIntoViewIfNeeded();
+  await inView(freshCards[2]);
   await shot(page, '11-three-fresh-cards');
   console.log(`ok artifactsapp_18_a_picture_waits_for_the_preview_not_a_fixed_time (three fresh cards' pictures in ${took} ms)`);
   // one picture's view at most is left
@@ -607,7 +612,7 @@ async function main() {
     const itsCard = page.locator(`button.art-card[data-artifact="${id}"]`);
     await until(`${path}’s card`, async () => (await itsCard.count()) === 1, 60_000);
     if (!open) return id;
-    await itsCard.scrollIntoViewIfNeeded();
+    await inView(itsCard);
     await itsCard.click();
     await until(`${path} open`, async () => (await page.locator('.art-strip-title b').innerText().catch(() => '')) === path, 60_000);
     return id;
@@ -651,7 +656,7 @@ async function main() {
   const thumbDrawn = (await thumbStatus())?.drawn === true;
   assert.equal(thumbDrawn, true, "artifactsapp_18: the picture's view heard the React page drawn");
   assert.ok(reactPicture.teal > 0, `artifactsapp_18: the React card's picture holds the teal page in its top half: ${JSON.stringify(reactPicture)}`);
-  await reactCard.scrollIntoViewIfNeeded();
+  await inView(reactCard);
   await shot(page, '12-react');
   console.log(`ok artifactsapp_13_a_react_artifact_draws_with_lucide_and_tailwind_from_loopback_only (${reactRequests.length} requests, ${vendorLoaded.length} to /__csb_vendor/)`);
   console.log(`ok artifactsapp_18_a_react_cards_picture_shows_the_page (${reactPicture.teal} of ${reactPicture.of} pixels in its top half teal; the picture's view drawn)`);
@@ -676,7 +681,7 @@ async function main() {
   const dashboardOff = dashboardRequests.filter((u) => !u.startsWith('file://') && !new RegExp(`^http://([a-z0-9]+-)?preview\\.localhost:${relayPort}/`).test(u) && !u.startsWith('data:') && !u.startsWith('devtools:'));
   assert.deepEqual(dashboardOff, [], 'artifactsapp_26: every request the preview made went to its host page or the relay');
   assert.ok(dashboardRequests.some((u) => u.endsWith('/__csb_vendor/recharts/recharts.mjs')), 'artifactsapp_26: recharts came from the relay');
-  await dashboardCard.scrollIntoViewIfNeeded();
+  await inView(dashboardCard);
   await shot(page, '12b-recharts-dashboard');
   console.log(`ok artifactsapp_26_a_dashboard_draws_with_recharts (a ${chart.stroke} curve, main's classes ${JSON.stringify(chart.className)}, ${dashboardPicture.teal} of ${dashboardPicture.of} pixels in its picture's top half teal, ${dashboardRequests.length} requests, all on loopback)`);
 
@@ -695,7 +700,7 @@ async function main() {
   await until('the shadcn card’s picture', async () => shadcnCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
   const shadcnPicture = await tealOf(shadcnCard);
   assert.ok(shadcnPicture.teal > 0, `artifactsapp_27: the shadcn card's picture holds the page: ${JSON.stringify(shadcnPicture)}`);
-  await shadcnCard.scrollIntoViewIfNeeded();
+  await inView(shadcnCard);
   await shot(page, '12c-shadcn-dashboard');
   await inFrame(`document.getElementById('details').click(); true`);
   // open, and settled: its entrance run, drawn whole
@@ -822,7 +827,7 @@ async function main() {
     await until(`${n}’s picture`, async () => tealCard.evaluate((el) => { const i = el.querySelector('img.art-thumb-img'); return !!i?.complete && i.naturalWidth > 0; }), 30_000);
     fresh25.push({ n, ...(await tealOf(tealCard)), status: await thumbStatus() });
   }
-  await tealCard.scrollIntoViewIfNeeded();
+  await inView(tealCard);
   await shot(page, '19-teal-cards');
   for (const f of fresh25) {
     assert.ok(f.teal > 0, `artifactsapp_25: ${f.n}'s picture is drawn and styled: ${JSON.stringify(fresh25)}`);
