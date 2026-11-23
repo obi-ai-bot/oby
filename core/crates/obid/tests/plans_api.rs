@@ -860,7 +860,7 @@ fn a_bypass_dispatch_waits_for_the_owners_confirm() {
         answer["text"]
             .as_str()
             .unwrap()
-            .contains("confirm it in your inbox"),
+            .contains("confirm it in Waiting for you"),
         "{answer}"
     );
     assert_eq!(answer["jobs"], json!([]));
@@ -1534,7 +1534,7 @@ fn research_cant_carry_a_job_past_its_safety_limit() {
         answer["text"]
             .as_str()
             .unwrap()
-            .contains("waits for your Confirm in the inbox"),
+            .contains("waits for your Confirm in Waiting for you"),
         "{answer}"
     );
     let confirms = items_of(&obid, "confirm");
@@ -2164,7 +2164,7 @@ fn another_conversations_job_waits_for_the_owners_confirm() {
     };
     assert_eq!(
         plan(r#"OBY oby_continue_job {"id":"c0ffee00"}"#),
-        "oby: Continue Vault tests waits for your OK: confirm it in your inbox."
+        "oby: Continue Vault tests waits for your OK: confirm it in Waiting for you."
     );
     assert_eq!(get_job(&obid, "c0ffee00")["status"], "failed");
     let answer = |title: &str, answer: &str| {
@@ -2181,7 +2181,7 @@ fn another_conversations_job_waits_for_the_owners_confirm() {
     assert_eq!(get_job(&obid, "c0ffee00")["status"], "failed");
     assert_eq!(
         plan(r#"OBY oby_change_job {"id":"c0ffee00","mode":"plan"}"#),
-        "oby: Put Vault tests in Plan mode waits for your OK: confirm it in your inbox."
+        "oby: Put Vault tests in Plan mode waits for your OK: confirm it in Waiting for you."
     );
     assert_eq!(get_job(&obid, "c0ffee00")["mode"], "sandbox");
     answer("Put Vault tests in Plan mode", "Confirm");
@@ -2925,6 +2925,67 @@ fn taskconv_1_a_task_from_the_tasks_view_gets_its_own_conversation() {
     assert_eq!(oby["jobs"], json!([id]));
     // its card shows under the words that started it
     assert_eq!(get_job(&obid, &id)["turn"], turns[0]["id"]);
+}
+
+/// TASKCONV-41: Oby's start line names the mode the task runs in, in the app's words for it, and
+/// its account labelled as one: an account called "Default" (Claude Code's, unless the owner
+/// renamed it) is never read as a mode (the owner's drive of 2026-11-23).
+#[test]
+fn taskconv_41_the_start_line_names_the_mode_and_the_account() {
+    let folder = Folder::new("taskconv-41");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness-jobs");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["agents"]["claude"]["accounts"][0]["name"] = json!("Default");
+    signed_in(&config);
+    let obid = start(&folder.0, &config, Some(harness.parent().unwrap()));
+    let started = |mode: &str, title: &str| {
+        let words = format!(
+            r#"OBY oby_dispatch {{"repo":"obi-e2e/fixture-app","kind":"fix","title":"{title}","task":"Fix the greeting"{mode}}}"#
+        );
+        let answer = said_anew(&obid, &words);
+        assert_eq!(answer["jobs"].as_array().map(Vec::len), Some(1), "{answer}");
+        (
+            answer["text"].as_str().unwrap().to_owned(),
+            answer["jobs"][0]["mode"].clone(),
+        )
+    };
+    let (text, mode) = started(r#","mode":"ask""#, "Greeting fix");
+    assert_eq!(mode, "ask");
+    assert!(
+        text.contains(
+            "Claude Code is fixing fixture-app (Greeting fix) in Ask mode, on the account Default."
+        ),
+        "{text}"
+    );
+    // Left out, the mode is the owner's default, and the line says which.
+    let (text, mode) = started("", "Greeting fix again");
+    assert_eq!(mode, "sandbox");
+    assert!(
+        text.contains("fixture-app (Greeting fix again) in Sandbox mode, on the account Default."),
+        "{text}"
+    );
+}
+
+/// TASKCONV-42: where obid tells the owner a card waits for them, it names the place the app
+/// shows it, Sangam's "Waiting for you": the app has no inbox.
+#[test]
+fn taskconv_42_a_card_is_said_to_wait_in_waiting_for_you() {
+    let folder = Folder::new("taskconv-42");
+    let obid = started_harness_jobs(&folder);
+    let answer = said(
+        &obid,
+        r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","title":"Greeting fix","task":"Fix the greeting","mode":"bypass"}"#,
+    );
+    let text = answer["text"].as_str().unwrap();
+    assert!(
+        text.ends_with(
+            "Starting 1 job in Bypass mode waits for your OK: confirm it in Waiting for you."
+        ),
+        "{answer}"
+    );
+    assert!(!text.to_lowercase().contains("inbox"), "{answer}");
+    assert_eq!(items_of(&obid, "confirm").len(), 1);
 }
 
 /// TASKCONV-3: words to a finished task from its page start a follow-up in the same conversation,
