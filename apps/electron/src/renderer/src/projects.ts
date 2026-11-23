@@ -18,8 +18,11 @@ export const useProjects = () => useSyncExternalStore(subscribe, () => list);
 // window opened, or came back to an obid that was away or restarted), each time a chip's menu opens,
 // and after a create, a change or a delete (PROJECTS-32). One read at a time: one asked meanwhile
 // runs right after it. A read that fails leaves the list as it was and is tried again, 1 s later,
-// then 2, 4, 8 and every 10 s, until one is read or projects no longer show
+// then 2, 4, 8 and every 10 s, until one is read or projects no longer show. A read with no answer in
+// 15 s counts as failed, and its late answer is dropped, so a held read never blocks the next ones
+const READ_LIMIT = 15_000;
 let read = false;
+let generation = 0;
 let reading = false;
 let again = false;
 let tries = 0;
@@ -31,7 +34,15 @@ export async function loadProjects(): Promise<void> {
   clearTimeout(retrying);
   reading = true;
   let ok = false;
-  try { set(await api.projects()); ok = true; } catch { /* as it was */ }
+  const mine = ++generation;
+  let limit: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const got = await Promise.race([
+      api.projects(),
+      new Promise<never>((_, no) => { limit = setTimeout(() => no(new Error('no answer')), READ_LIMIT); }),
+    ]);
+    if (mine === generation) { set(got); ok = true; }
+  } catch { /* as it was */ } finally { clearTimeout(limit); }
   reading = false;
   if (ok) tries = 0;
   if (again) { again = false; return loadProjects(); }
