@@ -69,8 +69,8 @@ async function on({ jobs = [], inbox = [], conversations = [] }: { jobs?: unknow
   const opened = vi.fn();
   return {
     opened,
-    side: (more: { activeTalk?: string } = {}) => renderToStaticMarkup(
-      <Sidebar open atHome={false} activeTalk={more.activeTalk} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none}
+    side: (more: { activeTalk?: string; active?: string } = {}) => renderToStaticMarkup(
+      <Sidebar open atHome={false} activeTalk={more.activeTalk} active={more.active} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none}
         onOpenTask={none} onOpenAgent={opened} onOpenChat={none} onOpenOby={none} onOpenMember={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} />,
     ).replaceAll('<!-- -->', ''),
   };
@@ -165,13 +165,31 @@ describe('a conversation\'s tasks, nested under it', () => {
     expect(nestOf(ended.side({ activeTalk: 'c1' }), 'Two fixes for today')).not.toContain('agents working');
   });
 
-  it('LIVETASK-22: a nested row is a mark of its progress; a click opens its conversation at its card, the conversation\'s row lit', async () => {
+  it('LIVETASK-22: a nested row is a session of its own; a click opens its own thread, and its row is lit while that shows', async () => {
     const { side, opened } = await on(TWO);
     const html = side({ activeTalk: 'c1' });
     expect(nestOf(html, 'Two fixes for today')).toMatch(/<button class="convo-kid" title="Fix iOS signing on Deskree Team"/);
     expect(html).not.toContain('convo-kid is-active');
     clicks['Fix iOS signing on Deskree Team']();
     expect(opened).toHaveBeenCalledWith('j2');
+    // its own thread on top (the conversation under it): its row lit, so its conversation's rows show
+    const own = nestOf(side({ active: 'j2' }), 'Two fixes for today');
+    expect(own).toMatch(/<button class="convo-kid is-active" aria-current="true" title="Fix iOS signing on Deskree Team"/);
+    try {
+      // folded by the owner earlier, opening its task's own thread (its card) shows its rows once, the lit one among them
+      kept['oby.kidsShown'] = JSON.stringify({ c1: false });
+      const folded = await on(TWO);
+      expect(nestOf(folded.side(), 'Two fixes for today')).not.toContain('convo-kids');
+      const { revealKids } = await import('../nested');
+      revealKids('c1');
+      expect(nestOf(folded.side({ active: 'j2' }), 'Two fixes for today')).toContain('convo-kid is-active');
+      // the twist still folds them while the row is lit (LIVETASK-20), and that is kept
+      clicks['Hide Two fixes for today’s agents']();
+      expect(JSON.parse(kept['oby.kidsShown'])).toEqual({ c1: false });
+      expect(nestOf(folded.side({ active: 'j2' }), 'Two fixes for today')).not.toContain('convo-kids');
+    } finally {
+      delete kept['oby.kidsShown'];
+    }
   });
 });
 
