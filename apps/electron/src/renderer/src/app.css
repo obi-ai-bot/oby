@@ -974,21 +974,16 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .composer-grid > .composer-tags { grid-area: tags; }
 .composer-grid > .composer-button { grid-area: plus; }
 .composer-grid > .composer-usage { grid-area: usage; }
-/* the end: voice while the box is empty; once there's something to send, voice
-   fades and shrinks away and send takes its place, a plain icon like voice and
-   +, fading in as it grows from 40%; emptied, back again (these outrank
-   .composer-button's own transition, further down) */
-.composer-grid > .composer-voice, .composer-grid > .composer-send { grid-area: end; }
-/* no talking (v1): send in the gauge's place, the gauge at the end */
+/* the end: send, a plain icon like +, dim and still till there's something to send, then lit (the
+   window has no voice button; these outrank .composer-button's own transition, further down) */
+.composer-grid > .composer-send { grid-area: end; }
+/* v1: send in the gauge's place, the gauge at the end */
 .composer-grid.is-send-first > .composer-send { grid-area: usage; }
 .composer-grid.is-send-first > .composer-usage { grid-area: end; }
-.composer-grid > .composer-voice { transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
-.composer-grid > .composer-voice.is-away { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in); }
-.composer-grid > .composer-send { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in), color var(--fade), background-color var(--fade); }
-/* no talking (v1): send stays at the end, dim and still till there's something to send */
+.composer-grid > .composer-send { pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in), color var(--fade), background-color var(--fade); }
 .composer-grid > .composer-send.is-always { opacity: 0.3; transform: scale(1); }
 .composer-grid > .composer-send.is-ready { opacity: 1; transform: scale(1); pointer-events: auto; color: var(--ink); transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
-@media (prefers-reduced-motion: reduce) { .composer-send, .composer-voice { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { .composer-send { transition: none !important; } }
 /* The text (MessageEditor): one line tall to start, growing with what's typed up
    to 5 lines, then scrolling (the box around it scrolls, the cursor with it); the
    placeholder over it on one line, cut short at the box's edge rather than wrapping */
