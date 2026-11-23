@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComputerButton } from '../computers/ComputerButton';
 import { ComputerLine, ComputerStage, QUIET_MS } from '../computers/ComputerHome';
-import { DEMO_CODE, DEMO_LINK, DEVBOX, STUDIO, codeRefused, demoApi } from '../computers/demo';
+import { DEMO_CODE, DEMO_LINK, DEMO_ONE_LINK, DEVBOX, STUDIO, codeRefused, demoApi } from '../computers/demo';
 import { NOT_YET, Refusal, computersOn, obidComputers, type ComputerEvents, type ComputersApi } from '../computers/obid';
 import { computerSays, messageOby, rename as renameKept, resetComputers, startComputers, type Ui } from '../computers/store';
 import { fingerprintText, type Computer, type ComputerList } from '../computers/view';
@@ -142,7 +142,7 @@ describe('COMPUTERSAPP-4: adding a computer over SSH', () => {
     await click($('.talk-choice.is-add'));
     expect(text('.computer-sheet h2')).toBe('Add a computer');
     expect(text('.computer-sheet .modal-lede')).toBe('Its conversations, tasks and folders open in this window. Oby has to be running there.');
-    expect($$('[role="tab"]').map((t) => `${t.textContent}:${t.getAttribute('aria-selected')}`)).toEqual(['Over SSH:true', 'With a code:false']);
+    expect($$('[role="tab"]').map((t) => `${t.textContent}:${t.getAttribute('aria-selected')}`)).toEqual(['Over SSH:true', 'With a link:false']);
     expect(text('label[for="ssh-host"]')).toBe('SSH host');
     expect($<HTMLInputElement>('#ssh-host')!.placeholder).toBe('devbox, or you@192.168.1.20');
     expect(text('.computer-hint')).toBe('Oby uses your own SSH: your keys, agent and known hosts. Nothing is installed there.');
@@ -192,11 +192,11 @@ describe('COMPUTERSAPP-5: SSH says no', () => {
   });
 });
 
-describe('COMPUTERSAPP-6: adding a computer with a code', () => {
+describe('COMPUTERSAPP-6: adding a computer with a link of version 1 and its code', () => {
   it('computersapp_6: obid reads the link: its name and fingerprint to check, then the code', async () => {
     await show(demoApi(ONLY, 0), { sheet: { kind: 'add', how: 'code' } });
     expect(text('label[for="pair-link"]')).toBe('Link');
-    expect(text('.computer-hint')).toBe('On the other computer, choose Show this computer’s code below. On Linux, run obid invite-computer.');
+    expect(text('.computer-hint')).toBe('On the other computer, choose Show this computer’s link below. On Linux, run obid invite-computer.');
     expect($('#pair-code')).toBeNull();
     await type($<HTMLInputElement>('#pair-link')!, DEMO_LINK);
     await until(() => expect($('.computer-found')).not.toBeNull());
@@ -204,7 +204,7 @@ describe('COMPUTERSAPP-6: adding a computer with a code', () => {
     expect(text('.computer-found .fingerprint')).toBe('7F3A 91C2 5D0E 44B8 · 0C6E A1F7 93D2 6B10');
     expect($$('.computer-found span').at(-1)!.textContent).toBe('Check that devbox shows the same fingerprint.');
     expect(text('label[for="pair-code"]')).toBe('Code');
-    expect(text('.computer-switch-link')).toBe('Show this computer’s code');
+    expect(text('.computer-switch-link')).toBe('Show this computer’s link');
   });
   it('computersapp_6: a link obid refuses says so in obid’s words', async () => {
     await show(demoApi(ONLY, 0), { sheet: { kind: 'add', how: 'code' } });
@@ -226,34 +226,86 @@ describe('COMPUTERSAPP-6: adding a computer with a code', () => {
   });
 });
 
-describe('COMPUTERSAPP-7: this computer’s code', () => {
-  it('computersapp_7: its code, fingerprint, the addresses it can be reached at with their switches, and how long it lasts', async () => {
+describe('COMPUTERSAPP-16: adding a computer with one link, no code', () => {
+  it('computersapp_16: obid reads a one link: its name and fingerprint, no Code field, and Add computer is ready', async () => {
+    await show(demoApi(ONLY, 0), { sheet: { kind: 'add', how: 'code' } });
+    expect($$('[role="tab"]').map((t) => t.textContent)).toEqual(['Over SSH', 'With a link']);
+    await type($<HTMLInputElement>('#pair-link')!, DEMO_ONE_LINK);
+    await until(() => expect($('.computer-found')).not.toBeNull());
+    expect(text('.computer-found b')).toBe('devbox');
+    expect(text('.computer-found .fingerprint')).toBe('7F3A 91C2 5D0E 44B8 · 0C6E A1F7 93D2 6B10');
+    expect($('#pair-code')).toBeNull();
+    expect(button('Add computer')!.hasAttribute('disabled')).toBe(false);
+  });
+  it('computersapp_16: Add computer adds it with the link alone, and the window switches to it', async () => {
+    const api = demoApi(ONLY, 0);
+    const add = vi.spyOn(api, 'addWithCode');
+    await show(api, { sheet: { kind: 'add', how: 'code', link: DEMO_ONE_LINK } });
+    await until(() => expect($('.computer-found')).not.toBeNull());
+    await act(async () => { $<HTMLFormElement>('form')!.requestSubmit(); });
+    await until(() => expect(rail().getAttribute('aria-label')).toBe('Computer: devbox. Change'));
+    expect(add).toHaveBeenCalledWith(DEMO_ONE_LINK, undefined);
+    expect($('.computer-sheet')).toBeNull();
+  });
+  it('computersapp_16: a refusal adding it shows in obid’s words and the sheet stays', async () => {
+    const api: ComputersApi = { ...demoApi(ONLY, 0), addWithCode: async () => { throw new Refusal('That link has ended or was already used. Make a new one on the other computer.'); } };
+    await show(api, { sheet: { kind: 'add', how: 'code', link: DEMO_ONE_LINK } });
+    await until(() => expect($('.computer-found')).not.toBeNull());
+    await act(async () => { $<HTMLFormElement>('form')!.requestSubmit(); });
+    await until(() => expect(text('[role="alert"]')).toBe('That link has ended or was already used. Make a new one on the other computer.'));
+    expect($('.computer-sheet')).not.toBeNull();
+  });
+});
+
+describe('COMPUTERSAPP-17: this computer’s link', () => {
+  const ONE = 'oby-computer:AkJCQkJCQkJCQkJCQkJCQkJ_OpHCXQ5EuAxuofeT0msQfzqRwl0ORLgMbqH3k9JrEATAqAEeIPsEZGUDBCD7';
+  it('computersapp_17: the link to copy, its fingerprint, the addresses it can be reached at with their switches, and how long it lasts', async () => {
     const until1432 = new Date(2026, 10, 20, 14, 32).getTime();
-    const api: ComputersApi = { ...demoApi(ONLY, 0), invite: async () => ({ name: 'Studio', code: '482913', link: DEMO_LINK, fingerprint: '7f3a91c25d0e44b80c6ea1f793d26b10', expiresAt: until1432, reach: [{ kind: 'lan', address: '192.168.1.30', on: true }, { kind: 'tailnet', address: '100.101.3.4', on: true }] }) };
-    const setReach = vi.spyOn(api, 'setReach');
+    const api: ComputersApi = { ...demoApi(ONLY, 0), invite: async () => ({ name: 'Studio', link: ONE, fingerprint: '7f3a91c25d0e44b80c6ea1f793d26b10', expiresAt: until1432, reach: [{ kind: 'lan', address: '192.168.1.30', on: true }, { kind: 'tailnet', address: '100.101.3.4', on: true }] }) };
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     await show(api, { sheet: { kind: 'add', how: 'code' } });
     await click($('.computer-switch-link'));
-    await until(() => expect($('.big-code')).not.toBeNull());
-    expect(text('.computer-sheet h2')).toBe('This Mac’s code');
-    expect(text('.modal-lede')).toBe('On the Mac you’re adding Studio to, paste its link and type this code.');
-    expect(text('.big-code')).toBe('482 913');
-    expect($('.big-code')!.getAttribute('aria-label')).toBe('Code 4 8 2 9 1 3');
+    await until(() => expect($('.computer-link')).not.toBeNull());
+    expect(text('.computer-sheet h2')).toBe('This Mac’s link');
+    expect(text('.modal-lede')).toBe('On the Mac you’re adding Studio to, paste this link.');
+    expect($<HTMLTextAreaElement>('.computer-link')!.value).toBe(ONE);
+    expect($('.big-code')).toBeNull();
     expect(text('.fingerprint')).toBe('7F3A 91C2 5D0E 44B8 · 0C6E A1F7 93D2 6B10');
     expect($$('.computer-sheet .modal-label').map((l) => l.textContent)).toEqual(['Fingerprint', 'Other computers reach this Mac at']);
     expect($$('.reach-row').map((r) => r.textContent)).toEqual(['Local network192.168.1.30', 'Tailscale100.101.3.4']);
     expect($$('.computer-hint').at(-1)!.textContent).toBe(`Good until ${new Date(until1432).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, for one computer.`);
-    await click(button('Tailscale'));
-    expect(button('Tailscale')!.getAttribute('aria-checked')).toBe('false');
-    expect(setReach).toHaveBeenCalledWith('tailnet', false);
     expect($$('.modal-actions button').map((b) => b.textContent)).toEqual(['Copy link', 'Done']);
+    await click(button('Copy link'));
+    expect(writeText).toHaveBeenCalledWith(ONE);
+    await until(() => expect(button('Copied')).toBeTruthy());
     await click(button('Done'));
     expect($('.computer-sheet')).toBeNull();
   });
-  it('computersapp_7: with no address to offer, it says to add this Mac over SSH instead', async () => {
-    const api: ComputersApi = { ...demoApi(ONLY, 0), invite: async () => ({ name: 'Studio', code: '482913', link: DEMO_LINK, fingerprint: '00', expiresAt: Date.now(), reach: [] }) };
+  it('computersapp_17: obid’s refusal shows in its own words, never an empty sheet', async () => {
+    const said = 'This Mac has no address another computer can reach. Turn it on in obid’s configuration.';
+    const api: ComputersApi = { ...demoApi(ONLY, 0), invite: async () => { throw new Refusal(said); } };
+    await show(api, { sheet: { kind: 'code' } });
+    await until(() => expect(text('[role="alert"]')).toBe(said));
+    expect(text('.computer-sheet h2')).toBe('This Mac’s link');
+    expect(button('Copy link')!.hasAttribute('disabled')).toBe(true);
+  });
+  it('computersapp_17: a switch obid doesn’t take goes back and says why', async () => {
+    const api: ComputersApi = { ...demoApi(ONLY, 0), setReach: async () => { throw new Refusal(NOT_YET.reach); } };
+    await show(api, { sheet: { kind: 'code' } });
+    await until(() => expect(button('Tailscale')).toBeTruthy());
+    await click(button('Tailscale'));
+    await until(() => expect(text('[role="alert"]')).toBe(NOT_YET.reach));
+    expect(button('Tailscale')!.getAttribute('aria-checked')).toBe('true');
+  });
+  it('computersapp_17: with no address to offer, it says to add this Mac over SSH instead', async () => {
+    const api: ComputersApi = { ...demoApi(ONLY, 0), invite: async () => ({ name: 'Studio', link: ONE, fingerprint: '00', expiresAt: Date.now(), reach: [] }) };
     await show(api, { sheet: { kind: 'code' } });
     await until(() => expect($$('.computer-hint').map((h) => h.textContent)).toContain('This Mac has no address another computer can reach. Add it over SSH instead.'));
   });
+});
+
+describe('COMPUTERSAPP-7: a fingerprint as the design shows it', () => {
   it('computersapp_7: a fingerprint is its first 16 bytes in groups of four hex digits', () => {
     expect(fingerprintText('sha256:7f:3a:91:c2:5d:0e:44:b8:0c:6e:a1:f7:93:d2:6b:10:ff:ff')).toBe('7F3A 91C2 5D0E 44B8 · 0C6E A1F7 93D2 6B10');
   });
@@ -514,7 +566,8 @@ describe('the picker on obid’s routes (docs/api/remote.md)', () => {
     const o = fakeObid();
     const api = (await computersOn(o.call, o.events))!;
     o.answers.set('POST /v1/computers/link', { status: 200, body: { name: 'devbox', fingerprint: '7F3A91C25D0E44B80C6EA1F793D26B10', routes: [{ kind: 'lan', address: '192.168.1.40:7779' }] } });
-    expect(await api.readLink('oby-computer:x')).toEqual({ name: 'devbox', fingerprint: '7F3A91C25D0E44B80C6EA1F793D26B10' });
+    // an obid before one links says nothing of a code: a link with one, as it always was
+    expect(await api.readLink('oby-computer:x')).toEqual({ name: 'devbox', fingerprint: '7F3A91C25D0E44B80C6EA1F793D26B10', needsCode: true });
     expect(o.calls.at(-1)).toEqual(['POST', '/v1/computers/link', { link: 'oby-computer:x' }]);
     o.answers.set('POST /v1/computers', { status: 422, body: { error: 'That code isn’t devbox’s.', reason: 'wrong_code' } });
     await expect(api.addWithCode('oby-computer:x', '111111')).rejects.toEqual(new Refusal('That code isn’t devbox’s.'));
@@ -553,13 +606,32 @@ describe('the picker on obid’s routes (docs/api/remote.md)', () => {
     expect(o.calls.at(-1)).toEqual(['DELETE', '/v1/computers/studio']);
     expect(await api.list()).toMatchObject({ current: 'this', computers: [{ id: 'devbox' }] });
   });
-  it('COMPUTERSAPP-4 and 7: what obid doesn’t do yet says so, and calls nothing: over SSH, this computer’s code, its reach', async () => {
+  it('COMPUTERSAPP-16: a one link reads as needing no code, and adds with {link} alone', async () => {
+    const o = fakeObid();
+    const api = (await computersOn(o.call, o.events))!;
+    o.answers.set('POST /v1/computers/link', { status: 200, body: { name: 'devbox', fingerprint: '7F3A91C25D0E44B80C6EA1F793D26B10', routes: [], needsCode: false } });
+    expect(await api.readLink(DEMO_ONE_LINK)).toEqual({ name: 'devbox', fingerprint: '7F3A91C25D0E44B80C6EA1F793D26B10', needsCode: false });
+    o.answers.set('POST /v1/computers', { status: 201, body: DEVBOX_WIRE });
+    expect(await api.addWithCode(DEMO_ONE_LINK)).toBe('devbox');
+    expect(o.calls.at(-1)).toEqual(['POST', '/v1/computers', { link: DEMO_ONE_LINK }]);
+    o.answers.set('POST /v1/computers', { status: 422, body: { error: 'That link has ended or was already used. Make a new one on the other computer.', reason: 'code_ended' } });
+    await expect(api.addWithCode(DEMO_ONE_LINK)).rejects.toEqual(new Refusal('That link has ended or was already used. Make a new one on the other computer.'));
+  });
+  it('COMPUTERSAPP-17: this Mac’s link is obid’s POST /v1/computers/invite {}; its refusal in obid’s words', async () => {
+    const o = fakeObid();
+    const api = (await computersOn(o.call, o.events))!;
+    o.answers.set('POST /v1/computers/invite', { status: 200, body: { link: DEMO_ONE_LINK, name: 'Studio', fingerprint: '7F3A 91C2 5D0E 44B8 0C6E A1F7 93D2 6B10', expiresAt: '2026-11-23T14:32:00Z', reach: [{ kind: 'lan', address: '192.168.1.30', on: true }, { kind: 'loopback', address: '127.0.0.1', on: true }] } });
+    expect(await api.invite()).toEqual({ name: 'Studio', link: DEMO_ONE_LINK, fingerprint: '7F3A 91C2 5D0E 44B8 0C6E A1F7 93D2 6B10', expiresAt: Date.parse('2026-11-23T14:32:00Z'), reach: [{ kind: 'lan', address: '192.168.1.30', on: true }, { kind: 'lan', address: '127.0.0.1', on: true }] });
+    expect(o.calls.at(-1)).toEqual(['POST', '/v1/computers/invite', {}]);
+    o.answers.set('POST /v1/computers/invite', { status: 409, body: { error: 'This Mac has no address another computer can reach.', reason: 'no_address' } });
+    await expect(api.invite()).rejects.toEqual(new Refusal('This Mac has no address another computer can reach.'));
+  });
+  it('COMPUTERSAPP-4 and 17: what obid doesn’t do yet says so, and calls nothing: over SSH, this Mac’s reach', async () => {
     const o = fakeObid();
     const api = (await computersOn(o.call, o.events))!;
     const before = o.calls.length;
     await expect(api.addOverSsh('studio', () => {})).rejects.toEqual(new Refusal(NOT_YET.ssh));
-    await expect(api.invite()).rejects.toEqual(new Refusal(NOT_YET.code));
-    await expect(api.setReach('lan', false)).rejects.toEqual(new Refusal(NOT_YET.code));
+    await expect(api.setReach('lan', false)).rejects.toEqual(new Refusal(NOT_YET.reach));
     expect(o.calls.length).toBe(before);
   });
   it('a state obid adds later reads as idle, and a route kind as the window names it (loopback: the local network)', async () => {

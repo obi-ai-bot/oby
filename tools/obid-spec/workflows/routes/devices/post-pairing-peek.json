@@ -1,0 +1,236 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/pairing/peek",
+  "version": "1.0.0",
+  "description": "A one link's holder asks the other computer's gateway its name before adding it: the open computer invitation's secret answers {name} and uses nothing up; its code says nothing (401); redeemed once by the secret, it's gone (410) (COMPUTERS-29).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/pairing/peek"
+    }
+  },
+  "steps": [
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0",
+          "direct": [
+            "127.0.0.1:0"
+          ]
+        }
+      }
+    },
+    {
+      "id": "at-studio",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.studio}",
+        "in": "home",
+        "path": "invite-computer",
+        "content": "workflow-presence-0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://studio.example.invalid",
+          "name": "Studio",
+          "computer": true,
+          "presence": "workflow-presence-0123456789abcdef0123456789abcdef"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "secret": {
+              "$matches": "^[A-Za-z0-9_-]{22}$"
+            },
+            "computerOneLink": {
+              "$matches": "^oby-computer:[A-Za-z0-9_-]+$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "its-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.studio.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing/peek",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": "Studio"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "again-nothing-used",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.studio.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing/peek",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": "Studio"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "its-code-says-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.studio.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing/peek",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.code}"
+        },
+        "expect": {
+          "status": 401
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "redeemed-by-its-secret",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.studio.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Mac"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            },
+            "link": {
+              "name": "Studio"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "used-once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.studio.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}",
+          "name": "Mac"
+        },
+        "expect": {
+          "status": 410
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "then-no-name",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.studio.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing/peek",
+        "as": "token",
+        "token": "x",
+        "body": {
+          "credential": "${state.invite.body.secret}"
+        },
+        "expect": {
+          "status": 410
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    }
+  ]
+}

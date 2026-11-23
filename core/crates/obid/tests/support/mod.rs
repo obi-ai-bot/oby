@@ -211,6 +211,25 @@ pub fn put_token(config: &Value, token: &str) {
 /// These tests were written when Sandbox was obid's default (#586) and pin its asks, so each
 /// starts in it unless its home saved a mode of its own. A new install starts in Bypass (#1570):
 /// jobs_api's `start_fresh` and status.rs show that.
+/// `config` with local-network reach off (`"direct": []`) unless it says otherwise, so a test's
+/// obid binds nothing but loopback by itself (COMPUTERS-31): `"direct": null` leaves the key out,
+/// reach on by default, for the test of that.
+pub fn reach_off(config: &Value) -> Value {
+    let mut config = config.clone();
+    if let Some(object) = config.as_object_mut() {
+        match object.get("direct") {
+            None => {
+                object.insert("direct".into(), json!([]));
+            }
+            Some(Value::Null) => {
+                object.remove("direct");
+            }
+            Some(_) => {}
+        }
+    }
+    config
+}
+
 pub fn keep_sandbox(config: &Value) {
     use std::os::unix::fs::PermissionsExt;
     let path = Path::new(config["home"].as_str().expect("home")).join("permissions.json");
@@ -303,7 +322,7 @@ pub fn start_with(
     }
     put_token(config, TOKEN);
     keep_sandbox(config);
-    std::fs::write(&path, config.to_string()).unwrap();
+    std::fs::write(&path, reach_off(config).to_string()).unwrap();
     std::fs::create_dir_all(folder.join("tmp")).unwrap();
     let stderr = folder.join("obid.stderr");
     // The fake gh (tests/agents/gh) always comes before the person's own: obid reads GitHub by
@@ -361,6 +380,7 @@ pub fn start_with(
     let mut line = String::new();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     stdout.read_line(&mut line).unwrap();
+    // A gateway local-network reach made by itself isn't on stdout: its port is in status.
     let gateway = config.get("gateway").map(|_| {
         let mut said = String::new();
         stdout.read_line(&mut said).unwrap();

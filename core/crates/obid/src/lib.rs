@@ -373,9 +373,14 @@ pub async fn serve(
     };
     // The gateway over HTTPS for the owner's other computers, with this computer's own
     // certificate (crate::remote::direct, COMPUTERS-10).
-    let (direct, direct_state) = match &gateway {
-        Some(_) => remote::direct::bind(&config.mac_home, &config.direct).await,
-        None => (Vec::new(), Vec::new()),
+    // Left out of the configuration, it's this machine's own private and tailnet addresses, on by
+    // default (COMPUTERS-31).
+    let direct_auto = (gateway.is_some() && config.direct_auto)
+        .then(|| Arc::new(remote::direct::Auto::new(&config.mac_home)));
+    let (direct, direct_state) = match (&gateway, &direct_auto) {
+        (Some(_), Some(auto)) => auto.start(),
+        (Some(_), None) => remote::direct::bind(&config.mac_home, &config.direct).await,
+        (None, _) => (Vec::new(), Vec::new()),
     };
     let mut gateway_state = gateway_state;
     if let Some(state) = gateway_state.as_mut().filter(|_| !direct_state.is_empty()) {
@@ -544,6 +549,7 @@ pub async fn serve(
         .into_iter()
         .flatten()
         .chain(answering.direct.iter().map(|a| a.port()))
+        .chain(direct_auto.as_ref().map(|auto| auto.port()))
         .collect();
     paired.set_own_ports(host_ports.clone());
     browser.set_host_ports(host_ports);
@@ -615,6 +621,7 @@ pub async fn serve(
         helpers,
         gateway: paired,
         gateway_state,
+        direct_auto: direct_auto.clone(),
         relay,
         connections,
         browser,
@@ -729,10 +736,17 @@ pub async fn serve(
     // The gateway (crate::gateway): paired phones' calls, forwarded to the same router.
     if let Some(listener) = gateway {
         let address = listener.local_addr().map_err(StartError::Serve)?;
-        println!("obid gateway listening on http://{address}");
+        // stdout's second line only for a gateway the configuration names: a launcher reads that
+        // far, and may close it after; local-network reach's own goes to the log alone.
+        if !shared.config.gateway_auto {
+            println!("obid gateway listening on http://{address}");
+        }
         tracing::info!(%address, "obid gateway listening");
         let app = gateway::router(shared.clone(), app.clone());
         remote::direct::serve(direct, &app, &stopping_rx);
+        if let Some(auto) = &direct_auto {
+            auto.arm(app.clone(), stopping_rx.clone());
+        }
         let mut stopping = stopping_rx.clone();
         tokio::spawn(async move {
             let stopped = async move {

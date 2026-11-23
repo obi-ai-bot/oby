@@ -153,6 +153,8 @@ const SHAPES: Shape[] = [
   { name: 'words_12 a member asked', method: 'POST', path: '/v1/obid/sphere/peers/dima/ask', id: 'dima', body: { text: 'What’s the progress?' } },
   { name: 'words_19 a member’s key pinned', method: 'POST', path: '/v1/obid/sphere/pins/dima', id: 'dima', body: { fingerprint: 'ed25519:ab12cd34' } },
   { name: 'COMPUTERSAPP-6 a computer added', method: 'POST', path: '/v1/computers', body: { link: 'oby-computer:eyJuYW1lIjoiZGV2Ym94In0', code: '482913' } },
+  { name: 'COMPUTERSAPP-16 a computer added with one link', method: 'POST', path: '/v1/computers', body: { link: 'oby-computer:AkJCQkJCQkJCQkJCQkJCQkJ_OpHCXQ5EuAxuofeT0msQfzqRwl0ORLgMbqH3k9JrEATAqAEoIPs' } },
+  { name: 'COMPUTERSAPP-17 this Mac’s link', method: 'POST', path: '/v1/computers/invite', body: {} },
   { name: 'WORDS-13 work nobody’s watching', method: 'POST', path: '/v1/accounts/a1/background', id: 'a1', body: { given: true } },
   { name: 'WORDS-1 a title', method: 'PATCH', path: '/v1/jobs/j1', id: 'j1', body: { title: 'Mine' } },
   { name: 'WORDS-1 an inbox answer', method: 'POST', path: '/v1/inbox/i1/answer', id: 'i1', body: { answer: 'SQLite', clientRequestId: 'k2' } },

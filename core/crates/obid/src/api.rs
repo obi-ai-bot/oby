@@ -44,6 +44,9 @@ pub struct Shared {
     pub gateway: crate::gateway::Gateway,
     /// `status.gateway`: whether the gateway listens, and why not; none with no `gateway` configured.
     pub gateway_state: Option<serde_json::Value>,
+    /// Local-network reach on by default, when the configuration leaves `direct` out
+    /// (crate::remote::direct::Auto, COMPUTERS-31): what it offers changes with the interfaces.
+    pub direct_auto: Option<Arc<crate::remote::direct::Auto>>,
     /// The phones' relay through the Obysphere, sealed end to end (crate::relay).
     pub relay: Arc<crate::relay::Relay>,
     /// Connected apps and their job-scoped MCP broker.
@@ -461,6 +464,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::remote::window::list).post(crate::remote::window::add),
         )
         .route("/v1/computers/link", post(crate::remote::window::read_link))
+        .route("/v1/computers/invite", post(crate::remote::window::invite))
         .route(
             "/v1/computers/current",
             axum::routing::put(crate::remote::window::use_computer),
@@ -1266,7 +1270,12 @@ async fn status(
         // Remote access through a Cloudflare Tunnel is gone (#896): always off, for the apps that
         // still decode it.
         tunnel: serde_json::json!({"state": "off", "detail": null}),
-        gateway: shared.gateway_state.clone(),
+        gateway: shared.gateway_state.clone().map(|mut state| {
+            if let Some(auto) = &shared.direct_auto {
+                state["direct"] = serde_json::Value::Array(auto.last());
+            }
+            state
+        }),
         vault_problem: crate::vault::check().err(),
         memory: shared
             .jobs

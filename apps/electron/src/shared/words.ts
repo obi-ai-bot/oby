@@ -85,6 +85,13 @@ const COMPUTER = /^\/v1\/computers\/[^/]+$/;
 // Add computer (a click holds its form's boxes) both hold. The sheet sends its six digits alone, so
 // a held text stands for it by its digits: "482 913", as the other computer shows it
 const COMPUTER_ADD = '/v1/computers';
+// A computer added with one link (COMPUTERSAPP-16, the owner's word of 2026-11-23): exactly
+// `{link}`, signed by the link the owner pasted, which Enter in its box and Add computer (a click
+// holds its form's boxes) both hold
+// This Mac's own one link made for another Mac (COMPUTERSAPP-17): an empty body, by the button that
+// opens its sheet, so a page can't make one with no click of the owner's
+export const SHOW_LINK = 'Show this computer’s link';
+const COMPUTER_INVITE = '/v1/computers/invite';
 const digitsOf = (s: string) => s.replace(/\D/g, '');
 
 // whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
@@ -170,7 +177,9 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   // a member's key the owner compared: the fingerprint alone (the path says whose), by Verify
   if (method === 'POST' && PIN.test(p)) return text(body.fingerprint) && shaped(body, { fingerprint: text }) ? [PIN_VERIFY] : null;
   // the yes alone: a no needs no signature (obid keeps it either way)
+  if (method === 'POST' && p === COMPUTER_ADD && body.code === undefined) return text(body.link) && body.link.trim() && shaped(body, { link: text }) ? [body.link] : null;
   if (method === 'POST' && p === COMPUTER_ADD) return text(body.link) && text(body.code) && /^\d{6}$/.test(body.code) && shaped(body, { link: text, code: text }) ? [body.code] : null;
+  if (method === 'POST' && p === COMPUTER_INVITE) return Object.keys(body).length === 0 ? [SHOW_LINK] : null;
   if (method === 'POST' && /^\/v1\/accounts\/[^/]+\/background$/.test(p)) return body.given === true && shaped(body, { given: flag }) ? [BACKGROUND_YES] : null;
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;
   if (method === 'POST' && /^\/v1\/inbox\/[^/]+\/answer$/.test(p)) return text(body.answer) && shaped(body, { answer: text, clientRequestId: requestKey }) ? [body.answer] : null;
@@ -202,7 +211,7 @@ export function owners(method: string, path: string, body: unknown, held: string
     const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
     const take = w === TAKE_CONTROL && /\/take$/.test(path.split('?')[0]);
     const skip = w === SKIP && BROWSER_ANSWER.test(path.split('?')[0]);
-    const code = i === 0 && method === 'POST' && path.split('?')[0] === COMPUTER_ADD;
+    const code = i === 0 && method === 'POST' && path.split('?')[0] === COMPUTER_ADD && isBody(body) && body.code !== undefined;
     const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (fix && norm(h) === norm(ASK_TO_FIX)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h))) || (code && digitsOf(h) === n)));
     if (at < 0) return null;
     used.push(at);

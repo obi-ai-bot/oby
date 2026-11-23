@@ -1,0 +1,222 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/computers/invite",
+  "version": "1.0.0",
+  "description": "Studio's window makes its one link as its owner's signed act (unsigned 403): no code, at most 100 characters; the Mac reads it (needsCode false) and adds Studio with the link alone, once (a second add is 422 code_ended); an obid with no direct address says what to set (409 no_address) (COMPUTERS-29, 30).",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/computers/invite"
+    }
+  },
+  "steps": [
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0",
+          "direct": [
+            "127.0.0.1:0"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mac",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "mac",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "owner",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.studio}"
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "unsigned-makes-nothing",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/computers/invite",
+        "body": {},
+        "expect": {
+          "status": 403
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-30"
+        ]
+      }
+    },
+    {
+      "id": "made",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/computers/invite",
+        "as": "device",
+        "device": "${state.owner}",
+        "body": {},
+        "expect": {
+          "status": 200,
+          "body": {
+            "link": {
+              "$matches": "^oby-computer:[A-Za-z0-9_-]{60,87}$"
+            },
+            "name": {
+              "$type": "string"
+            },
+            "fingerprint": {
+              "$matches": "^([0-9A-F]{4} ){7}[0-9A-F]{4}$"
+            },
+            "expiresAt": {
+              "$type": "string"
+            },
+            "reach": [
+              {
+                "kind": "loopback",
+                "address": "127.0.0.1",
+                "on": true
+              }
+            ],
+            "code": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-30"
+        ]
+      }
+    },
+    {
+      "id": "read-needs-no-code",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/link",
+        "body": {
+          "link": "${state.made.body.link}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "name": {
+              "$type": "string"
+            },
+            "needsCode": false
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "added-with-the-link-alone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "as": "device",
+        "device": "${state.device}",
+        "body": {
+          "link": "${state.made.body.link}"
+        },
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$type": "string"
+            },
+            "name": {
+              "$type": "string"
+            },
+            "state": "connected"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "once",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "as": "device",
+        "device": "${state.device}",
+        "body": {
+          "link": "${state.made.body.link}"
+        },
+        "expect": {
+          "status": 422,
+          "body": {
+            "reason": "code_ended"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-29"
+        ]
+      }
+    },
+    {
+      "id": "no-direct-address",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/invite",
+        "as": "device",
+        "device": "${state.device}",
+        "body": {},
+        "expect": {
+          "status": 409,
+          "body": {
+            "reason": "no_address"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-30"
+        ]
+      }
+    }
+  ]
+}

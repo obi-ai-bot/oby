@@ -1436,13 +1436,16 @@
             "COMPUTERS-16",
             "COMPUTERS-17..25",
             "COMPUTERS-26",
-            "COMPUTERS-28"
+            "COMPUTERS-28",
+            "COMPUTERS-29",
+            "COMPUTERS-30"
           ],
           "elsewhere": {
             "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
             "COMPUTERS-15": "obid's unit tests (computers_15_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
             "COMPUTERS-17..18": "proposed: proven by the lab's lab-remote workflows (LAB-REMOTE-n) until obid's side is ported, then by its tests in core/crates/obid (docs/contracts/remote.md, Status).",
-            "COMPUTERS-27": "a proxy client through the door, which no workflow step has: core/crates/obid/tests/remote.rs `computers_27_…`"
+            "COMPUTERS-27": "a proxy client through the door, which no workflow step has: core/crates/obid/tests/remote.rs `computers_27_…`",
+            "COMPUTERS-31": "obid's unit tests (computers_31_…, src/config.rs, src/remote/direct.rs) and core/crates/obid/tests/remote.rs on a real obid: what it binds depends on the machine's own interfaces, which no workflow fixes; workflows run with \"direct\": [] (tools/obid-spec/src/obid.rs)."
           }
         }
       }
@@ -2242,7 +2245,9 @@
             "COMPUTERSAPP-12": "the Electron app's computer picker, offered once obid answers GET /v1/computers, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_12_…, and the picker on obid's routes)",
             "COMPUTERSAPP-13": "the Electron app's message box on Home, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_13_…); its draft kept while no route answers is proposed",
             "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
-            "COMPUTERSAPP-15": "the Electron app's main process naming the computer in use with Oby-Computer, proven by apps/electron/src/renderer/src/test/engine.test.ts (computersapp_15_…); obid forwards what it names (docs/contracts/remote.md)"
+            "COMPUTERSAPP-15": "the Electron app's main process naming the computer in use with Oby-Computer, proven by apps/electron/src/renderer/src/test/engine.test.ts (computersapp_15_…); obid forwards what it names (docs/contracts/remote.md)",
+            "COMPUTERSAPP-16": "the Electron app's Add a computer sheet with one link, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_16_…, and the picker on obid's routes) and words.test.ts; obid's side is COMPUTERS-29 (post-computers-invite.json)",
+            "COMPUTERSAPP-17": "the Electron app's This Mac's link sheet, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_17_…, and the picker on obid's routes) and words.test.ts; obid's side is COMPUTERS-30 (post-computers-invite.json)"
           }
         }
       }

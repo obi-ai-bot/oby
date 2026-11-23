@@ -581,6 +581,11 @@ export type ComputerWire = {
   tried?: { route: string; what?: string; why: string }[];
 };
 export type ComputersWire = { current: string; computers: ComputerWire[] };
+// POST /v1/computers/link: what a link holds, read by obid; `needsCode` false for a one link
+// (COMPUTERS-29), which adds alone; left out by an obid before one links, so read as true
+export type ComputerLinkWire = { name: string; fingerprint: string | null; routes?: { kind: string; address: string }[]; needsCode?: boolean };
+// POST /v1/computers/invite (COMPUTERS-30): this Mac's one link for another Mac, and what it holds
+export type ComputerInviteWire = { link: string; name: string; fingerprint: string; expiresAt: string; reach: { kind: string; address: string; on: boolean }[] };
 // `computer.route`: moved from one route to another, or none answers, with each tried
 export type ComputerRouteWire =
   | { id: string; change: 'moved'; from: string; to: string }

@@ -172,6 +172,204 @@ pub fn serve(directs: Vec<Direct>, app: &axum::Router, stopping: &watch::Receive
     }
 }
 
+/// The first port local-network reach tries (COMPUTERS-31), and how many after it it may take
+/// when one is busy: the link carries the port it got.
+pub const AUTO_PORT: u16 = 8443;
+const AUTO_PORTS: u16 = 10;
+
+/// Whether local-network reach serves on `ip`: a private IPv4 address (RFC 1918), a tailnet's
+/// (100.64.0.0/10, Tailscale's among them), or a unique-local IPv6 one (fc00::/7, Tailscale's
+/// fd7a:115c:a1e0::/48 among them). Never loopback, link-local (a link can't carry its scope),
+/// unspecified (`0.0.0.0`, `::`) or public.
+pub fn private(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_private() || (a == 100 && (64..128).contains(&b))
+        }
+        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
+
+/// This machine's own addresses local-network reach serves on now, as its interfaces have them.
+pub fn private_addresses() -> Vec<std::net::IpAddr> {
+    super::invite::interface_addresses(true)
+        .into_iter()
+        .filter(|ip| private(*ip))
+        .collect()
+}
+
+/// Local-network reach, on by default (the owner's word of 2026-11-23, COMPUTERS-31): with no
+/// `direct` in the configuration, the gateway is served over HTTPS on each of this machine's own
+/// private and tailnet addresses ([`private`]), never a public or wildcard one, on
+/// [`AUTO_PORT`] or the next free one. Addresses that came since (another Wi-Fi) are bound when a
+/// link is made ([`Auto::refresh`]); one that went is left out of what's offered.
+pub struct Auto {
+    home: std::path::PathBuf,
+    held: std::sync::Mutex<Held>,
+    serving: std::sync::OnceLock<(axum::Router, watch::Receiver<bool>)>,
+}
+
+#[derive(Default)]
+struct Held {
+    port: Option<u16>,
+    tls: Option<(Arc<rustls::ServerConfig>, super::pin::Pin)>,
+    /// Each address bound so far, and what status says of it.
+    bound: Vec<(std::net::IpAddr, Value)>,
+    /// What the latest look at the interfaces offered.
+    offered: Vec<Value>,
+}
+
+impl Auto {
+    pub fn new(home: &Path) -> Auto {
+        Auto {
+            home: home.to_path_buf(),
+            held: std::sync::Mutex::new(Held::default()),
+            serving: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Binds this machine's private addresses now, before the gateway is served: the listeners,
+    /// and what status says of each.
+    pub fn start(&self) -> (Vec<Direct>, Vec<Value>) {
+        self.bind_new(&private_addresses())
+    }
+
+    /// Serves what's bound from now on with the gateway's `app`, until obid stops.
+    pub fn arm(&self, app: axum::Router, stopping: watch::Receiver<bool>) {
+        let _ = self.serving.set((app, stopping));
+    }
+
+    /// The port it serves on, or would: [`AUTO_PORT`] before it has one.
+    pub fn port(&self) -> u16 {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .port
+            .unwrap_or(AUTO_PORT)
+    }
+
+    /// What it offered at its last look, as `GET /v1/status` says it under `gateway.direct`.
+    pub fn last(&self) -> Vec<Value> {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .offered
+            .clone()
+    }
+
+    /// Looks at the interfaces again: an address that came is bound and served now, one that went
+    /// is no longer offered. What it offers, in [`bind`]'s shape.
+    pub fn refresh(&self) -> Vec<Value> {
+        let (new, offered) = self.bind_new(&private_addresses());
+        if let Some((app, stopping)) = self.serving.get() {
+            serve(new, app, stopping);
+        }
+        offered
+    }
+
+    fn bind_new(&self, ips: &[std::net::IpAddr]) -> (Vec<Direct>, Vec<Value>) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh: Vec<std::net::IpAddr> = ips
+            .iter()
+            .copied()
+            .filter(|ip| !held.bound.iter().any(|(b, _)| b == ip))
+            .collect();
+        let mut directs = Vec::new();
+        if !fresh.is_empty() && held.tls.is_none() {
+            let host = gethostname::gethostname().to_string_lossy().into_owned();
+            match certificate::load_or_make(&self.home, &host).and_then(|c| Ok((tls(&c)?, c.pin))) {
+                Ok(made) => held.tls = Some(made),
+                Err(detail) => tracing::warn!("no local-network reach: {detail}"),
+            }
+        }
+        if let (false, Some((tls, pin))) = (fresh.is_empty(), held.tls.clone()) {
+            // The port: the one it has, else the first of its range every address takes, else
+            // the first any takes.
+            let ports: Vec<u16> = match held.port {
+                Some(port) => vec![port],
+                None => (AUTO_PORT..AUTO_PORT + AUTO_PORTS).collect(),
+            };
+            let mut best: Option<(u16, Tried)> = None;
+            for port in ports {
+                let tried: Vec<_> = fresh
+                    .iter()
+                    .map(|ip| (*ip, listen(SocketAddr::new(*ip, port))))
+                    .collect();
+                let took = tried.iter().filter(|(_, l)| l.is_ok()).count();
+                let better = best
+                    .as_ref()
+                    .is_none_or(|(_, b)| took > b.iter().filter(|(_, l)| l.is_ok()).count());
+                let all = took == fresh.len();
+                if better {
+                    best = Some((port, tried));
+                }
+                if all {
+                    break;
+                }
+            }
+            if let Some((port, tried)) = best {
+                if tried.iter().any(|(_, l)| l.is_ok()) {
+                    held.port = Some(port);
+                }
+                for (ip, listener) in tried {
+                    let address = SocketAddr::new(ip, port);
+                    let state = match listener.and_then(|l| Direct::new(l, tls.clone(), pin)) {
+                        Ok(direct) => {
+                            directs.push(direct);
+                            json!({"address": address.to_string(), "state": "listening",
+                                   "pin": pin.to_string()})
+                        }
+                        Err(e) => {
+                            tracing::warn!("no direct address {address}: {e}");
+                            json!({"address": address.to_string(), "state": "down",
+                                   "detail": format!("can't listen on {address}: {e}")})
+                        }
+                    };
+                    // A busy address is tried again at the next look.
+                    if state["state"] == "listening" {
+                        held.bound.push((ip, state));
+                    }
+                }
+            }
+        }
+        let offered: Vec<Value> = ips
+            .iter()
+            .filter_map(|ip| {
+                held.bound
+                    .iter()
+                    .find(|(b, _)| b == ip)
+                    .map(|(_, s)| s.clone())
+            })
+            .collect();
+        held.offered = offered.clone();
+        (directs, offered)
+    }
+}
+
+/// Each address tried on one port, and its listener or why not.
+type Tried = Vec<(std::net::IpAddr, std::io::Result<TcpListener>)>;
+
+/// A listener on `address` for tokio, bound now.
+fn listen(address: SocketAddr) -> std::io::Result<TcpListener> {
+    let listener = std::net::TcpListener::bind(address)?;
+    listener.set_nonblocking(true)?;
+    TcpListener::from_std(listener)
+}
+
+/// What a computer's invitation offers now (COMPUTERS-13, 30, 31): with local-network reach on by
+/// default, this machine's private addresses as its interfaces have them at this moment;
+/// otherwise the `direct` addresses obid bound when it started.
+pub fn offered(shared: &crate::api::Shared) -> Value {
+    match &shared.direct_auto {
+        Some(auto) => Value::Array(auto.refresh()),
+        None => shared
+            .gateway_state
+            .as_ref()
+            .map_or(Value::Null, |state| state["direct"].clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +401,67 @@ mod tests {
         let said = pinned::said(&refused);
         assert!(said.starts_with(pinned::NOT_THE_PINNED), "{said}");
         assert!(said.contains(&mine.pin.to_string()), "{said}");
+    }
+
+    #[test]
+    fn computers_31_reach_serves_only_private_and_tailnet_addresses() {
+        for ip in [
+            "192.168.1.20",
+            "10.0.0.2",
+            "172.16.4.1",
+            "100.64.0.9",
+            "100.127.255.1",
+            "fd00::2",
+            "fd7a:115c:a1e0::9",
+        ] {
+            assert!(private(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "0.0.0.0",
+            "::",
+            "127.0.0.1",
+            "::1",
+            "169.254.3.4",
+            "fe80::1",
+            "203.0.113.9",
+            "100.128.0.1",
+            "8.8.8.8",
+            "2001:db8::1",
+        ] {
+            assert!(!private(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(private_addresses().into_iter().all(private));
+    }
+
+    #[tokio::test]
+    async fn computers_31_an_address_that_came_is_bound_and_one_that_went_isnt_offered() {
+        let home = std::env::temp_dir().join(format!("obid-reach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // Port 8443 held by something else: the next free one, which the offer carries.
+        let held = std::net::TcpListener::bind(("127.0.0.1", AUTO_PORT)).ok();
+        let auto = Auto::new(&home);
+        let v4: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let v6: std::net::IpAddr = "::1".parse().unwrap();
+        let (bound, offered) = auto.bind_new(&[v4]);
+        assert_eq!(bound.len(), 1, "{offered:?}");
+        let port = auto.port();
+        if held.is_some() {
+            assert_ne!(port, AUTO_PORT);
+        }
+        assert!((AUTO_PORT..AUTO_PORT + AUTO_PORTS).contains(&port));
+        assert_eq!(offered[0]["address"], format!("127.0.0.1:{port}"));
+        assert_eq!(offered[0]["state"], "listening");
+        // Another address came: bound on the same port, both offered.
+        let (bound, offered) = auto.bind_new(&[v4, v6]);
+        assert_eq!(bound.len(), 1, "only the new one");
+        assert_eq!(offered.len(), 2, "{offered:?}");
+        assert_eq!(offered[1]["address"], format!("[::1]:{port}"));
+        // The first went: it isn't offered any more.
+        let (bound, offered) = auto.bind_new(&[v6]);
+        assert!(bound.is_empty());
+        assert_eq!(offered.len(), 1);
+        assert_eq!(auto.last(), offered);
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }
