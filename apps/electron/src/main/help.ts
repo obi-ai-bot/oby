@@ -156,9 +156,10 @@ export async function scanText(text: string, gitleaks: Gitleaks | null = appGitl
 // The same scan on bytes that leave (the Obysphere's picture, SPHEREAPP-16): every printable ASCII
 // run of them as it is, everything else a space, so what a secret is written in reads as text and
 // gitleaks still finds its canary. A finding, or a scan that can't run, sends nothing.
+// eslint-disable-next-line no-control-regex
+export const printable = (bytes: Uint8Array) => Buffer.from(bytes).toString('latin1').replace(/[^\x20-\x7e\n]/g, ' ');
 export const scanBytes = (bytes: Uint8Array, gitleaks?: Gitleaks | null): Promise<Scan> =>
-  // eslint-disable-next-line no-control-regex
-  scanText(Buffer.from(bytes).toString('latin1').replace(/[^\x20-\x7e\n]/g, ' '), gitleaks === undefined ? appGitleaks() : gitleaks);
+  scanText(printable(bytes), gitleaks === undefined ? appGitleaks() : gitleaks);
 
 // Copy Diagnostics: copied when the scan is clean, else nothing and why (HELP-2 to 4). null: copied
 export async function copyDiagnostics(the: { facts?: () => Promise<Facts>; scan?: (text: string) => Promise<Scan>; write?: (text: string) => void } = {}): Promise<string | null> {

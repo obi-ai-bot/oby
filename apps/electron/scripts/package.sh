@@ -4,7 +4,7 @@
 #   0. Continue with ChatGPT's gate (src/renderer/src/chatgptGate.ts, docs/contracts/chatgpt-sign-in.md,
 #      "The gate"): left empty, the app is built without the button; set, it must be the link of a
 #      comment on #1879 that GitHub says exists, or nothing is built;
-#   1. obid, gh and gitleaks, staged and signed by helpers.sh when what goes in changed since;
+#   1. obid, gh, gitleaks and oby-picture-text, staged and signed by helpers.sh when what goes in changed since;
 #   2. main, preload and the renderer (electron-vite);
 #   3. per architecture: window-style built for it, the app signed with Developer ID and the
 #      hardened runtime (electron-builder), checked, scanned for secrets before it leaves this Mac,
@@ -92,10 +92,14 @@ for arch in $archs; do
   for helper in "$unpacked/spawn-helper" "$unpacked/pty.node"; do
     [[ "$(codesign -dv "$helper" 2>&1)" == *"TeamIdentifier=$team"* ]] || die "${helper:t} isn't signed by team $team"
   done
-  for helper in Helpers/obid MacOS/gh MacOS/gitleaks; do
+  for helper in Helpers/obid MacOS/gh MacOS/gitleaks MacOS/oby-picture-text; do
     [[ "$(codesign -dv "$app/Contents/$helper" 2>&1)" == *"TeamIdentifier=$team"* ]] || die "$helper isn't signed by team $team"
   done
   [[ "$("$app/Contents/MacOS/gitleaks" version 2>&1)" == 8.30.1 ]] || die "the app's gitleaks doesn't run"
+  # with no image it says how it's used (64): it runs, so the Obysphere's picture can be scanned
+  [[ "$(lipo -archs "$app/Contents/MacOS/oby-picture-text")" == "x86_64 arm64" ]] || die "the app's oby-picture-text isn't universal"
+  code=0; "$app/Contents/MacOS/oby-picture-text" > /dev/null 2>&1 || code=$?
+  (( code == 64 )) || die "the app's oby-picture-text doesn't run"
   # without it the updater never downloads (electron-updater reads its cache folder's name there)
   cmp -s build/app-update.yml "$app/Contents/Resources/app-update.yml" || die "$name.app has no app-update.yml: it could never update"
 

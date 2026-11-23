@@ -63,9 +63,10 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
-  # obid, gh and gitleaks, staged and signed by scripts/helpers.sh (gitleaks with its own
-  # entitlement): obid finds the others and its plug-ins from its own
-  # path (core/crates/obid/src/app.rs). Their signatures stay as staged.
+  # obid, gh, gitleaks and oby-picture-text, staged and signed by scripts/helpers.sh (gitleaks with
+  # its own entitlement): obid finds the others and its plug-ins from its own
+  # path (core/crates/obid/src/app.rs), main oby-picture-text beside its own executable
+  # (main/pictureText.ts). Their signatures stay as staged.
   extraFiles:
     - from: build/helpers/Contents/Helpers
       to: Helpers
@@ -85,5 +86,5 @@ mac:
   # one by one they'd each wait on Apple's timestamp server (over 200 of them)
   signIgnore:
     - /Contents/Helpers/obid$
-    - /Contents/MacOS/(gh|gitleaks)$
+    - /Contents/MacOS/(gh|gitleaks|oby-picture-text)$
     - \.pak$

@@ -485,6 +485,36 @@ export const centreSquare = (width: number, height: number) => {
 };
 // the most pixels main decodes an owner's image to before it's refused (8192 × 8192)
 export const PICTURE_PIXELS = 8192 * 8192;
+export const PICTURE_SIDE_MAX = 8192;
+// An owner's PNG or JPEG's size as its header says it, read before anything decodes it (SPHEREAPP-16):
+// a PNG's IHDR, a JPEG's first frame header (SOF) before its first scan; null for anything else, a
+// header cut short, or a side of 0. Only headers are read: never a byte of image data inflated.
+const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+export function imageSize(bytes: Uint8Array): { width: number; height: number } | null {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sized = (width: number, height: number) => (width > 0 && height > 0 ? { width, height } : null);
+  if (bytes.length >= 24 && PNG_SIGNATURE.every((b, i) => bytes[i] === b)) {
+    // the first chunk is IHDR, 13 bytes long
+    if (v.getUint32(8) !== 13 || String.fromCharCode(...bytes.subarray(12, 16)) !== 'IHDR') return null;
+    return sized(v.getUint32(16), v.getUint32(20));
+  }
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let at = 2;
+  while (at + 4 <= bytes.length) {
+    if (bytes[at] !== 0xff) return null;
+    const marker = bytes[at + 1];
+    // fill bytes, and the markers with no length (TEM, RSTn)
+    if (marker === 0xff) { at++; continue; }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { at += 2; continue; }
+    // a scan, or the image's end, before any frame header
+    if (marker === 0xda || marker === 0xd9) return null;
+    const length = v.getUint16(at + 2);
+    if (length < 2) return null;
+    if (SOF.has(marker)) return length >= 7 && at + 9 <= bytes.length ? sized(v.getUint16(at + 7), v.getUint16(at + 5)) : null;
+    at += 2 + length;
+  }
+  return null;
+}
 export function fitPicture(encode: (side: number) => Uint8Array): Uint8Array | null {
   for (const side of PICTURE_SIDES) {
     const png = encode(side);
