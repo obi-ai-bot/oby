@@ -6,8 +6,9 @@
 // the window shows (obid's job files only say when a task ended, as evidence). Tasks stay tiny: one
 // line in one file of the scratch repository, a file of its own for each scenario that makes a
 // pull request, so the run never conflicts with itself.
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
 
 const MIN = 60_000;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -640,49 +641,60 @@ export default [
   },
   {
     id: 'edit-project',
-    title: 'Make a project, edit its repositories and name, then delete it',
-    contract: 'projects.md (PROJECTS-25 to 31)',
+    title: 'Make a project with a folder, edit its folders and name, then delete it',
+    contract: 'projects.md (PROJECTS-20, 25 to 31)',
     run: async (t) => {
       await home(t);
       const name = `Oby drive ${stamp.slice(11).replace(':', '')}`;
-      const add = t.page.getByRole('button', { name: 'New project' });
-      if (!(await add.count())) throw new Error('no New project in the side panel (projects off?)');
-      await add.first().click();
-      await t.page.locator('#project-name').fill(name);
-      await t.click('Add from GitHub…');
-      const repoItem = t.page.getByRole('menuitemcheckbox', { name: t.repo, exact: false });
-      await until(t, () => repoItem.count(), 15_000).catch(() => {});
-      if (!(await repoItem.count())) { await t.shot('no-repo'); throw new Error(`${t.repo} isn't in Add from GitHub…’s list`); }
-      await repoItem.first().click();
-      await t.shot('new');
-      await t.click('Create project');
-      const head = t.page.locator('.project-group', { hasText: name });
-      await head.first().waitFor({ timeout: 15_000 });
-      await t.shot('made');
-      // edit: its ⋮, Edit project…
-      await t.page.getByRole('button', { name: `More for ${name}` }).click();
-      await t.page.getByRole('menuitem', { name: 'Edit project…' }).click();
-      await t.see('Edit project', { ms: 5000 });
-      const rows = await t.page.locator('.project-sheet .project-row').allInnerTexts();
-      t.note(`its sheet shows: ${rows.map((r) => r.replace(/\n+/g, ' ')).join(' | ')}`);
-      await t.shot('edit');
-      await t.page.getByRole('button', { name: `Remove ${t.repo.split('/')[1]}` }).click();
-      await t.page.locator('#project-name').fill(`${name} edited`);
-      await t.shot('edited');
-      await t.click('Save');
-      await t.page.locator('.project-group', { hasText: `${name} edited` }).first().waitFor({ timeout: 15_000 });
-      // what obid kept, as the sheet shows it when opened again
-      await t.page.getByRole('button', { name: `More for ${name} edited` }).click();
-      await t.page.getByRole('menuitem', { name: 'Edit project…' }).click();
-      await t.see('Edit project', { ms: 5000 });
-      const kept = await t.page.locator('.project-sheet .project-row').count();
-      t.note(`opened again it has ${kept} folders and repositories`);
-      await t.shot('reopened');
-      await t.click('Delete project…');
-      await t.click('Delete project');
-      await until(t, async () => !(await t.page.locator('.project-group', { hasText: `${name} edited` }).count()), 15_000);
-      await t.shot('deleted');
-      if (kept) throw new Error(`the removed repository came back: ${kept} rows`);
+      // a scratch folder of this run's own, made here and removed at the end (never the owner's
+      // files): in the home, since obid refuses /tmp and ~/Library; main's folder dialog answered
+      // with it, as no one can click a hidden window's sheet
+      const scratch = mkdtempSync(join(homedir(), '.oby-drive-folder-'));
+      const folder = basename(scratch);
+      try {
+        await t.app.evaluate(({ dialog }, to) => { globalThis.__obyDriveOpen ??= dialog.showOpenDialog; dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [to] }); }, scratch);
+        const add = t.page.getByRole('button', { name: 'New project' });
+        if (!(await add.count())) throw new Error('no New project in the side panel (projects off?)');
+        await add.first().click();
+        await t.page.locator('#project-name').fill(name);
+        const offered = await t.page.locator('.project-sheet .project-adds button').allInnerTexts();
+        t.note(`the sheet offers: ${offered.join(', ')}`);
+        if (offered.join() !== 'Add a folder…') throw new Error(`the New project sheet offers ${offered.join(', ')}, not only Add a folder…`);
+        await t.click('Add a folder…');
+        await t.page.locator('.project-sheet .project-row', { hasText: folder }).first().waitFor({ timeout: 10_000 });
+        await t.shot('new');
+        await t.click('Create project');
+        const head = t.page.locator('.project-group', { hasText: name });
+        await head.first().waitFor({ timeout: 15_000 });
+        await t.shot('made');
+        // edit: its ⋮, Edit project…
+        await t.page.getByRole('button', { name: `More for ${name}` }).click();
+        await t.page.getByRole('menuitem', { name: 'Edit project…' }).click();
+        await t.see('Edit project', { ms: 5000 });
+        const rows = await t.page.locator('.project-sheet .project-row').allInnerTexts();
+        t.note(`its sheet shows: ${rows.map((r) => r.replace(/\n+/g, ' ')).join(' | ')}`);
+        await t.shot('edit');
+        await t.page.getByRole('button', { name: `Remove ${folder}` }).click();
+        await t.page.locator('#project-name').fill(`${name} edited`);
+        await t.shot('edited');
+        await t.click('Save');
+        await t.page.locator('.project-group', { hasText: `${name} edited` }).first().waitFor({ timeout: 15_000 });
+        // what obid kept, as the sheet shows it when opened again
+        await t.page.getByRole('button', { name: `More for ${name} edited` }).click();
+        await t.page.getByRole('menuitem', { name: 'Edit project…' }).click();
+        await t.see('Edit project', { ms: 5000 });
+        const kept = await t.page.locator('.project-sheet .project-row').count();
+        t.note(`opened again it has ${kept} folders and repositories`);
+        await t.shot('reopened');
+        await t.click('Delete project…');
+        await t.click('Delete project');
+        await until(t, async () => !(await t.page.locator('.project-group', { hasText: `${name} edited` }).count()), 15_000);
+        await t.shot('deleted');
+        if (kept) throw new Error(`the removed folder came back: ${kept} rows`);
+      } finally {
+        await t.app.evaluate(({ dialog }) => { if (globalThis.__obyDriveOpen) dialog.showOpenDialog = globalThis.__obyDriveOpen; }).catch(() => {});
+        rmSync(scratch, { recursive: true, force: true });
+      }
     },
   },
   {
@@ -989,7 +1001,10 @@ export default [
       if (!ended(job)) throw new Error('the task didn’t end in 10 minutes');
       t.note(`it ended ${job.status}, ${job.commits ?? 0} commits, ${job.published ?? 'nothing published'}`);
       const more = t.page.getByRole('button', { name: `More for ${title}`, exact: true }).filter({ visible: true });
-      const row = t.page.locator('.convo-kid', { hasText: title });
+      // the task itself, by its id, never by its title: the conversation's own row quotes the title in
+      // its preview line and stays when the task goes
+      const row = t.page.locator(`.convo-kid[data-task-row="${id}"]`);
+      const homeCard = t.page.locator(`article.ask-card[data-task-ask="${id}"]`);
       await until(t, () => more.count(), 30_000).catch(() => { throw new Error(`no “More for ${title}” on its card`); });
       t.note(`before Delete: its rows in the side panel ${await row.count()}`);
       await t.shot('ended');
@@ -1034,11 +1049,12 @@ export default [
         const kept = jobOrNone(t, id) ? `obid still keeps it (${jobOrNone(t, id).status})` : 'obid deleted its job file';
         throw new Error(`10 s after Delete task it is still shown: its card ${(await card.count()) ? 'still in the conversation' : 'gone'}; ${await row.count()} side-panel rows; its card's menu ${offers}; ${kept}; new on screen: ${added.length ? added.slice(0, 6).map((l) => `“${l.slice(0, 120)}”`).join(', ') : 'nothing (no words from obid)'}`);
       }
-      // Home and the side panel, as the owner comes back to them: no card, no row
+      // Home and the side panel, as the owner comes back to them: no card of its own on Home, no row
+      // of its own under its conversation (the conversation's row, which may quote it, isn't it)
       await home(t);
-      const left = await t.page.locator('article.ask-card, .convo-kid, .convo-row').filter({ hasText: title }).count();
+      const left = { 'Home card': await homeCard.count(), 'side-panel row': await row.count() };
       await t.shot('home');
-      if (left) throw new Error(`deleted, the task is still on Home or in the side panel (${left})`);
+      if (left['Home card'] || left['side-panel row']) throw new Error(`deleted, the task is still shown: ${Object.entries(left).filter(([, n]) => n).map(([w, n]) => `${n} ${w}`).join(', ')}`);
       t.note(`obid's job file is ${jobOrNone(t, id) ? 'still there' : 'gone'}`);
     },
   },

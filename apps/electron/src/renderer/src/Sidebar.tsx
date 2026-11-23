@@ -488,6 +488,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             title={kidTitle(k)}
             onClick={() => { markSeen(k.id); onOpenAgent?.(k.id); }}
             onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
+            data-task-row={k.id}
           >
             <BrandMark brand={k.brand} size={14} />
             <span className="convo-kid-text"><b>{k.title}</b> · {kidLine(k)}</span>

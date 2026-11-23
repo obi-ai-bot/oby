@@ -283,33 +283,27 @@ describe('PROJECTS-20', () => {
     expect(dialog()!.querySelector('h2')!.textContent).toBe('New project');
     expect(dialog()!.querySelector('.modal-lede')!.textContent).toBe('A project is the folders and repositories its conversations work in.It stays in this profile.');
     expect([...dialog()!.querySelectorAll('.modal-label')].map((l) => l.textContent)).toEqual(['Name', 'Folders and repositories']);
-    expect(buttons(dialog()!).map((b) => b.textContent)).toEqual(['Add a folder…', 'Add from GitHub…', 'Cancel', 'Create project']);
+    expect(buttons(dialog()!).map((b) => b.textContent)).toEqual(['Add a folder…', 'Cancel', 'Create project']);
     const create = () => button('Create project', dialog()!)!;
     expect(create().disabled).toBe(true);
     await fill('#project-name', '   ');
     expect(create().disabled).toBe(true);
     await fill('#project-name', 'Website');
 
-    // a folder from main's own dialog, then from GitHub; × takes one out
+    // a folder from main's own dialog (the same one again is kept once); × takes one out
     await click(button('Add a folder…', dialog()!)!);
     await until(() => expect(sheetRows()).toEqual([['website', 'On this Mac', '/Users/me/website']]));
     await click(button('Add a folder…', dialog()!)!);
     await until(() => expect(o.app.pickFolders).toHaveBeenCalledTimes(2));
     expect(sheetRows()).toHaveLength(1);
-    await click(button('Add from GitHub…', dialog()!)!);
-    await until(() => expect(dialog()!.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(2));
-    expect([...dialog()!.querySelectorAll('[role="menuitemcheckbox"]')].map((b) => b.textContent)).toEqual(['o/website-cms', 'o/docs']);
-    await click(dialog()!.querySelector('[role="menuitemcheckbox"]')!);
-    expect(sheetRows()).toEqual([['website', 'On this Mac', '/Users/me/website'], ['website-cms', 'GitHub', 'o/website-cms']]);
-    await click(button('Add from GitHub…', dialog()!)!);
-    await until(() => expect(dialog()!.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(2));
-    await click([...dialog()!.querySelectorAll('[role="menuitemcheckbox"]')][1]);
-    await click(button('Remove docs', dialog()!)!);
-    expect(sheetRows().map((r) => r[0])).toEqual(['website', 'website-cms']);
+    await click(button('Remove website', dialog()!)!);
+    expect(sheetRows()).toEqual([]);
+    await click(button('Add a folder…', dialog()!)!);
+    await until(() => expect(sheetRows()).toEqual([['website', 'On this Mac', '/Users/me/website']]));
 
     await click(create());
     await until(() => expect(dialog()).toBeNull());
-    expect(posted(o.calls, '/v1/projects')).toEqual([{ method: 'POST', path: '/v1/projects', body: { name: 'Website', folders: ['/Users/me/website'], repos: ['o/website-cms'] } }]);
+    expect(posted(o.calls, '/v1/projects')).toEqual([{ method: 'POST', path: '/v1/projects', body: { name: 'Website', folders: ['/Users/me/website'], repos: [] } }]);
     expect(listed().filter((l) => l.startsWith('#'))).toEqual(['# Oby app', '# Website']);
     await click(homeChip()!);
     await until(() => expect(shownChoices().map((c) => c[0])).toEqual(['Oby app', 'Website', 'No project']));
@@ -332,26 +326,6 @@ describe('PROJECTS-20', () => {
     expect(dialog()).toBeNull();
     expect(posted(o.calls, '/v1/projects')).toHaveLength(sent);
     expect(posted(o.calls, '/v1/plans')).toHaveLength(0);
-  });
-});
-
-describe('PROJECTS-20, no repositories', () => {
-  it('PROJECTS-20: projects_20_add_from_github_with_none_listed_says_so', async () => {
-    const o = obid([OBY]);
-    o.said.repos = [];
-    await showHome(o);
-    await until(() => expect(button('New project')).toBeDefined());
-    await click(button('New project')!);
-    await fill('#project-name', 'Website');
-    await click(button('Add from GitHub…', dialog()!)!);
-    await until(() => expect(dialog()!.querySelector('.row-menu [role="status"]')?.textContent).toBe('No repositories to add'));
-    expect(button('Add from GitHub…', dialog()!)!.getAttribute('aria-expanded')).toBe('true');
-    expect(dialog()!.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(0);
-    // the sheet stays as it was, and closes the line again
-    expect(host.querySelector<HTMLInputElement>('#project-name')!.value).toBe('Website');
-    await click(button('Add from GitHub…', dialog()!)!);
-    expect(dialog()!.querySelector('.row-menu')).toBeNull();
-    expect(dialog()).not.toBeNull();
   });
 });
 
@@ -485,7 +459,7 @@ describe('PROJECTS-26', () => {
       ['oby', 'On this Mac', '/Users/me/oby'], ['oby', 'GitHub', 'obi-ai-bot/oby'], ['oby-plan', 'GitHub', 'obi-ai-bot/oby-plan'],
     ]);
     expect(buttons(dialog()!).filter((b) => !b.classList.contains('project-row-remove')).map((b) => b.textContent))
-      .toEqual(['Add a folder…', 'Add from GitHub…', 'Delete project…', 'Cancel', 'Save']);
+      .toEqual(['Add a folder…', 'Delete project…', 'Cancel', 'Save']);
     // Save with nothing changed, and Cancel, send nothing
     await click(button('Save', dialog()!)!);
     await until(() => expect(dialog()).toBeNull());
@@ -513,25 +487,36 @@ describe('PROJECTS-26', () => {
 });
 
 describe('PROJECTS-27', () => {
-  it('PROJECTS-27: projects_27_add_a_repo', async () => {
+  it('PROJECTS-27: projects_27_no_add_from_github', async () => {
     const o = obid([OBY, TETRIX], [convo('c1', 'Two fixes for today', { project: OBY.id, folders: OBY.folders })]);
     await showHome(o);
     await until(() => expect(listed()).toContain('# Tetrix'));
-    // from the title bar's chip
+    const noGithub = () => {
+      expect(buttons(dialog()!).map((b) => b.textContent)).not.toContain('Add from GitHub…');
+      expect(dialog()!.textContent).not.toContain('Add from GitHub');
+      expect(dialog()!.querySelector('[aria-haspopup="menu"]')).toBeNull();
+      expect(dialog()!.querySelector('[role="menuitemcheckbox"]')).toBeNull();
+    };
+    // New project: only a folder is added
+    await click(button('New project')!);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('New project');
+    noGithub();
+    await click(button('Cancel', dialog()!)!);
+    // Edit project, from the title bar's chip: its repositories still show, and nothing adds one
     await openRow('Two fixes for today');
     await until(() => expect(chipName(barChip())).toBe('Oby app'));
     await click(barChip()!);
     await click(button('Edit project…')!);
-    await click(button('Add from GitHub…', dialog()!)!);
-    await until(() => expect(dialog()!.querySelectorAll('[role="menuitemcheckbox"]')).toHaveLength(2));
-    await click(dialog()!.querySelector('[role="menuitemcheckbox"]')!);
-    expect(sheetRows().map((r) => r[2])).toEqual(['/Users/me/oby', 'obi-ai-bot/oby', 'obi-ai-bot/oby-plan', 'o/website-cms']);
+    expect(dialog()!.querySelector('h2')!.textContent).toBe('Edit project');
+    noGithub();
+    expect(sheetRows().map((r) => r[2])).toEqual(['/Users/me/oby', 'obi-ai-bot/oby', 'obi-ai-bot/oby-plan']);
+    // a change to its name keeps them: only the name is sent
+    await fill('#project-name', 'Oby');
     await click(button('Save', dialog()!)!);
     await until(() => expect(dialog()).toBeNull());
-    // only the key that changed
-    expect(patched(o.calls)).toEqual([{ method: 'PATCH', path: `/v1/projects/${OBY.id}`, body: { repos: ['obi-ai-bot/oby', 'obi-ai-bot/oby-plan', 'o/website-cms'] } }]);
+    expect(patched(o.calls)).toEqual([{ method: 'PATCH', path: `/v1/projects/${OBY.id}`, body: { name: 'Oby' } }]);
     await click(barChip()!);
-    await until(() => expect(shownChoices()[0]).toEqual(['Oby app', '3 repos']));
+    await until(() => expect(shownChoices()[0]).toEqual(['Oby', '2 repos']));
   });
 });
 
