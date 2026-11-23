@@ -80,26 +80,28 @@ export function Path({ url }: { url: string }) {
  */
 function AddressField({ tab, icon }: { tab?: Tab; icon: ReactNode }) {
   const { api } = useBrowser();
+  const [focused, setFocused] = useState(false);
+  // what the owner typed, until it goes or they leave the field: shown in place of the page's address
   const [draft, setDraft] = useState<string | null>(null);
   const [why, setWhy] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
   const blank = !!tab && !tab.href;
   useEffect(() => { setDraft(null); setWhy(null); if (blank) field.current?.focus(); }, [tab?.id, blank]);
   const go = async () => {
-    const no = await api.open(draft ?? '', tab?.id);
+    const no = await api.open(draft ?? tab?.href ?? '', tab?.id);
     setWhy(no);
-    if (!no) field.current?.blur();
+    if (!no) { setDraft(null); field.current?.blur(); }
   };
   return (
     <label className={`br-address is-field${why ? ' is-warn' : ''}`} title={why ?? undefined}>
       {icon}
       <span className="br-field">
-        {draft === null && (tab?.url ? <Path url={tab.url} /> : <span className="br-path">Type an address</span>)}
+        {!focused && (tab?.url ? <Path url={tab.url} /> : <span className="br-path">Type an address</span>)}
         <input
           ref={field} className="br-input" aria-label="Address" aria-invalid={why ? true : undefined} spellCheck={false} autoComplete="off"
-          placeholder={draft === null ? undefined : 'Type an address'} value={draft ?? ''}
-          onFocus={(e) => { const el = e.currentTarget; setDraft(tab?.href ?? ''); requestAnimationFrame(() => el.select()); }}
-          onBlur={() => setDraft(null)}
+          placeholder={focused ? 'Type an address' : undefined} value={focused ? draft ?? tab?.href ?? '' : ''}
+          onFocus={(e) => { const el = e.currentTarget; setFocused(true); requestAnimationFrame(() => el.select()); }}
+          onBlur={() => { setFocused(false); setDraft(null); }}
           onChange={(e) => { setDraft(e.currentTarget.value); setWhy(null); }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') { e.preventDefault(); void go(); }
