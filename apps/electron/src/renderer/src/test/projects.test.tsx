@@ -714,6 +714,24 @@ describe('PROJECTS-32', () => {
     expect(listed()).toEqual(['# Oby app', 'In the app', '+ New project']);
   });
 
+  it('PROJECTS-32: projects_32_a_read_with_no_answer_does_not_block_the_next', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const o = obid([OBY], [convo('c1', 'In the app', { project: OBY.id })]);
+    // the first read is never answered (obid accepted it, then went quiet)
+    o.said.hold = new Promise<void>(() => {});
+    await showHome(o);
+    expect(reads(o)).toBe(1);
+    o.said.hold = undefined;
+    // a reconnect and a chip's menu meanwhile start no read beside the held one
+    await act(async () => o.bridge.sync({ status: STATUS(['folders-v1', 'projects-v1']), conversations: o.conversations }));
+    expect(reads(o)).toBe(1);
+    expect(listed()).not.toContain('# Oby app');
+    // 15 s with no answer: it counts as failed, and the reads go on by themselves
+    await later(15_000);
+    await until(() => expect(listed()).toEqual(['# Oby app', 'In the app', '+ New project']));
+    expect(reads(o)).toBeGreaterThan(1);
+  });
+
   it('PROJECTS-32: projects_32_a_reconnect_reads_the_list_again', async () => {
     const o = obid([OBY], [convo('c1', 'In the app', { project: OBY.id }), convo('c2', 'Elsewhere', { project: TETRIX.id })]);
     await showHome(o);
