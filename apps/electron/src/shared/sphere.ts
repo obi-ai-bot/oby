@@ -558,9 +558,14 @@ async function pictureNow(call: Call, ownerKey: () => KeyObject, http: typeof fe
   } catch (e) { return noPicture(sphere, 'failed', e instanceof Error ? e.message : String(e)); }
 }
 
+// The membership a click chose (SPHEREAPP-19): the Obysphere's address and id then (`<url>/<sphere>`,
+// null when there was none), and whether it's still the one (main's count of membership changes)
+export type PictureBound = { at: string | null; live: () => boolean };
+export const PICTURE_MOVED = 'Your Obysphere changed before the picture went, so nothing was sent.';
 // png: a whole square PNG of at most PICTURE_MAX (fitPicture's), sent only once scan says it's clean;
-// null removes the picture
-export async function setPicture(call: Call, ownerKey: () => KeyObject, png: Uint8Array | null, scan: PictureScan, http: typeof fetch = fetch): Promise<PictureAnswer> {
+// null removes the picture. bound: checked again right before the PUT or DELETE, after the scan: a
+// membership that isn't the one the click chose sends nothing.
+export async function setPicture(call: Call, ownerKey: () => KeyObject, png: Uint8Array | null, scan: PictureScan, http: typeof fetch = fetch, bound?: PictureBound): Promise<PictureAnswer> {
   let sphere: string | null = null;
   try {
     if (png && (png.length > PICTURE_MAX || !sideFits(wholePng(png)))) return noPicture(null, 'failed', PICTURE_REFUSED);
@@ -571,6 +576,7 @@ export async function setPicture(call: Call, ownerKey: () => KeyObject, png: Uin
     const a = await asAdmin(call, ownerKey, http);
     if ('refused' in a) return noPicture(null, a.refused!.refused, a.refused!.why === ONLY_ADMINS_INVITE ? ONLY_ADMINS_PICTURE : a.refused!.why!);
     sphere = String(a.m.sphere);
+    if (bound && (!bound.live() || bound.at !== atOf(a.m))) return noPicture(sphere, 'failed', PICTURE_MOVED);
     const r = await http(`${sphereAt(a.m)}/image`, png
       ? { method: 'PUT', redirect: 'error', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'image/png' }, body: new Uint8Array(png) }
       : { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${a.token}` } });

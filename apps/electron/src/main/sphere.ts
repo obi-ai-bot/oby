@@ -53,6 +53,15 @@ function pruned(a: InvitesAnswer): InvitesAnswer {
   return a;
 }
 
+// the live Obysphere's address and id now (`<url>/<sphere>`, as a picture answer's `at`), or null
+async function sphereNow() {
+  const a = await obid('GET', '/v1/obid/sphere', undefined, undefined, true).catch(() => null);
+  try {
+    const m = a?.status === 200 ? JSON.parse(a.text) as { state?: unknown; url?: unknown; sphere?: unknown } : null;
+    return m?.state === 'joined' ? `${String(m.url)}/${String(m.sphere)}` : null;
+  } catch { return null; }
+}
+
 // obid's owner id now: who a join would act for, or null when obid can't say
 async function ownerNow() {
   const a = await obid('GET', '/v1/obid/sphere', undefined, undefined, true).catch(() => null);
@@ -351,25 +360,31 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   };
   const noPicture = (why: string): PictureAnswer => ({ sphere: null, sha256: null, image: null, refused: 'failed', why });
   ipc(trusted).handle('sphere-picture', [], read, null);
-  // A set or removal, from the click that started it: when the membership changed before it finished
-  // (Leave, a join, getting back in), its answer is the old Obysphere's, so main keeps none of it and
-  // the page gets none (null, as Cancel), and it never shows on the new one (SPHEREAPP-19)
-  const mutated = async (at: number, f: () => Promise<PictureAnswer>): Promise<PictureAnswer | null> => {
-    const a = await f();
-    return at === membership ? pictured(a) : null;
+  // A set or removal is bound to the membership its click chose (SPHEREAPP-19): that Obysphere's
+  // address and id, read on the click, and main's count of membership changes then. setPicture checks
+  // both again right before it sends, after the scan, and sends nothing when either changed (Leave, a
+  // join, getting back in); an answer that comes after a change is the old Obysphere's, so main keeps
+  // none of it and the page gets none (null, as Cancel)
+  const mutated = async (gen: number, at: string | null, png: Uint8Array | null): Promise<PictureAnswer | null> => {
+    const a = await setPicture(obid, ownerKey, png, scan, fetch, { at, live: () => gen === membership });
+    return gen === membership ? pictured(a) : null;
   };
   // the picture's exact bytes and the text Vision reads in it, through the secret scan (SPHEREAPP-18)
   const scan = (png: Uint8Array) => scanPicture(png);
   ipc(trusted).handle('sphere-set-picture', [], async (e): Promise<PictureAnswer | null> => {
     if (!takeInput()) return noPicture('Changing the picture takes your own click.');
-    const at = membership;
+    const gen = membership;
+    const at = await sphereNow();
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
     const { canceled, filePaths } = await dialog.showOpenDialog(w, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }] });
-    if (canceled || !filePaths[0] || at !== membership) return null;
+    if (canceled || !filePaths[0] || gen !== membership) return null;
     const png = squarePng(filePaths[0]);
     if ('why' in png) return noPicture(png.why);
-    return mutated(at, () => setPicture(obid, ownerKey, png, scan));
+    return mutated(gen, at, png);
   }, null);
-  ipc(trusted).handle('sphere-remove-picture', [], async () => (
-    takeInput() ? mutated(membership, () => setPicture(obid, ownerKey, null, scan)) : noPicture('Removing the picture takes your own click.')), null);
+  ipc(trusted).handle('sphere-remove-picture', [], async () => {
+    if (!takeInput()) return noPicture('Removing the picture takes your own click.');
+    const gen = membership;
+    return mutated(gen, await sphereNow(), null);
+  }, null);
 }

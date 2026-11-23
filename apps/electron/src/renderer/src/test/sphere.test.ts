@@ -10,7 +10,7 @@ vi.mock('node:zlib', async (original) => {
 });
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, PICTURE_MAX, PICTURE_WAIT, SCOPES, addSignin, centreSquare, fitPicture, imageSize, pngSide, readPicture, setPicture, wholePng, PICTURE_SECRET, PICTURE_UNCHECKED, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  ACCEPTS, NotThisKey, PICTURE_MAX, PICTURE_WAIT, SCOPES, addSignin, centreSquare, fitPicture, imageSize, pngSide, readPicture, setPicture, wholePng, PICTURE_MOVED, PICTURE_SECRET, PICTURE_UNCHECKED, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
   starterRule, writePolicy, type Answer, type Call, type PictureScan, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
 import { withStarterRule } from '../../../shared/policy';
@@ -600,6 +600,30 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     expect(sent(sphere)).toHaveLength(1);
     expect(scanned).toEqual([logo]);
     expect(new Uint8Array(sent(sphere)[0].init.body as Uint8Array)).toEqual(logo);
+  });
+
+  it('sphereapp_19: a set or removal sends nothing when the membership its click chose changed before it went', async () => {
+    const logo = realPng(256);
+    const sent = (sphere: ReturnType<typeof fakeSphere>) => imageCalls(sphere).filter((r) => r.init.method === 'PUT' || r.init.method === 'DELETE');
+    const AT = 'https://sphere.example.com/demo';
+    // the membership changes during the scan: no PUT
+    let live = true;
+    const during: PictureScan = async () => { live = false; return { kind: 'clean' }; };
+    const sphere = fakeSphere({ image: realPng(128) });
+    expect(await setPicture(obid(), () => key, logo, during, sphere.http, { at: AT, live: () => live })).toMatchObject({ refused: 'failed', why: PICTURE_MOVED, image: null });
+    expect(sent(sphere)).toEqual([]);
+    // nor a DELETE once it changed
+    expect(await setPicture(obid(), () => key, null, during, sphere.http, { at: AT, live: () => false })).toMatchObject({ refused: 'failed', why: PICTURE_MOVED });
+    expect(sent(sphere)).toEqual([]);
+    // obid now in another Obysphere than the click chose (another server, the same id), or none then
+    for (const at of ['https://other.example.com/demo', null]) {
+      expect(await setPicture(obid(), () => key, logo, async () => ({ kind: 'clean' }), sphere.http, { at, live: () => true })).toMatchObject({ why: PICTURE_MOVED });
+      expect(sent(sphere)).toEqual([]);
+    }
+    expect(sphere.picture.image).toEqual(realPng(128));
+    // the one it chose, still: sent
+    expect(await setPicture(obid(), () => key, logo, async () => ({ kind: 'clean' }), sphere.http, { at: AT, live: () => true })).toMatchObject({ refused: null, at: AT });
+    expect(sent(sphere)).toHaveLength(1);
   });
 
   it('sphereapp_16: only a whole PNG is handed on or sent, and the picture it had stays', async () => {

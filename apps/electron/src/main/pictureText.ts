@@ -15,7 +15,7 @@ import { printable, scanText, type Gitleaks, type Scan } from './help';
 export const PICTURE_TEXT = 'oby-picture-text';
 // Vision answers a picture in well under a second once loaded; loading it cold took 14 s once on this Mac
 export const TEXT_WAIT = 30_000;
-// The text in a picture, or a throw when it couldn't be read
+// What the helper printed for a picture (readings, below), or a throw when it couldn't read it
 export type TextReader = (png: Uint8Array) => Promise<string>;
 
 // Beside the app's executable once packaged (Contents/MacOS, as gitleaks); in development where
@@ -41,14 +41,30 @@ export const runPictureText = (bin: string, wait = TEXT_WAIT): TextReader => asy
   }
 };
 
-// What the scan reads of the picture's text: each line as read, then all of them run together (a
-// token drawn over two lines), and both again with the marks a reading puts for a letter (`]` for
-// `j`, `|` for `l`) as a letter and no spaces, so a token read a little wrong still reads as one
+// What the helper printed: one JSON array of readings (best first) for each line of text it read.
+// Anything else is a reading that can't be trusted, and throws: nothing goes.
+export function readings(printed: string): string[][] {
+  return printed.split('\n').filter((l) => l.trim()).map((l) => {
+    const r: unknown = JSON.parse(l);
+    if (!Array.isArray(r) || !r.length || !r.every((x) => typeof x === 'string')) throw new Error('it printed something else than readings');
+    return r as string[];
+  });
+}
+
+// What the scan reads of the picture's text: every reading of every line alone; every reading of a
+// line run together with every reading of the next (a token drawn over two lines: at most 9 a
+// pair, so the right halves always meet whatever readings come between them); the best readings of
+// all lines run together; and each of those again with the marks a reading puts for a letter (`]`
+// for `j`, `|` for `l`) as a letter and no spaces, so a token read a little wrong still reads as one
 const MISREAD = /[[\]|!(){}]/g;
-export function textToScan(read: string): string {
-  const lines = read.split('\n').map((l) => l.trim()).filter(Boolean);
-  const mended = lines.map((l) => l.replace(MISREAD, 'l').replace(/\s+/g, ''));
-  return [...lines, lines.join(''), ...mended, mended.join('')].join('\n');
+export function textToScan(lines: string[][]): string {
+  const read = lines.map((l) => l.map((r) => r.replace(/\s*\n\s*/g, ' ').trim()));
+  const all = [
+    ...read.flat(),
+    ...read.slice(1).flatMap((next, i) => read[i].flatMap((a) => next.map((b) => a + b))),
+    read.map((l) => l[0]).join(''),
+  ];
+  return [...all, ...all.map((r) => r.replace(MISREAD, 'l').replace(/\s+/g, ''))].join('\n');
 }
 
 const appReader = (): TextReader | null => { const bin = pictureTextBin(); return bin ? runPictureText(bin) : null; };
@@ -58,7 +74,7 @@ const appReader = (): TextReader | null => { const bin = pictureTextBin(); retur
 export async function scanPicture(png: Uint8Array, the: { gitleaks?: Gitleaks | null; read?: TextReader | null } = {}): Promise<Scan> {
   const read = the.read === undefined ? appReader() : the.read;
   if (!read) return { kind: 'couldNotRun', why: 'the picture’s text reader isn’t there' };
-  let text: string;
-  try { text = await read(png); } catch (e) { return { kind: 'couldNotRun', why: `the picture’s text couldn’t be read: ${e instanceof Error ? e.message : String(e)}` }; }
-  return scanText(`${printable(png)}\n${textToScan(text)}`, the.gitleaks);
+  let lines: string[][];
+  try { lines = readings(await read(png)); } catch (e) { return { kind: 'couldNotRun', why: `the picture’s text couldn’t be read: ${e instanceof Error ? e.message : String(e)}` }; }
+  return scanText(`${printable(png)}\n${textToScan(lines)}`, the.gitleaks);
 }

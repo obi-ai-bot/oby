@@ -30,6 +30,9 @@ const the = vi.hoisted(() => ({
   // a set or removal held until it's let go (SPHEREAPP-19); the scan main handed the last one (SPHEREAPP-18)
   holdSet: null as Promise<void> | null,
   scan: null as ((png: Uint8Array) => Promise<unknown>) | null,
+  // what obid answers for its membership, when set (else `[]`); the membership the last set or removal was bound to
+  membership: null as Record<string, unknown> | null,
+  bound: null as { at: string | null; live: () => boolean } | null,
   // the last answer main's picture read was handed to keep
   lastPicture: undefined as unknown,
   // a picture read held until it's let go
@@ -117,7 +120,10 @@ vi.mock('electron-updater', () => ({
 // obid's calls, counted; the event stream never answers
 vi.mock('../../../main/obid', async (original) => ({
   ...await original<typeof import('../../../main/obid')>(),
-  obid: async (...a: unknown[]) => { the.calls.push(a); return { status: 200, text: '[]' }; },
+  obid: async (...a: unknown[]) => {
+    the.calls.push(a);
+    return { status: 200, text: a[0] === 'GET' && a[1] === '/v1/obid/sphere' && the.membership ? JSON.stringify(the.membership) : '[]' };
+  },
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
   chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
@@ -160,9 +166,10 @@ vi.mock('../../../shared/sphere', async (original) => ({
     if (held) return { sphere: 'demo', sha256: 'b'.repeat(64), image: 'data:image/png;base64,NEW', refused: null, why: null };
     return { sphere: 'demo', sha256: null, image: null, refused: null, why: null };
   },
-  setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null, scan: (png: Uint8Array) => Promise<unknown>) => {
+  setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null, scan: (png: Uint8Array) => Promise<unknown>, _h: unknown, bound: typeof the.bound) => {
     the.invites++;
     the.scan = scan;
+    the.bound = bound;
     if (the.holdSet) await the.holdSet;
     return { sphere: 'demo', at: 'https://sphere.example.com/demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null };
   },
@@ -843,6 +850,32 @@ describe('SPHEREAPP-16 and 17', () => {
       await call('sphere-picture', own());
       expect(the.lastPicture).toMatchObject({ refused: null, at: 'https://sphere.example.com/demo' });
     } finally { the.holdSet = null; letGo(); }
+  });
+
+  it('sphereapp_19: a set or removal is bound to the Obysphere its click chose, and stops being when the membership changes', async () => {
+    while (takeInput()) { /* other tests' */ }
+    let letGo = () => {};
+    the.holdSet = new Promise((r) => { letGo = r; });
+    the.membership = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington' };
+    try {
+      input();
+      const removing = call('sphere-remove-picture', own());
+      await new Promise((r) => setImmediate(r));
+      // bound to the address and id obid said on the click, and still the one
+      expect(the.bound!.at).toBe('https://sphere.example.com/demo');
+      expect(the.bound!.live()).toBe(true);
+      // the owner leaves while it's out (its scan, say): setPicture's check before sending now fails
+      await call('sphere-leave', own());
+      expect(the.bound!.live()).toBe(false);
+      letGo();
+      expect(await removing).toBeNull();
+      // out of any Obysphere on the click: bound to none
+      the.membership = null;
+      the.holdSet = null;
+      input();
+      await call('sphere-remove-picture', own());
+      expect(the.bound).toMatchObject({ at: null });
+    } finally { the.holdSet = null; the.membership = null; letGo(); }
   });
 
   it('sphereapp_18: the picture main sends is scanned with the text read in it, and with no reader nothing goes', async () => {

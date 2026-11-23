@@ -17,7 +17,7 @@ vi.mock('electron', () => ({
 }));
 vi.mock('../../../main/obid', () => ({ obid: async () => ({ status: 0, text: '' }) }));
 
-const { PICTURE_TEXT, pictureTextBin, runPictureText, scanPicture, textToScan } = await import('../../../main/pictureText');
+const { PICTURE_TEXT, pictureTextBin, readings, runPictureText, scanPicture, textToScan } = await import('../../../main/pictureText');
 const folder = mkdtempSync(join(tmpdir(), 'oby-picture-text-test-'));
 afterAll(() => rmSync(folder, { recursive: true, force: true }));
 
@@ -33,6 +33,8 @@ const fakeGitleaks: Gitleaks = async (input, report) => {
 // GITHUB_TOKEN=; its bytes hold no text of it), and a logo that says "Acme"
 const TOKEN_PNG = new Uint8Array(readFileSync(join(__dirname, 'fixtures/picture-token.png')));
 const LOGO_PNG = new Uint8Array(readFileSync(join(__dirname, 'fixtures/picture-logo.png')));
+// what oby-picture-text prints: a JSON array of readings, best first, for each line it read
+const printed = (...lines: string[][]) => lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
 // a stand-in helper: a shell script
 function helper(name: string, body: string) {
   const bin = join(folder, name);
@@ -45,19 +47,32 @@ describe('SPHEREAPP-18: the text in a picture is scanned before it leaves', () =
   it('sphereapp_18_a_picture_whose_text_reads_as_a_secret_is_refused_and_a_clean_logo_goes', async () => {
     const t = token();
     // drawn over two lines, and read with a mark for a letter (`]` for `j`): still found
-    for (const read of [`GITHUB_TOKEN=\n${t}`, `GITHUB_TOKEN=\n${t.slice(0, 20)}\n${t.slice(20)}`, `${t.slice(0, 10)}]${t.slice(11)}`]) {
+    for (const read of [printed(['GITHUB_TOKEN='], [t]), printed(['GITHUB_TOKEN='], [t.slice(0, 20)], [t.slice(20)]), printed([`${t.slice(0, 10)}]${t.slice(11)}`])]) {
       expect(await scanPicture(TOKEN_PNG, { read: async () => read, gitleaks: fakeGitleaks })).toEqual({ kind: 'found', rules: ['github-pat'] });
     }
     // the bytes alone hold no text of it: the scan of the bytes would let it go
     expect(await scanPicture(TOKEN_PNG, { read: async () => '', gitleaks: fakeGitleaks })).toEqual({ kind: 'clean' });
-    expect(await scanPicture(LOGO_PNG, { read: async () => 'Acme', gitleaks: fakeGitleaks })).toEqual({ kind: 'clean' });
+    expect(await scanPicture(LOGO_PNG, { read: async () => printed(['Acme', 'Acne']), gitleaks: fakeGitleaks })).toEqual({ kind: 'clean' });
     // through setPicture: refused with its words, and nothing reaches obid or the Sphere
     const call = vi.fn(), http = vi.fn();
     const ownerKey = () => { throw new Error('no key is used'); };
-    expect(await setPicture(call, ownerKey, TOKEN_PNG, (png) => scanPicture(png, { read: async () => `GITHUB_TOKEN=\n${t}`, gitleaks: fakeGitleaks }), http))
+    expect(await setPicture(call, ownerKey, TOKEN_PNG, (png) => scanPicture(png, { read: async () => printed(['GITHUB_TOKEN='], [t]), gitleaks: fakeGitleaks }), http))
       .toMatchObject({ refused: 'failed', why: PICTURE_SECRET, image: null });
     expect(call).not.toHaveBeenCalled();
     expect(http).not.toHaveBeenCalled();
+  });
+
+  it('sphereapp_18: a token drawn over two lines is found whichever readings Vision gives of each half', async () => {
+    const t = token(), [one, two] = [t.slice(0, 20), t.slice(20)];
+    // three readings of each half, the right one second of the first and last of the second; the
+    // others break the token (a mark no token holds), so only the right pair makes it
+    const first = [`${one.slice(0, 8)}-${one.slice(9)}`, one, `${one.slice(0, 12)}.${one.slice(13)}`];
+    const second = [`${two.slice(0, 5)}-${two.slice(6)}`, `${two.slice(0, 10)}.${two.slice(11)}`, two];
+    for (const lines of [[first, second], [['GITHUB_TOKEN=', 'GITHUB-TOKEN='], first, second, ['done']]]) {
+      expect(await scanPicture(TOKEN_PNG, { read: async () => printed(...lines), gitleaks: fakeGitleaks })).toEqual({ kind: 'found', rules: ['github-pat'] });
+    }
+    // with only wrong readings of a half, nothing is made up
+    expect(await scanPicture(TOKEN_PNG, { read: async () => printed([first[0], first[2]], second), gitleaks: fakeGitleaks })).toEqual({ kind: 'clean' });
   });
 
   it('sphereapp_18: a text reader that isn’t there, fails or takes too long sends nothing', async () => {
@@ -67,7 +82,11 @@ describe('SPHEREAPP-18: the text in a picture is scanned before it leaves', () =
     const slow = await scanPicture(LOGO_PNG, { read: runPictureText(helper('slow', 'exec sleep 5'), 200), gitleaks: fakeGitleaks });
     expect(slow).toEqual({ kind: 'couldNotRun', why: 'the picture’s text couldn’t be read: it took over 0.2 s' });
     // read, but the scan can't run: nothing goes either
-    expect(await scanPicture(LOGO_PNG, { read: async () => 'Acme', gitleaks: null })).toEqual(couldNotRun);
+    expect(await scanPicture(LOGO_PNG, { read: async () => printed(['Acme']), gitleaks: null })).toEqual(couldNotRun);
+    // a helper that prints something else than readings: nothing goes
+    for (const said of ['Acme\n', '{"a":1}\n', '[]\n', '[1]\n']) {
+      expect(await scanPicture(LOGO_PNG, { read: async () => said, gitleaks: fakeGitleaks })).toEqual(couldNotRun);
+    }
     // and setPicture says so, sending nothing
     const http = vi.fn();
     expect(await setPicture(vi.fn(), () => { throw new Error('no key'); }, LOGO_PNG, (png) => scanPicture(png, { read: null }), http)).toMatchObject({ refused: 'failed', why: PICTURE_UNCHECKED });
@@ -100,9 +119,12 @@ describe('SPHEREAPP-18: the text in a picture is scanned before it leaves', () =
     expect(pictureTextBin()).toBe(join(dev, 'build/helpers/Contents/MacOS', PICTURE_TEXT));
   });
 
-  it('sphereapp_18: what the scan reads of the text: each line, run together, and mended', () => {
-    expect(textToScan('GITHUB_TOKEN=\nghp_ab]c\n de f|g \n')).toBe(['GITHUB_TOKEN=', 'ghp_ab]c', 'de f|g', 'GITHUB_TOKEN=ghp_ab]cde f|g', 'GITHUB_TOKEN=', 'ghp_ablc', 'deflg', 'GITHUB_TOKEN=ghp_ablcdeflg'].join('\n'));
-    expect(textToScan('')).toBe('\n');
+  it('sphereapp_18: what the scan reads of the text: each reading, each next pair, the best run together, and mended', () => {
+    expect(textToScan(readings(printed(['ab]c', 'abjc'], [' de f|g ']))).split('\n')).toEqual([
+      'ab]c', 'abjc', 'de f|g', 'ab]cde f|g', 'abjcde f|g', 'ab]cde f|g',
+      'ablc', 'abjc', 'deflg', 'ablcdeflg', 'abjcdeflg', 'ablcdeflg',
+    ]);
+    expect(textToScan([])).toBe('\n');
   });
 
   // On a Mac with the helper staged (scripts/helpers.sh) and gitleaks: Vision and gitleaks for real

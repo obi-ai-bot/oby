@@ -42,8 +42,11 @@ do {
 } catch {
   fail(70, "Vision couldn't read the image: \(error.localizedDescription)")
 }
-var out = ""
+var out = Data()
 for observation in request.results ?? [] {
-  for candidate in observation.topCandidates(3) { out += candidate.string + "\n" }
+  let readings = observation.topCandidates(3).map(\.string)
+  guard let line = try? JSONSerialization.data(withJSONObject: readings) else { fail(70, "can't write what it read") }
+  out.append(line)
+  out.append(Data("\n".utf8))
 }
-FileHandle.standardOutput.write(Data(out.utf8))
+FileHandle.standardOutput.write(out)
