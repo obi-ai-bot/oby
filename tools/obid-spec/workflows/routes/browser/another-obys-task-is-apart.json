@@ -1,0 +1,397 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: another Oby's task is apart from the owner's: another profile, signed out where the owner is signed in, no reach to the owner's tab, and owner B reaches no tab of A's by any credential",
+  "version": "1.0.0",
+  "description": "BROWSER-20 and 21 (the lab's LAB-BROWSERSPHERE-3 and 4): owners A (ana) and B (ben) on one Obysphere. A job of A's own signs in to the fixture site (a cookie) and keeps running, its tab open. B's task, accepted on A's Oby, opens the same site's account page in a browser of its own: the site says signed out and the page holds no cookie of A's; reading, evaluating in and navigating A's tab are each refused `not_your_tab`; it lists only its own tab. Then every route under /v1/browser, on A's obid and A's gateway, with no token, B's obid's token, B's device's signed words and a made-up token, reaches none of A's tabs.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/mcp"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs",
+        "browser": true,
+        "env": {
+          "OBID_TEST_FOREIGN_BROWSER": "1"
+        },
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "a-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.b}"
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-sphere-site",
+      "inputs": {}
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "agent": "claude",
+        "url": "${state.site.url}/login",
+        "stay": true,
+        "then": [
+          {
+            "tool": "oby_browser_navigate",
+            "args": {
+              "url": "${state.site.url}/account"
+            }
+          },
+          {
+            "tool": "oby_browser_snapshot",
+            "args": {}
+          },
+          {
+            "tool": "oby_browser_list_tabs",
+            "args": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-is-signed-in",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.own}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.1.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Signed in as the host"
+            },
+            "browsed.calls.then.2.result.structuredContent.result.tabs": {
+              "$len": 1
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-21"
+        ]
+      }
+    },
+    {
+      "id": "handoff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "BROWSE: ${state.site.url}/account APART ${state.own.browsed.calls.then.2.result.structuredContent.result.tabs.0.tab} COMMIT: notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.handoff.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.handoff.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.handoff.body.correlationId}",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "job": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "job": "${state.job.body.job}"
+      }
+    },
+    {
+      "id": "b-s-task-is-signed-out",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.snapshot.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Signed out"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-21"
+        ]
+      }
+    },
+    {
+      "id": "b-s-page-has-no-cookie-of-a-s",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.0.result.structuredContent.ok": true,
+            "browsed.calls.then.0.result.structuredContent.result.outside.data": {
+              "$not": {
+                "$contains": "oby_lab_sid"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-21"
+        ]
+      }
+    },
+    {
+      "id": "b-s-task-cant-read-a-s-tab",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.1.result.isError": true,
+            "browsed.calls.then.1.result.structuredContent.error.code": "not_your_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-21"
+        ]
+      }
+    },
+    {
+      "id": "b-s-task-cant-evaluate-a-s-tab",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.2.result.isError": true,
+            "browsed.calls.then.2.result.structuredContent.error.code": "not_your_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-21"
+        ]
+      }
+    },
+    {
+      "id": "b-s-task-cant-drive-a-s-tab",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.3.result.isError": true,
+            "browsed.calls.then.3.result.structuredContent.error.code": "not_your_tab"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-21"
+        ]
+      }
+    },
+    {
+      "id": "b-s-task-lists-only-its-own-tab",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.4.result.structuredContent.result.tabs": {
+              "$len": 1
+            },
+            "browsed.calls.then.4.result.structuredContent.result.tabs.0.tab": {
+              "$ne": "${state.own.browsed.calls.then.2.result.structuredContent.result.tabs.0.tab}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-20"
+        ]
+      }
+    },
+    {
+      "id": "no-route-reaches-a-s-tabs",
+      "use": "runtime.rust:browser-reach",
+      "inputs": {
+        "a": "${state.a}",
+        "b": "${state.b}",
+        "bDevice": "${state.b-device}",
+        "tab": "${state.own.browsed.calls.then.2.result.structuredContent.result.tabs.0.tab}",
+        "expect": {
+          "paths": {
+            "reached": 0,
+            "tried": {
+              "$ne": 0
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-20"
+        ]
+      }
+    }
+  ]
+}

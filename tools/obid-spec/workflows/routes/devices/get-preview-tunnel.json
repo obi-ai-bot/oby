@@ -1,0 +1,210 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/preview/tunnel",
+  "version": "1.0.0",
+  "description": "A computer's preview tunnel on its gateway (COMPUTERS-26): nobody but a paired computer's own token learns it is there (no token, a phone's: the gateway's unlisted 404); for the computer's token, a bad port is 400 bad_port and a real port without a WebSocket upgrade 400 not_a_websocket, before anything is dialed. The tunnel itself is a WebSocket, which no workflow step opens: core/crates/obid/tests/remote.rs `computers_26_…`.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/preview/tunnel"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "computer-invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://computer.example.invalid",
+          "name": "Test computer",
+          "computer": true
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "computer",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        },
+        "body": {
+          "credential": "${state.computer-invite.body.secret}",
+          "name": "Test Mac"
+        }
+      }
+    },
+    {
+      "id": "phone-invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "body": {
+          "url": "https://mac.example.invalid",
+          "name": "Test Mac"
+        },
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "phone",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "POST",
+        "path": "/v1/pairing",
+        "as": "token",
+        "token": "x",
+        "expect": {
+          "status": 200,
+          "body": {
+            "token": {
+              "$type": "string"
+            }
+          }
+        },
+        "body": {
+          "credential": "${state.phone-invite.body.secret}",
+          "name": "Test phone"
+        }
+      }
+    },
+    {
+      "id": "no-token-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "x"
+        },
+        "method": "GET",
+        "path": "/v1/preview/tunnel?port=9",
+        "as": "none",
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": "That route isn't available through the gateway."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-26"
+        ]
+      }
+    },
+    {
+      "id": "a-phone-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.phone.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/preview/tunnel?port=9",
+        "as": "token",
+        "token": "${state.phone.body.token}",
+        "expect": {
+          "status": 404,
+          "body": {
+            "error": "That route isn't available through the gateway."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-26"
+        ]
+      }
+    },
+    {
+      "id": "port-0-bad-port",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/preview/tunnel?port=0",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 400,
+          "body": {
+            "reason": "bad_port"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-26"
+        ]
+      }
+    },
+    {
+      "id": "no-upgrade",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": {
+          "base": "${state.o.gatewayBase}",
+          "token": "${state.computer.body.token}"
+        },
+        "method": "GET",
+        "path": "/v1/preview/tunnel?port=9",
+        "as": "token",
+        "token": "${state.computer.body.token}",
+        "expect": {
+          "status": 400,
+          "body": {
+            "reason": "not_a_websocket"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-26"
+        ]
+      }
+    }
+  ]
+}

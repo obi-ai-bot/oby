@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { anything, flag, method, v1Path } from '../shared/decode';
 import { ipc, type Trusted } from './ipc';
 import { SCRATCH } from '../shared/build';
+import { importType } from '../shared/artifactImport';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
 // answering on this Mac, adopted. Its token stays here in main: the renderer asks main for each
@@ -128,12 +129,45 @@ export function chooseProfile(id: string | null) {
   return changed;
 }
 
+// The computer the window works on (docs/contracts/computers-app.md; docs/api/remote.md, "A request
+// for another computer"): null is this Mac. While it's another, every call and the stream name it
+// with Oby-Computer, and the Mac's obid sends them there; never a /v1/computers route, which is this
+// Mac's own, nor a call main makes for this Mac (`here`), and never with Oby-Profile (the other
+// computer answers for its own default profile). It's set only from obid's own answers about the
+// window's computers (heardComputers), never from the page's word
+let computer: string | null = null;
+const switched = new Set<(id: string | null) => void>();
+export const openedComputer = () => computer;
+// told each time the computer in use changes (live.ts follows the new one)
+export const onComputer = (f: (id: string | null) => void) => { switched.add(f); };
+function useComputer(id: string | null) {
+  if (id === computer) return;
+  computer = id;
+  switched.forEach((f) => f(id));
+}
+const COMPUTERS = /^\/v1\/computers(\/|$)/;
+// obid's list of the window's computers, from a call's answer or the `computers` event: which is in use
+export function heardComputers(list: { current?: unknown }) {
+  if (typeof list.current === 'string' && list.current) useComputer(list.current === 'this' ? null : list.current);
+}
+// a call's answer about the window's computers: the list (GET, the switch's PUT), or a removal that
+// took the window back to this Mac
+function heard(method: string, path: string, status: number, text: string) {
+  const p = path.split('?')[0];
+  if (status < 200 || status >= 300 || !COMPUTERS.test(p)) return;
+  let value: { current?: unknown; removed?: unknown } | null = null;
+  try { value = JSON.parse(text); } catch { return; }
+  if (!value) return;
+  if ((method === 'GET' && p === '/v1/computers') || (method === 'PUT' && p === '/v1/computers/current')) heardComputers(value);
+  else if (method === 'DELETE' && typeof value.removed === 'string' && value.removed === computer) useComputer(null);
+}
+
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
 export type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
 // a call that isn't to obid's API
 const NOT_OBID: Answer = { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
 
-export async function send(method: string, path: string, body: unknown, signal?: AbortSignal, words?: string): Promise<Response | Answer> {
+export async function send(method: string, path: string, body: unknown, signal?: AbortSignal, words?: string, here = false): Promise<Response | Answer> {
   // only obid's API: never another host, never another path
   if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return NOT_OBID;
   const t = token();
@@ -145,15 +179,17 @@ export async function send(method: string, path: string, body: unknown, signal?:
   if (who !== 'mine') return who === 'foreign' ? { status: 0, text: TAKEN } : gone();
   // a file's bytes (POST /v1/attachments) go as they are; anything else as JSON
   const raw = body instanceof Uint8Array;
+  const there = computer && !here && !COMPUTERS.test(path.split('?')[0]) ? computer : null;
   try {
     const r = await fetch(BASE + path, {
       method, signal, cache: 'no-store',
       headers: {
         Authorization: `Bearer ${t}`,
-        Accept: path.split('?')[0] === '/v1/events' || /^\/v1\/browser\/(events|tabs\/[^/]+\/stream)$/.test(path.split('?')[0]) ? 'text/event-stream' : 'application/json',
-        ...(body === undefined ? {} : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json' }),
+        Accept: path.split('?')[0] === '/v1/events' || path.split('?')[0] === '/v1/browser/events' || (method === 'GET' && path === '/v1/browser/relay') ? 'text/event-stream' : 'application/json',
+        // an artifact's import is sent as what its bytes are (shared/artifactImport.ts); other bytes as bytes
+        ...(body === undefined ? {} : { 'Content-Type': raw ? (path === '/v1/artifacts/import' ? importType(body) : 'application/octet-stream') : 'application/json' }),
         ...(words ? { 'X-Oby-Words': words } : {}),
-        ...(profile ? { 'Oby-Profile': profile } : {}),
+        ...(there ? { 'Oby-Computer': there } : profile ? { 'Oby-Profile': profile } : {}),
       },
       body: body === undefined ? undefined : raw ? Buffer.from(body) : JSON.stringify(body),
     });
@@ -288,7 +324,7 @@ async function restartIfStale(label: string, printed: string) {
     if (!(Date.parse(lstart.stdout.trim()) < statSync(helper()).ctimeMs - 1000)) return;
   } catch { return; }
   for (let i = 0; i < 20; i++) {
-    const r = await send('GET', '/v1/status', undefined);
+    const r = await send('GET', '/v1/status', undefined, undefined, undefined, true);
     const running = r instanceof Response && r.ok ? await r.json().then((s: { running?: number }) => s.running, () => 0) : 0;
     if (!running) break;
     await sleep(30_000);
@@ -374,9 +410,11 @@ export async function startObid() {
 }
 
 // One call, read whole
-export async function obid(method: string, path: string, body?: unknown, words?: string): Promise<Answer> {
-  const r = await send(method, path, body, undefined, words);
-  return r instanceof Response ? { status: r.status, text: await r.text() } : r;
+export async function obid(method: string, path: string, body?: unknown, words?: string, here = false): Promise<Answer> {
+  const r = await send(method, path, body, undefined, words, here);
+  const a = r instanceof Response ? { status: r.status, text: await r.text() } : r;
+  heard(method, path, a.status, a.text);
+  return a;
 }
 
 // Whether obid takes a request key (`receipts` on GET /v1/status, docs/contracts/receipts.md), as

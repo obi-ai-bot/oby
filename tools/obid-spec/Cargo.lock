@@ -1644,6 +1644,7 @@ dependencies = [
  "png",
  "rand",
  "regex",
+ "ring",
  "rustls",
  "schemars",
  "serde",

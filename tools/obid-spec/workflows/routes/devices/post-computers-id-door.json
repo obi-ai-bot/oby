@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/computers/{id}/door",
+  "version": "1.0.0",
+  "description": "The window's main asks for a computer's door (COMPUTERS-28): an unknown computer is 404 no_such_computer; for Studio, added with a code, the door's proxy URL in the shape BOX_PROXY takes, the same door when asked again.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/computers/{id}/door"
+    }
+  },
+  "steps": [
+    {
+      "id": "mac",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "mac",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "unknown-404",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/nope/door",
+        "expect": {
+          "status": 404,
+          "body": {
+            "reason": "no_such_computer"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-28"
+        ]
+      }
+    },
+    {
+      "id": "studio",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "studio",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "config": {
+          "gateway": "127.0.0.1:0",
+          "direct": [
+            "127.0.0.1:0"
+          ]
+        }
+      }
+    },
+    {
+      "id": "at-studio",
+      "use": "runtime.rust:write-file",
+      "inputs": {
+        "obid": "${state.studio}",
+        "in": "home",
+        "path": "invite-computer",
+        "content": "workflow-presence-0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "id": "invite",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.studio}",
+        "method": "POST",
+        "path": "/v1/pairing/invite",
+        "expect": {
+          "status": 200,
+          "body": {
+            "code": {
+              "$matches": "^[0-9]{6}$"
+            },
+            "computerLink": {
+              "$matches": "^oby-computer:"
+            }
+          }
+        },
+        "body": {
+          "url": "https://studio.example.invalid",
+          "name": "Studio",
+          "computer": true,
+          "presence": "workflow-presence-0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.mac}"
+      }
+    },
+    {
+      "id": "add",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers",
+        "expect": {
+          "status": 201,
+          "body": {
+            "id": {
+              "$type": "string"
+            },
+            "state": "connected"
+          }
+        },
+        "body": {
+          "link": "${state.invite.body.computerLink}",
+          "code": "${state.invite.body.code}"
+        },
+        "as": "device",
+        "device": "${state.device}"
+      }
+    },
+    {
+      "id": "door",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/${state.add.body.id}/door",
+        "expect": {
+          "status": 200,
+          "body": {
+            "proxy": {
+              "$matches": "^http://oby:[0-9a-f]{64}@127\\.0\\.0\\.1:[0-9]+$"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-28"
+        ]
+      }
+    },
+    {
+      "id": "the-same-door",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.mac}",
+        "method": "POST",
+        "path": "/v1/computers/${state.add.body.id}/door",
+        "expect": {
+          "status": 200,
+          "body": {
+            "proxy": "${state.door.body.proxy}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "COMPUTERS-28"
+        ]
+      }
+    }
+  ]
+}

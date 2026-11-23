@@ -276,8 +276,8 @@ struct WorkflowResult {
 async fn run(a: Args) -> Result<i32> {
     let names = node_names();
     let mut workflows = workflow::load_all(&workflows_dir(), &names)?;
-    // The lab's workflows run only when asked for by their tag or area (src/lab/mod.rs): the merge
-    // queue's, a pull request's and the nightly run never make a machine.
+    // The lab's workflows run only when asked for by their tag or area (src/lab/mod.rs): a run
+    // that doesn't ask for them never makes a machine.
     let wants_lab = a.tag.as_deref() == Some(obid_spec::lab::TAG)
         || a.only.as_deref().is_some_and(obid_spec::lab::is_lab);
     if !wants_lab {

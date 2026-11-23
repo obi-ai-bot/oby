@@ -1284,9 +1284,9 @@ class Pins(unittest.TestCase):
             ],
         )
         with tempfile.TemporaryDirectory() as folder:
-            # The first of its GITLEAKS_VERSIONs changed, the others as they are.
+            # A second GITLEAKS_VERSION that says another version than ci.yml's one.
             ci = Path(folder) / "ci.yml"
-            ci.write_text(re.sub(r"GITLEAKS_VERSION: \S+", "GITLEAKS_VERSION: 0.0.1", text, count=1))
+            ci.write_text(text + "\n  GITLEAKS_VERSION: 0.0.1\n")
             done = self.pins(ci)
             self.assertNotEqual(done.returncode, 0, done.stdout)
             self.assertIn("GITLEAKS_VERSION disagree", done.stderr)

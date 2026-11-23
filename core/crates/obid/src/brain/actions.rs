@@ -73,6 +73,8 @@ pub struct Asked<'a> {
     pub signed: bool,
     /// The message box's chips sent with them (super::defaults, COMPOSER-4 and 5).
     pub defaults: Option<&'a super::defaults::Defaults>,
+    /// The artifact open where the words were said (`Control::artifact`): its jobs change it.
+    pub artifact: Option<super::open_artifact::OpenArtifact>,
 }
 
 /// A plan that answers rather than acts: a reply, a question, or jobs it starts (#269). `live` is
@@ -200,6 +202,7 @@ fn planned_job(
             .map(|m| m.as_str().to_owned()),
         brief: d.brief(),
         complex: d.complexity == super::plan::Complexity::Complex,
+        artifacts: open_artifact(shared, asked),
         ..NewJob::default()
     };
     // Work planned after the turn read something untrusted starts now, marked untrusted, in the
@@ -216,6 +219,27 @@ fn planned_job(
         asked,
         researched,
     )
+}
+
+/// The artifact open where `asked`'s words were said, as the job it plans starts with it
+/// (ARTIFACTS-19): the version open, under the entry obid names it by. None when it's gone or no
+/// longer of `asked`'s conversation.
+fn open_artifact(shared: &Shared, asked: &Asked<'_>) -> Vec<crate::job::JobArtifact> {
+    let Some(open) = &asked.artifact else {
+        return Vec::new();
+    };
+    shared
+        .artifacts
+        .get(&open.id)
+        .filter(|a| a.conversation.as_deref() == Some(asked.conversation))
+        .and_then(|a| crate::artifacts::seed::entry_for(&a, open.version))
+        .map(|entry| crate::job::JobArtifact {
+            id: open.id.clone(),
+            version: open.version,
+            entry,
+        })
+        .into_iter()
+        .collect()
 }
 
 /// The marks a job planned on `asked` gets: untrusted after research, and the owner's own
@@ -382,7 +406,7 @@ async fn dispatch(
     };
     if !waiting.is_empty() {
         let line = format!(
-            "Starting {} in Bypass mode waits for your OK: confirm it in your inbox.",
+            "Starting {} in Bypass mode waits for your OK: confirm it in Waiting for you.",
             waiting.len().to_string() + if waiting.len() == 1 { " job" } else { " jobs" }
         );
         text = if text.is_empty() {
@@ -416,6 +440,7 @@ async fn fix_ci(
         agent: Some(d.agent.clone()),
         account: Some(d.account.clone()),
         request: Some(asked.said.to_owned()),
+        ran_unproxied: super::open_artifact::laid_unproxied(shared, asked.conversation),
         ..NewJob::default()
     };
     let started =
@@ -525,7 +550,10 @@ fn named_checks(said: &str) -> Vec<String> {
 }
 
 /// What started, in Oby's voice (`Desk.startedLine`): "On it. Claude Code is fixing oby #12
-/// (Login screen) on Deskree, and Claude Code is reviewing oby PR #33 on Deskree."
+/// (Login screen) in Ask mode, on the account Deskree, and Claude Code is reviewing oby PR #33 in
+/// Plan mode, on the account Deskree." The mode is the one it runs in, in the app's words for it,
+/// and the account is labelled as one, so an account named "Default" isn't read as a mode
+/// (TASKCONV-41).
 pub(crate) fn started_line(shared: &Shared, jobs: &[Job]) -> String {
     let parts: Vec<String> = jobs
         .iter()
@@ -540,9 +568,10 @@ pub(crate) fn started_line(shared: &Shared, jobs: &[Job]) -> String {
                 other => other,
             };
             format!(
-                "{} is {doing} {} on {}",
+                "{} is {doing} {} in {} mode, on the account {}",
                 tool_name(&job.agent),
                 what(job),
+                crate::jobs::Jobs::mode_of(job).title(),
                 account_name(shared, &job.account)
             )
         })
@@ -721,7 +750,7 @@ async fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool, owners: bool) -> (
         );
         return (
             format!(
-                "{name} was started in another conversation, so trying it again waits for your OK: confirm it in your inbox."
+                "{name} was started in another conversation, so trying it again waits for your OK: confirm it in Waiting for you."
             ),
             true,
         );
@@ -799,7 +828,11 @@ fn message_job(
     }
     // Its agent's question is the owner's to answer (#858): the brain's words never are.
     let foreign = super::written_after(shared, conversation);
-    match shared.jobs.relay(&job.id, &words, source, foreign) {
+    let unproxied = super::open_artifact::laid_unproxied(shared, conversation);
+    match shared
+        .jobs
+        .relay(&job.id, &words, source, foreign, unproxied)
+    {
         Some(Ok(_)) => Outcome::Done(format!("Told {name} what you said.")),
         Some(Err(refused)) => Outcome::Failed(format!("Couldn't tell {name}: {}", refused.0)),
         None => Outcome::Failed("That task isn't here any more.".into()),
@@ -867,7 +900,11 @@ pub(super) fn already_on_it(
 ) -> Outcome {
     let (name, follow) = (job.short_title(), next.short_title());
     let foreign = super::written_after(shared, conversation);
-    match shared.jobs.relay(&next.id, words, source, foreign) {
+    let unproxied = super::open_artifact::laid_unproxied(shared, conversation);
+    match shared
+        .jobs
+        .relay(&next.id, words, source, foreign, unproxied)
+    {
         Some(Ok(heard)) => Outcome::Started(
             format!("Already on it in {follow}, the follow-up of {name}: I told it what you said."),
             heard.to_json(),
@@ -891,10 +928,10 @@ pub(super) async fn answer_inbox(
     owners_word: Option<i64>,
 ) -> Outcome {
     let Some(id) = plan.item.as_deref() else {
-        return Outcome::NeedsWhich("Say which inbox item to answer.".into());
+        return Outcome::NeedsWhich("Say which card to answer.".into());
     };
     let Some(item) = shared.link.item(id) else {
-        return Outcome::Failed("That inbox item isn't here any more.".into());
+        return Outcome::Failed("That card isn't here any more.".into());
     };
     // Words the brain wrote for a job's agent (a question's answer, a no's words) (crate::secretspec).
     if !item.job.is_empty()
@@ -906,9 +943,13 @@ pub(super) async fn answer_inbox(
             item.kind == crate::sphere::inbox::QUESTION_KIND
                 || crate::permissions::inbox_decision(a).1.is_some()
         })
-        && let Some(why) = super::written_after(shared, conversation)
     {
-        shared.jobs.mark(&item.job, why, false);
+        if let Err(e) = super::open_artifact::heard_unproxied(shared, conversation, &item.job) {
+            return Outcome::Failed(format!("Couldn't answer {}: {e}", item.title));
+        }
+        if let Some(why) = super::written_after(shared, conversation) {
+            shared.jobs.mark(&item.job, why, false);
+        }
     }
     if item.done.is_some() {
         return Outcome::Failed(format!(
@@ -1118,7 +1159,8 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
                     != crate::permissions::Decision::Deny =>
         {
             Owners::Waits(
-                "it touches secrets: it waits for your click on its card, in your inbox.".into(),
+                "it touches secrets: it waits for your click on its card, in Waiting for you."
+                    .into(),
             )
         }
         // A bare no to a job's permission is Oby's to say.
@@ -1360,6 +1402,7 @@ mod tests {
             turn: "t",
             signed,
             defaults: None,
+            artifact: None,
         };
         let other = asked("Fix the docs", true);
         assert_eq!(named_branch(&d, false, &other).as_deref(), Some("gh-pages"));
@@ -1407,6 +1450,7 @@ mod tests {
                 turn: "t",
                 signed,
                 defaults: None,
+                artifact: None,
             };
             let new = marked(NewJob::default(), &asked, researched);
             assert_eq!(new.own_conversation, signed, "{signed} {researched}");
@@ -1653,7 +1697,7 @@ mod tests {
                 assert_eq!(
                     owners_call(&permission, words, Some(&job), owner),
                     Owners::Waits(
-                        "it touches secrets: it waits for your click on its card, in your inbox."
+                        "it touches secrets: it waits for your click on its card, in Waiting for you."
                             .into()
                     ),
                     "{words}"

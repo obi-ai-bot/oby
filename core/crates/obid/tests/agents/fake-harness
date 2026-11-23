@@ -23,6 +23,8 @@
 //   ESCAPE <file>  tries to write outside its room, into repos/ and the account's own folder, to
 //                  read obid's token, the account's login, the test's folder and <file>, and reads
 //                  repos/; says what held
+//   WRITES <path>…  asks to write each path (Write), writes it when allowed, and says
+//                  "writes: <allow|deny|…> …" in order (WORKSPACE-1)
 //   PERMS          asks obid's permission for writes inside, outside and in repos/, the web, a
 //                  secret, a command that sends a file from outside the room, another MCP tool
 //   SAY <words>    streams <words> in three deltas and says them
@@ -172,7 +174,41 @@ async function mcp(name, tool, args) {
   });
   return answer.json();
 }
-const oby = (tool, args) => mcp("oby", tool, args);
+// As Claude Code 2.1.325, measured on a Mac on 2026-11-23 (CONVERSATION-AGENT-53): it lists an MCP
+// server's tools once, as it connects, and never again by itself; a `tools/list` refused, or one
+// obid answered past its 30 s, leaves the server connected with no tools, and a call of one of them
+// is "No such tool available". With `oby-list-lost` in its account's folder its first listing of
+// Oby's tools is lost so. Its control request `mcp_reconnect` lists them again; `mcp_status` says
+// what each server of its --mcp-config gave it. Without the mark it holds what obid lists.
+let obyTools = conversation && existsSync(join(process.env.CLAUDE_CONFIG_DIR ?? ".", "oby-list-lost")) ? [] : null;
+const listOby = async () => ((await mcp("oby", "tools/list", {}))?.result?.tools ?? []).map((t) => t.name);
+const oby = (tool, args) =>
+  obyTools !== null && !obyTools.includes(tool)
+    ? Promise.resolve({ result: { isError: true, content: [{ type: "text", text: `No such tool available: mcp__oby__${tool}` }] } })
+    : mcp("oby", tool, args);
+async function control(message) {
+  const id = message.request_id;
+  const request = message.request ?? {};
+  const answer = (response) => ({ type: "control_response", response });
+  try {
+    const servers = flag("--mcp-config") ? JSON.parse(readFileSync(flag("--mcp-config"), "utf8")).mcpServers : {};
+    if (request.subtype === "mcp_status") {
+      const listed = [];
+      for (const name of Object.keys(servers)) {
+        const tools = name === "oby" ? (obyTools ?? (await listOby())) : [];
+        listed.push({ name, status: "connected", tools: tools.map((t) => ({ name: t })) });
+      }
+      return emit(answer({ subtype: "success", request_id: id, response: { mcpServers: listed } }));
+    }
+    if (request.subtype === "mcp_reconnect" && servers[request.serverName]) {
+      if (request.serverName === "oby") obyTools = await listOby();
+      return emit(answer({ subtype: "success", request_id: id }));
+    }
+    emit(answer({ subtype: "error", request_id: id, error: `Unsupported control request subtype: ${request.subtype}` }));
+  } catch (e) {
+    emit(answer({ subtype: "error", request_id: id, error: String(e) }));
+  }
+}
 
 const tries = (f) => {
   try {
@@ -215,6 +251,7 @@ const handle = (line) => {
   } catch {
     return;
   }
+  if (message.type === "control_request") return control(message);
   if (message.type === "control_response" && then) {
     const next = then;
     then = null;
@@ -435,6 +472,23 @@ async function act(words, prompt = "", before = resumed) {
       { tool: "mcp__elsewhere__run", input: {} },
     );
     askNext();
+  } else if (words.startsWith("WRITES ")) {
+    // Asks to write each path in turn (Write), writes it when allowed, and says what came back of
+    // each: "writes: allow deny …" (WORKSPACE-1).
+    const paths = words.slice(7).trim().split(/\s+/);
+    const said = [];
+    const next = () => {
+      const path = paths.shift();
+      if (!path) return result(`writes: ${said.join(" ")}`);
+      const input = { file_path: path, content: "written by the stand-in\n" };
+      emit({ type: "control_request", request_id: `w${said.length + 1}`, request: { subtype: "can_use_tool", tool_name: "Write", input } });
+      then = (answer) => {
+        if (answer.behavior !== "allow") said.push(answer.behavior);
+        else said.push(tries(() => writeFileSync(path, input.content)) === "ok" ? "allow" : "allow-unwritten");
+        next();
+      };
+    };
+    next();
   } else if (words.startsWith("PAUSE ")) {
     const [, ms, ...rest] = words.split(" ");
     await new Promise((done) => setTimeout(done, Number(ms)));

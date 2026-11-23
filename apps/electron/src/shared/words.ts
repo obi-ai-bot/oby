@@ -23,6 +23,11 @@ export const ALLOW_ONCE = 'Allow once';
 // job, the one message whose words needn't be the text a click held (docs/runner-api.md)
 export const TRY_AGAIN_LABEL = 'Try again';
 export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
+// The artifact pane's Ask to fix (docs/contracts/artifacts-app.md, ARTIFACTSAPP-24, WORDS-24): this
+// label also stands for its fix words to Oby, as the said words of words that aren't an answer, the
+// page's error going with them as an attached file, never in the words
+export const ASK_TO_FIX = 'Ask to fix';
+export const FIX_WORDS = 'The preview shows an error, in the attached file. Fix the artifact so it draws.';
 
 // The yes to work nobody's watching using a ChatGPT login (docs/contracts/chatgpt-sign-in.md): this
 // button's label, its own so a click on any other button (a permission's Allow) can't stand for it.
@@ -34,6 +39,16 @@ export const BACKGROUND_YES = 'Yes, it can';
 // click on any other Remove can't stand for it.
 export const VAULT_ADD = 'Add Secret';
 export const VAULT_REMOVE = 'Remove Secret';
+
+// The owner's edit of an artifact (docs/contracts/artifacts-app.md, ARTIFACTSAPP-8, WORDS-23): its
+// Save button's own label, which names the version it makes (`Save as v3`, `base` + 1), so no other
+// button's click can stand for it; never the text, which sits in the Code tab's editor. The signature
+// still covers the exact body, the text included.
+export const saveAs = (base: number) => `Save as v${base + 1}`;
+// An artifact imported from a file dropped into a conversation (ARTIFACTSAPP-12, WORDS-21): its Import
+// button's own label, the bytes signed as they are
+export const IMPORT = 'Import';
+const ARTIFACT_EDIT = /^\/v1\/artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/versions$/;
 
 // The owner's hold on a browser tab (docs/contracts/browser-app.md, BROWSERAPP-9): Take control and
 // Give back, each signed by its own button's label, an empty body. A take is also the page dialog's
@@ -61,6 +76,17 @@ const BROWSER_SAVE = /^\/v1\/browser\/downloads\/[^/]+\/saveCopy$/;
 // Confirm card's is (SPHERE-9), so it signs exactly `{fingerprint}` by this button's label.
 export const PIN_VERIFY = 'Verify';
 
+// A computer removed (COMPUTERSAPP-11): no body, by its dialog's own Remove computer, never a bare
+// Remove, so a click on any other Remove can't stand for it (the owner's word of 2026-11-21)
+export const REMOVE_COMPUTER = 'Remove computer';
+const COMPUTER = /^\/v1\/computers\/[^/]+$/;
+// A computer added with a code (docs/contracts/computers-app.md, COMPUTERSAPP-6): exactly `{link,
+// code}`, signed by the code the owner typed in its sheet, which Enter in its box and the sheet's
+// Add computer (a click holds its form's boxes) both hold. The sheet sends its six digits alone, so
+// a held text stands for it by its digits: "482 913", as the other computer shows it
+const COMPUTER_ADD = '/v1/computers';
+const digitsOf = (s: string) => s.replace(/\D/g, '');
+
 // whether `words` @-name `owner` (a whole word, case aside), as the message box sets a mention apart
 const named = (words: string, owner: string) =>
   /^[a-z0-9-]{1,63}$/.test(owner) && new RegExp(`(?<![\\w@])@${owner}(?![\\w-])`, 'i').test(words);
@@ -76,13 +102,23 @@ const PIN = /^\/v1\/obid\/sphere\/pins\/[^/]+$/;
 // them; null for any other request, or any other shape (main never signs it). A key the app
 // doesn't send (a job's check, mode or repository, say) is never signed along with the words.
 export function wordsOf(method: string, path: string, body: unknown): string[] | null {
-  // the vault's removal, the one request signed with no body
+  // the vault's removal and a computer's, the two requests signed with no body
   if (VAULT.test(path.split('?')[0])) {
     if (method === 'DELETE') return body === undefined ? [VAULT_REMOVE] : null;
     if (method === 'PUT') return isBody(body) && text(body.value) && shaped(body, { value: text }) ? [VAULT_ADD] : null;
   }
+  if (method === 'DELETE' && COMPUTER.test(path.split('?')[0]) && path.split('?')[0] !== '/v1/computers/current') return body === undefined ? [REMOVE_COMPUTER] : null;
+  // an artifact imported from a dropped file: its bytes as they are, by its own Import button (WORDS-21)
+  if (method === 'POST' && path === '/v1/artifacts/import') return body instanceof Uint8Array && body.byteLength > 0 ? [IMPORT] : null;
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
+  // the owner's edit: the version it's made on, and some of its files' new text, nothing else
+  if (method === 'POST' && ARTIFACT_EDIT.test(p)) {
+    const files = body.files;
+    return Number.isSafeInteger(body.base) && (body.base as number) >= 1 && isBody(files) && Object.keys(files).length > 0
+      && Object.values(files).every(text) && shaped(body, { base: (b) => Number.isSafeInteger(b), files: isBody })
+      ? [saveAs(body.base as number)] : null;
+  }
   // a browser tab's take or give back: an empty body, nothing else
   const hold = method === 'POST' ? BROWSER_TAB.exec(p) : null;
   if (hold) return Object.keys(body).length === 0 ? [hold[1] === 'take' ? TAKE_CONTROL : GIVE_BACK] : null;
@@ -116,6 +152,10 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
       // where the conversation the words start works (WORKSPACE-3, WORDS-20): "This folder" or
       // "A new worktree", with new only; signed with the body, never one of the words
       workspace: (w) => (w === 'folder' || w === 'worktree') && body.new === true,
+      // the artifact open beside the conversation (ARTIFACTS-12, WORDS-22): its id and version, in
+      // a conversation only; signed with the body, never one of the words
+      artifact: (a) => isBody(a) && typeof a.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(a.id)
+        && Number.isSafeInteger(a.version) && (a.version as number) >= 1 && shaped(a, { id: text, version: (v) => Number.isSafeInteger(v) }) && body.new !== true,
     });
     // an answer to Oby's question: the words it answers, and the owner's answer
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;
@@ -130,6 +170,7 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   // a member's key the owner compared: the fingerprint alone (the path says whose), by Verify
   if (method === 'POST' && PIN.test(p)) return text(body.fingerprint) && shaped(body, { fingerprint: text }) ? [PIN_VERIFY] : null;
   // the yes alone: a no needs no signature (obid keeps it either way)
+  if (method === 'POST' && p === COMPUTER_ADD) return text(body.link) && text(body.code) && /^\d{6}$/.test(body.code) && shaped(body, { link: text, code: text }) ? [body.code] : null;
   if (method === 'POST' && /^\/v1\/accounts\/[^/]+\/background$/.test(p)) return body.given === true && shaped(body, { given: flag }) ? [BACKGROUND_YES] : null;
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;
   if (method === 'POST' && /^\/v1\/inbox\/[^/]+\/answer$/.test(p)) return text(body.answer) && shaped(body, { answer: text, clientRequestId: requestKey }) ? [body.answer] : null;
@@ -157,10 +198,12 @@ export function owners(method: string, path: string, body: unknown, held: string
     if (!n) return null;
     if (answers && i === 0 && earlier.some((e) => norm(e) === n)) continue;
     const round = w === TRY_AGAIN && MESSAGES.test(path.split('?')[0]);
+    const fix = i === 0 && w === FIX_WORDS && !answers && method === 'POST' && path.split('?')[0] === '/v1/plans';
     const once = i === 0 && w === DECISIONS.allow && PERMISSION.test(path.split('?')[0]);
     const take = w === TAKE_CONTROL && /\/take$/.test(path.split('?')[0]);
     const skip = w === SKIP && BROWSER_ANSWER.test(path.split('?')[0]);
-    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h)))));
+    const code = i === 0 && method === 'POST' && path.split('?')[0] === COMPUTER_ADD;
+    const at = held.findIndex((h, j) => !used.includes(j) && (norm(h) === n || (round && norm(h) === norm(TRY_AGAIN_LABEL)) || (fix && norm(h) === norm(ASK_TO_FIX)) || (once && norm(h) === ALLOW_ONCE) || (take && TAKE_LABELS.some((l) => norm(l) === norm(h))) || (skip && SKIP_LABELS.some((l) => norm(l) === norm(h))) || (code && digitsOf(h) === n)));
     if (at < 0) return null;
     used.push(at);
   }

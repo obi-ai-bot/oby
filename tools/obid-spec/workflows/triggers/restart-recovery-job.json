@@ -67,8 +67,14 @@
         "obid": "${state.o}",
         "method": "GET",
         "path": "/v1/jobs/${state.s.body.id}",
+        "within": 30,
         "expect": {
-          "status": 200
+          "status": 200,
+          "paths": {
+            "session": {
+              "$type": "string"
+            }
+          }
         }
       }
     },

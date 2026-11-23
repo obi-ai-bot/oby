@@ -18,9 +18,12 @@ POST /v1/agent/mcp/{job}
 POST /v1/agent/tetrix/{job}
 GET /v1/alerts
 GET /v1/artifacts
+POST /v1/artifacts/import
 DELETE /v1/artifacts/{id}
 GET /v1/artifacts/{id}
 PATCH /v1/artifacts/{id}
+GET /v1/artifacts/{id}/export/{version}
+POST /v1/artifacts/{id}/versions
 GET /v1/artifacts/{id}/{version}/{*path}
 DELETE /v1/attachments
 POST /v1/attachments
@@ -31,6 +34,8 @@ GET /v1/browser/downloads
 POST /v1/browser/downloads/{id}/saveCopy
 GET /v1/browser/events
 POST /v1/browser/mcp
+GET /v1/browser/relay
+POST /v1/browser/relay
 GET /v1/browser/settings
 PUT /v1/browser/settings
 POST /v1/browser/tabs/{id}/back
@@ -42,6 +47,14 @@ POST /v1/browser/tabs/{id}/secret
 GET /v1/browser/tabs/{id}/stream
 POST /v1/browser/tabs/{id}/take
 POST /v1/clear
+GET /v1/computers
+POST /v1/computers
+PUT /v1/computers/current
+POST /v1/computers/link
+DELETE /v1/computers/{id}
+PATCH /v1/computers/{id}
+POST /v1/computers/{id}/door
+POST /v1/computers/{id}/retry
 GET /v1/connectors
 GET /v1/conversation
 POST /v1/conversation/stop
@@ -181,3 +194,4 @@ POST /v1/tetrix/sign-in
 # The gateway's own listener (gateway.rs, `router`), not the API's router:
 DELETE /v1/pairing
 POST /v1/pairing
+GET /v1/preview/tunnel

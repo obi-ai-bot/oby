@@ -147,6 +147,17 @@ fn start_checking(
     path_first: Option<&Path>,
     base_check: bool,
 ) -> Obid {
+    start_checking_with(folder, config, path_first, base_check, &[])
+}
+
+/// [`start_checking`] with `env` added to obid's environment.
+fn start_checking_with(
+    folder: &Path,
+    config: &Value,
+    path_first: Option<&Path>,
+    base_check: bool,
+    env: &[(&str, &str)],
+) -> Obid {
     use std::os::unix::fs::PermissionsExt;
     put_token(config, TOKEN);
     // Written when Sandbox was the default (#586), these tests pin its asks (support::keep_sandbox).
@@ -155,12 +166,23 @@ fn start_checking(
         std::fs::write(&kept, r#"{"mode": "sandbox"}"#).unwrap();
         std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    start_fresh(folder, config, path_first, base_check)
+    start_fresh_with(folder, config, path_first, base_check, env)
 }
 
 /// [`start_with`], with nothing saved in `permissions.json` that obid didn't find there: a new
 /// install's (#1570).
 fn start_fresh(folder: &Path, config: &Value, path_first: Option<&Path>, base_check: bool) -> Obid {
+    start_fresh_with(folder, config, path_first, base_check, &[])
+}
+
+/// [`start_fresh`] with `env` added to obid's environment.
+fn start_fresh_with(
+    folder: &Path,
+    config: &Value,
+    path_first: Option<&Path>,
+    base_check: bool,
+    env: &[(&str, &str)],
+) -> Obid {
     let mut search = std::env::var_os("PATH").unwrap_or_default();
     if let Some(first) = path_first {
         let mut dirs = vec![first.to_path_buf()];
@@ -177,6 +199,7 @@ fn start_fresh(folder: &Path, config: &Value, path_first: Option<&Path>, base_ch
         .args(["serve", "--config"])
         .arg(&path)
         .env_clear()
+        .envs(env.iter().copied())
         .env("PATH", search)
         .env("HOME", folder.join("env-home"))
         .env("TMPDIR", folder.join("tmp"))
@@ -2318,11 +2341,16 @@ fn tasks_18_a_stopped_job_says_who_stopped_it() {
 /// obid with a second repository, `obi-e2e/gone`, whose remote doesn't exist: a job on it fails
 /// before its agent starts, so it never has a session.
 fn start_with_gone(folder: &Path) -> Obid {
+    start_with_gone_with(folder, &[])
+}
+
+/// [`start_with_gone`] with `env` added to obid's environment.
+fn start_with_gone_with(folder: &Path, env: &[(&str, &str)]) -> Obid {
     let remote = fixture(&folder.join("fixture"));
     let mut config = config(folder, &remote);
     config["repos"].as_array_mut().unwrap().push(json!({"repo": "obi-e2e/gone",
         "remote": format!("file://{}", folder.join("nowhere.git").display()), "defaultBranch": "main"}));
-    start(folder, &config)
+    start_checking_with(folder, &config, None, false, env)
 }
 
 /// `POST /v1/jobs/{id}/messages` with Try again's words.
@@ -2391,6 +2419,50 @@ fn tasks_20_try_again_reruns_a_task_that_never_started() {
     assert_eq!(refailed["reason"], failed["reason"], "{refailed}");
     assert!(refailed["session"].is_null(), "{refailed}");
     assert_eq!(follow_ups(&obid, &id), Vec::<Value>::new());
+}
+
+/// JOBSTATE-6 (#2820): Try again's answer is the round it opened, even when that round ended
+/// before the answer was read. obid holds the answer 3 seconds (a debug build's
+/// `OBID_TEST_MESSAGE_ANSWER_HOLD_MS`), long enough for the rerun's clone, which can't start, to
+/// fail; the answer still reads queued or running with how it ended gone, and only `GET` shows it
+/// failed again. Its revision is older than the failure's, so an app that has the failure keeps it.
+#[test]
+fn jobstate_6_try_again_answers_the_round_it_opened_though_it_already_failed() {
+    let folder = Folder::new("jobstate-6-held");
+    let obid = start_with_gone_with(&folder.0, &[("OBID_TEST_MESSAGE_ANSWER_HOLD_MS", "3000")]);
+    let posted = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/gone", "kind": "build", "task": "Add a.txt"}),
+    );
+    let id = posted.body["id"].as_str().unwrap().to_owned();
+    let failed = wait(&obid, &id);
+    assert_eq!(failed["status"], "failed", "{failed}");
+
+    let again = press_try_again(&obid, &id);
+    assert_eq!(again.status, 200, "{}", again.text);
+    // The rerun failed while the answer was held.
+    let refailed = wait(&obid, &id);
+    assert_eq!(refailed["status"], "failed", "{refailed}");
+    assert_eq!(refailed["round"], 2, "{refailed}");
+    assert!(
+        matches!(again.body["status"].as_str(), Some("queued" | "running")),
+        "{}",
+        again.text
+    );
+    assert_eq!(again.body["round"], 2, "{}", again.text);
+    for empty in ["finished", "reason", "nextStep"] {
+        assert!(again.body[empty].is_null(), "{empty}: {}", again.text);
+    }
+    // Older than the failure's, so an app that has the failure keeps it (LIVE-1).
+    let (answered, ended) = (
+        again.body["revision"].as_u64(),
+        refailed["revision"].as_u64(),
+    );
+    assert!(
+        answered < ended,
+        "answer {answered:?}, failure {ended:?}: {}",
+        again.text
+    );
 }
 
 /// TASKS-25: a job no app signed that ends before its agent starts ends `failed` with its reason,
@@ -4698,6 +4770,61 @@ fn merging_36_a_review_of_someone_elses_commits_asks_for_its_reads() {
     // Only the fix boxes it: in the own lane `python3 -c` would ask all the same.
     let (args, _) = last_launch(&folder.0);
     assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
+}
+
+/// BROWSER-18: the owner's review of a pull request whose head has a commit obid didn't record
+/// reads someone else's code from its start: its agent is given no browser server, as another
+/// Oby's task isn't, while the box is off (`box_edge::foreign_browser`).
+#[test]
+fn browser_18_a_review_of_someone_elses_commits_gets_no_browser() {
+    let folder = Folder::new("review-theirs-browser");
+    let remote = fixture(&folder.0.join("fixture"));
+    authors_commit(&folder.0, &remote, "refs/pull/91/head");
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 91, "task": "REPORT"});
+    let id = post_job(&obid, task).body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let loaded = loaded(&obid, &id);
+    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
+}
+
+/// BROWSER-18: the owner's review of a pull request someone else wrote in (a member, here) reads
+/// someone else's code from its start, though obid recorded its commits: its run loads no browser
+/// server.
+#[test]
+fn browser_18_a_review_of_a_pull_request_someone_else_wrote_in_gets_no_browser() {
+    let folder = Folder::new("review-member-browser");
+    let remote = fixture(&folder.0.join("fixture"));
+    pull_request_90(&remote);
+    let (config, _account) = recording_config(&folder.0, &remote);
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let obid = start_with(&folder.0, &config, Some(&agents));
+    // The stand-in gh (tests/agents/gh): the owner is wellington of obi-e2e, and sangam, a
+    // member, wrote the pull request.
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("user"), "wellington\n").unwrap();
+    std::fs::write(gh.join("orgs"), "obi-e2e\n").unwrap();
+    let none = json!({"pageInfo": {"hasNextPage": false}, "nodes": []});
+    let pr = json!({"author": {"login": "sangam"}, "authorAssociation": "MEMBER", "body": "A line",
+                    "userContentEdits": none, "timelineItems": none, "comments": none, "reviews": none});
+    let who = json!({"data": {"viewer": {"login": "wellington"}, "repository": {"issueOrPullRequest": pr}}});
+    std::fs::write(gh.join("who.json"), who.to_string()).unwrap();
+    let started = typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 90,
+                        "task": "REPORT"}}),
+    );
+    assert_eq!(started.status, 201, "{}", started.text);
+    let id = started.body["id"].as_str().unwrap();
+    assert_eq!(wait(&obid, id)["status"], "done");
+    let loaded = loaded(&obid, id);
+    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
 }
 
 /// MERGING-36: a review the owner dispatched (signed, so obid asks GitHub who wrote the pull
@@ -7068,8 +7195,9 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     let all = json!(["user", "project", "local"]);
     assert_eq!(
         loaded(&obid, id),
+        // The owner's and the repository's servers, then Oby's browser (BROWSER-17).
         json!({"sources": all, "found": all, "skills": ["owners-skill"],
-               "mcpServers": ["owners-github", "repos-server"], "sandbox": false})
+               "mcpServers": ["owners-github", "repos-server", "browser"], "sandbox": false})
     );
 
     let (obid, job) = marked_untrusted(&folder.0, &config, obid, id, "REPORT");
@@ -7077,6 +7205,8 @@ fn lanes_23_an_own_job_loads_every_settings_source_as_the_terminal_does() {
     let loaded = loaded(&obid, job["id"].as_str().unwrap());
     assert_eq!(loaded["sources"], json!([]), "{loaded}");
     assert_eq!(loaded["skills"], json!([]), "{loaded}");
+    // None of the owner's or the repository's servers, and no browser: an untrusted job gets none
+    // while the box is off (box_edge::foreign_browser, BROWSER-18).
     assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
 }
 

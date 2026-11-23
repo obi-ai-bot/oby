@@ -58,6 +58,7 @@ fn sample_tab() -> Tab {
         computer: Computer::this_mac(),
         ask: Some(sample_ask()),
         dialog: Some("words".into()),
+        partition: Some("persist:oby-agent-codex".into()),
     }
 }
 
@@ -79,6 +80,10 @@ fn sample_browser() -> JobBrowser {
         agent: "codex".into(),
         state: BrowserState::Failed,
         reason: Some("why".into()),
+        origin: Origin::Obi {
+            peer: "obi-b".into(),
+            peer_owner: "ben".into(),
+        },
     }
 }
 
@@ -180,6 +185,50 @@ fn samples() -> Vec<Value> {
         })
         .unwrap(),
         serde_json::to_value(ReloadBody {}).unwrap(),
+        // The window's relay (T3 Code's design).
+        serde_json::to_value(RelayCommand::Cdp {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+            message: "{}".into(),
+            agent_code: true,
+        })
+        .unwrap(),
+        serde_json::to_value(RelayCommand::Pointer {
+            thread_id: "j1".into(),
+            tab_id: "tab-1".into(),
+            phase: PointerPhase::Move,
+            x: 1.0,
+            y: 2.0,
+        })
+        .unwrap(),
+        serde_json::to_value(RelayCommand::Turn {
+            thread_id: "j1".into(),
+            active: true,
+        })
+        .unwrap(),
+        serde_json::to_value(RelayCommand::Box {
+            thread_id: "j1".into(),
+            partition: "oby-box-j1".into(),
+            proxy: "http://oby:<token>@127.0.0.1:1".into(),
+        })
+        .unwrap(),
+        serde_json::to_value(RelayEvents {
+            events: vec![
+                RelayEvent::LoadFailed {
+                    thread_id: "j1".into(),
+                    tab_id: "tab-1".into(),
+                    url: "u".into(),
+                    code: -105,
+                    description: "d".into(),
+                },
+                RelayEvent::Shown {
+                    thread_id: "j1".into(),
+                    tab_id: "tab-1".into(),
+                    shown: true,
+                },
+            ],
+        })
+        .unwrap(),
         serde_json::to_value(BackBody {}).unwrap(),
         // The secret's body is only ever read: its keys as the route takes them.
         json!({"field": "#pw", "value": "v"}),

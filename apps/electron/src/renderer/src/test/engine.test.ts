@@ -382,3 +382,79 @@ describe('the app’s own run records', () => {
     expect(records.runRecords()).toEqual({ marker: null, attempts: 0, crashes: [] });
   });
 });
+
+// Another computer in use (docs/contracts/computers-app.md, COMPUTERSAPP-15; docs/api/remote.md, "A
+// request for another computer"): main names it on every call with Oby-Computer, as obid said it
+describe('COMPUTERSAPP-15: every call names the computer in use', () => {
+  // each call's path and headers, and obid's answer to it by method and path
+  const sent: { method: string; path: string; headers: Record<string, string> }[] = [];
+  const answers = new Map<string, { status: number; body: unknown }>();
+  async function onAnswers() {
+    const call = await adopted();
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      const path = new URL(url).pathname + new URL(url).search, method = init.method ?? 'GET';
+      sent.push({ method, path, headers: { ...(init.headers as Record<string, string>) } });
+      const a = answers.get(`${method} ${path}`) ?? { status: 200, body: {} };
+      return new Response(JSON.stringify(a.body), { status: a.status });
+    });
+    void call;
+    const main = await import('../../../main/obid');
+    const named = async (method: string, path: string, body?: unknown, here = false) => {
+      sent.length = 0;
+      await main.obid(method, path, body, undefined, here);
+      return sent[0].headers;
+    };
+    return { main, named };
+  }
+  beforeEach(() => { sent.length = 0; answers.clear(); });
+
+  it('computersapp_15: obid’s list puts every call on its computer, never with Oby-Profile; /v1/computers and main’s own Mac calls stay this Mac’s', async () => {
+    const { main, named } = await onAnswers();
+    main.chooseProfile('p1');
+    expect((await named('GET', '/v1/jobs'))['Oby-Profile']).toBe('p1');
+    answers.set('GET /v1/computers', { status: 200, body: { current: 'studio', computers: [{ id: 'studio', name: 'Studio', state: 'connected' }] } });
+    const list = await named('GET', '/v1/computers');
+    expect(list['Oby-Computer']).toBeUndefined();
+    expect(main.openedComputer()).toBe('studio');
+    const jobs = await named('GET', '/v1/jobs?limit=50');
+    expect(jobs['Oby-Computer']).toBe('studio');
+    expect(jobs['Oby-Profile']).toBeUndefined();
+    expect((await named('POST', '/v1/jobs/j1/messages', { text: 'go on' }))['Oby-Computer']).toBe('studio');
+    // the Mac's own: its computers, and what main asks for this Mac (its device key, its status)
+    expect((await named('PATCH', '/v1/computers/studio', { name: 'Big Mac' }))['Oby-Computer']).toBeUndefined();
+    expect((await named('GET', '/v1/status', undefined, true))['Oby-Computer']).toBeUndefined();
+    expect((await named('POST', '/v1/devices', {}, true))['Oby-Computer']).toBeUndefined();
+  });
+
+  it('computersapp_15: only obid’s own answers move it: the switch’s list, a removal of the one in use; never what the page asked', async () => {
+    const { main, named } = await onAnswers();
+    answers.set('PUT /v1/computers/current', { status: 200, body: { current: 'studio', computers: [{ id: 'studio', name: 'Studio', state: 'connected' }] } });
+    await named('PUT', '/v1/computers/current', { id: 'studio' });
+    expect(main.openedComputer()).toBe('studio');
+    // the page asked for devbox; obid refused it: still Studio
+    answers.set('PUT /v1/computers/current', { status: 404, body: { error: 'No such computer.', reason: 'no_such_computer' } });
+    await named('PUT', '/v1/computers/current', { id: 'devbox' });
+    expect(main.openedComputer()).toBe('studio');
+    // another one removed: still Studio; Studio removed: this Mac
+    answers.set('DELETE /v1/computers/devbox', { status: 200, body: { removed: 'devbox', there: true } });
+    await named('DELETE', '/v1/computers/devbox');
+    expect(main.openedComputer()).toBe('studio');
+    answers.set('DELETE /v1/computers/studio', { status: 200, body: { removed: 'studio', there: false } });
+    await named('DELETE', '/v1/computers/studio');
+    expect(main.openedComputer()).toBeNull();
+    const after = await named('GET', '/v1/jobs');
+    expect(after['Oby-Computer']).toBeUndefined();
+  });
+
+  it('computersapp_15: the switch back to This Mac ends the naming, and each change is told once', async () => {
+    const { main, named } = await onAnswers();
+    const told: (string | null)[] = [];
+    main.onComputer((id) => told.push(id));
+    answers.set('GET /v1/computers', { status: 200, body: { current: 'studio', computers: [{ id: 'studio', name: 'Studio', state: 'connected' }] } });
+    await named('GET', '/v1/computers');
+    await named('GET', '/v1/computers');
+    main.heardComputers({ current: 'this' });
+    expect(told).toEqual(['studio', null]);
+    expect((await named('GET', '/v1/jobs'))['Oby-Computer']).toBeUndefined();
+  });
+});

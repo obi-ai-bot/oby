@@ -56,3 +56,27 @@ export function kidsLine(kids: Task[]): string | undefined {
 
 // Its row's title when hovered: the task and the account it runs on (screen 03's title attribute)
 export const kidTitle = (t: Task) => (t.job.account ? `${t.title} on ${t.job.account}` : t.title);
+
+// Which conversations' rows the owner folded or showed with its twist (LIVETASK-20), kept as
+// oby.kidsShown: conversation id to shown or not
+const KIDS = 'oby.kidsShown';
+export function keptKids(): Record<string, boolean> {
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(KIDS) ?? '{}');
+    return kept && typeof kept === 'object' && !Array.isArray(kept) ? Object.fromEntries(Object.entries(kept).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean> : {};
+  } catch { return {}; }
+}
+export function keepKids(next: Record<string, boolean>) {
+  try { localStorage.setItem(KIDS, JSON.stringify(next)); } catch { /* not remembered, that's all */ }
+}
+// A task's own thread opened (its card, its nested row): its conversation's rows show once, the lit
+// one among them, even folded by the owner before; the twist folds them again (LIVETASK-22)
+const revealed = new Set<(chat: string) => void>();
+export function revealKids(chat: string) {
+  const kept = keptKids();
+  if (kept[chat] !== false) return;
+  delete kept[chat];
+  keepKids(kept);
+  for (const f of revealed) f(chat);
+}
+export const onRevealKids = (f: (chat: string) => void) => { revealed.add(f); return () => { revealed.delete(f); }; };

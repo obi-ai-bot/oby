@@ -184,8 +184,11 @@
 /* The boards' own pieces (each board's <style>), as they are */
 
 /* Closed */
-.tip-under{position:absolute;top:44px;right:8px;padding:4px 8px;border:1px solid var(--surface-edge);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;white-space:nowrap}
+/* Its 8px from the bar's end, past the bar's gutter, as board 1 measures it */
+.tip-under{position:absolute;top:44px;right:calc(8px - var(--gutter));padding:4px 8px;border:1px solid var(--surface-edge);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;white-space:nowrap}
 .tip-under kbd{margin-left:8px;color:var(--muted);font:inherit}
+/* The bar's end (its fade-in a stacking context the tip can't leave) over the chat, as board 1 paints the tip */
+.bar-end:has(.tip-under){position:relative;z-index:3}
 
 /* Together */
 .docs{position:absolute;inset:0;display:flex;font:14px/1.5 -apple-system,system-ui,Inter,sans-serif;color:#1a1b1f;background:#fff}
@@ -261,3 +264,15 @@
 .pill-sep { width: 1px; height: 20px; background: var(--line); }
 html.is-mac-overlay, html.is-mac-overlay body, html.is-mac-overlay #root { background: transparent !important; }
 html.is-mac-overlay .control-pill { position: fixed; top: 8px; }
+
+/* The agents' pages, each a <webview> on its slot (Webviews.tsx), with the agent's pointer over it */
+.br-hosted { z-index: 1; overflow: hidden; background: #fff; }
+/* board 6's ring on a page you hold, over its webview */
+.br-hosted.is-held::after { content: ''; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--unread); pointer-events: none; z-index: 10; }
+/* The webview stays at the root, under the panel (a moved one loses its page), so over a live page
+   the panel is see-through and lets clicks through to it; its rows keep the panel's colour and
+   what it draws over the page (the ring, Ran a script, the peek, the pointer) stays on top, as T3
+   Code keeps its own overlays over its webview. Only a live slot: the demo's page is unchanged. */
+.br:has(> .br-view > .br-slot), .br-view:has(> .br-slot) { background: transparent; pointer-events: none; }
+:where(.br:has(> .br-view > .br-slot)) > :where(:not(.br-view)), :where(.br-view:has(> .br-slot)) > :where(:not(.br-slot)) { pointer-events: auto; }
+:where(.br:has(> .br-view > .br-slot)) > :where(.br-tabs, .where-bar, .br-nav, .br-control, .br-shelf) { background-color: var(--bg); }

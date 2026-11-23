@@ -34,6 +34,17 @@ describe('live state', () => {
     expect(answer(held, job({ revision: 6 })).jobs.j1.revision).toBe(6);
   });
 
+  it('JOBSTATE-6: Try again answered after its round already failed leaves the failure on the card', () => {
+    // obid's answer is the round Try again opened, at the revision it had then; the failure's event
+    // is newer, whichever comes first.
+    const opened = job({ revision: 7, status: 'queued', round: 2, finished: null });
+    const failed = job({ revision: 9, status: 'failed', round: 2, finished: '2026-11-21T05:19:48Z' });
+    const eventFirst = answer(apply(holding(opened), { kind: 'job', job: failed }), opened);
+    expect(eventFirst.jobs.j1).toMatchObject({ status: 'failed', revision: 9 });
+    const answerFirst = apply(answer(empty, opened), { kind: 'job', job: failed });
+    expect(answerFirst.jobs.j1).toMatchObject({ status: 'failed', revision: 9 });
+  });
+
   it('LIVE-2: a deleted job never comes back', () => {
     const deleted = parseEvent('job', JSON.stringify({ id: 'j1', deleted: true }));
     expect(deleted).toEqual({ kind: 'jobGone', id: 'j1' });

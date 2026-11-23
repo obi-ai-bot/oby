@@ -1,0 +1,1 @@
+import*as r from"react";import"react/jsx-runtime";var n=Object.defineProperty,i=(e,t)=>n(e,"name",{value:t,configurable:!0}),a={LTR:"ltr"},c=r.createContext(void 0);function o(e){const t=r.useContext(c);return e||t||a.LTR}i(o,"useDirection");export{o as u};

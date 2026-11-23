@@ -8,20 +8,33 @@
 //! - `accounts.link`: a symbolic link there, a login file that is a link (SIGN-IN-3).
 //! - `accounts.log`: the scratch obid's own log, so a `check` can prove a login's secret never
 //!   reached it.
+//! - `accounts.openai` and its siblings: a stand-in OpenAI for Continue with ChatGPT
+//!   (src/coverage_accounts_openai.rs).
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+#[path = "coverage_accounts_openai.rs"]
+mod openai;
+
 /// The accounts area's nodes: their names and what they do.
 pub const NODES: &[(&str, &str)] = &[
     ("accounts.exec", "Writes an executable script (0700) at `path` in a scratch obid's person's home (`in`: person, the default, or home), its `text` as given: {path: where it is}."),
     ("accounts.link", "Makes a symbolic link at `path` in a scratch obid's person's home (`in`: person, the default, or home) pointing to `to` (a path in the same folder): {path, to}."),
     ("accounts.log", "Reads a scratch obid's own log (obid.log beside its home): {text, lines}; with `has`, also `with`: its lines that hold that text, so a `check` can count them."),
+    ("accounts.openai", "Starts a stand-in OpenAI on 127.0.0.1 (a free port) for this workflow: {origin}, for obid-start's env as OBID_TEST_CHATGPT_ORIGIN."),
+    ("accounts.openai-set", "Changes what the stand-in OpenAI (`openai`, an accounts.openai output) does next: sub, email, scope, deny, forged, wrongAud, callbackClient, holdMs, expiresIn; appends tokenErrors [{status, body}], revokeStatuses, responses ({said} | {failed: {code, message}} | {status, json} | {status, text} | {cut: [events]}) and responseHoldsMs; refuse (first-access, last-access, all-access, or none to clear them), refuseAll."),
+    ("accounts.openai-saw", "What the stand-in OpenAI saw: {authorized, refreshes, tokens, access, refresh, firstAccess, lastAccess, lastRefresh, revoked, bearers, posts, models}; with expect (body/paths) and within (seconds, read again until it holds)."),
+    ("accounts.visit", "GETs a loopback URL as the person's browser does, following no redirect: `url`, `host` (another Host header), `replace` [from, to] in the URL, `dropQuery`; `background` answers a handle at once and `wait` (a handle) its answer: {status, location, text}; with expect."),
+    ("accounts.tokens", "Where the stand-in OpenAI's tokens are: every file under a scratch obid's folder that holds one (paths relative to it, sorted), how many are in any process's arguments or environment, and which of `look` (other texts) are: {files, inProcesses, tokens, found}; with expect and within."),
 ];
 
 pub async fn run_node(name: &str, input: &Value) -> Result<Value> {
+    if openai::NAMES.contains(&name) {
+        return openai::run_node(name, input).await;
+    }
     match name {
         "accounts.exec" => exec(input),
         "accounts.link" => link(input),

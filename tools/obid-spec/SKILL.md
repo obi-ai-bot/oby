@@ -12,8 +12,8 @@ Build both binaries first: `cargo build --manifest-path tools/obid-spec/Cargo.to
   obid's scenarios proven, exit 1 when anything is missing; `--gate`, the check's, fails only on
   what must hold now and reports the unproven scenarios as the backlog.
 
-The check runs it: GitHub's merge queue the `launch` workflows, nightly all of them, and a pull
-request only when it changes the suite or carries `full-suite`. A step that turns red there is a
+The Mac's check runs all of them for a change to the suite, and `scripts/preflight.sh`
+each workflow a change touches; GitHub doesn't run it. A step that turns red there is a
 regression or a new bug: fix the product, or file the bug and mark the step `ui.expectedRed`;
 loosen a step only when the step itself was wrong.
 

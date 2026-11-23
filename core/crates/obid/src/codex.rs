@@ -84,6 +84,11 @@ pub fn argv(
 /// The MCP servers [`argv`] gives Codex, the only ones that may start or run.
 const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
 
+/// The MCP servers whose tools a boxed job's Codex may run, each by obid's rules: [`OWN_SERVERS`]
+/// and Oby's browser, given to a job of the owner's (crate::browser::AgentServer::codex,
+/// BROWSER-17). A conversation's Codex isn't given the browser.
+const JOB_SERVERS: [&str; 3] = ["oby", "tetrix", crate::browser::agent_server::NAME];
+
 /// What an own run (LANES-13 and LANES-18) is told so that Oby's own tools run (LANES-21): in
 /// Bypass Codex asks nobody, and from codex-cli 0.163 it refuses an MCP call that would need
 /// approval with nobody to ask ("MCP tool call requires approval, but approval policy is never"),
@@ -93,6 +98,13 @@ const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
 pub(crate) const OWN_OBY_TOOLS: [&str; 2] = [
     "-c",
     r#"mcp_servers.oby.default_tools_approval_mode="approve""#,
+];
+
+/// [`OWN_OBY_TOOLS`] for Oby's browser (BROWSER-17), given only with its server: obid's browser
+/// server serves its own tools alone, each checked by obid's rules as it's served.
+pub(crate) const OWN_BROWSER_TOOLS: [&str; 2] = [
+    "-c",
+    r#"mcp_servers.browser.default_tools_approval_mode="approve""#,
 ];
 
 /// Runs one turn: starts the server, sends `prompt`, answers approvals with `decide`, reports with
@@ -1027,8 +1039,9 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     .and_then(|calls| calls.iter().rfind(|(tool, _)| Some(tool.as_str()) == named));
                 let answer = match call.cloned() {
                     // Only Oby's own server: another's (ChatGPT's apps, the person's) is never
-                    // run, as before Codex asked. An own run's are the owner's (LANE-12).
-                    Some(_) if !OWN_SERVERS.contains(&server) && !self.own => {
+                    // run, as before Codex asked. An own run's go to its rules: Bypass runs them,
+                    // every other mode asks the owner (CONVERSATION-AGENT-18).
+                    Some(_) if !JOB_SERVERS.contains(&server) && !self.own => {
                         Answer::Deny(format!("Only Oby's own tools run here, not {server}'s."))
                     }
                     Some((tool, arguments)) => {
@@ -1044,18 +1057,13 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     }
                     None => Answer::Deny("obid couldn't see which tool this runs.".into()),
                 };
-                if let Answer::Deny(why) = &answer {
-                    (self.on_event)(Event::Denied(why.clone()));
-                }
-                let action = if matches!(answer, Answer::Allow | Answer::AllowWith(_)) {
-                    "accept"
-                } else {
-                    "decline"
+                return match answer {
+                    Answer::Deny(why) => self.decline_call(&id, params, why).await,
+                    Answer::Allow | Answer::AllowWith(_) => {
+                        let accept = json!({"action": "accept", "content": {}});
+                        self.conn.reply(&id, accept).await
+                    }
                 };
-                return self
-                    .conn
-                    .reply(&id, json!({"action": action, "content": {}}))
-                    .await;
             }
             Some("item/tool/requestUserInput") => return self.ask_owner(&id, params).await,
             _ => return self.conn.refuse(&id).await,
@@ -1125,6 +1133,18 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     /// Declines, and since the decision has no room for a reason, tells the turn why.
     async fn decline(&mut self, id: &Value, params: &Value, why: String) {
         self.conn.reply(id, json!({"decision": "decline"})).await;
+        self.tell_why(params, why).await;
+    }
+
+    /// Declines an MCP tool's call: Codex tells the model only that it was rejected
+    /// (CONVERSATION-AGENT-18), so the turn hears why, as a declined command's does.
+    async fn decline_call(&mut self, id: &Value, params: &Value, why: String) {
+        let decline = json!({"action": "decline", "content": {}});
+        self.conn.reply(id, decline).await;
+        self.tell_why(params, why).await;
+    }
+
+    async fn tell_why(&mut self, params: &Value, why: String) {
         (self.on_event)(Event::Denied(why.clone()));
         if let (Some(thread), Some(turn)) = (params["threadId"].as_str(), params["turnId"].as_str())
         {
@@ -1620,6 +1640,19 @@ mod tests {
         assert_eq!(package("../elsewhere"), None);
         assert_eq!(package("/usr/bin"), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// BROWSER-17: a boxed job's Codex runs the tools of Oby's servers, the browser's among them,
+    /// each by obid's rules; another server's (`browserx`, the person's) is refused before them.
+    #[test]
+    fn browser_17_a_boxed_jobs_codex_may_run_the_browsers_tools() {
+        for server in ["oby", "tetrix", "browser"] {
+            assert!(JOB_SERVERS.contains(&server), "{server}");
+        }
+        for server in ["browserx", "codex_apps", "playwright", ""] {
+            assert!(!JOB_SERVERS.contains(&server), "{server}");
+        }
+        assert!(!OWN_SERVERS.contains(&"browser"));
     }
 
     /// ConnectionTests' last part: Codex finds the broker in its config and reads the job's token
@@ -2123,7 +2156,8 @@ exec sleep 30
         let tetrix = json!({"method": "item/completed",
             "params": {"item": {"type": "mcpToolCall", "server": "tetrix", "tool": "search"}}});
         assert_eq!(ran_outside(&tetrix), None);
-        for name in ["codex_apps", "elsewhere", ""] {
+        // A conversation isn't given Oby's browser (BROWSER-17 is a job's): none of its starts.
+        for name in ["codex_apps", "elsewhere", "", "browser"] {
             assert_eq!(
                 ran_outside(&starting(name)),
                 Some("Codex sent mcpServer/startupStatus/updated".into()),

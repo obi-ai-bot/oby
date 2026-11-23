@@ -11,6 +11,7 @@ import { everything, onObid } from '../lean';
 import type { BrowserApi, BrowserState, Tab } from './view';
 import { demoBoard } from './demo';
 import { connectLive, type Live } from './live';
+import { focusPage } from './Webviews';
 import { closeChanges, useChangesOpen } from '../ChangesPanel';
 
 /** The window's own state: not the browser's, never sent anywhere. */
@@ -43,8 +44,6 @@ export type Browser = {
   /** the demo's words for the conversation folded to one line, while the page is full width */
   peek: { agent: Tab['owner']; title: string; line: string } | null;
   active: Tab | undefined;
-  /** on obid: the stream's latest frame for a tab, as an image URL, and its size in the page's px */
-  frame: (tab: string) => { url: string; width: number; height: number } | null;
 };
 
 /** The panel's width the first time, and its narrowest (BROWSERAPP-3). */
@@ -52,12 +51,15 @@ export const PANEL_DEFAULT = 640, PANEL_MIN = 360;
 
 export const UI0: Ui = { open: true, full: false, width: PANEL_DEFAULT, gaveBack: false, card: null, typed: 0, filled: null, tipClosed: false };
 const NONE = async () => undefined;
+// the message box Give back returns the keyboard to: the conversation's (ChatView.tsx:279), else
+// Home's (Home.tsx:408)
+const MESSAGE_BOXES = ['.chat-layer:not(.is-covered):not(.is-leaving) > .composer [contenteditable="true"]', '.composer .composer-input'];
 const EMPTY: BrowserState = { tabs: [], active: null, asks: [], downloads: [], settings: BROWSER_DEFAULT_SETTINGS };
 
 // outside a BrowserProvider (a screen drawn on its own, in a test): no browser offered
 const OFF: Browser = {
-  offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined, frame: () => null,
-  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE },
+  offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined,
+  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE, nav: NONE },
 };
 const Ctx = createContext<Browser>(OFF);
 export const useBrowser = () => useContext(Ctx);
@@ -72,7 +74,6 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
   const [ui, setUiState] = useState<Ui>({ ...UI0, ...(demo ? demo.ui : { open: false }) });
   const setUi = (u: Partial<Ui>) => setUiState((o) => ({ ...o, ...u }));
   const [offered, setOffered] = useState(false);
-  const [frames, setFrames] = useState<Record<string, { url: string; width: number; height: number }>>({});
   const conn = useRef<Live | null>(null);
   // the latest state, for calls made from the api below (made once per mode)
   const latest = useRef(s);
@@ -91,9 +92,8 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       offered: setOffered,
       // the tab shown stays the one you chose while it's there
       state: (next) => setS((o) => ({ ...next, active: o.active && next.tabs.some((t) => t.id === o.active) ? o.active : next.active })),
-      frame: (tab, url, size) => setFrames((f) => ({ ...f, [tab]: { url, ...size } })),
       problem: (why) => { if (why) console.warn(`The browser: ${why}`); },
-    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), watch: (tab, fn) => browser.watch(tab, fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask) });
+    }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask), navState: (fn) => browser.navState(fn) });
     conn.current = c;
     return () => { c.close(); conn.current = null; };
   }, [onLive]);
@@ -102,10 +102,19 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
     if (onLive) {
       // the owner's acts, signed by main on their own click (shared/words.ts)
       return {
-        take: (t) => conn.current?.take(t) ?? Promise.resolve(),
-        giveBack: async (t) => { await conn.current?.giveBack(t); setUi({ gaveBack: true }); },
+        // once obid takes the tab, the keyboard is on its page; once it gives it back, in the message
+        // box (BROWSERAPP-40, 41), as T3 Code's Take control and Release control move it
+        take: async (t) => {
+          const job = latest.current.tabs.find((x) => x.id === t)?.job;
+          if ((await conn.current?.take(t)) && job) focusPage(job, t);
+        },
+        giveBack: async (t) => {
+          if (await conn.current?.giveBack(t)) MESSAGE_BOXES.map((css) => document.querySelector<HTMLElement>(css)).find(Boolean)?.focus();
+          setUi({ gaveBack: true });
+        },
         // the password or code goes to main, which fills it on your click and keeps nothing (BROWSERAPP-12)
-        secret: async (t, field, value, ask) => { setUi({ card: null, typed: 0 }); const at = await conn.current?.fill(t, field, value, ask); if (at === true) setUi({ filled: { tab: t, field, length: value.length } }); },
+        // the card and its strip stay until main has filled, so board 8's strip shows the whole fill
+        secret: async (t, field, value, ask) => { const at = await conn.current?.fill(t, field, value, ask); setUi(at === true ? { card: null, typed: 0, filled: { tab: t, field, length: value.length } } : { card: null, typed: 0 }); },
         answer: (a, choice) => conn.current?.answer(a, choice) ?? Promise.resolve(),
         saveCopy: (d) => conn.current?.saveCopy(d) ?? Promise.resolve(),
         reveal: async (d) => { const name = latest.current.downloads.find((x) => x.id === d)?.savedAs; if (name) await window.app?.browser?.reveal(name); },
@@ -113,7 +122,13 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
         // desktop control's state and Stop come with its own contract (agent-desktop): nothing on obid yet
         stopMac: NONE, answerMac: NONE,
         select: async (t) => setS((o) => ({ ...o, active: t })),
-        input: (t, e) => conn.current?.input(t, e) ?? Promise.resolve(),
+        // Back, Forward, Reload, Stop loading: main moves the tab's own page, unsigned (BROWSERAPP-30 to 35)
+        nav: async (t, op) => {
+          const job = latest.current.tabs.find((x) => x.id === t)?.job;
+          if (!job) return;
+          const why = await window.app?.browser?.nav(job, t, op);
+          if (why) console.warn(`The browser: ${why}`);
+        },
       };
     }
     const tab = (id: string, f: (t: Tab) => Tab) => setS((o) => ({ ...o, tabs: o.tabs.map((t) => (t.id === id ? f(t) : t)) }));
@@ -132,13 +147,13 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       answerMac: async () => setS((o) => ({ ...o, macAsk: null })),
       setSettings: async (x) => setS((o) => ({ ...o, settings: { ...o.settings, ...x } })),
       select: async (id) => setS((o) => ({ ...o, active: id })),
+      nav: NONE,
     };
   }, [onLive]);
 
   const browser: Browser = {
     offered: !!demo || (onLive && offered), mode: onLive ? 'obid' : 'demo', s, ui, setUi, api, peek: demo?.peek ?? null,
     active: s.tabs.find((t) => t.id === s.active),
-    frame: (t) => frames[t] ?? null,
   };
   return <Ctx.Provider value={browser}>{children}</Ctx.Provider>;
 }

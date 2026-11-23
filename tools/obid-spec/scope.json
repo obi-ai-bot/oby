@@ -283,7 +283,8 @@
             "CONVERSATION-AGENT-49",
             "CONVERSATION-AGENT-50",
             "CONVERSATION-AGENT-51",
-            "CONVERSATION-AGENT-52"
+            "CONVERSATION-AGENT-52",
+            "CONVERSATION-AGENT-53"
           ],
           "elsewhere": {
             "CONVERSATION-AGENT-10": "not built: retired (supervisor deleted).",
@@ -498,7 +499,9 @@
             "TASKCONV-34",
             "TASKCONV-35",
             "TASKCONV-36",
-            "TASKCONV-37"
+            "TASKCONV-37",
+            "TASKCONV-41",
+            "TASKCONV-42"
           ],
           "elsewhere": {
             "TASKCONV-19": "not built: retired with `oby_shell`.",
@@ -1336,7 +1339,9 @@
             "FOLDERS-20": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-21": "not built: proposed (folders for jobs, trust, failures).",
             "FOLDERS-23": "not built: proposed (folders for jobs, trust, failures).",
-            "WORKSPACE-1": "not built: proposed (the lanes wire the write list; its builder is proved by Kani in workspace/writes.rs)."
+            "WORKSPACE-1": "tests/workspace.rs (obid's rule for Claude Code's file tools through obid's API) and brain::folder_writes::tests; its builder proved by Kani in workspace/writes.rs.",
+            "WORKSPACE-7": "tests/workspace.rs (a worktree and unsigned words through obid's API).",
+            "WORKSPACE-8": "tests/conversation_codex.rs (the profile obid gives Codex); Codex's own sandbox measured on macOS and Ubuntu (docs/contracts/folders.md)."
           }
         },
         "setup.md": {
@@ -1367,9 +1372,11 @@
     },
     "devices": {
       "routes": [
+        "/v1/computers",
         "/v1/devices",
         "/v1/notifications",
-        "/v1/pairing"
+        "/v1/pairing",
+        "/v1/preview"
       ],
       "contracts": {
         "phone-pairing.md": {
@@ -1423,12 +1430,16 @@
         "remote.md": {
           "obid": [
             "COMPUTERS-14",
-            "COMPUTERS-16"
+            "COMPUTERS-16",
+            "COMPUTERS-17..25",
+            "COMPUTERS-26",
+            "COMPUTERS-28"
           ],
           "elsewhere": {
             "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
             "COMPUTERS-15": "obid's unit tests (computers_15_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
-            "COMPUTERS-17..18": "proposed: proven by the lab's lab-remote workflows (LAB-REMOTE-n) until obid's side is ported, then by its tests in core/crates/obid (docs/contracts/remote.md, Status)."
+            "COMPUTERS-17..18": "proposed: proven by the lab's lab-remote workflows (LAB-REMOTE-n) until obid's side is ported, then by its tests in core/crates/obid (docs/contracts/remote.md, Status).",
+            "COMPUTERS-27": "a proxy client through the door, which no workflow step has: core/crates/obid/tests/remote.rs `computers_27_…`"
           }
         }
       }
@@ -1629,12 +1640,6 @@
         "ci.md": {
           "obid": [],
           "elsewhere": {
-            "CI-1": "GitHub Actions lanes and the Check summary.",
-            "CI-2": "GitHub Actions lanes and the Check summary.",
-            "CI-3": "GitHub Actions lanes and the Check summary.",
-            "CI-4": "GitHub Actions lanes and the Check summary.",
-            "CI-5": "GitHub Actions lanes and the Check summary.",
-            "CI-6": "GitHub Actions lanes and the Check summary.",
             "CI-7": "not built: obid arming GitHub's merge queue (proposed).",
             "CI-8": "not built: obid arming GitHub's merge queue (proposed).",
             "CI-9": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
@@ -1642,13 +1647,6 @@
             "CI-11": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
             "CI-12": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
             "CI-13": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-14": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-15": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-16": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-17": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-18": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-19": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-20": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
             "CI-21": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
             "CI-22": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
             "CI-23": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
@@ -1681,19 +1679,15 @@
             "CI-54": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
             "CI-55": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
             "CI-56": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-57": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-58": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-59": "repository checks, the Mac check, factory limits, nightly and Kani in CI.",
-            "CI-60": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
-            "CI-61": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
-            "CI-62": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
-            "CI-63": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
-            "CI-64": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
-            "CI-65": "GitHub Actions lanes and scripts/ci-rust-tests.sh.",
-            "CI-66": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh).",
-            "CI-67": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh).",
-            "CI-68": "GitHub Actions lanes and the Mac's check (scripts/oby-check.sh).",
-            "CI-69": "scripts/preflight.sh, proven by scripts/preflight-test.sh."
+            "CI-66": "the Mac's check (scripts/oby-check.sh).",
+            "CI-69": "scripts/preflight.sh, proven by scripts/preflight-test.sh.",
+            "CI-70": "GitHub Actions: .github/workflows/ci.yml, proven by its runs.",
+            "CI-71": "GitHub Actions: .github/workflows/ci.yml, proven by its runs.",
+            "CI-72": "GitHub Actions: .github/workflows/ci.yml, proven by its runs.",
+            "CI-73": "GitHub Actions: .github/workflows/ci.yml, proven by its runs.",
+            "CI-74": "GitHub Actions: .github/workflows/ci.yml, proven by its runs.",
+            "CI-75": "GitHub Actions: .github/workflows/ci.yml, proven by its runs.",
+            "CI-76": "GitHub Actions: .github/workflows/ci.yml, proven by its runs."
           }
         },
         "engine.md": {
@@ -1887,7 +1881,8 @@
             "SHORTCUTS-8": "Electron keys.",
             "SHORTCUTS-9": "Electron keys.",
             "SHORTCUTS-10": "Electron main's menu bar (release build without developer items).",
-            "SHORTCUTS-11": "Electron side panel search (Settings and actions)."
+            "SHORTCUTS-11": "Electron side panel search (Settings and actions).",
+            "SHORTCUTS-12": "Electron keyboard shortcut (shortcuts_12 in shortcuts.test.tsx)."
           }
         },
         "help.md": {
@@ -1902,7 +1897,8 @@
         },
         "signed-words.md": {
           "obid": [
-            "WORDS-5"
+            "WORDS-5",
+            "WORDS-21"
           ],
           "elsewhere": {
             "WORDS-1": "the Electron main's signing.",
@@ -1923,7 +1919,10 @@
             "WORDS-17": "the Electron main's signing.",
             "WORDS-18": "the Electron main's signing.",
             "WORDS-19": "the Electron main's signing.",
-            "WORDS-20": "the Electron main's signing."
+            "WORDS-20": "the Electron main's signing.",
+            "WORDS-22": "the Electron main's signing.",
+            "WORDS-23": "the Electron main's signing.",
+            "WORDS-24": "the Electron main's signing."
           }
         },
         "sphere-app.md": {
@@ -2164,11 +2163,11 @@
             "BROWSERAPP-5": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
             "BROWSERAPP-6": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
             "BROWSERAPP-7": "the Electron app's browser panel on its demo data, proven by tools/obid-spec/workflows/app/browser-*.json (app.* nodes) and the app's unit tests; no obid API",
-            "BROWSERAPP-8": "the Electron app's browser on obid, through main (main/browser.ts, main/browserInput.ts): browserLive.test.ts and device.test.ts; in the real app on a scratch obid workflows/app/browser-101-live-on-obid.json and browser-102-live-take-control.json, board 6 on the demo data browser-06-hold.json; no obid API of its own",
-            "BROWSERAPP-9": "the Electron app's browser on obid, through main (main/browser.ts, main/browserInput.ts): browserLive.test.ts and device.test.ts; in the real app on a scratch obid workflows/app/browser-101-live-on-obid.json and browser-102-live-take-control.json, board 6 on the demo data browser-06-hold.json; no obid API of its own",
-            "BROWSERAPP-10": "the Electron app's browser on obid, through main (main/browser.ts, main/browserInput.ts): browserLive.test.ts and device.test.ts; in the real app on a scratch obid workflows/app/browser-101-live-on-obid.json and browser-102-live-take-control.json, board 6 on the demo data browser-06-hold.json; no obid API of its own",
+            "BROWSERAPP-8": "the Electron app's browser on obid, through main (main/browser.ts): browserLive.test.ts; in the real app on a scratch obid workflows/app/browser-101-live-on-obid.json and browser-104-live-webview.json; no obid API of its own",
+            "BROWSERAPP-9": "the Electron app's Take control and Give back, signed by main by their own labels (shared/words.ts, browser/live.ts): browserLive.test.ts; board 6 on the demo data workflows/app/browser-06-hold.json; no obid API of its own",
+            "BROWSERAPP-10": "retired with obid's own browser (O1, W3): the owner's mouse and keys reach the tab's webview, none of them to obid or signed: browserRetired.test.ts; no obid API",
             "BROWSERAPP-11": "the Electron app's browser asks and password card (browser/Asks.tsx; main fills on the owner's click, main/device.ts fillSecret): browserApp.test.tsx, browserLive.test.ts, device.test.ts; in the real app workflows/app/browser-07-asks-sign-in.json, browser-08-password.json, browser-09-every-ask.json; no obid API of its own",
-            "BROWSERAPP-12": "the Electron app's browser asks and password card (browser/Asks.tsx; main fills on the owner's click, main/device.ts fillSecret): browserApp.test.tsx, browserLive.test.ts, device.test.ts; in the real app workflows/app/browser-07-asks-sign-in.json, browser-08-password.json, browser-09-every-ask.json; no obid API of its own",
+            "BROWSERAPP-12": "the Electron app's password card (browser/Asks.tsx); main holds the tab and types the value into the tab's own webview on the owner's click (main/device.ts fillSecret, main/browserGuest.ts typeInto), never to obid, board 8's strip kept until main has filled (browser/store.tsx): browserApp.test.tsx, browserLive.test.ts, browserHold.test.tsx, device.test.ts, browserFill.test.ts; in the real app workflows/app/browser-08-password.json on the demo data; no obid API of its own",
             "BROWSERAPP-13": "the Electron app's browser asks and password card (browser/Asks.tsx; main fills on the owner's click, main/device.ts fillSecret): browserApp.test.tsx, browserLive.test.ts, device.test.ts; in the real app workflows/app/browser-07-asks-sign-in.json, browser-08-password.json, browser-09-every-ask.json; no obid API of its own",
             "BROWSERAPP-14": "the Electron app's page states in the panel (browser/Panel.tsx PageState): browserApp.test.tsx; in the real app workflows/app/browser-10-page-states.json; no obid API of its own",
             "BROWSERAPP-15": "the Electron app's script mark (scriptRun, browser/live.ts): browserLive.test.ts; in the real app workflows/app/browser-11-script.json; no obid API of its own",
@@ -2176,7 +2175,30 @@
             "BROWSERAPP-17": "the Electron app's browser on another computer (browser/BrowserPane.tsx): in the real app workflows/app/browser-14-another-computer.json; no obid API of its own",
             "BROWSERAPP-18": "the Electron app's Settings › General Browser group (browser/Settings.tsx), switches signed by their labels (shared/words.ts, the preload's switch label): browserLive.test.ts, preload.test.ts; in the real app workflows/app/browser-13-settings.json; no obid API of its own",
             "BROWSERAPP-19": "the Electron app's Mac pill and frame (main/macPill.ts, its own windows) and the card in Oby (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx, ipc.test.ts; in the real app workflows/app/browser-15-the-mac.json; no obid API yet",
-            "BROWSERAPP-20": "the Electron app's first-time sheet (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx; in the real app workflows/app/browser-16-first-time-mac.json; no obid API yet"
+            "BROWSERAPP-20": "the Electron app's first-time sheet (browser/Mac.tsx), on the demo data until desktop control's own contract: browserApp.test.tsx; in the real app workflows/app/browser-16-first-time-mac.json; no obid API yet",
+            "BROWSERAPP-22": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-23": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-24": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-25": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-26": "the Electron page's webviews (browser/Webviews.tsx: one per agent tab with a partition, on the panel's slot; docs/plans/browser-t3.md W2): browserWebviews.test.tsx; in the real app, driven by an agent through obid's relay, workflows/app/browser-104-live-webview.json",
+            "BROWSERAPP-27": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts, main/pageRule.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-28": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts, main/pageRule.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-29": "the Electron main's half of the relay to the window's webviews (main/browserRelay.ts, main/browserGuest.ts, main/pageRule.ts; docs/plans/browser-t3.md): browserRelay.test.ts; obid's half (POST /v1/browser/relay) comes with its O1, the page's webviews with W2",
+            "BROWSERAPP-30": "the Electron app's Back, Forward, Reload and Stop loading on a tab's own page (main/browserGuest.ts nav, main/browser.ts browser-nav, browser/Panel.tsx, browser/BrowserPane.tsx, browser/live.ts, browser/store.tsx), as T3 Code's main moves its webContents: browserNav.test.tsx; no obid API",
+            "BROWSERAPP-31": "the Electron app's Back, Forward, Reload and Stop loading on a tab's own page (main/browserGuest.ts nav, main/browser.ts browser-nav, browser/Panel.tsx, browser/BrowserPane.tsx, browser/live.ts, browser/store.tsx), as T3 Code's main moves its webContents: browserNav.test.tsx; no obid API",
+            "BROWSERAPP-32": "the Electron app's Back, Forward, Reload and Stop loading on a tab's own page (main/browserGuest.ts nav, main/browser.ts browser-nav, browser/Panel.tsx, browser/BrowserPane.tsx, browser/live.ts, browser/store.tsx), as T3 Code's main moves its webContents: browserNav.test.tsx, browserRelay.test.ts; no obid API",
+            "BROWSERAPP-33": "the Electron app's Back, Forward, Reload and Stop loading on a tab's own page (main/browserGuest.ts nav, main/browser.ts browser-nav, browser/Panel.tsx, browser/BrowserPane.tsx, browser/live.ts, browser/store.tsx), as T3 Code's main moves its webContents: browserNav.test.tsx; no obid API",
+            "BROWSERAPP-34": "the Electron app's Back, Forward, Reload and Stop loading on a tab's own page (main/browserGuest.ts nav, main/browser.ts browser-nav, browser/Panel.tsx, browser/BrowserPane.tsx, browser/live.ts, browser/store.tsx), as T3 Code's main moves its webContents: browserNav.test.tsx, browserApp.test.tsx; no obid API",
+            "BROWSERAPP-35": "the Electron app's Back, Forward, Reload and Stop loading on a tab's own page (main/browserGuest.ts nav, main/browser.ts browser-nav, browser/Panel.tsx, browser/BrowserPane.tsx, browser/live.ts, browser/store.tsx), as T3 Code's main moves its webContents: browserNav.test.tsx, ipc.test.ts; no obid API",
+            "BROWSERAPP-36": "the Electron main's box partition, held to its foreign job's browser door (main/browserGuest.ts prepare, boxDoor, clearBox; main/browserRelay.ts box; as T3 Code's getSession and clear make a partition's session): browserBox.test.ts; obid's half is BROWSER-18 (egress.rs's browser door, relay.rs's box)",
+            "BROWSERAPP-37": "the Electron main's box partition, held to its foreign job's browser door (main/browserGuest.ts prepare, boxDoor, clearBox; main/browserRelay.ts box; as T3 Code's getSession and clear make a partition's session): browserBox.test.ts; obid's half is BROWSER-18 (egress.rs's browser door, relay.rs's box)",
+            "BROWSERAPP-38": "the Electron main's box partition, held to its foreign job's browser door (main/browserGuest.ts prepare, boxDoor, clearBox; main/browserRelay.ts box; as T3 Code's getSession and clear make a partition's session): browserBox.test.ts; obid's half is BROWSER-18 (egress.rs's browser door, relay.rs's box)",
+            "BROWSERAPP-39": "the Electron main's box partition, held to its foreign job's browser door (main/browserGuest.ts prepare, boxDoor, clearBox; main/browserRelay.ts box; as T3 Code's getSession and clear make a partition's session): browserRelay.test.ts; obid's half is BROWSER-18 (egress.rs's browser door, relay.rs's box)",
+            "BROWSERAPP-40": "the Electron app's keyboard and ring on Take control and Give back (browser/store.tsx, browser/live.ts, browser/Webviews.tsx focusPage, browser/browser.css), as T3 Code's Take control focuses the page: browserHold.test.tsx; the live hold in the real window (build.md of W01-19); no obid API of its own",
+            "BROWSERAPP-41": "the Electron app's ring and pointer on a held tab, Give back's keyboard, and the live page seen through the panel (browser/store.tsx, browser/live.ts, browser/Webviews.tsx, browser/browser.css), as T3 Code keeps its overlays over its webview: browserHold.test.tsx; in the real app workflows/app/browser-104-live-webview.json; no obid API of its own",
+            "BROWSERAPP-42": "the Electron main's hold around Fill in (main/device.ts fillSecret: take unless this device holds the tab, give back only the hold it took, each signed): device.test.ts; no obid API of its own",
+            "BROWSERAPP-43": "the Electron main's typing into the tab's own webview (main/browserGuest.ts typeInto, FILL_PREP reload, focusField, FIELD_LENGTH; a password only into a password input, a code ask's kind read from obid; owner's agents' partitions only): browserFill.test.ts; no obid API of its own",
+            "BROWSERAPP-44": "the Electron main's guard after a fill (main/browserRelay.ts NO_SCRIPT, NOT_PASSED, filled, no screenshot while guarded, no read once a filled field shows, a guarded tab's commands one at a time, a filled tab's failed load bare; obid's agentCode, BROWSER-33): browserRelay.test.ts; no obid API of its own"
           }
         },
         "computers-app.md": {
@@ -2193,9 +2215,10 @@
             "COMPUTERSAPP-9": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
             "COMPUTERSAPP-10": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
             "COMPUTERSAPP-11": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
-            "COMPUTERSAPP-12": "the Electron app's computer picker on its demo data, proven by apps/electron/src/renderer/src/test/computers.test.tsx; obid serves none of its routes yet (docs/contracts/remote.md is obid's side)",
-            "COMPUTERSAPP-13": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
-            "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)"
+            "COMPUTERSAPP-12": "the Electron app's computer picker, offered once obid answers GET /v1/computers, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_12_…, and the picker on obid's routes)",
+            "COMPUTERSAPP-13": "the Electron app's message box on Home, proven by apps/electron/src/renderer/src/test/computers.test.tsx (computersapp_13_…); its draft kept while no route answers is proposed",
+            "COMPUTERSAPP-14": "proposed: the Electron app, once obid serves the picker's routes and forwards the window's to the computer in use (docs/contracts/remote.md)",
+            "COMPUTERSAPP-15": "the Electron app's main process naming the computer in use with Oby-Computer, proven by apps/electron/src/renderer/src/test/engine.test.ts (computersapp_15_…); obid forwards what it names (docs/contracts/remote.md)"
           }
         }
       }
@@ -2234,7 +2257,13 @@
             "BROWSER-25",
             "BROWSER-26",
             "BROWSER-27",
-            "BROWSER-28"
+            "BROWSER-28",
+            "BROWSER-30",
+            "BROWSER-31",
+            "BROWSER-32",
+            "BROWSER-33",
+            "BROWSER-34",
+            "BROWSER-35"
           ],
           "elsewhere": {}
         }
@@ -2255,9 +2284,25 @@
             "ARTIFACTS-6",
             "ARTIFACTS-7",
             "ARTIFACTS-8",
+            "ARTIFACTS-9",
+            "ARTIFACTS-10",
+            "ARTIFACTS-11",
+            "ARTIFACTS-12",
             "ARTIFACTS-13",
             "ARTIFACTS-14",
-            "ARTIFACTS-15"
+            "ARTIFACTS-15",
+            "ARTIFACTS-16",
+            "ARTIFACTS-17",
+            "ARTIFACTS-18",
+            "ARTIFACTS-19",
+            "ARTIFACTS-20",
+            "ARTIFACTS-21",
+            "ARTIFACTS-22",
+            "ARTIFACTS-23",
+            "ARTIFACTS-24",
+            "ARTIFACTS-25",
+            "ARTIFACTS-26",
+            "ARTIFACTS-27"
           ],
           "elsewhere": {}
         }

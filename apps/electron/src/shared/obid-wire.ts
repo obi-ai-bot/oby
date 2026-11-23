@@ -219,6 +219,9 @@ export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; 
   // obid only (docs/contracts/deliveries.md): where the owner's words stand. status: an open string
   // (queued, starting, running, answered, failed, interrupted, cancelled); read one you don't know as nothing
   delivery?: { status: string; by?: string; why?: string; error?: string };
+  // obid only (docs/api/conversations.md, oby_artifact): on Oby's turn, the artifacts it published; none
+  // from an older obid
+  artifacts?: { id: string; version: number }[];
   // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
   revision?: number };
 // What the owner can do about a task obid couldn't start on an account (ACCOUNTS-37). action: an open
@@ -407,6 +410,8 @@ export type PlanRequest = {
   // where a new conversation works (obid only, workspace-v1; docs/api/folders.md, "Workspace"): with
   // new only, never changed after (WORKSPACE-3)
   workspace?: Workspace;
+  // the artifact open while the words were said (obid only, artifact-turn-v1; docs/api/artifacts.md, ARTIFACTS-12)
+  artifact?: { id: string; version: number };
 };
 // "GET /v1/conversations/{id}/workspace" (obid only, workspace-v1; docs/api/folders.md, "Workspace"):
 // where the conversation works in each of its folders, and what finishing can do there now
@@ -533,10 +538,15 @@ export function rememberedOf(value: unknown): RememberedDecision | null {
   };
 }
 
+/** `artifact` on /v1/events: which artifact, its new version when it got one, its conversation. */
+export type ArtifactEvent = { id: string; version: number | null; conversation: string | null; renamed: boolean; title: string | null };
 export type Event =
   | { kind: 'roomPost'; post: RoomPost }
   // its posts aren't taken from it: the thread is read again (peers.ts)
   | { kind: 'peerThread'; owner: string }
+  // an artifact made, given a new version, renamed or given a conversation (docs/api/events.md):
+  // the app reads it again where it shows it (docs/contracts/artifacts-app.md, ARTIFACTSAPP-6)
+  | { kind: 'artifact'; artifact: ArtifactEvent }
   | { kind: 'job'; job: Job }
   | { kind: 'jobGone'; id: string }
   | { kind: 'inbox'; item: InboxItem }
@@ -555,7 +565,30 @@ export type Event =
   | { kind: 'transcriptLine'; job: string; n: number; append: string }
   // ...the words it's writing past that line, and a running command's last lines (LIVETASK-32, 34)
   | { kind: 'transcriptTail'; job: string; n: number; tail: string }
-  | { kind: 'transcriptOutput'; job: string; n: number; output: { text: string; lines: number } };
+  | { kind: 'transcriptOutput'; job: string; n: number; output: { text: string; lines: number } }
+  // obid only, on the Mac's own stream (docs/api/remote.md, "This Mac's computers"): the window's
+  // computers whenever they change, and a computer's route moved or lost
+  | { kind: 'computers'; list: ComputersWire }
+  | { kind: 'computerRoute'; route: ComputerRouteWire };
+
+// obid's list of the window's computers (GET /v1/computers, the `computers` event), as obid sends it:
+// `os`, `route` (while connected) and `tried` (while lost) left out when there are none. Its states
+// only grow: one this build doesn't know is read as idle (computers/obid.ts)
+export type ComputerWire = {
+  id: string; name: string; os?: string; state: string;
+  route?: { id?: string; kind: string; address?: string };
+  tried?: { route: string; what?: string; why: string }[];
+};
+export type ComputersWire = { current: string; computers: ComputerWire[] };
+// `computer.route`: moved from one route to another, or none answers, with each tried
+export type ComputerRouteWire =
+  | { id: string; change: 'moved'; from: string; to: string }
+  | { id: string; change: 'lost'; tried: { route: string; what?: string; why: string }[] };
+export const isComputersWire = (v: unknown): v is ComputersWire => {
+  const o = v as ComputersWire | null;
+  return !!o && typeof o.current === 'string' && Array.isArray(o.computers)
+    && o.computers.every((c) => !!c && typeof c.id === 'string' && typeof c.name === 'string' && typeof c.state === 'string');
+};
 
 // Server-Sent Events, as the stream's text comes in a piece at a time: each event's name and data
 // to `onEvent`; comments (`: ping`) and other fields are skipped (apps/web/src/api.ts).
@@ -604,6 +637,11 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
     case 'roomPost': { const post = roomPostOf(value); return post ? { kind: 'roomPost', post } : null; }
     case 'peerThread': return typeof v.owner === 'string' ? { kind: 'peerThread', owner: v.owner } : null;
+    case 'artifact': return typeof v.id === 'string' ? { kind: 'artifact', artifact: {
+      id: v.id, version: typeof v.version === 'number' ? v.version : null,
+      conversation: typeof v.conversation === 'string' ? v.conversation : null,
+      renamed: v.renamed === true, title: typeof v.title === 'string' ? v.title : null,
+    } } : null;
     case 'accounts': return Array.isArray(value) ? { kind: 'accounts', accounts: value as Account[] } : null;
     case 'conversation':
       if (typeof v.id !== 'string') return null;
@@ -619,6 +657,11 @@ export function parseEvent(name: string, data: string): Event | null {
         return { kind: 'transcriptOutput', job: v.job, n: v.n, output: { text: o.text, lines: typeof o.lines === 'number' ? o.lines : 0 } };
       }
       return typeof (v.entry as TranscriptEntry | undefined)?.n === 'number' ? { kind: 'transcript', job: v.job, entry: v.entry as TranscriptEntry } : null;
+    case 'computers': return isComputersWire(value) ? { kind: 'computers', list: value } : null;
+    case 'computer.route':
+      if (typeof v.id !== 'string') return null;
+      if (v.change === 'moved' && typeof v.from === 'string' && typeof v.to === 'string') return { kind: 'computerRoute', route: { id: v.id, change: 'moved', from: v.from, to: v.to } };
+      return v.change === 'lost' && Array.isArray(v.tried) ? { kind: 'computerRoute', route: { id: v.id, change: 'lost', tried: v.tried as { route: string; what?: string; why: string }[] } } : null;
     default: return null;
   }
 }
@@ -648,7 +691,9 @@ export const BROWSER_PATH = '/v1/browser';
 export const BROWSER_EVENTS = '/v1/browser/events';
 export const BROWSER_SETTINGS = '/v1/browser/settings';
 export const BROWSER_DOWNLOADS = '/v1/browser/downloads';
-export const browserTabPath = (tab: string, verb: 'stream' | 'input' | 'take' | 'giveBack' | 'secret') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
+/** the window's half of the relay: its webviews' events, in order (docs/plans/browser-t3.md) */
+export const BROWSER_RELAY = '/v1/browser/relay';
+export const browserTabPath = (tab: string, verb: 'take' | 'giveBack') => `/v1/browser/tabs/${encodeURIComponent(tab)}/${verb}`;
 export const browserAskPath = (ask: string) => `/v1/browser/asks/${encodeURIComponent(ask)}/answer`;
 export const browserSaveCopyPath = (download: string) => `/v1/browser/downloads/${encodeURIComponent(download)}/saveCopy`;
 
@@ -681,6 +726,8 @@ export interface BrowserTab {
   computer: { id: string; name: string };
   ask: BrowserAsk | null;
   dialog: string | null;
+  /** the session the tab's page lives in, as obid names it (docs/plans/browser-t3.md): absent from an obid before the relay */
+  partition?: string;
 }
 
 export interface BrowserDownload {
@@ -710,10 +757,3 @@ export type BrowserEvent = { seq: number } & (
   | { type: 'settings'; settings: BrowserSettings }
 );
 
-/** `event: frame` on a tab's stream: the newest frame only */
-export interface BrowserFrame { tabId: string; seq: number; data: string; mime: string; width: number; height: number; dropped: number }
-
-/** POST …/input: the person's mouse and keys on a tab they hold, in the page's CSS pixels (the lab's contract) */
-export type BrowserInput =
-  | { type: 'mouse'; eventType: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel'; x: number; y: number; button?: string | null; clickCount?: number | null; deltaX?: number | null; deltaY?: number | null }
-  | { type: 'key'; eventType: 'keyDown' | 'keyUp' | 'char'; key: string; text?: string | null; code?: string | null };

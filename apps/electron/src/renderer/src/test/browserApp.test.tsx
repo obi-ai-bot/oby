@@ -50,7 +50,7 @@ describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser',
   });
   it('browserapp_7: on an obid without the browser (GET /v1/browser answers 404) there is no globe, and nothing is followed', async () => {
     const follow = vi.fn(() => () => {});
-    (window as unknown as { app: unknown }).app = { obid: { call: async () => ({ status: 404, text: '{"error":"Not found."}' }) }, browser: { follow, watch: () => () => {} } };
+    (window as unknown as { app: unknown }).app = { obid: { call: async () => ({ status: 404, text: '{"error":"Not found."}' }) }, browser: { follow, watch: () => () => {}, navState: () => () => {} } };
     await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(host.querySelector('[data-browser="globe"]')).toBeNull();
@@ -60,7 +60,7 @@ describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser',
   it('browserapp_7: on an obid that answers GET /v1/browser, the globe shows and says how many tabs', async () => {
     const tabs = [{ id: 't1', owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Sign in', url: 'http://localhost:3000/', state: 'ready', heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null }];
     const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
-    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {} } };
+    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {}, navState: () => () => {} } };
     await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Show the browser, 1 tab');
@@ -83,6 +83,14 @@ describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser',
   it('browserapp_7: on the demo data at board 2, the globe and the panel show (the check above can fail)', () => {
     draw(2);
     expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Hide the browser');
+    expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Clicking Sign in');
+  });
+  it('browserapp_4: on the demo data at board 2, each tab clicked has its own strip: Sign up says what Codex does there', () => {
+    draw(2);
+    const tab = (name: string) => [...host.querySelectorAll('[role="tab"]')].find((t) => t.getAttribute('aria-label')?.includes(name) || t.textContent?.includes(name)) as HTMLElement;
+    act(() => tab('Sign up · Acme').click());
+    expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Typing in Email');
+    act(() => tab('Sign in · Acme').click());
     expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Clicking Sign in');
   });
 });
@@ -126,19 +134,18 @@ describe('BROWSERAPP-14: a page that didn\'t simply load', () => {
   beforeEach(() => { vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
   afterEach(() => { act(() => root.unmount()); host.remove(); delete (window as unknown as { app?: unknown }).app; });
 
-  it('browserapp_14: on the demo data a failed page shows its words and Try again; on obid its words alone (no route for the owner yet)', async () => {
+  it('browserapp_14: a failed page shows its words and Try again, on the demo data and on obid', async () => {
     act(() => root.render(<BrowserProvider board={10}><BrowserPane width={640} /></BrowserProvider>));
     act(() => (host.querySelectorAll('.br-tab')[1] as HTMLButtonElement).click());
     expect(host.querySelector('[data-browser="page-failed"]')?.textContent).toBe('This page didn’t loadlocalhost:3000 refused to connect. Is the app running?Try again');
     act(() => root.unmount()); root = createRoot(host);
     const tabs = [{ id: 't1', owner: { kind: 'agent', job: 'j1', agent: 'codex' }, title: 'Dashboard', url: 'http://localhost:3000/dashboard', state: 'failed', heldBy: null, holdGeneration: 0, computer: { id: 'local', name: 'This Mac' }, ask: null, dialog: null }];
     const call = async (_m: string, path: string) => ({ status: 200, text: JSON.stringify(path === '/v1/browser' ? { tabs, settings: { agentsUseBrowser: true, agentsUseMac: true }, seq: 1 } : { downloads: [], seq: 1 }) });
-    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, watch: () => () => {}, fill: async () => null, reveal: async () => true } };
+    (window as unknown as { app: unknown }).app = { obid: { call }, browser: { follow: () => () => {}, fill: async () => null, reveal: async () => true, navState: () => () => {} } };
     await act(async () => { root.render(<BrowserProvider board={null} live><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     act(() => (host.querySelector('[data-browser="globe"]') as HTMLButtonElement).click());
-    expect(host.querySelector('[data-browser="page-failed"]')?.textContent).toBe('This page didn’t loadlocalhost:3000 refused to connect. Is the app running?');
-    expect([...host.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(false);
+    expect(host.querySelector('[data-browser="page-failed"]')?.textContent).toBe('This page didn’t loadlocalhost:3000 refused to connect. Is the app running?Try again');
   });
 });
 

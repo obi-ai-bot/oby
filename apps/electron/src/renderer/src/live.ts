@@ -12,6 +12,7 @@ import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { ALLOW_ONCE, TRY_AGAIN } from '../../shared/words';
 import { has } from '../../shared/capabilities';
+import { artifactChanged, openArtifactOf } from './artifacts/store';
 import { answer, answerStatus, answerTurns, apply as applyToObid, type ObidState } from '../../shared/live-state';
 import { unwired, type LiveMessage, type LiveSnapshot } from '../../shared/live-wire';
 import { onObid } from './lean';
@@ -77,12 +78,23 @@ const set = (patch: Partial<Live>) => {
   state = { ...state, ...patch }; publish(); listeners.forEach((l) => l());
   if (!pacing && Object.keys(state.pace).length) { ticked = performance.now(); pacing = setInterval(tick, WORD_MS); }
 };
+// obid's word on the window's computers, from main's stream of this Mac's (computers/obid.ts follows
+// it); a function that stops following
+type ComputerEvent = Extract<Event, { kind: 'computers' | 'computerRoute' }>;
+const computerFollowers = new Set<(e: ComputerEvent) => void>();
+export function onComputerEvent(f: (e: ComputerEvent) => void) {
+  computerFollowers.add(f);
+  return () => { computerFollowers.delete(f); };
+}
+
 // An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
 // state read before the call's await, which would undo what came meanwhile (a Confirm's answer
 // putting back the job its own `deleted` event took away)
 // (main brings an event's item's job itself; an answer's the page asks it for)
 const takeEvent = (e: Event) => {
   if (e.kind === 'transcript' || e.kind === 'transcriptLine' || e.kind === 'transcriptTail' || e.kind === 'transcriptOutput') return heard(e);
+  // the window's computers are the picker's (computers/obid.ts), never this store's
+  if (e.kind === 'computers' || e.kind === 'computerRoute') { computerFollowers.forEach((f) => f(e)); return; }
   if (e.kind === 'jobGone') sessions.delete(e.id);
   set({ ...apply(state, e), ...(e.kind === 'inbox' ? closing(state, e.item) : {}) });
 };
@@ -116,6 +128,8 @@ const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, .
 const answers = (t: Turn) => t.who === 'oby' && !t.ended && !t.routine && !folded(t);
 // The cards a turn holds, of a shape this app reads. Any other leaves its turn as words.
 const asksOn = (t: Turn): AskMark[] => (Array.isArray(t.asks) ? t.asks : []).filter((a) => !!a && typeof a.owner === 'string' && typeof a.name === 'string' && typeof a.question === 'string' && typeof a.state === 'string');
+// The artifacts an Oby turn published, by id; any entry of another shape is dropped.
+const artifactsOn = (t: Turn): string[] => (t.who === 'oby' && Array.isArray(t.artifacts) ? t.artifacts : []).flatMap((a) => (!!a && typeof a.id === 'string' ? [a.id] : []));
 // obid's own turn about a question, which its card says instead (only those are relayed with a card)
 const folded = (t: Turn) => !!t.relayed && asksOn(t).length > 0;
 // words this app has on their way in a conversation
@@ -218,7 +232,9 @@ export function chatOf(s: Live, c: Conversation): Chat {
     const jobs = [...t.jobs, ...mine].filter((j) => !carded.has(j) && carded.add(j));
     // the files that went with your words: their tags (a photo's preview while this app has it)
     const files = t.attachments?.map((name) => { const p = s.previews[t.id]?.find((f) => f.name === name); return { name: p?.shown ?? name, preview: p?.preview }; });
-    const message: Message = { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}), ...(t.who === 'oby' && t.fixes?.length ? { fixes: t.fixes } : {}) };
+    const published = artifactsOn(t), reports = t.ended && typeof t.jobs[0] === 'string' ? t.jobs[0] : undefined;
+    const message: Message = { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}), ...(t.who === 'oby' && t.fixes?.length ? { fixes: t.fixes } : {}),
+      ...(published.length ? { artifacts: published } : {}), ...(reports ? { reports } : {}) };
     said.push(message);
     for (const offer of offers.filter((o) => o.id === answer)) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer });
     if (t.who === 'oby') confirm({ who: 'oby', text: '', ago: minutesAgo(t.at) }, t.at);
@@ -260,15 +276,16 @@ function chatsOf(s: Live): Chat[] {
 }
 
 // The decision a job's card shows, of its open inbox items: what its agent waits on first (a
-// permission or a question, its agent's own among them), else the oldest (an offer like a check to
-// keep). The card holds one.
+// permission or a question, its agent's own among them), then obid's Confirm of something asked
+// for it (Delete's, TASKS-11: never hidden behind a card from before, such as a failed one), else
+// the oldest (an offer like a check to keep). The card holds one.
 const WAITS = new Set(['permission', 'agentQuestion']);
 const itemOf = (s: Live, job: string) => {
   const items = s.inbox.filter((i) => i.job === job);
   // Oby's own question comes last: it's about the task, and hides no decision it may lead to (a
   // Confirm to go past a safety limit)
   const others = items.filter((i) => i.kind !== 'question');
-  return others.find((i) => WAITS.has(i.kind)) ?? others[0] ?? items[0];
+  return others.find((i) => WAITS.has(i.kind)) ?? others.find((i) => i.kind === 'confirm') ?? others[0] ?? items[0];
 };
 // Oby's own question: its escalation takes an answer that settles it. A stalled task's
 // (supervisor-) takes none: only obid can settle it, so it means something only while it's stopped.
@@ -347,10 +364,14 @@ export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuesti
   if (item.kind === 'failed' && !item.headline && item.text) {
     return { kind: 'failed', headline: item.text, text: '', options: item.options, recommended: item.recommended ?? undefined };
   }
+  // A permission's title is its task's too, which the drawer shows after " · " and Home's card in its
+  // head: what it asks is obid's text, the permission's own title ("Run npm test", "Edit word.md";
+  // docs/api/inbox.md), and that is its headline (LIVETASK-24, #2788)
+  const asks = item.kind === 'permission' && !item.headline && item.text ? item.text : undefined;
   return {
     // obid's own question (Oby's escalation, a stalled task): its why and what Oby recommends are
     // its text, shown under its title (TASKS-14)
-    kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline || item.kind === 'question' ? item.text : '',
+    kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? asks ?? item.title, text: item.headline || item.kind === 'question' ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
     ...(label ? { label } : {}),
     repos: repoTicks(item),
@@ -667,7 +688,7 @@ export function lookAtUsage() {
 
 // --- events
 
-export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' }>): Live {
+export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' | 'transcriptTail' | 'transcriptOutput' | 'computers' | 'computerRoute' }>): Live {
   switch (e.kind) {
     // A question's card on a turn changes only the card, and nothing about a turn under way; so
     // does its words' delivery, which only moves them between the waiting row and the conversation
@@ -723,6 +744,10 @@ export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcr
       return s;
     case 'peerThread':
       threadChanged(e.owner);
+      return s;
+    // the artifacts keep their own (artifacts/store.ts): the pane and the cards read it again
+    case 'artifact':
+      artifactChanged(e.artifact);
       return s;
   }
 }
@@ -921,7 +946,10 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
           // the skill picked in the box, beside the words (COMPOSER-27); an answer to Oby's question is only the answer
           ...(skill && !q ? { skill } : {}),
           // where the conversation it starts works, once obid takes it (WORKSPACE-3)
-          ...(has(state.status, 'workspace-v1') && !c && att?.workspace ? { workspace: att.workspace } : {}) }));
+          ...(has(state.status, 'workspace-v1') && !c && att?.workspace ? { workspace: att.workspace } : {}),
+          // the artifact open beside this conversation, once obid takes it (ARTIFACTS-12,
+          // ARTIFACTSAPP-7); an answer to Oby's question is only the answer
+          ...(has(state.status, 'artifact-turn-v1') && c && !q && openArtifactOf(c) ? { artifact: openArtifactOf(c)! } : {}) }));
       planned = true;
       const where = a.conversation ?? c;
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card

@@ -787,6 +787,38 @@ pub fn github_items(obid: &Obid, state: &str) -> Vec<Value> {
         .collect()
 }
 
+/// `config`, made in `folder`, with the stand-in Cursor (tests/agents/fake-cursor) and its signed-in
+/// account "Cursor account": a job on it always runs boxed (`Jobs::own_lane`).
+pub fn with_cursor(folder: &Path, config: &mut Value) {
+    let dir = folder.join("home/accounts/cursor");
+    let login = dir.join(if cfg!(target_os = "macos") {
+        ".cursor/auth.json"
+    } else {
+        ".config/cursor/auth.json"
+    });
+    std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+    std::fs::write(&login, json!({"apiKey": "fake-cursor"}).to_string()).unwrap();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-cursor");
+    config["agents"]["cursor"] = json!({"bin": bin,
+        "accounts": [{"id": "cursor", "name": "Cursor account", "configDir": dir}]});
+}
+
+/// Whether job `id`'s kept file says it ran with no egress proxy of obid's (LANE-3a).
+pub fn ran_unproxied(obid: &Obid, id: &str) -> bool {
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    kept["ranUnproxied"] == json!(true)
+}
+
+/// Flags `conversation`, which a turn made, as one that laid an unproxied version in its room
+/// (ARTIFACTS-24), as obid's `note_unproxied` does.
+pub fn laid_unproxied(obid: &Obid, conversation: &str) {
+    let folder = obid.home.join(format!("conversations/{conversation}"));
+    assert!(folder.is_dir(), "{}", folder.display());
+    std::fs::write(folder.join("laid-unproxied"), b"").unwrap();
+}
+
 /// The job once it has ended (`GET /v1/jobs/{id}/wait`), failing the test with the job as it is
 /// when it hasn't within `seconds`: `/wait` alone never gives up, and a job can wait by itself for
 /// days (an account's limit, LIMITS-15).

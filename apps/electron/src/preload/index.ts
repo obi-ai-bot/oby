@@ -101,6 +101,18 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('cursor', listener);
     return () => { ipcRenderer.off('cursor', listener); };
   },
+  // an artifact's version shown by Sandpack over the page's box for it, in main's view of its own
+  // (main/artifactPreview.ts, ARTIFACTSAPP-1); null hides it. Only the id, the version and the box go
+  artifactPreview: (ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number }; edits?: Record<string, string> } | null) =>
+    ipcRenderer.invoke('artifact-preview', ask) as Promise<{ shown: true; pageError?: string } | { error: string } | null>,
+  // an artifact's version, as a project archive (.zip) or standalone HTML, saved where the owner picks
+  // in main's own dialog (main/artifactExport.ts, ARTIFACTSAPP-11): only the id, the version and which go
+  artifactExport: (id: string, version: number, as: 'zip' | 'html') =>
+    ipcRenderer.invoke('artifact-export', id, version, as) as Promise<{ saved: string } | { cancelled: true } | { error: string } | null>,
+  // a picture of an artifact's version, taken by main in the preview's own view (main/artifactPreview.ts, ARTIFACTSAPP-18)
+  artifactThumb: (id: string, version: number) => ipcRenderer.invoke('artifact-thumb', { id, version }) as Promise<{ src: string } | { none: true } | null>,
+  // the version on view in the preview run again, in main's view (main/artifactPreview.ts, ARTIFACTSAPP-20)
+  artifactReload: () => ipcRenderer.invoke('artifact-reload') as Promise<null>,
   // a sign-in page in the person's browser (https only)
   openExternal: (url: string) => ipcRenderer.send('open-external', url),
   // a render error the page's root boundary caught (RenderError.tsx): kept by main, which reloads once
@@ -242,14 +254,28 @@ contextBridge.exposeInMainWorld('app', {
     // a password or code into the page's field, filled by main on the owner's press of Fill in (or
     // Enter in the card's box): main checks it saw that input itself; null once filled, else why not
     fill: (tab: string, field: string, value: string, ask?: string) => ipcRenderer.invoke('browser-fill', tab, field, value, ask ?? '', pressed(FILL_IN)) as Promise<string | null>,
+    // a <webview> the page mounted for obid's tab, by its webContents id: main checks it's this
+    // window's and in the partition obid named, then relays it (docs/plans/browser-t3.md); null once relayed
+    register: (threadId: string, tabId: string, webContentsId: number) => ipcRenderer.invoke('browser-register', threadId, tabId, webContentsId) as Promise<string | null>,
+    // whether that webview is on screen
+    shown: (threadId: string, tabId: string, shown: boolean) => { void ipcRenderer.invoke('browser-shown', threadId, tabId, shown); },
+    // the agent's pointer on a tab, to draw over its webview (move, then click); a function that stops listening
+    pointer(fn: (p: { threadId: string; tabId: string; phase: 'move' | 'click'; x: number; y: number }) => void) {
+      const listener = (_: unknown, p: { threadId: string; tabId: string; phase: 'move' | 'click'; x: number; y: number }) => fn(p);
+      ipcRenderer.on('browser-pointer', listener);
+      return () => { ipcRenderer.off('browser-pointer', listener); };
+    },
+    // the owner's Back, Forward, Reload or Stop loading on a tab's own page: main moves it, unsigned
+    // and with no obid call (BROWSERAPP-30 to 35); null once done, else why not
+    nav: (threadId: string, tabId: string, op: 'back' | 'forward' | 'reload' | 'stop') => ipcRenderer.invoke('browser-nav', threadId, tabId, op) as Promise<string | null>,
+    // a tab's own page: its address, whether it has one behind, one ahead, is loading, and where its last load failed; a function that stops listening
+    navState(fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => void) {
+      const listener = (_: unknown, s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => fn(s);
+      ipcRenderer.on('browser-nav-state', listener);
+      return () => { ipcRenderer.off('browser-nav-state', listener); };
+    },
     // Show in Finder for a download in Downloads, by its name (main/browser.ts): true once shown
     reveal: (name: string) => ipcRenderer.invoke('browser-reveal', name) as Promise<boolean>,
-    watch(tab: string, fn: (data: string) => void) {
-      const listener = (_: unknown, m: { tab: string; data: string }) => { if (m.tab === tab) fn(m.data); };
-      ipcRenderer.on('browser-frame', listener);
-      void ipcRenderer.invoke('browser-watch', tab);
-      return () => { ipcRenderer.off('browser-frame', listener); void ipcRenderer.invoke('browser-unwatch', tab); };
-    },
   },
   // obid, through main, which holds its token (main/obid.ts): one call; and what main's one follower
   // of obid's events holds (main/live.ts), then each message it sends, and what it reads for the page

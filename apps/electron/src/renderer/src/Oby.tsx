@@ -18,6 +18,14 @@ declare global {
       onShortcut?(fn: (command: string) => void): () => void;
       help?(what: 'reveal-log' | 'copy-diagnostics'): Promise<string | null>;  // the Help menu's items (main/help.ts)
       openExternal(url: string): void;
+      // an artifact's version saved where the owner picks (main/artifactExport.ts)
+      artifactExport?(id: string, version: number, as: 'zip' | 'html'): Promise<{ saved: string } | { cancelled: true } | { error: string } | null>;
+      // an artifact's version shown by Sandpack over a box of the page, in main's own view (main/artifactPreview.ts); null hides it
+      artifactPreview?(ask: { id: string; version: number; bounds: { x: number; y: number; width: number; height: number }; edits?: Record<string, string> } | null): Promise<{ shown: true; pageError?: string } | { error: string } | null>;
+      // the version on view in the preview run again (main/artifactPreview.ts)
+      artifactReload?(): Promise<null>;
+      // a picture of an artifact's version, a PNG data: URL, taken in main's preview view (main/artifactPreview.ts)
+      artifactThumb?(id: string, version: number): Promise<{ src: string } | { none: true } | null>;
       renderError?(name: string, message: string, componentStack: string): void;  // a render error the root caught (preload, main/runMarker.ts)
       pickFolders?(from?: string): Promise<string[]>;  // the Mac's folder picker (main), several at once, opening in from
       openLoginItems(): void;
@@ -73,13 +81,19 @@ declare global {
         onPill(fn: (use: import('./browser/Mac').MacUse) => void): () => void;
         stop(): void;
       };
-      // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, and a
-      // tab's frames; each a function that stops listening
+      // obid's browser, followed by main (preload, main/browser.ts, BROWSERAPP-8): its events, each a
+      // function that stops listening
       browser?: {
         follow(fn: (m: { name: string; data: string }) => void): () => void;
-        watch(tab: string, fn: (data: string) => void): () => void;
         // a password or code into the page's field, filled by main on the owner's click (BROWSERAPP-12): null once filled
         fill(tab: string, field: string, value: string, ask?: string): Promise<string | null>;
+        // a <webview> mounted for obid's tab, relayed by main once checked (docs/plans/browser-t3.md): null once relayed
+        register(threadId: string, tabId: string, webContentsId: number): Promise<string | null>;
+        shown(threadId: string, tabId: string, shown: boolean): void;
+        pointer(fn: (p: { threadId: string; tabId: string; phase: 'move' | 'click'; x: number; y: number }) => void): () => void;
+        // the owner's Back, Forward, Reload or Stop loading on a tab's own page, by main (BROWSERAPP-30 to 35): null once done
+        nav(threadId: string, tabId: string, op: 'back' | 'forward' | 'reload' | 'stop'): Promise<string | null>;
+        navState(fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => void): () => void;
         // Show in Finder for a download in Downloads, by its name (BROWSERAPP-16)
         reveal(name: string): Promise<boolean>;
       };

@@ -1,8 +1,8 @@
 {
   "schemaVersion": "2",
-  "name": "POST /v1/browser/tabs/{id}/giveBack",
+  "name": "obid's browser: POST /v1/browser/tabs/{id}/giveBack is the owner's signed act: unsigned is refused, and a signed give back of a tab that doesn't exist is refused",
   "version": "1.0.0",
-  "description": "Giving a tab back is the holder's own signed act: unsigned, 401 unsigned; signed for a tab obid doesn't have, 404 no_such_tab. Taking and giving back a real tab, and another device refused not_holder, are in post-browser-tab-take.json (BROWSER-5).",
+  "description": "BROWSER-5 (core/crates/obid/src/browser/routes.rs, give_back): Give back is signed by the device that holds the tab. With no signed words it is refused 401 `unsigned`; signed by a paired device, a give back of `tab-1`, which doesn't exist, is refused 404 `no_such_tab`. The agent's next act running once the tab is given back is in tests/browser_api.rs.",
   "trigger": {
     "http": {
       "method": "POST",
@@ -34,12 +34,14 @@
         "obid": "${state.o}",
         "method": "POST",
         "path": "/v1/browser/tabs/tab-1/giveBack",
+        "as": "owner",
         "expect": {
           "status": 401,
           "paths": {
             "reason": "unsigned"
           }
-        }
+        },
+        "body": {}
       },
       "ui": {
         "proves": [
@@ -54,14 +56,15 @@
         "obid": "${state.o}",
         "method": "POST",
         "path": "/v1/browser/tabs/tab-1/giveBack",
-        "as": "device",
-        "device": "${state.d1}",
         "expect": {
           "status": 404,
           "paths": {
             "reason": "no_such_tab"
           }
-        }
+        },
+        "as": "device",
+        "device": "${state.d1}",
+        "body": {}
       },
       "ui": {
         "proves": [

@@ -17,6 +17,8 @@
 //! - [`certificate`], [`direct`] and [`pinned`]: this computer's own certificate, the gateway
 //!   served over HTTPS with it, and the window's client that trusts only a pinned one.
 //! - [`tunnel`]: an `ssh -N -L` to another computer's obid, held while the window uses it.
+//! - [`preview_tunnel`]: a page's `localhost` on another computer, one WebSocket per connection:
+//!   that computer's end, on its gateway, and this Mac's, from a computer's door (crate::egress).
 //! - [`pair`]: `obid pair-computer`, which the person's SSH runs on the other computer.
 //! - [`invite`] and [`code`]: adding a computer with a code, its side and the Mac's.
 //! - [`addresses`]: where this obid answers, kept for `obid pair-computer`.
@@ -26,17 +28,24 @@
 //! `obid pair-computer`, as the person's own presence on that machine. It never writes
 //! `~/.ssh`, the person's ssh configuration or `known_hosts`, and installs nothing over SSH.
 
+pub mod adding;
 pub mod addresses;
 pub mod certificate;
 pub mod code;
+pub mod computers;
 pub mod direct;
+pub mod forward;
 pub mod invite;
 pub mod link;
 pub mod pair;
 pub mod pin;
 pub mod pinned;
+pub mod preview_tunnel;
+pub mod reach;
 pub mod route;
 pub mod ssh;
 pub mod supervisor;
 pub mod trouble;
 pub mod tunnel;
+pub mod tunnels;
+pub mod window;

@@ -752,6 +752,13 @@ pub struct NewJob {
     pub unsigned: bool,
     #[serde(skip)]
     pub client_request_id: Option<String>,
+    /// The artifacts it starts with (ARTIFACTS-19, 20): obid sets them, the API never does.
+    #[serde(skip)]
+    pub artifacts: Vec<crate::job::JobArtifact>,
+    /// Planned in a conversation that had an unproxied version laid in its room
+    /// ([`Job::ran_unproxied`], ARTIFACTS-24). Kept in a Start or a Confirm item; never the API's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ran_unproxied: bool,
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
@@ -919,7 +926,7 @@ struct Ask {
 
 /// Why words that aren't the owner's own don't answer the agent's question (#858).
 pub const QUESTION_IS_THE_OWNERS: &str =
-    "It waits for the owner to answer its question, in their inbox.";
+    "It waits for the owner to answer its question, in Waiting for you.";
 /// Why an answer to the agent's question (#858) isn't one.
 const QUESTION_NEEDS_AN_ANSWER: &str = "Answer its question with one of its options or your own words (up to 2,000 characters), or say no.";
 
@@ -2295,6 +2302,7 @@ impl Jobs {
         );
         job.files = files;
         job.attachments = new.attachments;
+        job.artifacts = new.artifacts;
         job.start_in(&self.config.home, new.profile, new.conversation);
         job.turn = new.turn.filter(|_| job.conversation.is_some());
         job.brief = new
@@ -2351,7 +2359,7 @@ impl Jobs {
                 .as_ref()
                 .is_some_and(|of| of.foreign_by_api && of.someone_elses_but_api().is_none());
         job.reached = of.as_ref().and_then(Job::reached_for_follow_up);
-        job.ran_unproxied = of.as_ref().is_some_and(|of| of.ran_unproxied);
+        job.ran_unproxied = new.ran_unproxied || of.as_ref().is_some_and(|of| of.ran_unproxied);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
         job.named = match &of {
@@ -2779,25 +2787,6 @@ impl Jobs {
         self.message_attaching(id, text, source, &[])
     }
 
-    /// [`Self::message`] with words the brain wrote (`message_job`, `oby_tell_job`): never the
-    /// answer to the agent's question, which is the owner's alone (#858), so refused while one
-    /// waits. `foreign`: why they aren't on obid's allowlist (crate::secretspec), which marks the
-    /// job; `None` only when the conversation that wrote them read nothing that isn't.
-    pub fn relay(
-        self: &Arc<Self>,
-        id: &str,
-        text: &str,
-        source: Source,
-        foreign: Option<String>,
-    ) -> Option<Result<Job, Refused>> {
-        if let Some(why) = foreign
-            && self.get(id).is_some_and(|job| job.obi.is_none())
-        {
-            self.mark(id, why, false);
-        }
-        self.message_as(id, text, source, &[], false)
-    }
-
     /// [`Self::message`] with files the owner attached (already checked to be in obid's
     /// attachments folder): they go with the follow-up the words start, and only with one.
     pub fn message_attaching(
@@ -2807,11 +2796,12 @@ impl Jobs {
         source: Source,
         attachments: &[String],
     ) -> Option<Result<Job, Refused>> {
-        self.message_as(id, text, source, attachments, true)
+        self.message_as(id, text, source, attachments, true, (None, false))
     }
 
     /// [`Self::message_attaching`]; `answers` says whether the words may answer the agent's
-    /// question (only the owner's own, as they wrote them, may).
+    /// question (only the owner's own, as they wrote them, may); `relayed`, a relay's foreign
+    /// reason and unproxied flag, which whichever job hears them takes first ([`Self::relay`]).
     fn message_as(
         self: &Arc<Self>,
         id: &str,
@@ -2819,6 +2809,7 @@ impl Jobs {
         source: Source,
         attachments: &[String],
         answers: bool,
+        relayed: (Option<&str>, bool),
     ) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
         // Files with no words (Sangam's message box sends them alone): the follow-up they start
@@ -2843,6 +2834,9 @@ impl Jobs {
                     .into(),
             )));
         }
+        if let Err(why) = self.kept_relayed(id, relayed) {
+            return Some(Err(Refused(why)));
+        }
         // Try again's words, and more after them (oby_continue_job's), pick its session up.
         let follows =
             !job.status.is_active() && !text.starts_with(crate::brain::actions::TRY_AGAIN);
@@ -2858,7 +2852,7 @@ impl Jobs {
                 && let Some(next) = self.following(id)
             {
                 let sent = self
-                    .message_as(&next.id, text, source, attachments, answers)?
+                    .message_as(&next.id, text, source, attachments, answers, relayed)?
                     .map_err(|why| {
                         Refused(format!("{} ({}): {}", next.short_title(), next.id, why.0))
                     });
@@ -2925,9 +2919,9 @@ impl Jobs {
                         named_now: true,
                         // Their word, signed, on it: they're following it now.
                         unattended: source == Source::Api && job.background(),
-                        // Files may hold anyone's words, as a conversation's do (crate::secretspec).
-                        foreign: (!attachments.is_empty())
-                            .then(|| "files the owner attached, which may hold anyone's words".into()),
+                        // A relay's foreign reason, or files, which may hold anyone's words.
+                        foreign: lanes::follow_up_foreign(relayed.0, attachments),
+                        ran_unproxied: relayed.1,
                         // An attachment is untrusted (ATTACH-6, ATTACH-13), as words with one are.
                         untrusted: next.untrusted || !attachments.is_empty(),
                         ..next
@@ -2964,7 +2958,7 @@ impl Jobs {
         // A plan goes back only on the owner's own words (#609).
         if waiting.as_ref().is_some_and(Permission::is_plan) && !source.direct() {
             return Some(Err(Refused(
-                "It waits for the owner to approve its plan or send it back, in their inbox."
+                "It waits for the owner to approve its plan or send it back, in Waiting for you."
                     .into(),
             )));
         }
@@ -3133,7 +3127,7 @@ impl Jobs {
         self.heard_from_owner(id, text, source);
         self.changed.notify_waiters();
         self.schedule();
-        self.get(id).map(Ok)
+        Some(Ok(crate::job::as_opened(&resumed, self.get(id)?)))
     }
 
     /// A round obid opens after the agent's last turn (a rebase, the commit, the decision check,
@@ -3192,7 +3186,7 @@ impl Jobs {
             let Some(source) = Source::named(&words.source).filter(|_| !nothing_to_pick_up) else {
                 continue;
             };
-            match self.message_as(id, &words.text, source, &[], true) {
+            match self.message_as(id, &words.text, source, &[], true, (None, false)) {
                 Some(Ok(_)) => {}
                 Some(Err(why)) => {
                     self.update(id, |job| {
@@ -3228,7 +3222,7 @@ impl Jobs {
             .get(id)
             .and_then(|j| j.owners.first().map(|w| w.text.clone()))
         {
-            match self.message_as(next, &words, Source::Confirmed, &[], true) {
+            match self.message_as(next, &words, Source::Confirmed, &[], true, (None, false)) {
                 // Words that couldn't leave `id` aren't sent again.
                 Some(Ok(_)) if take(&words).is_some() => {}
                 Some(Err(why)) => {
@@ -3353,7 +3347,7 @@ impl Jobs {
             ));
         }
         Refused(format!(
-            "It stopped at its safety limit ({limit}): carrying it on waits for your Confirm in the inbox."
+            "It stopped at its safety limit ({limit}): carrying it on waits for your Confirm in Waiting for you."
         ))
     }
 
@@ -3531,11 +3525,13 @@ impl Jobs {
         if let Err(e) = self.store.remove(id) {
             tracing::error!("can't forget job {id}: {e}");
         }
+        // Gone now, for the apps too (TASKS-3). Its folders and branch go after, under the lock the
+        // clone is got ready with: removing its worktree while another's is added fails that add
+        // (#2626); `git branch -D` rewrites its .git/config (it drops the branch's section, there
+        // or not), and a `git config` of git::ensure_clone meanwhile fails on git's lock.
+        self.events.send("job", json!({"id": id, "deleted": true}));
+        self.changed.notify_waiters();
         let clone = self.clone_for(&job);
-        // Under the lock the clone is got ready with: removing its worktree while another's is
-        // added fails that add (#2626); `git branch -D` rewrites its .git/config (it drops the
-        // branch's section, there or not), and a `git config` of git::ensure_clone meanwhile fails
-        // on git's lock, and with it another job's start.
         let preparing = self.preparing(&job.repo);
         let preparing = preparing.lock().await;
         self.remove_folders(&clone, id).await;
@@ -3545,8 +3541,6 @@ impl Jobs {
             let _ = git::git(&clone, &["branch", "-D", "--", &job.branch]).await;
         }
         drop(preparing);
-        self.events.send("job", json!({"id": id, "deleted": true}));
-        self.changed.notify_waiters();
         Some(Ok(branch_stays))
     }
 
@@ -5916,6 +5910,7 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         start_from: unmerged.then(|| job.branch.clone()),
         follow_up_of: Some(job.id.clone()),
         earlier: Some(crate::secrets::known().redact(&did.join("\n"))),
+        artifacts: job.artifacts.clone(),
         ..NewJob::default()
     }
 }
@@ -6083,7 +6078,7 @@ fn standing_rules(job: &Job) -> Option<String> {
     if asks_goal_line(job) {
         lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't. Pushing, the pull request and linking it to its issue are obid's, done after you end with `GOAL MET`, even when the task asks for them: they are never what's left.".into());
     }
-    lines.push("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file, or one folder with an index.html, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it.".into());
+    lines.push(concat!("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file (a .tsx or .jsx file is a React page), or one folder with an index.html, or with an App.tsx or App.jsx and no index.html for a React page, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it. ", crate::brain::tools::preview_imports!()).into());
     // Claude Code's own background tasks wake it when they end, and obid waits for them
     // (crate::agent); nothing else that's left running when a turn ends does.
     lines.push(if job.agent == Tool::Claude.id() {
@@ -7381,9 +7376,15 @@ mod tests {
     async fn words_from_a_marked_conversation_mark_the_job() {
         let (jobs, _clone, root) = jobs_with_a_clone("brain-words").await;
         jobs.update("j", |job| job.vetted = true);
-        let _ = jobs.relay("j", "Use SQLite", Source::Owner, None);
+        let _ = jobs.relay("j", "Use SQLite", Source::Owner, None, false);
         assert_eq!(jobs.get("j").unwrap().foreign, None);
-        let _ = jobs.relay("j", "Use SQLite", Source::Owner, Some("the inbox".into()));
+        let _ = jobs.relay(
+            "j",
+            "Use SQLite",
+            Source::Owner,
+            Some("the inbox".into()),
+            false,
+        );
         assert_eq!(jobs.get("j").unwrap().foreign.as_deref(), Some("the inbox"));
         jobs.update("j", |job| {
             job.foreign = None;
@@ -8090,6 +8091,31 @@ mod tests {
         assert_eq!(tail("aébc", 3), "bc");
     }
 
+    /// ARTIFACTS-27: a job's standing rules carry the sentence naming what a preview imports,
+    /// after the artifacts line's own words.
+    #[test]
+    fn artifacts_27_the_job_brief_names_the_previews_imports() {
+        let job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "Build it".into(),
+            "claude".into(),
+            "default".into(),
+        );
+        let rules = standing_rules(&job).unwrap();
+        assert!(
+            rules.contains(crate::brain::tools::preview_imports!()),
+            "{rules}"
+        );
+        assert!(
+            rules.contains(
+                "obid shows each one when the job ends; keep secrets out, or it shows none of it."
+            ),
+            "{rules}"
+        );
+    }
+
     #[test]
     fn the_owner_prompt_says_what_obid_does() {
         let mut job = Job::new(
@@ -8109,6 +8135,8 @@ mod tests {
         assert!(prompt.contains("`node --test` succeeds"));
         let prompt = standing_rules(&job).unwrap();
         assert!(prompt.contains("counts as nothing committed"));
+        // ARTIFACTS-26: a React page is its App.tsx alone.
+        assert!(prompt.contains("App.tsx"), "{prompt}");
         // Seen live: the summary said "someone should add" the evidence to the description it was.
         assert!(
             prompt.contains("quotes your final message as the pull request's description"),
@@ -10390,6 +10418,7 @@ mod tests {
             (|job: &mut Job| job.untrusted = true) as fn(&mut Job),
             |job| job.memory_from_others = true,
             |job| job.ran_unproxied = true,
+            |job| job.someone_elses_code = true,
             |job| job.check_withheld = None,
         ] {
             assert!(jobs.update("aaaa0006", mark).is_none());
@@ -10404,7 +10433,7 @@ mod tests {
             (
                 (job.foreign.clone(), job.foreign_by_api, job.reached.clone()),
                 (job.untrusted, job.unsigned, job.memory_from_others),
-                (job.ran_unproxied, job.vetted),
+                (job.ran_unproxied, job.vetted, job.someone_elses_code),
                 (job.withheld.clone(), job.check_withheld.clone()),
             )
         };
@@ -10415,7 +10444,7 @@ mod tests {
                 Some("it reached example.com".to_owned()),
             ),
             (true, true, true),
-            (true, false),
+            (true, false, true),
             (
                 Some("this job reached chatgpt.com".to_owned()),
                 Some("a newer check".to_owned()),
@@ -11241,6 +11270,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// TASKS-3: deleted, it's gone: its `deleted` event goes out as soon as obid forgets the job,
+    /// not once its worktree and branch are cleaned up, which wait for the clone's lock (another
+    /// job getting ready in the repository, a lookup's fetch). Until then the apps showed the
+    /// task, and offered Delete again, though obid had it no more.
+    #[tokio::test]
+    async fn tasks_3_a_deleted_job_is_said_gone_at_once_while_its_clone_is_busy() {
+        let root = std::env::temp_dir().join(format!("obid-delete-said-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut job = Job::new(
+            "eeee0007".into(),
+            "o/r".into(),
+            "research".into(),
+            "Read it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        let clone = git::clone_path(&home, "o/r");
+        std::fs::create_dir_all(&clone).unwrap();
+        cleanup_git(&clone, &["init", "-q"]);
+        cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let jobs = jobs_with_kept(&home, &[&job]);
+        let mut events = jobs.events.subscribe();
+        // Another job is getting the clone ready.
+        let preparing = jobs.preparing("o/r");
+        let held = preparing.lock().await;
+        let mut deleting = Box::pin(jobs.delete("eeee0007"));
+        let waited = tokio::time::timeout(Duration::from_secs(2), &mut deleting).await;
+        assert!(waited.is_err(), "its cleanup waits on the lock: {waited:?}");
+        assert!(jobs.get("eeee0007").is_none(), "obid has it no more");
+        let said = std::iter::from_fn(|| events.try_recv().ok())
+            .find(|e| e.name == "job" && e.data["id"] == "eeee0007");
+        assert_eq!(
+            said.map(|e| e.data),
+            Some(json!({"id": "eeee0007", "deleted": true})),
+            "said gone while the lock is still held"
+        );
+        drop(held);
+        assert!(matches!(deleting.await, Some(Ok(_))));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A panic after its job ended (in what comes after its run) leaves the job as it ended: the
     /// bug is noted on it, and no item asks to try it again (#914's review).
     #[tokio::test]
@@ -11937,6 +12008,67 @@ mod tests {
             Some(crate::publish::branch_moved("oby/keep0001"))
         );
         assert_eq!(other.checked_head, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PUBLISHING-2 (#2831): obid moves a job's branch only from where it last put it. A move
+    /// someone else made since stays, and keeping the job's commits says why; once the branch is
+    /// back where obid put it, it moves, and obid remembers where.
+    #[tokio::test]
+    async fn publishing_2_keep_commits_leaves_a_branch_someone_else_moved() {
+        let (root, clone, base, jobs) = cleanup_home("kept-move", true);
+        let (mut job, tree) = ended(&jobs, &clone, &base, "kept0001", obi_protocol::time::now());
+        job.status = Status::Running;
+        let branch = format!("refs/heads/{}", job.branch);
+        cleanup_git(&clone, &["branch", &job.branch, &base]);
+        job.kept = Some(base.clone());
+        jobs.lock().jobs.insert(job.id.clone(), job);
+        let tree_of = format!("{base}^{{tree}}");
+        let theirs = cleanup_git(
+            &clone,
+            &["commit-tree", &tree_of, "-p", &base, "-m", "Someone else's"],
+        );
+        cleanup_git(&clone, &["update-ref", &branch, &theirs]);
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "The job's"]);
+        let mine = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+
+        let kept = jobs.keep_commits("kept0001").await;
+        assert!(
+            kept.as_ref()
+                .is_err_and(|e| e.contains("moved since Oby put it")),
+            "{kept:?}"
+        );
+        assert_eq!(cleanup_git(&clone, &["rev-parse", &branch]), theirs);
+        assert_eq!(jobs.get("kept0001").unwrap().kept, Some(base.clone()));
+
+        cleanup_git(&clone, &["update-ref", &branch, &base]);
+        assert_eq!(jobs.keep_commits("kept0001").await, Ok(mine.clone()));
+        assert_eq!(cleanup_git(&clone, &["rev-parse", &branch]), mine);
+        assert_eq!(jobs.get("kept0001").unwrap().kept, Some(mine));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PUBLISHING-2, RECOVERY-2 (#2831): obid went down between moving a job's branch and noting
+    /// where. The branch is on a commit of the job's own, one its worktree's head descends from,
+    /// so the next keep still moves it; someone else's commit there it still leaves.
+    #[tokio::test]
+    async fn publishing_2_keep_commits_moves_a_branch_obid_moved_before_it_went_down() {
+        let (root, clone, base, jobs) = cleanup_home("kept-crash", true);
+        let (mut job, tree) = ended(&jobs, &clone, &base, "kept0002", obi_protocol::time::now());
+        job.status = Status::Running;
+        let branch = format!("refs/heads/{}", job.branch);
+        job.kept = Some(base.clone());
+        jobs.lock().jobs.insert(job.id.clone(), job);
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "First"]);
+        let first = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "Second"]);
+        let second = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+        // The branch on its first commit, as obid left it, its file still naming the base.
+        cleanup_git(&clone, &["branch", "-f", "oby/kept0002", &first]);
+
+        assert_eq!(jobs.keep_commits("kept0002").await, Ok(second.clone()));
+        assert_eq!(cleanup_git(&clone, &["rev-parse", &branch]), second);
+        assert_eq!(jobs.get("kept0002").unwrap().kept, Some(second));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -13437,7 +13569,7 @@ mod tests {
         };
         let id = waiting();
         for source in [Source::Owner, Source::Confirmed] {
-            let Some(Err(Refused(why))) = jobs.relay("j", "SQLite", source, None) else {
+            let Some(Err(Refused(why))) = jobs.relay("j", "SQLite", source, None, false) else {
                 panic!("the brain answered the question");
             };
             assert_eq!(why, QUESTION_IS_THE_OWNERS);
@@ -13529,7 +13661,7 @@ mod tests {
             let Ruling::Ask(answered) = jobs.rule_on("j", "Bash", &input, &worktree) else {
                 panic!("nothing asked");
             };
-            assert!(jobs.relay("j", words, source, None).unwrap().is_ok());
+            assert!(jobs.relay("j", words, source, None, false).unwrap().is_ok());
             let Answer::Deny(heard) = answered.await.unwrap() else {
                 panic!("the agent heard no refusal");
             };

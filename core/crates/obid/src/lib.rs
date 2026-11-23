@@ -534,6 +534,19 @@ pub async fn serve(
     jobs.use_connections(connections.clone());
     // Oby's browser, browsers a stopped obid left reaped first (crate::browser, BROWSER-25).
     let browser = browser::Service::open(&config.home).await;
+    // The box's edge for another Oby's task's browser: obid's own port, its gateway's and the
+    // `direct` listeners' (BROWSER-18); a preview tunnel refuses the same (COMPUTERS-26).
+    let gateway_port = gateway
+        .as_ref()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port());
+    let host_ports: Vec<u16> = [Some(bound.port()), gateway_port]
+        .into_iter()
+        .flatten()
+        .chain(answering.direct.iter().map(|a| a.port()))
+        .collect();
+    paired.set_own_ports(host_ports.clone());
+    browser.set_host_ports(host_ports);
     jobs.use_browser(browser.clone());
     let tetrix = tetrix::Tetrix::open(
         &config.home,
@@ -586,6 +599,11 @@ pub async fn serve(
     if let Some(receipts) = &receipts {
         link.use_receipts(receipts.clone());
     }
+    // The computers the window works on (crate::remote::computers, COMPUTERS-19).
+    let computers = remote::computers::Computers::open(
+        &config.home,
+        vault::shared().expect("the vault is installed first"),
+    );
     let shared = Arc::new(api::Shared {
         config,
         token,
@@ -618,6 +636,7 @@ pub async fn serve(
         push: pushes,
         receipts,
         stopping: stopping_rx.clone(),
+        computers,
     });
     let app = api::router(shared.clone());
     stopwatch.lap("the rest");
@@ -647,7 +666,6 @@ pub async fn serve(
         });
     }
     // A browser that closed itself (10 minutes idle) shows as not started again (crate::browser).
-    shared.browser.spawn_sweeper(stopping_rx.clone());
     // The worktrees' cleanup pass, in the background: never before the first answer.
     tokio::spawn(keep_worktrees_clean(shared.clone(), cancelled.clone()));
     // The machine's memory and each running job's, while jobs run (crate::meter).

@@ -3,7 +3,7 @@
 // (17); and the globe at the title bar's end that shows and hides it (1). Built from the lab's
 // screens (tools/obid-spec/lab-ui/browser/src/scenes.tsx), whose conversations were the boards'
 // own: here the conversation is the app's.
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CodeXml, Globe, Server, X } from 'lucide-react';
 import { Control, FileRow, Nav, Panel, Pointer, Tabs, View, YouPointer } from './Panel';
 import { Globe17, Logo, agentName } from './pieces';
@@ -11,20 +11,24 @@ import { useBrowser } from './store';
 import { demoPage } from './demo';
 import { shown } from './live';
 import { useLive } from '../live';
+import { registerCommands, shortcutLabel } from '../shortcuts';
 import './browser.css';
 
 /** The globe at the bar's end: closed, it says how many tabs and who's using one; open, it hides the panel. */
 export function BrowserGlobe() {
   const { offered, ui, setUi, s } = useBrowser();
   const [tip, setTip] = useState(false);
-  if (!offered || !s.settings.agentsUseBrowser) return null;
+  const globe = offered && s.settings.agentsUseBrowser;
+  // ⇧⌘B (SHORTCUTS-12): the globe's own click, while there's a globe
+  useEffect(() => (globe ? registerCommands({ 'browser.show': () => setUi({ open: true }) }) : undefined), [globe]);
+  if (!globe) return null;
   if (ui.open) return <Globe17 on label="Hide the browser" onClick={() => setUi({ open: false, full: false })} />;
   const using = s.tabs.find((t) => t.holder === 'agent' && t.action);
   const who = using?.owner.kind === 'agent' ? `, ${agentName(using.owner.agent)} is using one` : '';
   return (
     <div style={{ position: 'relative' }} onMouseEnter={() => setTip(true)} onMouseLeave={() => setTip(false)}>
       <Globe17 label={`Show the browser, ${s.tabs.length} ${s.tabs.length === 1 ? 'tab' : 'tabs'}${who}`} badge={!!using} onClick={() => setUi({ open: true })} />
-      {tip && <span className="tip-under" role="tooltip">Show the browser<kbd>⇧⌘B</kbd></span>}
+      {tip && <span className="tip-under" role="tooltip">Show the browser<kbd>{shortcutLabel('browser.show')}</kbd></span>}
     </div>
   );
 }
@@ -68,6 +72,8 @@ export function BrowserPane({ width }: { width: number }) {
   // the conversation folded to one line: the tab's task, and what its agent is at (on obid, its job's title)
   const peek = demoPeek ?? (mode === 'obid' ? { agent: active.owner, title: (active.job && jobs[active.job]?.title) || active.title, line: active.action ?? shown(active.url) } : null);
   const where = active.computer;
+  // board 10's loading row: on obid while the tab's own page loads, as main says (BROWSERAPP-32)
+  const loading = mode === 'obid' ? active.pageLoading === true : active.state === 'loading';
   const { page, label } = mode === 'demo' ? demoPage(active) : { page: null, label: active.title };
   // the agent's label turns to the pointer's left near the page's right edge (5)
   const flip = active.pointer && viewWidth > 0 && active.pointer.x > viewWidth - 220;
@@ -77,7 +83,7 @@ export function BrowserPane({ width }: { width: number }) {
       <Panel width={width} full={ui.full} label={ui.full ? 'Browser, full width' : where ? `Browser on ${where.name}` : 'Browser'} resize={!ui.full && !held}>
         <Tabs full={ui.full} newTabLabel={where ? `New tab on ${where.name}` : 'New tab'} />
         {where && <div className="where-bar" data-browser="where"><Server size={13} strokeWidth={1.6} /><span>This browser runs on <b>{where.name}</b>. Its localhost is {where.name}’s, not this Mac’s.</span></div>}
-        {active.state === 'loading'
+        {loading
           ? <Nav tab={active} set="loading"><span className="br-loading" style={{ left: 8 }} /></Nav>
           : <Nav tab={active} warn={active.state === 'certificate'} />}
         <Control tab={active} />

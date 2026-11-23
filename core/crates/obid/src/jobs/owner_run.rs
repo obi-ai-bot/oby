@@ -136,6 +136,7 @@ impl Jobs {
                 if theirs && job.read_only() && job.review_of.is_none() {
                     let why = format!("pull request #{pr}'s head has commits obid didn't record");
                     self.mark(id, why, false);
+                    self.update(id, |job| job.someone_elses_code = true);
                     job = self.get(id).ok_or("the job is gone")?;
                 }
             }
@@ -235,6 +236,17 @@ impl Jobs {
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
+            // Where its branch is as its worktree starts: obid moves it only from there (#2831).
+            let kept = match branch_ref.starts_with("refs/heads/") {
+                true => git::git(
+                    &clone,
+                    &["rev-parse", "--verify", &format!("{branch_ref}^{{commit}}")],
+                )
+                .await
+                .ok()
+                .filter(|h| git::is_sha(h)),
+                false => None,
+            };
             let mut missing: Vec<String> = Vec::new();
             if git::uses_lfs(&clone, &start_commit).await {
                 missing.push("its Git LFS files are pointers".into());
@@ -252,6 +264,7 @@ impl Jobs {
             let worktree_text = worktree.to_string_lossy().into_owned();
             self.update(id, |job| {
                 job.made_worktree(worktree_text);
+                job.kept = kept;
                 job.start_commit.get_or_insert(start_commit);
                 job.base = Some(base.clone());
                 if !missing.is_empty() {
@@ -292,6 +305,7 @@ impl Jobs {
                 job.attachments_gone = (!gone.is_empty()).then_some(gone);
             });
         }
+        self.seed_artifacts(id, &worktree);
         // The issue it works from, as GitHub has it now, read with obid's own gh (the owner's
         // login), quoted as data in `.obi/inputs/`, on every run: its agent has no GitHub login to
         // read it itself (ISSUETASK-1). Who wrote it is read after the quote, so a word anyone
@@ -868,7 +882,17 @@ impl Jobs {
                             .map(|tool| format!("mcp__tetrix__{tool}")),
                     );
                 }
-                if (broker.is_some() || tetrix.is_some()) && tool == Tool::Claude {
+                // Oby's browser (BROWSER-17): Claude Code's in its --mcp-config, Codex's in its `-c`
+                // settings (`Jobs::launch`); Cursor's comes with its session (`Jobs::turn`).
+                let browser = matches!(tool, Tool::Claude | Tool::Codex)
+                    .then(|| self.browser_server(&job))
+                    .flatten();
+                if browser.is_some() {
+                    mcp_rules.extend(crate::browser::AgentServer::rules());
+                }
+                if (broker.is_some() || tetrix.is_some() || browser.is_some())
+                    && tool == Tool::Claude
+                {
                     let file = mcp_config_path(own, &spec.temp, &self.login_path(id))?;
                     let mut config = json!({"mcpServers": {}});
                     if let Some((url, token)) = broker.as_ref().filter(|_| tool == Tool::Claude) {
@@ -876,6 +900,9 @@ impl Jobs {
                     }
                     if let Some((url, token)) = tetrix.as_ref().filter(|_| tool == Tool::Claude) {
                         config["mcpServers"]["tetrix"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});
+                    }
+                    if let Some(server) = &browser {
+                        config["mcpServers"][crate::browser::agent_server::NAME] = server.claude();
                     }
                     // An own run's first turn waits for none of the owner's servers, so obid's are
                     // each `alwaysLoad`: connected before it (LANES-24, `agent::MCP_STARTUP_WAIT`).

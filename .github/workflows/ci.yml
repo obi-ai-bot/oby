@@ -1,295 +1,133 @@
-# CI: what GitHub runs on GitHub's standard Ubuntu runners, with one job, Check, that says whether
-# the run passed (docs/ci.md, "What GitHub runs"; the design is docs/ci-architecture.md).
+# CI: the software factory's gate, on GitHub's hosted runners (docs/ci.md, "What GitHub runs";
+# docs/contracts/ci.md, CI-70 to 76).
 #
-#   plan            which lanes the change reaches, from the paths it changed, which Rust tests run
-#                   (scripts/ci-rust-tests.sh), and gitleaks (with .gitleaks.toml) over the commits
-#                   it brings
-#   lint            in core/: cargo fmt --check, clippy -D warnings on every target
-#   limits          obid's line limits on the checked commit, from the run's base: the script's
-#                   own (OBY_CHECK_ONLY=limits scripts/oby-check.sh, docs/contracts/ci.md, CI-35)
-#   rust-build      in core/: one cargo nextest archive of the tests plan chose (the workspace's,
-#                   or obid's lib and the test binaries it named), kept 1 day
-#   rust-test       the archive's tests plan chose, in 1 to 4 nextest shards (core/.config/
-#                   nextest.toml's ci profile: one retry), each keeping its JUnit report 14 days
-#   e2e             make e2e: headless, stub agents, no credentials, against oby-sphere's commit
-#   control-plane   cloud/control-plane: pnpm test (vitest inside Miniflare) and pnpm check
-#   electron        apps/electron: npm ci, typecheck, test and build
-#   tools           tools/oby-check-blok (its own Cargo workspace): cargo test
-#   obid-spec       tools/obid-spec (its own Cargo workspace): its tests and coverage gate, then its
-#                   workflows against this commit's obid on stand-in agents and the pinned Sphere,
-#                   black-box: the merge queue the `launch` ones (the Obysphere's and the launch
-#                   flows'), nightly and on demand all of them, a pull request all of them only for
-#                   a change to tools/obid-spec/ or with `full-suite` (docs/contracts/ci.md, CI-67)
-#   brain           tools/brain: its map of obid and the app, read from the code, typechecked and
-#                   tested, so it can't drift from them (docs/contracts/ci.md, CI-56)
-#   proofs          obid's Kani harnesses: every one compiled, and the ones the change requires by
-#                   path proved (scripts/kani-required.sh); every one proved nightly and on demand
-#                   (docs/proofs.md, CI-57 to 59)
-#   Check           needs every job: fails when plan didn't pass, any job failed or was cancelled
-#                   (a skipped job passes), or a guard plan named ran no test; writes the lanes,
-#                   which Rust tests ran and why, each job's result, a failed shard's tests and
-#                   every flaky test to its summary
+#   changes     what the change reaches, from the paths it changed, and gitleaks over the commits
+#               it brings
+#   rust        core/: fmt, clippy, obid's limits, and every test compiled once; or, for a change
+#               that only reaches what the guards read, the guards alone
+#   rust-test   those tests, in 4 shards
+#   electron    apps/electron: typecheck, tests and build
+#   Check       the one required check: every job above passed or was skipped
 #
-# The Apple apps (xcodebuild) and swift test are the Mac check's (AGENTS.md, "Build and run").
+# The same jobs run on every push to a pull request, a draft included, in the merge queue, and on
+# dev after each merge (the only run that saves the Rust cache: a pull request can read dev's,
+# never another pull request's). No label and no schedule changes what runs.
 #
-# Modes. A job is skipped with `if:`, never with a workflow-level `paths:` (a workflow skipped by a
-# path filter leaves its check Pending, which blocks merging; a skipped job reports success):
-#   - A draft pull request without the `full-ci` or `full-suite` label skips every job, Check
-#     included. A label takes effect on the next push after labelling.
-#   - A ready pull request into dev runs plan, lint when the rust lane is reached, the guards
-#     (below) when the change reaches what they read, and Check: no other test job. The Mac check
-#     (scripts/oby-check.sh) runs the tests each change reaches.
-#   - A pull request labelled `full-ci` into dev runs every job its lanes reach, and of the Rust
-#     tests the guards and the ones the change can break (scripts/ci-rust-tests.sh affected),
-#     every one when it can't tell which.
-#   - A pull request labelled `full-suite` or into main, the merge queue (merge_group), the nightly
-#     run on dev and a run on demand (workflow_dispatch) run every job their lanes reach, and every
-#     Rust test when the rust lane is reached; the guards otherwise, when the change reaches what
-#     they read. The nightly and on-demand runs reach every lane. limits follows the rust lane, so
-#     the queue judges obid's line limits on the group's combined code, which no branch's own check
-#     sees.
-#   - The guards: Rust tests that each keep two places in agreement (the route guard: obid's
-#     routes and the apps' calls; the API docs; the prompt budget; and the rest
-#     scripts/ci-rust-tests.sh lists). They run in every run but a skipped draft whose change
-#     reaches core/, apps/electron/, apps/shared/, docs/api/, docs/runner-api.md, docs/contracts/
-#     or e2e/, whatever its lanes, so an app-only change that calls a route obid lacks fails.
-#   - Only the nightly and on-demand runs save caches: a pull request's caches can't be read by
-#     any other pull request (they're scoped to refs/pull/<n>/merge), so they only churned the
-#     repository's 10 GB.
+# A job is skipped with `if:`, never with a workflow-level `paths:`: a skipped job reports success,
+# while a workflow skipped by a path filter leaves Check pending, which blocks the merge.
 name: CI
 
 on:
   pull_request:
-    # Listing types replaces the default (opened, synchronize, reopened), so those stay explicit;
-    # ready_for_review runs a draft that turned ready on the same head. No `labeled`: a run started
-    # by another label would skip and post a success over a failed check on that head.
-    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
-  schedule:
-    - cron: "17 3 * * *"
-  workflow_dispatch:
+  push:
+    branches: [dev]
 
-# A newer push to the same pull request cancels the run it supersedes; merge queue, nightly and
-# on-demand runs each run to the end.
+# A newer push to the same pull request, or to dev, cancels the run it supersedes; a merge queue
+# run always runs to the end.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  # Rust's 1.97 channel (its latest patch release), so a new stable's lints don't fail a change
-  # that didn't touch them. Bump it on purpose. core/Cargo.toml's rust-version is the floor.
+  # Rust's 1.97 channel, so a new stable's lints don't fail a change that didn't touch them. Bump
+  # it on purpose. core/Cargo.toml's rust-version is the floor.
   RUSTUP_TOOLCHAIN: "1.97"
-  WRANGLER_SEND_METRICS: "false"
+  # gitleaks' pin: .github/actions/setup installs exactly this.
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 
 jobs:
-  plan:
-    name: plan
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'full-suite')
+  changes:
+    name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      mode: ${{ steps.lanes.outputs.mode }}
-      tests: ${{ steps.lanes.outputs.tests }}
       rust: ${{ steps.lanes.outputs.rust }}
-      e2e: ${{ steps.lanes.outputs.e2e }}
       electron: ${{ steps.lanes.outputs.electron }}
-      control-plane: ${{ steps.lanes.outputs.control-plane }}
-      tools: ${{ steps.lanes.outputs.tools }}
-      brain: ${{ steps.lanes.outputs.brain }}
-      obid-spec: ${{ steps.lanes.outputs.obid-spec }}
-      proofs: ${{ steps.lanes.outputs.proofs }}
-      selector: ${{ steps.lanes.outputs.selector }}
-      rust-tests: ${{ steps.lanes.outputs.rust-tests }}
-      rust-why: ${{ steps.lanes.outputs.rust-why }}
-      rust-targets: ${{ steps.lanes.outputs.rust-targets }}
-      rust-filter: ${{ steps.lanes.outputs.rust-filter }}
-      rust-shards: ${{ steps.lanes.outputs.rust-shards }}
-      rust-shard-count: ${{ steps.lanes.outputs.rust-shard-count }}
-      rust-guards: ${{ steps.lanes.outputs.rust-guards }}
-      rust-selected: ${{ steps.lanes.outputs.rust-selected }}
     env:
-      GITLEAKS_VERSION: 8.30.1
-      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+      HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      # The mode: test jobs run in the merge queue, nightly, on demand, and on a pull request
-      # labelled full-ci or full-suite or into main. The lanes: a pull request's diff from its merge
-      # base, the merge queue's from the group's base, every lane nightly and on demand. A path no
-      # row names, or a diff that can't be read, reaches every lane. The Rust tests: every one, the
-      # affected set or the guards (scripts/ci-rust-tests.sh, docs/ci.md, "Which Rust tests run").
+      # rust: `full` (lint, limits and every test), `guards` (the guards alone) or `none`.
+      # A pull request's diff is from its merge base, the queue's and dev's from the commit before.
+      # A path no row names, or a diff that can't be read, reaches everything. A moved file counts
+      # under both its old path and its new one.
       - name: What the change reaches
         id: lanes
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
-          FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite') }}
         run: |
-          tests=true
-          case "$GITHUB_EVENT_NAME" in
-            pull_request)
-              if [ "$FULL_SUITE" = true ]; then mode="pull request, labelled full-suite"; suite=full
-              elif [ "$BASE_REF" = main ]; then mode="pull request into main"; suite=full
-              elif [ "$FULL_CI" = true ]; then mode="pull request, labelled full-ci"; suite=affected
-              else mode="pull request into $BASE_REF: plan, lint and the guards"; suite=guards; tests=false
-              fi
-              range="$BASE...$HEAD" ;;
-            merge_group) mode="merge queue"; suite=full; range="$BASE..$HEAD" ;;
-            schedule) mode="nightly"; suite=full; range="" ;;
-            *) mode="$GITHUB_EVENT_NAME"; suite=full; range="" ;;
-          esac
-
-          rust=false e2e=false electron=false control_plane=false tools=false brain=false proofs="" guards=false selector=false files=""
-          every_lane() { rust=true e2e=true electron=true control_plane=true tools=true brain=true proofs=all guards=true; }
-          # The Rust test selector's own tests: when it, they or the Mac's map it reads changed, and
-          # in a run with no diff (nightly, on demand).
-          [ -n "$range" ] || selector=true
-          if [ -z "$range" ]; then
-            every_lane
-          elif ! files=$(git diff --name-only "$range"); then
-            echo "The diff $range can't be read: every lane."
-            every_lane
-            files=""
-          else
-            # The Kani harnesses the change requires by path (CI-58): `all`, or their filters.
-            proofs=$(scripts/kani-required.sh <<< "$files" | tr '\n' ' ' | sed 's/ $//')
-            while IFS= read -r f; do
-              [ -n "$f" ] || continue
-              # What the Brain reads (CI-56), apart from the lanes below.
-              case "$f" in
-                tools/brain/*|core/crates/obid/src/*|apps/electron/src/*|apps/shared/*|docs/api/*|docs/runner-api.md|AGENTS.md) brain=true ;;
-              esac
-              # What the Rust guards read (scripts/ci-rust-tests.sh), whatever the lane.
-              case "$f" in
-                core/*|apps/electron/*|apps/shared/*|docs/api/*|docs/runner-api.md|docs/contracts/*|e2e/*) guards=true ;;
-                scripts/ci-rust-tests*|scripts/oby-check*) selector=true ;;
-              esac
-              case "$f" in
-                .github/*|scripts/oby-check*|core/Cargo.lock|core/Cargo.toml|rust-toolchain*) every_lane ;;
-                docs/api/*) rust=true ;;
-                core/*|e2e/*|Makefile) rust=true e2e=true ;;
-                apps/electron/*) electron=true ;;
-                cloud/control-plane/*) control_plane=true ;;
-                tools/oby-check-blok/*) tools=true ;;
-                tools/brain/*|tools/obid-spec/*) ;;
-                docs/*|factory/*|.claude/*|design/*|character/*|apps/ios/*|apps/watch/*|apps/shared/*|apps/Oby.xcodeproj/*|mcp/*) ;;
-                *.md) ;;
-                *) every_lane ;;
-              esac
-            done <<< "$files"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then range="$BASE...$HEAD"; else range="$BASE..$HEAD"; fi
+          rust=none electron=false
+          guards() { [ "$rust" = full ] || rust=guards; }
+          if [ -z "$BASE" ] || ! files=$(git diff --name-only --no-renames "$range"); then
+            echo "The diff $range can't be read: everything runs."
+            rust=full electron=true files=""
           fi
-          # obid-spec (CI-67): the merge queue runs its `launch` workflows when the change reaches obid
-          # (the rust lane) or the suite; nightly and on demand, every workflow; a pull request, every
-          # workflow only for a change to tools/obid-spec/ or with full-suite, else none.
-          obid_spec=none suite_changed=false contracts_changed=false
-          if grep -q '^tools/obid-spec/' <<< "$files"; then suite_changed=true; fi
-          # (CI-68) a contract's scenarios or obid's routes: their coverage gate, with or without a run
-          if grep -qE '^docs/(contracts|api)/' <<< "$files"; then contracts_changed=true; fi
-          case "$GITHUB_EVENT_NAME" in
-            merge_group) if [ "$rust" = true ] || [ "$suite_changed" = true ]; then obid_spec=launch; fi ;;
-            pull_request) if [ "$suite_changed" = true ] || [ "$FULL_SUITE" = true ]; then obid_spec=all; fi ;;
-            *) obid_spec=all ;;
-          esac
-          # (CI-68) a change to a contract or to obid's routes that no run covers still gets the
-          # coverage gate alone, on its pull request and in the merge queue: an unlisted scenario or
-          # route fails there, never first in the next pull request's queue run
-          if [ "$obid_spec" = none ] && [ "$contracts_changed" = true ]; then obid_spec=gate; fi
+          while IFS= read -r f; do
+            case "$f" in
+              "") ;;
+              .github/*|scripts/oby-check*|core/Cargo.toml|core/Cargo.lock|rust-toolchain*) rust=full electron=true ;;
+              # The app's relay test reads the CDP methods obid's browser sends.
+              core/crates/obid/src/browser/*) rust=full electron=true ;;
+              core/*|e2e/*|docs/api/*|Makefile) rust=full ;;
+              # The app bundles design/oby (apps/electron/vite.config.ts).
+              apps/electron/*|design/oby/*) electron=true; guards ;;
+              # README.md and docs/ARCHITECTURE.md: obid's secret scan reads them in a guard.
+              apps/shared/*|docs/runner-api.md|docs/contracts/*|README.md|docs/ARCHITECTURE.md) guards ;;
+              docs/*|factory/*|tools/*|cloud/*|.claude/*|design/*|character/*|apps/ios/*|apps/watch/*|apps/Oby.xcodeproj/*|mcp/*|*.md) ;;
+              *) rust=full electron=true ;;
+            esac
+          done <<< "$files"
+          echo "rust=$rust electron=$electron"
+          { echo "rust=$rust"; echo "electron=$electron"; } >> "$GITHUB_OUTPUT"
 
-          # Which Rust tests: with the rust lane, the mode's (in a run that tests) or the guards (in
-          # one that doesn't); without it, the guards when the change reaches what they read. A run
-          # that reaches every lane has no diff to map, and tests everything.
-          if [ "$rust" = true ] && [ "$tests" = true ]; then want=$suite
-          elif [ "$rust" = true ] || [ "$guards" = true ]; then want=guards
-          else want=none
-          fi
-          if [ "$want" = none ]; then
-            rust_out=$(printf '%s\n' rust-tests=none "rust-why=the change reaches no Rust test" "rust-shards=[]" rust-shard-count=0 "rust-guards=[]")
-          elif ! rust_out=$(printf '%s\n' "$files" | CI_RUST_RANGE="$range" scripts/ci-rust-tests.sh "$want"); then
-            echo "scripts/ci-rust-tests.sh failed: plan fails, so no lane can be trusted."
-            exit 1
-          fi
+      - uses: ./.github/actions/setup
 
-          echo "mode=$mode tests=$tests"
-          echo "rust=$rust e2e=$e2e electron=$electron control-plane=$control_plane tools=$tools brain=$brain"
-          echo "proofs required: ${proofs:-none}"
-          echo "obid-spec: $obid_spec"
-          echo "$rust_out"
-          echo "$rust_out" >> "$GITHUB_OUTPUT"
-          {
-            echo "mode=$mode"
-            echo "tests=$tests"
-            echo "rust=$rust"
-            echo "e2e=$e2e"
-            echo "electron=$electron"
-            echo "control-plane=$control_plane"
-            echo "tools=$tools"
-            echo "brain=$brain"
-            echo "proofs=$proofs"
-            echo "selector=$selector"
-            echo "obid-spec=$obid_spec"
-          } >> "$GITHUB_OUTPUT"
-
-      # scripts/ci-rust-tests.sh's own tests (CI-60 to 65), on this checkout's tree and history.
-      - name: The Rust test selector's own tests
-        if: steps.lanes.outputs.selector == 'true'
-        run: bash scripts/ci-rust-tests-test.sh
-
-      - name: Install gitleaks
-        run: |
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
-          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-
-      # The commits this run brings, as scripts/oby-check.sh scans a change's (with .gitleaks.toml
-      # and .gitleaksignore): a pull request's from its merge base with the base branch, the merge
-      # queue's from the group's base (base_sha..head_sha). Older history isn't rescanned here.
-      # A run with no earlier commit (nightly and on demand have none) starts from where it leaves
-      # the default branch instead; on dev itself that is its head, so a nightly or on-demand run on
-      # dev scans the head commit alone: the commits before it were scanned on their pull requests
-      # and in the queue.
+      # The commits this run brings, with the change's own .gitleaks.toml and .gitleaksignore (both
+      # are security paths: a change to either needs its two reviews). Older history isn't
+      # rescanned: it was scanned on its own pull requests. With no earlier commit to start from,
+      # the head commit alone. -m: what a merge commit itself adds is scanned too.
       - name: gitleaks over the new commits
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          base=""
           if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            base=$(git merge-base "$BASE" "$HEAD")
-          elif [ -n "$DEFAULT_BRANCH" ] && fork=$(git merge-base "origin/$DEFAULT_BRANCH" "$HEAD" 2>/dev/null) \
-              && [ "$fork" != "$(git rev-parse "$HEAD")" ]; then
-            echo "No earlier commit to start from (${BASE:-none}): scanning from origin/$DEFAULT_BRANCH."
-            base=$fork
-          fi
-          if [ -n "$base" ]; then
-            range="$base..$HEAD"
+            range="$(git merge-base "$BASE" "$HEAD")..$HEAD"
           else
             echo "No earlier commit to start from (${BASE:-none}): scanning $HEAD alone."
             range="-1 $HEAD"
           fi
           echo "Scanning $range"
-          gitleaks git . "--log-opts=$range" --config .gitleaks.toml --no-banner --redact
+          gitleaks git . "--log-opts=-m $range" --config .gitleaks.toml --no-banner --redact
 
-  lint:
-    name: lint
-    needs: plan
-    if: needs.plan.outputs.rust == 'true'
+  rust:
+    name: rust
+    needs: changes
+    if: needs.changes.outputs.rust != 'none'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      # The guards: tests that each keep two places in agreement (obid's routes with
+      # docs/api/routes.txt and the apps' calls, who writes a job's state, what released obids
+      # wrote, GET /v1/status's capabilities and their doc, the prompt budget, the one unsafe
+      # function, no Keychain in the vault, what only the Mac tests, the MCP tool list and protocol
+      # versions, and obid's secret scan against this repository's docs and names). A change on
+      # either side can break one, so an app-only change runs them too.
+      GUARDS: >-
+        binary_id(obid::routes_guard) | binary_id(obid::state_owner) | binary_id(obid::released_files)
+        | (binary_id(obid::runner_api) & test(/^caps_/))
+        | (binary_id(obid) & test(/::(prompt_budget_holds|unsafe_1_only_may_write_is_unsafe|keychain_1_the_vault_never_touches_the_keychain|merging_2_what_only_the_mac_tests_is_the_scripts|agentmcp_7_every_entry_names_every_gate|one_protocol_version_list|clean_docs_and_the_fixture_result_stay_clean|this_repositorys_names_are_clean_and_a_token_among_them_is_found)$/))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Rust toolchain
@@ -298,89 +136,70 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: core
-          shared-key: lint
-          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-
-      - name: cargo fmt --check
-        run: cargo fmt --manifest-path core/Cargo.toml --all -- --check
-
-      - name: cargo clippy -D warnings
-        run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
-
-  limits:
-    # The script's own counting and judging, on the checked commit (the merge group's combined
-    # code in the queue), measured from the run's base so a limit the commit lowered holds.
-    name: limits
-    needs: plan
-    if: needs.plan.outputs.rust == 'true' && needs.plan.outputs.tests == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      # Nightly and on demand have no base: the commit is measured against itself.
-      - name: obid's line limits
-        env:
-          BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
-        run: OBY_CHECK_ONLY=limits scripts/oby-check.sh "${BASE:-HEAD}"
-
-  rust-build:
-    # The tests plan chose, compiled once: rust-test's shards run them from this archive and compile
-    # nothing. Every test of the workspace, or obid's lib and the test binaries plan named.
-    name: rust-build
-    needs: plan
-    if: needs.plan.outputs.rust-tests == 'full' || needs.plan.outputs.rust-tests == 'affected' || needs.plan.outputs.rust-tests == 'guards'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: core
-          shared-key: test-build
-          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          shared-key: rust-${{ needs.changes.outputs.rust }}
+          save-if: ${{ github.event_name == 'push' }}
 
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-nextest@0.9.150
 
-      # RUST_TARGETS is `--workspace`, or `-p obid --lib --test <name>...` (names checked by
-      # scripts/ci-rust-tests.sh: lowercase letters, digits and `_` only), split into words here.
-      - name: cargo nextest archive
+      - name: cargo fmt --check
+        if: needs.changes.outputs.rust == 'full'
+        run: cargo fmt --manifest-path core/Cargo.toml --all -- --check
+
+      - name: cargo clippy -D warnings
+        if: needs.changes.outputs.rust == 'full'
+        run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      # The script's own counting and judging, on the checked commit (in the queue, the group's
+      # combined code), measured from the run's base so a limit the commit lowered holds.
+      - name: obid's limits
+        if: needs.changes.outputs.rust == 'full'
         env:
-          RUST_TARGETS: ${{ needs.plan.outputs.rust-targets }}
-        run: |
-          read -r -a targets <<< "$RUST_TARGETS"
-          echo "Building: ${targets[*]}"
-          cargo nextest archive --manifest-path core/Cargo.toml "${targets[@]}" --locked --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: OBY_CHECK_ONLY=limits scripts/oby-check.sh "$BASE"
+
+      # Compiled once: rust-test's shards run from this archive and compile nothing.
+      - name: Build every test
+        if: needs.changes.outputs.rust == 'full'
+        run: cargo nextest archive --manifest-path core/Cargo.toml --workspace --locked --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: needs.changes.outputs.rust == 'full'
         with:
           name: nextest-archive
           path: ${{ runner.temp }}/nextest-archive.tar.zst
           retention-days: 1
           if-no-files-found: error
 
+      - uses: ./.github/actions/setup
+        if: needs.changes.outputs.rust == 'guards'
+        with:
+          sandbox: "true"
+
+      - name: bubblewrap works
+        if: needs.changes.outputs.rust == 'guards'
+        run: |
+          bwrap --ro-bind / / --unshare-all --die-with-parent true
+
+      # Retries come from core/.config/nextest.toml's ci profile, never from the command line.
+      - name: The guards
+        if: needs.changes.outputs.rust == 'guards'
+        run: |
+          cargo nextest run --manifest-path core/Cargo.toml -p obid --lib \
+            --test routes_guard --test state_owner --test released_files --test runner_api \
+            --locked --profile ci --no-fail-fast --no-tests=fail -E "$GUARDS"
+
   rust-test:
-    name: rust-test (${{ matrix.shard }}/${{ needs.plan.outputs.rust-shard-count }})
-    needs: [plan, rust-build]
+    name: rust-test (${{ matrix.shard }}/4)
+    needs: [changes, rust]
+    if: needs.changes.outputs.rust == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # 4 for every test; for the affected set, one per 20,000 lines of its test binaries, at
-        # most 4; 1 for the guards (scripts/ci-rust-tests.sh).
-        shard: ${{ fromJSON(needs.plan.outputs.rust-shards || '[1]') }}
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -393,179 +212,32 @@ jobs:
         with:
           tool: cargo-nextest@0.9.150
 
-      # obid's job sandbox on Linux is bubblewrap (with slirp4netns for an agent's network), and
-      # tests/sandbox.rs, the plug-in tests and the job tests make one. Ubuntu 24.04's AppArmor
-      # refuses unprivileged user namespaces by default, which bubblewrap needs: this throwaway
-      # runner allows them. The last line proves bubblewrap works here, so a sandbox test that
-      # fails is the sandbox's failure, not the runner's.
-      - name: bubblewrap for obid's job sandbox
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap slirp4netns
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --ro-bind / / --unshare-all --die-with-parent true
+      - uses: ./.github/actions/setup
+        with:
+          sandbox: "true"
 
-      # obid's own secret scan runs gitleaks (on PATH); its tests and make e2e need it.
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      - name: bubblewrap works
         run: |
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
-          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/gitleaks"
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
-          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+          bwrap --ro-bind / / --unshare-all --die-with-parent true
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nextest-archive
           path: ${{ runner.temp }}
 
-      # The archive extracts into core/, so its binaries sit at the core/target paths rust-build
-      # compiled them for (env!("CARGO_BIN_EXE_obid") is fixed at compile time), and the
-      # workspace's files (tests' fixtures, routes_guard's docs/api) are this checkout's. Retries
-      # come from the ci profile, never from the command line. RUST_FILTER, when plan gave one,
-      # keeps the tests it chose of the archive's; a shard it leaves empty passes, and Check fails
-      # a run whose guards ran no test.
-      - name: cargo nextest run (${{ matrix.shard }}/${{ needs.plan.outputs.rust-shard-count }})
-        env:
-          RUST_FILTER: ${{ needs.plan.outputs.rust-filter }}
-          SHARD: ${{ matrix.shard }}/${{ needs.plan.outputs.rust-shard-count }}
+      # The archive extracts into core/, so its binaries sit at the core/target paths rust compiled
+      # them for (env!("CARGO_BIN_EXE_obid") is fixed at compile time), and the workspace's files
+      # (the tests' fixtures, routes_guard's docs/api) are this checkout's.
+      - name: cargo nextest run (${{ matrix.shard }}/4)
         run: |
-          filter=()
-          if [ -n "$RUST_FILTER" ]; then filter=(-E "$RUST_FILTER"); fi
           cargo nextest run --archive-file "$RUNNER_TEMP/nextest-archive.tar.zst" \
             --workspace-remap "$GITHUB_WORKSPACE/core" --extract-to "$GITHUB_WORKSPACE/core" \
-            --partition "slice:$SHARD" --profile ci --no-fail-fast --no-tests=warn "${filter[@]}"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: junit-${{ matrix.shard }}
-          path: core/target/nextest/ci/junit.xml
-          retention-days: 14
-
-  control-plane:
-    name: control-plane
-    needs: plan
-    if: needs.plan.outputs.control-plane == 'true' && needs.plan.outputs.tests == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: cloud/control-plane
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # cloud/control-plane/package.json names no packageManager: the same pnpm as oby-sphere's.
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 11.23.0
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: cloud/control-plane/pnpm-lock.yaml
-
-      - name: pnpm install
-        run: pnpm install --frozen-lockfile
-
-      - name: pnpm test
-        run: pnpm test
-
-      - name: pnpm check
-        run: pnpm check
-
-  e2e:
-    name: e2e
-    needs: plan
-    if: needs.plan.outputs.e2e == 'true' && needs.plan.outputs.tests == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      OBI_SPHERE_DIR: ${{ github.workspace }}/oby-sphere
-    defaults:
-      run:
-        working-directory: oby
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: oby
-          persist-credentials: false
-
-      # The Sphere side of the scenario: oby-sphere (public, no token) at the one commit oby pins in
-      # e2e/sphere.ref, the deployed Sphere's (docs/contracts/test-rig.md, RIG-27), never its moving
-      # dev, so a push there can't turn oby's checks red.
-      # Moving to a newer oby-sphere is a change here, with this run as its test.
-      - name: The oby-sphere commit oby is tested with
-        id: sphere
-        run: |
-          ref=$(tr -d '[:space:]' < e2e/sphere.ref)
-          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::e2e/sphere.ref isn't a commit id: $ref"; exit 1; }
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: obi-ai-bot/oby-sphere
-          ref: ${{ steps.sphere.outputs.ref }}
-          path: oby-sphere
-          persist-credentials: false
-
-      - name: Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: oby/core
-          shared-key: e2e
-          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-
-      # obid runs each job's agent (here the stub) in its bubblewrap sandbox: see rust-test.
-      - name: bubblewrap for obid's job sandbox
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap slirp4netns
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --ro-bind / / --unshare-all --die-with-parent true
-
-      # pnpm's version comes from oby-sphere's server/package.json (packageManager).
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          package_json_file: oby-sphere/server/package.json
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: |
-            oby-sphere/server/pnpm-lock.yaml
-            oby-sphere/spec/pnpm-lock.yaml
-
-      # obid's own secret scan runs gitleaks (on PATH); its tests and make e2e need it.
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
-          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/gitleaks"
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
-          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
-
-      - name: make e2e
-        run: make e2e
+            --partition "slice:${{ matrix.shard }}/4" --profile ci --no-fail-fast
 
   electron:
     name: electron
-    needs: plan
-    if: needs.plan.outputs.electron == 'true' && needs.plan.outputs.tests == 'true'
+    needs: changes
+    if: needs.changes.outputs.electron == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -583,380 +255,30 @@ jobs:
           cache-dependency-path: apps/electron/package-lock.json
 
       # zsh: the ChatGPT gate's test runs scripts/package.sh with /bin/zsh, which Ubuntu's runner
-      # lacks. Nothing else: postinstall's install-electron only downloads Electron's zip, and its
-      # node-gyp build (native/window-style, Objective-C++) runs on macOS only, so nothing compiles.
+      # lacks. Nothing compiles here: postinstall only downloads Electron's zip, and its node-gyp
+      # build (native/window-style) runs on macOS only.
       - name: zsh for the tests
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq zsh
 
-      - name: npm ci
-        run: npm ci
-
-      - name: npm run typecheck
-        run: npm run typecheck
-
-      - name: npm test
-        run: npm test
-
-      - name: npm run build
-        run: npm run build
-
-  tools:
-    name: tools
-    needs: plan
-    if: needs.plan.outputs.tools == 'true' && needs.plan.outputs.tests == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: tools/oby-check-blok
-          shared-key: tools
-          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-
-      # The tests run scripts/oby-check.sh, which runs the installed oby-check-blok (on PATH, as a
-      # Mac's `cargo install --locked --path tools/oby-check-blok`) and its secret scan, gitleaks.
-      # --debug into the workspace's own target folder: the test build below reuses what it built.
-      # A folder of its own, since the script refuses a binary in one others may write.
-      - name: Install oby-check-blok
-        run: |
-          cargo install --debug --locked --path tools/oby-check-blok --target-dir tools/oby-check-blok/target --root "$RUNNER_TEMP/oby-check-blok"
-          echo "$RUNNER_TEMP/oby-check-blok/bin" >> "$GITHUB_PATH"
-
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
-          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/gitleaks"
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
-          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
-
-      - name: cargo test
-        run: cargo test --manifest-path tools/oby-check-blok/Cargo.toml --locked
-
-  obid-spec:
-    # obid's routes and background triggers, each proven black-box by a workflow against this
-    # commit's obid (docs/contracts/obid-spec.md; docs/contracts/ci.md, CI-67): scratch obids on
-    # stand-in agents, never a real CLI or login, and the Sphere at e2e/sphere.ref. plan says which:
-    # `launch` (the merge queue: the Obysphere's and the launch flows' workflows) or `all`. A known
-    # bug's step (expectedRed, flaky, each with its issue) doesn't fail it; an expected red that
-    # passes, or any other failed step, does.
-    name: obid-spec
-    needs: plan
-    if: needs.plan.outputs.obid-spec == 'launch' || needs.plan.outputs.obid-spec == 'all' || needs.plan.outputs.obid-spec == 'gate'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      OBID_SPEC_SPHERE_CLONE: ${{ github.workspace }}/oby-sphere
-      OBID_SPEC_SET: ${{ needs.plan.outputs.obid-spec }}
-    defaults:
-      run:
-        working-directory: oby
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: oby
-          persist-credentials: false
-
-      # The Sphere at the one commit oby pins (e2e/sphere.ref), as the e2e job takes it.
-      - name: The oby-sphere commit oby is tested with
-        if: env.OBID_SPEC_SET != 'gate'
-        id: sphere
-        run: |
-          ref=$(tr -d '[:space:]' < e2e/sphere.ref)
-          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::e2e/sphere.ref isn't a commit id: $ref"; exit 1; }
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: env.OBID_SPEC_SET != 'gate'
-        with:
-          repository: obi-ai-bot/oby-sphere
-          ref: ${{ steps.sphere.outputs.ref }}
-          path: oby-sphere
-          persist-credentials: false
-
-      - name: Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: |
-            oby/core
-            oby/tools/obid-spec
-          shared-key: obid-spec
-          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-
-      # obid runs each job's agent (here a stand-in) in its bubblewrap sandbox: see rust-test.
-      - name: bubblewrap for obid's job sandbox
-        if: env.OBID_SPEC_SET != 'gate'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap slirp4netns
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --ro-bind / / --unshare-all --die-with-parent true
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        if: env.OBID_SPEC_SET != 'gate'
-        with:
-          package_json_file: oby-sphere/server/package.json
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        if: env.OBID_SPEC_SET != 'gate'
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: oby-sphere/server/pnpm-lock.yaml
-
-      # OBID_SPEC_SPHERE_CLONE names a clone that is ready: its server's packages installed.
-      - name: The Sphere's packages
-        if: env.OBID_SPEC_SET != 'gate'
-        working-directory: oby-sphere/server
-        run: pnpm install --frozen-lockfile
-
-      # obid's own secret scan runs gitleaks; the suite clones it into each scratch obid's PATH.
-      - name: Install gitleaks
-        if: env.OBID_SPEC_SET != 'gate'
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
-          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/gitleaks"
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
-          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
-
-      - name: Build obid
-        if: env.OBID_SPEC_SET != 'gate'
-        run: cargo build --manifest-path core/Cargo.toml -p obid --bin obid --locked
-
-      # (CI-68) not for `gate`: some start a scratch obid, which `gate` doesn't build
-      - name: The suite's own tests
-        if: env.OBID_SPEC_SET != 'gate'
-        run: cargo test --manifest-path tools/obid-spec/Cargo.toml --locked
-
-      - name: Build the suite
-        run: cargo build --manifest-path tools/obid-spec/Cargo.toml --bins --locked
-
-      # Every route and trigger has a workflow and every scenario is classified; the scenarios still
-      # waiting for an assertion are the backlog, reported, never a failure (OBIDSPEC-11).
-      - name: obid-spec coverage --gate
-        run: tools/obid-spec/target/debug/obid-spec coverage --gate
-
-      # Four at a time on the runner's four cores; a failed workflow's folder is kept under TMPDIR.
-      - name: obid-spec run
-        if: env.OBID_SPEC_SET != 'gate'
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: |
-          only=()
-          [ "$OBID_SPEC_SET" = all ] || only=(--tag "$OBID_SPEC_SET")
-          tools/obid-spec/target/debug/obid-spec run --jobs 4 "${only[@]}" --obid "$PWD/core/target/debug/obid"
-
-      # A failed workflow's scratch homes and logs (stand-in agents and test values only), 7 days.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with:
-          name: obid-spec-failed
-          path: ${{ runner.temp }}/obid-spec-*/
-          retention-days: 7
-          if-no-files-found: ignore
-
-  brain:
-    # The Brain's map of obid and the app (tools/brain), read from this commit's code: its tests hold
-    # every route, module, app call, kept choice and rule to the code (CI-56).
-    name: brain
-    needs: plan
-    if: needs.plan.outputs.brain == 'true' && needs.plan.outputs.tests == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: tools/brain
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: tools/brain/package-lock.json
-
-      - name: npm ci
-        run: npm ci
-
-      - name: npm run typecheck
-        run: npm run typecheck
-
-      # Builds the Rust extractor (obid-extract, its own Cargo project) and reads the repository.
-      - name: npm test
-        run: npm test
-
-      - name: The extractor's own tests
-        run: cargo test --manifest-path obid-extract/Cargo.toml --locked
-
-  proofs:
-    # obid's Kani harnesses (docs/proofs.md). Every one is compiled (CI-57); the ones the change
-    # requires by path are proved (CI-58), and nightly and on demand every one (CI-59). Kani is
-    # pinned here and installed from crates.io; its setup fetches its own bundle and nightly, which
-    # it picks itself: the workflow's RUSTUP_TOOLCHAIN is unset for it.
-    name: proofs
-    needs: plan
-    if: needs.plan.outputs.rust == 'true' && needs.plan.outputs.tests == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 340 || 90 }}
-    env:
-      KANI_VERSION: 0.68.0
-      PROOFS: ${{ needs.plan.outputs.proofs }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Rust toolchain
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-
-      - name: Install Kani
-        run: |
-          cargo install --locked kani-verifier --version "$KANI_VERSION"
-          env -u RUSTUP_TOOLCHAIN cargo kani setup
-          env -u RUSTUP_TOOLCHAIN cargo kani --version
-
-      - name: Compile every harness
-        working-directory: core
-        run: env -u RUSTUP_TOOLCHAIN cargo kani -p obid --tests --only-codegen
-
-      - name: Prove what the change requires
-        # Two at a time (four ran the runner out of memory), each within 20 minutes; nightly and
-        # on demand also the harnesses on core/.config/kani-slow.txt, each within 150
-        # (docs/proofs.md).
-        env:
-          KANI_SLOW: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'prove' || '' }}
-          KANI_HARNESS_TIMEOUT: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '150m' || '20m' }}
-        run: scripts/kani-prove.sh "$PROOFS"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
 
   check:
-    # The run's one status: the merge queue requires it (R01-03).
+    # A skipped job passes: its part of the repository didn't change. A failed or cancelled one
+    # fails the run, and so does anything short of success in `changes`, which holds the secret scan.
     name: Check
-    needs: [plan, lint, limits, rust-build, rust-test, control-plane, e2e, electron, tools, obid-spec, brain, proofs]
-    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'full-suite'))
+    needs: [changes, rust, rust-test, electron]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.rust-test.result == 'success' || needs.rust-test.result == 'failure'
-        with:
-          pattern: junit-*
-          path: junit
-
-      # A failed test has <failure> or <error> in its shard's JUnit (its retry failed too); one
-      # that passed on its retry has <flakyFailure> only. Each guard plan named must have run at
-      # least one test, or the run fails: a guard renamed or gone is said, never skipped quietly.
-      - name: The run's result
-        shell: python3 {0}
+      - name: Every job passed or was skipped
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          import json, os, re, sys
-          import xml.etree.ElementTree as ET
-
-          needs = json.loads(os.environ["NEEDS"])
-          plan = needs["plan"]
-          out = plan.get("outputs") or {}
-          lanes = ["rust", "e2e", "electron", "control-plane", "tools", "brain"]
-          reached = [lane for lane in lanes if out.get(lane) == "true"]
-          rust_tests = out.get("rust-tests") or "none"
-          lines = [
-              "## Check",
-              "",
-              f"- Mode: {out.get('mode') or 'unknown: plan gave none'}",
-              f"- Lanes: {', '.join(reached) or 'none'}",
-              f"- Rust tests: {rust_tests}, {out.get('rust-why') or 'plan gave no reason'}",
-              f"- obid-spec: {out.get('obid-spec') or 'none'}",
-          ]
-          if rust_tests != "none":
-              lines.append(f"- Ran: {out.get('rust-selected') or 'unknown'}")
-          lines += [
-              "",
-              "| Job | Result |",
-              "|---|---|",
-          ]
-          lines += [f"| {job} | {need['result']} |" for job, need in needs.items()]
-
-          shards = json.loads(out.get("rust-shards") or "[]")
-          guards = json.loads(out.get("rust-guards") or "[]")
-          count = len(shards)
-          failed, flaky, unreported, ran = {}, [], [], []
-          if needs["rust-test"]["result"] in ("success", "failure"):
-              for shard in shards:
-                  path = f"junit/junit-{shard}/junit.xml"
-                  # One artifact alone is extracted into junit/ itself, not a folder of its name.
-                  if count == 1 and not os.path.exists(path):
-                      path = "junit/junit.xml"
-                  if not os.path.exists(path):
-                      unreported.append(f"{shard}/{count}")
-                      continue
-                  for suite in ET.parse(path).getroot().iter("testsuite"):
-                      for case in suite.iter("testcase"):
-                          ran.append((suite.get("name"), case.get("name")))
-                          name = f"{suite.get('name')} {case.get('name')}"
-                          if case.find("failure") is not None or case.find("error") is not None:
-                              failed.setdefault(shard, []).append(name)
-                          elif case.find("flakyFailure") is not None:
-                              flaky.append(f"{name} (shard {shard}/{count})")
-          silent = []
-          if needs["rust-test"]["result"] in ("success", "failure") and not unreported:
-              lines += ["", f"Rust tests run: {len(ran)}, in {count} shard{'s' if count != 1 else ''}."]
-              for name, suite, pattern in guards:
-                  if not any(s == suite and re.search(pattern, t) for s, t in ran):
-                      silent.append(name)
-          for shard, tests in sorted(failed.items()):
-              lines += ["", f"### Failed: rust-test {shard}/{count}", ""] + [f"- `{t}`" for t in tests]
-          if unreported:
-              lines += ["", f"No JUnit report from rust-test {', '.join(unreported)}: it stopped before its tests ended."]
-          if silent:
-              lines += ["", "### Guards that ran no test", "", "Renamed or gone: change scripts/ci-rust-tests.sh's list with them.", ""] + [f"- `{g}`" for g in silent]
-          if flaky:
-              lines += ["", "### Flaky", "", "Passed only on a retry:", ""] + [f"- `{t}`" for t in flaky]
-
-          # The Brain's map is reported, never a failure (the owner's word, 2026-11-17; CI-56).
-          if needs.get("brain", {}).get("result") == "failure":
-              lines += ["", "The Brain's map is out of date with this change: reported, not a failure. Fix tools/brain in a follow-up."]
-          # The proofs are reported, never a failure too (the owner's word, 2026-11-17).
-          if needs.get("proofs", {}).get("result") == "failure":
-              lines += ["", "A proof failed: reported, not a failure. See the proofs job, and fix it in a follow-up."]
-          reported = ("brain", "proofs")
-          bad = [job for job, need in needs.items() if job not in reported and need["result"] in ("failure", "cancelled")]
-          if plan["result"] != "success":
-              verdict = f"Failed: plan {plan['result']}, so no lane can be trusted."
-          elif bad:
-              verdict = f"Failed: {', '.join(bad)}."
-          elif silent:
-              verdict = f"Failed: the guards {', '.join(silent)} ran no test."
-          else:
-              verdict = "Passed."
-          lines += ["", f"**{verdict}**"]
-
-          text = "\n".join(lines) + "\n"
-          print(text)
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-              summary.write(text)
-          sys.exit(0 if verdict == "Passed." else 1)
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          jq -e '.changes.result == "success" and ([.[].result] | all(. == "success" or . == "skipped"))' <<< "$NEEDS" > /dev/null

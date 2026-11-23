@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf, IMPORT, ASK_TO_FIX, FIX_WORDS } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -253,7 +253,7 @@ describe('signed words', () => {
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const plan = (workspace: unknown, more: Record<string, unknown> = { new: true }) =>
       ({ said: 'Fix the login', folders: ['/Users/me/api'], ...more, workspace });
-    // the shape: "This folder" or "A new worktree", with new only, never one of the words
+    // the shape: this folder, or New worktree checked, with new only, never one of the words
     for (const workspace of ['folder', 'worktree']) {
       expect(wordsOf('POST', '/v1/plans', plan(workspace))).toEqual(['Fix the login']);
       expect(owners('POST', '/v1/plans', plan(workspace), ['Fix the login'], [])).toEqual([0]);
@@ -270,6 +270,64 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan('folder'))).not.toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan('worktree'))).not.toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan('elsewhere'))).toBeNull();
+  });
+
+  it('words_22_the_artifact_open_signs_with_its_words', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const artifact = { id: '3f0c2a1e-1111-4222-8333-944455556666', version: 2 };
+    const plan = (a: unknown, more: Record<string, unknown> = { conversation: 'c1' }) => ({ said: 'Make the heading red', ...more, artifact: a });
+    // the shape: the open artifact's id and version, in a conversation, never one of the words
+    expect(wordsOf('POST', '/v1/plans', plan(artifact))).toEqual(['Make the heading red']);
+    expect(owners('POST', '/v1/plans', plan(artifact), ['Make the heading red'], [])).toEqual([0]);
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/plans', plan(artifact))).not.toBeNull();
+    for (const a of [null, 'x', {}, { id: artifact.id }, { id: 'c1', version: 1 }, { ...artifact, version: 0 }, { ...artifact, version: 1.5 }, { ...artifact, title: 'page' }, { id: artifact.id.toUpperCase(), version: 1 }]) {
+      expect(wordsOf('POST', '/v1/plans', plan(a)), JSON.stringify(a)).toBeNull();
+    }
+    // with new, it isn't a shape the app sends: nothing is signed
+    expect(wordsOf('POST', '/v1/plans', plan(artifact, { new: true }))).toBeNull();
+  });
+
+  it('words_21_an_artifacts_import_signs_its_bytes_as_they_are_by_its_own_import', () => {
+    const bytes = new TextEncoder().encode('<!doctype html><h1>Mine</h1>');
+    expect(IMPORT).toBe('Import');
+    expect(wordsOf('POST', '/v1/artifacts/import', bytes)).toEqual(['Import']);
+    expect(owners('POST', '/v1/artifacts/import', bytes, ['Import'], [])).toEqual([0]);
+    for (const held of ['Save', 'Import as', '<!doctype html><h1>Mine</h1>']) expect(owners('POST', '/v1/artifacts/import', bytes, [held], []), held).toBeNull();
+    for (const body of [new Uint8Array(), { bytes: 'x' }, '<h1>x</h1>', undefined]) expect(wordsOf('POST', '/v1/artifacts/import', body), String(body)).toBeNull();
+    expect(wordsOf('PUT', '/v1/artifacts/import', bytes)).toBeNull();
+    // the signature is over the bytes themselves, as obid hashes them
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const [, signedAt, signature] = wordsHeader(privateKey, 'd1', 'POST', '/v1/artifacts/import', bytes)!.split(' ');
+    const sentence = `oby-words\nPOST\n/v1/artifacts/import\n${createHash('sha256').update(bytes).digest('hex')}\n${signedAt}`;
+    expect(verify('sha256', Buffer.from(sentence), createPublicKey(privateKey), Buffer.from(signature, 'base64'))).toBe(true);
+  });
+
+  it('words_23_an_artifacts_edit_signs_by_its_own_save_as_label', () => {
+    const path = '/v1/artifacts/3f0c2a1e-1111-4222-8333-944455556666/versions';
+    const edit = { base: 2, files: { 'style.css': 'h1 { color: crimson }' } };
+    expect(saveAs(2)).toBe('Save as v3');
+    expect(wordsOf('POST', path, edit)).toEqual(['Save as v3']);
+    expect(owners('POST', path, edit, ['Save as v3'], [])).toEqual([0]);
+    // another button's click can't stand for it, nor the text typed in the editor
+    for (const held of ['Save', 'Save as v2', 'h1 { color: crimson }']) expect(owners('POST', path, edit, [held], []), held).toBeNull();
+    for (const body of [{}, { base: 2 }, { files: edit.files }, { base: 0, files: edit.files }, { base: 1.5, files: edit.files }, { base: 2, files: {} }, { base: 2, files: { 'a.css': 1 } }, { ...edit, title: 'x' }, { base: 2, files: ['a'] }]) {
+      expect(wordsOf('POST', path, body), JSON.stringify(body)).toBeNull();
+    }
+    expect(wordsOf('POST', '/v1/artifacts/c1/versions', edit)).toBeNull();
+    expect(wordsOf('PUT', path, edit)).toBeNull();
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    expect(wordsHeader(privateKey, 'd1', 'POST', path, edit)).not.toBeNull();
+  });
+
+  it('words_24_ask_to_fix_signs_its_own_words_by_its_own_label', () => {
+    expect([ASK_TO_FIX, FIX_WORDS]).toEqual(['Ask to fix', 'The preview shows an error, in the attached file. Fix the artifact so it draws.']);
+    const body = { said: FIX_WORDS, conversation: 'c1', id: 't1', artifact: { id: '3f0c2a1e-1111-4222-8333-944455556666', version: 2 }, attachments: ['uploads/preview-error.txt'] };
+    expect(owners('POST', '/v1/plans', body, ['Ask to fix'], [])).toEqual([0]);
+    // another button can't stand for it, nor it for other words, another request or an answer
+    expect(owners('POST', '/v1/plans', body, ['Try again'], [])).toBeNull();
+    expect(owners('POST', '/v1/plans', { ...body, said: 'something else' }, ['Ask to fix'], [])).toBeNull();
+    expect(owners('POST', '/v1/jobs/x/messages', { text: FIX_WORDS }, ['Ask to fix'], [])).toBeNull();
+    expect(owners('POST', '/v1/plans', { said: 'Which one?', answer: { question: 'Which one?', option: FIX_WORDS }, conversation: 'c1', id: 't2' }, ['Ask to fix'], ['Which one?'])).toBeNull();
   });
 
   it('words_17_the_vault_signs_a_put_by_add_secret_and_a_bodiless_delete_by_remove_secret', () => {
@@ -295,6 +353,43 @@ describe('signed words', () => {
     const sentence = `oby-words\nDELETE\n${path}\n${empty}\n${signedAt}`;
     expect(verify('sha256', Buffer.from(sentence), createPublicKey(privateKey), Buffer.from(signature, 'base64'))).toBe(true);
     expect(wordsHeader(privateKey, 'd1', 'DELETE', path, {})).toBeNull();
+  });
+
+  it('COMPUTERSAPP-6: a computer added with a code signs exactly {link, code} by the code the owner typed', () => {
+    const link = 'oby-computer:eyJuYW1lIjoiZGV2Ym94In0', body = { link, code: '482913' };
+    expect(wordsOf('POST', '/v1/computers', body)).toEqual(['482913']);
+    // Enter in its box holds the box as typed, the other computer's way ("482 913"); a click on Add
+    // computer holds its form's boxes too: either stands for it
+    expect(owners('POST', '/v1/computers', body, ['482 913'], [])).toEqual([0]);
+    expect(owners('POST', '/v1/computers', body, ['Add computer', link, '482913'], [])).toEqual([2]);
+    // the button alone, or another code, is no word of the owner's for it
+    expect(owners('POST', '/v1/computers', body, ['Add computer'], [])).toBeNull();
+    expect(owners('POST', '/v1/computers', body, ['482 914'], [])).toBeNull();
+    // only that shape: six digits, the link, nothing else; never another verb or path
+    for (const b of [{ link }, { code: '482913' }, { link, code: '48291' }, { link, code: '482 913' }, { link, code: '482913', ssh: 'devbox' }, { link: 1, code: '482913' }]) {
+      expect(wordsOf('POST', '/v1/computers', b)).toBeNull();
+    }
+    expect(wordsOf('PUT', '/v1/computers', body)).toBeNull();
+    expect(wordsOf('POST', '/v1/computers/link', { link })).toBeNull();
+    // a code stands for nothing else: a message with those digits needs its own words
+    expect(owners('POST', '/v1/jobs/j1/messages', { text: '482913' }, ['482 913'], [])).toBeNull();
+  });
+
+  it('COMPUTERSAPP-11: a computer’s removal signs with no body, by Remove computer alone, never a bare Remove', () => {
+    const path = '/v1/computers/studio';
+    expect(REMOVE_COMPUTER).toBe('Remove computer');
+    expect(wordsOf('DELETE', path, undefined)).toEqual([REMOVE_COMPUTER]);
+    expect(owners('DELETE', path, undefined, ['Remove computer'], [])).toEqual([0]);
+    // a click on any other Remove (an account's, a rule's), or the vault's, can't stand for it
+    for (const other of ['Remove', 'Remove Secret', 'Remove…']) expect(owners('DELETE', path, undefined, [other], [])).toBeNull();
+    // and its label signs no other removal
+    expect(owners('DELETE', '/v1/obid/vault/staging-key', undefined, ['Remove computer'], [])).toBeNull();
+    // only with no body; never the list, the switch, or another verb on it
+    for (const body of [{}, { id: 'studio' }, null, '']) expect(wordsOf('DELETE', path, body)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers', undefined)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers/current', undefined)).toBeNull();
+    expect(wordsOf('DELETE', '/v1/computers/studio/retry', undefined)).toBeNull();
+    expect(wordsOf('PATCH', path, { name: 'Remove computer' })).toBeNull();
   });
 
   it('WORDS-7: main signs once per real keystroke or click it saw, and only right after it', () => {

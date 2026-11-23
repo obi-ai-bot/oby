@@ -1,0 +1,361 @@
+{
+  "schemaVersion": "2",
+  "name": "CHATGPT-11: every token is taken out of a /v1 answer, also after a restart, and out of a model's words",
+  "version": "1.0.0",
+  "description": "An answer that repeats what it was given (an account's payer) shows the vault's name, never the login's access or refresh token, before and after a restart; a model's words holding the access token reach the job with it taken out.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/accounts"
+    }
+  },
+  "steps": [
+    {
+      "id": "openai",
+      "use": "runtime.rust:accounts.openai",
+      "inputs": {}
+    },
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex"
+        },
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "a-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/accounts/${state.a.body.id}/sign-in?with=chatgpt",
+        "within": 10,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "url": {
+              "$contains": "/api/accounts/authorize"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a-consent",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-page.body.url}",
+        "expect": {
+          "status": 302
+        }
+      }
+    },
+    {
+      "id": "a-back",
+      "use": "runtime.rust:accounts.visit",
+      "inputs": {
+        "url": "${state.a-consent.location}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "a-settled",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/status",
+        "within": 15,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "accounts": {
+              "$any": {
+                "id": "${state.a.body.id}",
+                "signingIn": {
+                  "$exists": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "t",
+      "use": "runtime.rust:accounts.openai-saw",
+      "inputs": {
+        "openai": "${state.openai}",
+        "expect": {
+          "paths": {
+            "tokens": {
+              "$len": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "chatgpt-11-the-access-token-scrubbed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.t.firstAccess}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$not": {
+              "$contains": "${state.t.firstAccess}"
+            }
+          },
+          "paths": {
+            "payer": {
+              "$contains": "[vault: oby.chatgpt."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-11-the-refresh-token-scrubbed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.t.lastRefresh}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$not": {
+              "$contains": "${state.t.lastRefresh}"
+            }
+          },
+          "paths": {
+            "payer": {
+              "$contains": "[vault: oby.chatgpt."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "down",
+      "use": "runtime.rust:obid-stop",
+      "inputs": {
+        "obid": "${state.o}"
+      }
+    },
+    {
+      "id": "o2",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs",
+        "env": {
+          "OBID_TEST_CHATGPT_ORIGIN": "${state.openai.origin}"
+        }
+      }
+    },
+    {
+      "id": "chatgpt-11-the-access-token-after-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.t.firstAccess}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$not": {
+              "$contains": "${state.t.firstAccess}"
+            }
+          },
+          "paths": {
+            "payer": {
+              "$contains": "[vault: oby.chatgpt."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-11-the-refresh-token-after-a-restart",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "POST",
+        "path": "/v1/accounts",
+        "body": {
+          "agent": "codex",
+          "payer": "${state.t.lastRefresh}"
+        },
+        "expect": {
+          "status": 201,
+          "text": {
+            "$not": {
+              "$contains": "${state.t.lastRefresh}"
+            }
+          },
+          "paths": {
+            "payer": {
+              "$contains": "[vault: oby.chatgpt."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "words",
+      "use": "runtime.rust:accounts.openai-set",
+      "inputs": {
+        "openai": "${state.openai}",
+        "responses": [
+          {
+            "said": "the token is ${state.t.firstAccess} there"
+          }
+        ]
+      }
+    },
+    {
+      "id": "device2",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o2}"
+      }
+    },
+    {
+      "id": "j",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+          "job": {
+            "repo": "obi-e2e/fixture-app",
+            "kind": "research",
+            "check": "true",
+            "agent": "codex",
+            "account": "${state.a.body.id}",
+            "task": "RELAY"
+          }
+        },
+        "as": "device",
+        "device": "${state.device2}",
+        "within": 10,
+        "expect": {
+          "status": 201
+        }
+      }
+    },
+    {
+      "id": "chatgpt-11-a-models-words-scrubbed",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "within": 180,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "status": "done",
+            "summary": {
+              "$contains": "[vault: oby.chatgpt."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    },
+    {
+      "id": "chatgpt-11-nowhere-in-the-job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o2}",
+        "method": "GET",
+        "path": "/v1/jobs/${state.j.body.id}",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "${state.t.firstAccess}"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "CHATGPT-11"
+        ]
+      }
+    }
+  ]
+}

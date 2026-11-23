@@ -38,8 +38,13 @@ use crate::store::{make_private_dir, write_private};
 
 mod blobs;
 mod design;
+pub mod edit;
+pub mod export;
 mod limits;
+pub mod seed;
 mod view;
+
+pub use export::Origin;
 
 pub use limits::{MAX_BYTES, MAX_ENTRIES, MAX_FILES, MAX_JOB_BYTES};
 
@@ -111,6 +116,10 @@ pub struct Artifact {
     pub created: String,
     /// Oldest first.
     pub versions: Vec<Version>,
+    /// How it came to be when no agent made it: `{"kind": "import", "from": …}`. Left out for an
+    /// agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,6 +135,50 @@ pub struct Version {
     /// The job that published it, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
+    /// `owner` when the owner's own edit made it (ARTIFACTS-16, [`edit`]); none for an agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// What could have shaped its text from outside, fixed as it was made (ARTIFACTS-25): none
+    /// for a version kept before obid recorded it, which counts as someone else's
+    /// ([`seed::carried`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marks: Option<Marks>,
+}
+
+/// The marks a version's maker had as it made it (ARTIFACTS-24, 25), as `crate::jobs::Jobs::mark`
+/// takes them: `foreign`, someone else's text (an untrusted or foreign job, Oby's turn after it
+/// read something untrusted or off obid's allowlist, an import); `reached`, a job that reached
+/// past the package registries; `unproxied`, a job that ran with no egress proxy. All none: the
+/// owner's own work, run behind obid's proxy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Marks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reached: Option<String>,
+    /// Its job ran with no egress proxy of obid's (LANE-3a, `Job::ran_unproxied`): a job it
+    /// reaches gets none of the declared secrets for its check, and is marked nothing else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unproxied: bool,
+}
+
+impl Marks {
+    pub fn is_empty(&self) -> bool {
+        !self.taints() && !self.unproxied
+    }
+
+    /// Whether what it carries is someone else's text or a reach past the registries, which
+    /// makes a turn it reaches one that read something untrusted; an unproxied run alone doesn't.
+    pub fn taints(&self) -> bool {
+        self.foreign.is_some() || self.reached.is_some()
+    }
+
+    /// Takes in what `other` carries: the first reason of each kind is kept.
+    pub fn join(&mut self, other: Marks) {
+        self.foreign = self.foreign.take().or(other.foreign);
+        self.reached = self.reached.take().or(other.reached);
+        self.unproxied |= other.unproxied;
+    }
 }
 
 impl Artifact {
@@ -152,6 +205,18 @@ pub struct Publish<'a> {
     /// files as that version make no new one, whatever version came after it, so a job publishing
     /// its `.obi/artifacts/` again never lays its files over its conversation's (ARTIFACTS-7).
     pub kept: Option<u32>,
+    /// What its maker carries (ARTIFACTS-25), kept on the version it makes.
+    pub marks: Marks,
+}
+
+/// Who made a version, past what [`Publish`] says: the owner's edit, the uploads its files
+/// already hold (a design's, kept under `assets/` by the version it was made from), and, for a
+/// new artifact no agent made, how it came to be (an import, crate::artifacts::export).
+#[derive(Default)]
+struct Made {
+    by: Option<&'static str>,
+    blobs: Option<BTreeMap<String, String>>,
+    origin: Option<Origin>,
 }
 
 /// Every artifact obid keeps.
@@ -196,14 +261,27 @@ impl Artifacts {
     /// artifact's latest version, that version is the answer and nothing new is kept. `Err` is
     /// one line saying why nothing was published.
     pub async fn publish(&self, what: Publish<'_>) -> Result<(String, u32), String> {
-        match self.publish_unsaid(what).await {
+        self.publish_from(what, None).await
+    }
+
+    /// [`Artifacts::publish`], a new artifact keeping `origin` (an import, crate::artifacts::export).
+    async fn publish_from(
+        &self,
+        what: Publish<'_>,
+        origin: Option<Origin>,
+    ) -> Result<(String, u32), String> {
+        let made = Made {
+            origin,
+            ..Made::default()
+        };
+        match self.publish_unsaid(what, made).await {
             Ok(made) => Ok(made),
             // A refusal may name what it refused: never a name that looks like a secret.
             Err(why) => Err(self.speakable(why).await),
         }
     }
 
-    async fn publish_unsaid(&self, what: Publish<'_>) -> Result<(String, u32), String> {
+    async fn publish_unsaid(&self, what: Publish<'_>, made: Made) -> Result<(String, u32), String> {
         let title = clean_title(what.title)
             .ok_or("Not published: the title is one line of 1 to 100 characters.")?;
         let before = match what.artifact {
@@ -237,7 +315,9 @@ impl Artifacts {
                 .await
                 .map_err(|e| format!("Not published: the copy stopped ({e})."))?
         };
-        let result = self.finish(&what, &title, before, &staging, copied).await;
+        let result = self
+            .finish(&what, &title, before, &staging, copied, made)
+            .await;
         let _ = std::fs::remove_dir_all(&staging);
         result
     }
@@ -249,6 +329,7 @@ impl Artifacts {
         before: Option<Artifact>,
         staging: &Path,
         copied: Result<Copied, String>,
+        made: Made,
     ) -> Result<(String, u32), String> {
         let mut copied = copied.map_err(|why| format!("Not published: {why}"))?;
         let kind = check_kind(
@@ -257,7 +338,9 @@ impl Artifacts {
             what.kind.or(before.as_ref().map(|a| a.kind)),
         )
         .map_err(|why| format!("Not published: {why}"))?;
-        let blobs = if kind == Kind::Design {
+        let blobs = if let Some(kept) = made.blobs {
+            kept
+        } else if kind == Kind::Design {
             blobs::ingest(staging, &mut copied.files)
                 .map_err(|why| format!("Not published: {why}"))?
         } else {
@@ -313,6 +396,7 @@ impl Artifacts {
                 job: what.job.map(str::to_owned),
                 created: now.clone(),
                 versions: Vec::new(),
+                origin: made.origin,
             },
         };
         if artifact.versions.len() >= MAX_VERSIONS as usize {
@@ -354,6 +438,8 @@ impl Artifacts {
             bytes: copied.bytes,
             blobs,
             job: what.job.map(str::to_owned),
+            by: made.by.map(str::to_owned),
+            marks: Some(what.marks.clone()),
         });
         self.save(&artifact)
             .map_err(|e| format!("Not published: obid couldn't keep it ({e})."))?;
@@ -499,6 +585,28 @@ impl Artifacts {
         Ok(Some(artifact))
     }
 
+    /// Gives `id` the conversation `to`, only while it still has `had` (none, or one that's gone):
+    /// words said while it was open are in `to` from now on (ARTIFACTS-12, TASKCONV-4's rule), and
+    /// any of `to`'s jobs may version it. Says so (`artifact` with `joined`). The artifact as it is
+    /// now, whether it took `to` or kept another; none when there's no such one.
+    pub fn join(&self, id: &str, had: Option<&str>, to: &str) -> std::io::Result<Option<Artifact>> {
+        let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut artifact) = self.get(id) else {
+            return Ok(None);
+        };
+        if artifact.conversation.as_deref() != had {
+            return Ok(Some(artifact));
+        }
+        artifact.conversation = Some(to.to_owned());
+        self.save(&artifact)?;
+        self.events.send(
+            "artifact",
+            json!({"id": artifact.id, "joined": true, "title": artifact.title,
+                   "kind": artifact.kind, "conversation": artifact.conversation, "job": artifact.job}),
+        );
+        Ok(Some(artifact))
+    }
+
     /// Deletes it with every version: whether it was there.
     pub fn delete(&self, id: &str) -> std::io::Result<bool> {
         let _held = self.lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -631,18 +739,18 @@ fn check_kind(copied: &Copied, staging: &Path, wanted: Option<Kind>) -> Result<K
             };
             canvas = Some(value);
             kind
-        } else if has("index.html") {
+        } else if has("index.html") || has("App.tsx") || has("App.jsx") {
             Kind::Html
         } else {
             return Err(
-                "a folder is an html artifact with an index.html, or a canvas or a design with a canvas.json."
+                "a folder is an html artifact with an index.html or an App.tsx/App.jsx, or a canvas or a design with a canvas.json."
                     .into(),
             );
         }
     } else {
         let name = copied.files.first().map_or("", String::as_str);
         match extension(name).as_str() {
-            "html" => Kind::Html,
+            "html" | "tsx" | "jsx" => Kind::Html,
             "md" | "markdown" => Kind::Markdown,
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => Kind::Image,
             "pdf" => Kind::Pdf,
@@ -729,11 +837,12 @@ fn copy(root: &Path, path: &str, to: &Path) -> Result<Copied, String> {
         copied.folder = true;
         copy_folder(entry, &shown, to, "", 0, &mut copied)?;
     } else if meta.is_file() {
-        // A single page is its folder's index.html.
-        let name = if extension(last) == "html" || extension(last) == "htm" {
-            "index.html"
-        } else {
-            last
+        // A single page is its folder's index.html, a single React file its App.tsx/App.jsx.
+        let name = match extension(last).as_str() {
+            "html" | "htm" => "index.html",
+            "tsx" => "App.tsx",
+            "jsx" => "App.jsx",
+            _ => last,
         };
         copy_file(entry, &to.join(name), name, &mut copied)?;
         copied.files.push(name.to_owned());
@@ -935,7 +1044,7 @@ pub async fn list(State(shared): State<Arc<Shared>>, Query(filter): Query<Filter
     axum::Json(json!(all)).into_response()
 }
 
-fn no_artifact() -> ApiError {
+pub(crate) fn no_artifact() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "There's no such artifact.")
 }
 
@@ -1172,6 +1281,7 @@ mod tests {
             job: None,
             artifact: None,
             kept: None,
+            marks: Marks::default(),
         }
     }
 

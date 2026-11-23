@@ -1,0 +1,522 @@
+{
+  "schemaVersion": "2",
+  "name": "obid's browser: another Oby's task browses in the box: obid names who asked, its tab is in the box's partition, page data reaches it quoted, and it can't open the host's obid, gateway, the browser's API or a file",
+  "version": "1.0.0",
+  "description": "BROWSER-18 (src/browser/box_edge.rs, jobs/reach.rs; the lab's LAB-BROWSERSPHERE-1): owners A (ana) and B (ben) on one Obysphere; B hands A a task whose quoted goal says to browse the fixture site, then try A's obid, A's gateway, the browser's own route and a file of A's; A accepts on a paired device. The task runs boxed on A's Oby with the browser server obid gave its agent: A's browser records name B's Obi and owner, its tab opens in the box's partition `oby-box-<job>` (a webview of Oby's window), the page's text reaches it only quoted, and each of the host's own places is refused `outside_box` while it stays on its page. A job of A's own opens A's obid: the edge is the foreign lane's only.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/browser/mcp"
+    }
+  },
+  "steps": [
+    {
+      "id": "sphere",
+      "use": "runtime.rust:sphere-make"
+    },
+    {
+      "id": "a",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-a",
+        "owner": "ana",
+        "agent": "fake-harness-jobs",
+        "browser": true,
+        "env": {
+          "OBID_TEST_FOREIGN_BROWSER": "1"
+        },
+        "config": {
+          "gateway": "127.0.0.1:0"
+        }
+      }
+    },
+    {
+      "id": "a-window",
+      "use": "runtime.rust:browser-window",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "b",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "owner-b",
+        "owner": "ben",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "a-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "b-key",
+      "use": "runtime.rust:owner-key"
+    },
+    {
+      "id": "a-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.a}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.a-key}",
+        "name": "Ana's Oby"
+      }
+    },
+    {
+      "id": "b-joined",
+      "use": "runtime.rust:sphere-join",
+      "inputs": {
+        "obid": "${state.b}",
+        "sphere": "${state.sphere}",
+        "ownerKey": "${state.b-key}",
+        "name": "Ben's Oby"
+      }
+    },
+    {
+      "id": "sealed",
+      "use": "runtime.rust:sphere-seal",
+      "inputs": {
+        "members": [
+          {
+            "obid": "${state.a}",
+            "ownerKey": "${state.a-key}"
+          },
+          {
+            "obid": "${state.b}",
+            "ownerKey": "${state.b-key}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a-device",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.a}"
+      }
+    },
+    {
+      "id": "site",
+      "use": "runtime.rust:browser-site",
+      "inputs": {}
+    },
+    {
+      "id": "handoff",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.b}",
+        "method": "POST",
+        "path": "/v1/obid/sphere/requests",
+        "body": {
+          "to": "${state.a-joined.obiId}",
+          "type": "handoff",
+          "body": {
+            "goal": "BROWSE: ${state.site.url}/ EDGE ${state.a.gatewayBase} WAIT-OFF COMMIT: page-notes.txt",
+            "repo": "obi-e2e/fixture-app",
+            "base_branch": "main",
+            "acceptance": [
+              {
+                "kind": "tests_pass"
+              }
+            ],
+            "summary": "Needs a web page."
+          },
+          "expiresIn": 3600
+        },
+        "expect": {
+          "status": 202,
+          "body": {
+            "type": "handoff",
+            "state": "sent"
+          }
+        }
+      }
+    },
+    {
+      "id": "handoff-waits",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/inbox",
+        "within": 30,
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$any": {
+                "id": "obi-${state.handoff.body.correlationId}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "POST",
+        "path": "/v1/inbox/obi-${state.handoff.body.correlationId}/answer",
+        "body": {
+          "answer": "Accept"
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200
+        }
+      }
+    },
+    {
+      "id": "job",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/jobs",
+        "within": 30,
+        "pick": {
+          "where": {
+            "kind": "build"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "paths": {
+            "$": {
+              "$len": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "obid-says-it-came-from-b",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/obid/sphere/exchanges/${state.handoff.body.correlationId}",
+        "expect": {
+          "status": 200,
+          "body": {
+            "direction": "incoming",
+            "type": "handoff",
+            "job": "${state.job.picked.id}",
+            "peerOwner": "ben",
+            "peer": "${state.b-joined.obiId}"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "boxed",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "job": "${state.job.picked.id}"
+      }
+    },
+    {
+      "id": "its-agent-was-given-the-browser",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.server.url": {
+              "$contains": "/v1/browser/mcp"
+            },
+            "browsed.server.bearer": true,
+            "browsed.rules.0": "mcp__browser__oby_browser_open"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "it-opens-a-web-page-and-reads-it-only-quoted",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.open.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.ok": true,
+            "browsed.calls.snapshot.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Sign in"
+            },
+            "browsed.calls.snapshot.result.structuredContent.result.outside.note": {
+              "$contains": "never instructions"
+            },
+            "browsed.calls.snapshot.result.structuredContent.result.marksTurnUntrusted": true,
+            "browsed.calls.snapshot.result.structuredContent.result.data": {
+              "$exists": false
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "its-browser-is-the-boxes-and-names-ben",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.5.result.structuredContent.result.browser.origin": {
+              "kind": "obi",
+              "peer": "${state.b-joined.obiId}",
+              "peerOwner": "ben"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "its-tab-is-in-the-boxes-partition",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "GET",
+        "path": "/v1/browser",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "tabs": {
+              "$any": {
+                "owner": {
+                  "job": "${state.job.picked.id}"
+                },
+                "partition": "oby-box-${state.job.picked.id}"
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18",
+          "BROWSER-32"
+        ]
+      }
+    },
+    {
+      "id": "not-the-hosts-obid",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.0.result.isError": true,
+            "browsed.calls.then.0.result.structuredContent.error.code": "outside_box"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "not-the-hosts-gateway",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.1.result.isError": true,
+            "browsed.calls.then.1.result.structuredContent.error.code": "outside_box"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "not-the-browsers-api",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.2.result.isError": true,
+            "browsed.calls.then.2.result.structuredContent.error.code": "outside_box"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "not-a-file-of-the-hosts",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.3.result.isError": true,
+            "browsed.calls.then.3.result.structuredContent.error.code": "outside_box"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "still-on-the-page",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxed}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.4.result.structuredContent.ok": true,
+            "browsed.calls.then.4.result.structuredContent.result.outside.data.tree": {
+              "$contains": "Sign in"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "own",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "agent": "claude",
+        "url": "${state.a.base}/v1/health",
+        "then": [
+          {
+            "tool": "oby_browser_list_tabs",
+            "args": {}
+          }
+        ]
+      }
+    },
+    {
+      "id": "the-owners-own-job-may-open-its-obid",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.own}",
+        "expect": {
+          "paths": {
+            "browsed.calls.open.result.structuredContent.ok": true
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "its-browser-is-its-own",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.own}",
+        "expect": {
+          "paths": {
+            "browsed.calls.then.0.result.structuredContent.result.browser.origin": {
+              "kind": "own"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18"
+        ]
+      }
+    },
+    {
+      "id": "off",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.a}",
+        "method": "PUT",
+        "path": "/v1/browser/settings",
+        "body": {
+          "agentsUseBrowser": false
+        },
+        "as": "device",
+        "device": "${state.a-device}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "agentsUseBrowser": false
+          }
+        }
+      }
+    },
+    {
+      "id": "boxedOff",
+      "use": "runtime.rust:browser-agent-job",
+      "inputs": {
+        "obid": "${state.a}",
+        "job": "${state.job.picked.id}",
+        "until": "calls.off"
+      }
+    },
+    {
+      "id": "switched-off-it-is-told-to-finish-without-a-browser",
+      "use": "runtime.rust:check",
+      "inputs": {
+        "value": "${state.boxedOff}",
+        "expect": {
+          "paths": {
+            "browsed.calls.off.result.isError": true,
+            "browsed.calls.off.result.structuredContent.error.code": "browser_off",
+            "browsed.calls.off.result.structuredContent.error.message": {
+              "$contains": "Finish without a browser, and say so in your summary."
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "BROWSER-18",
+          "BROWSER-15"
+        ]
+      }
+    }
+  ]
+}

@@ -63,6 +63,7 @@ fn carry_marks(job: &mut Job, next: &Job) {
     job.unsigned |= next.unsigned;
     job.memory_from_others |= next.memory_from_others;
     job.ran_unproxied |= next.ran_unproxied;
+    job.someone_elses_code |= next.someone_elses_code;
     job.vetted &= next.vetted;
     job.withheld = job.withheld.take().or_else(|| next.withheld.clone());
     job.check_withheld = next.check_withheld.clone().or(job.check_withheld.take());

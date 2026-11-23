@@ -1,0 +1,396 @@
+{
+  "schemaVersion": "2",
+  "name": "POST /v1/artifacts/import: the owner's signed import is a design of theirs, a zip with a link, a path out or too much is refused whole",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-11 and WORDS-21 (lab: LAB-ARTIFACTS-1 and 19, workflows/lab/artifacts/design.json and signed.json). The lab's own Claude Design project zip (canvas.json v3, three boards, a design system, fonts, video, three uploads, one whose id looks like a token) is refused unsigned and signed over other bytes, keeping nothing; signed by a paired device over its exact bytes it is a design with no conversation and no job, origin the import, titled from its canvas.json, its uploads under assets/. A page and a document import too. Zips with a link, `..`, an absolute path, an SVG one byte over its limit or 513 files are each refused whole saying which, and nothing of them is kept.",
+  "trigger": {
+    "http": {
+      "method": "POST",
+      "path": "/v1/artifacts/import"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "d1",
+      "use": "runtime.rust:device-pair",
+      "inputs": {
+        "obid": "${state.o}",
+        "name": "d1"
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "name": "claude-design",
+        "zip": true,
+        "expect": {
+          "paths": {
+            "zip": {
+              "$type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "no-token-401",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/artifacts/import",
+        "as": "none",
+        "expect": {
+          "status": 401
+        }
+      }
+    },
+    {
+      "id": "11-unsigned-refused",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.fx.zip}",
+        "as": "unsigned",
+        "expect": {
+          "paths": {
+            "status": 403
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11",
+          "WORDS-21"
+        ]
+      }
+    },
+    {
+      "id": "11-signed-over-other-bytes-refused",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.fx.zip}",
+        "as": "other-bytes",
+        "expect": {
+          "paths": {
+            "status": 403
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11",
+          "WORDS-21"
+        ]
+      }
+    },
+    {
+      "id": "11-nothing-kept-unsigned",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 0
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11",
+          "WORDS-21"
+        ]
+      }
+    },
+    {
+      "id": "11-imported-as-the-owners-design",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.fx.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.kind": "design",
+            "body.title": "Lab design",
+            "body.origin": {
+              "kind": "import",
+              "from": "claude-design-zip"
+            },
+            "body.conversation": null,
+            "body.job": null,
+            "body.versions.0.blobs.Kq7Zt2mW9xR4vB8nL3pF6hJ1sD5gA0cYeU7iO2wT": {
+              "$matches": "^assets/[0-9a-f]{16}\\.png$"
+            },
+            "body.versions.0.blobs.font-7c1e": "assets/font-7c1e.woff2",
+            "body.versions.0.files": {
+              "$contains": "canvas.json"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11",
+          "WORDS-21"
+        ]
+      }
+    },
+    {
+      "id": "pg",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "name": "page"
+      }
+    },
+    {
+      "id": "11-a-page-imports",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.pg.path}/index.html",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.kind": "html",
+            "body.title": "Imported",
+            "body.origin": {
+              "kind": "import",
+              "from": "page"
+            },
+            "body.versions.0.files": [
+              "index.html"
+            ]
+          }
+        },
+        "contentType": "text/html"
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    },
+    {
+      "id": "doc",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "name": "document"
+      }
+    },
+    {
+      "id": "11-a-document-imports",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.doc.path}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 200,
+            "body.kind": "markdown",
+            "body.origin": {
+              "kind": "import",
+              "from": "document"
+            },
+            "body.versions.0.files": [
+              "document.md"
+            ]
+          }
+        },
+        "contentType": "text/markdown"
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    },
+    {
+      "id": "zip-link",
+      "use": "runtime.rust:artifacts-zip",
+      "inputs": {
+        "kind": "link"
+      }
+    },
+    {
+      "id": "11-a-zip-link-refused",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.zip-link.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 400,
+            "body.reason": "bad_import",
+            "body.error": "Not published: \"away\" is a link, which obid never follows."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    },
+    {
+      "id": "zip-dotdot",
+      "use": "runtime.rust:artifacts-zip",
+      "inputs": {
+        "kind": "dotdot"
+      }
+    },
+    {
+      "id": "11-a-zip-dotdot-refused",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.zip-dotdot.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 400,
+            "body.reason": "bad_import",
+            "body.error": "Not published: \"../escape.html\" isn't a plain path inside the zip."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    },
+    {
+      "id": "zip-absolute",
+      "use": "runtime.rust:artifacts-zip",
+      "inputs": {
+        "kind": "absolute"
+      }
+    },
+    {
+      "id": "11-a-zip-absolute-refused",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.zip-absolute.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 400,
+            "body.reason": "bad_import",
+            "body.error": "Not published: \"/etc/escape.html\" isn't a plain path inside the zip."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    },
+    {
+      "id": "zip-oversize",
+      "use": "runtime.rust:artifacts-zip",
+      "inputs": {
+        "kind": "oversize"
+      }
+    },
+    {
+      "id": "11-a-zip-oversize-refused",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.zip-oversize.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 400,
+            "body.reason": "bad_import",
+            "body.error": "Not published: big.svg is 2 MB and 1 byte, and an SVG may be 2 MB at most."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    },
+    {
+      "id": "zip-many",
+      "use": "runtime.rust:artifacts-zip",
+      "inputs": {
+        "kind": "many"
+      }
+    },
+    {
+      "id": "11-a-zip-many-refused",
+      "use": "runtime.rust:artifacts-import",
+      "inputs": {
+        "obid": "${state.o}",
+        "device": "${state.d1}",
+        "file": "${state.zip-many.zip}",
+        "as": "device",
+        "expect": {
+          "paths": {
+            "status": 400,
+            "body.reason": "bad_import",
+            "body.error": "Not published: a version holds at most 512 files, and this holds 513."
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    },
+    {
+      "id": "11-nothing-refused-was-kept",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts",
+        "expect": {
+          "status": 200,
+          "body": {
+            "$len": 3
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-11"
+        ]
+      }
+    }
+  ]
+}

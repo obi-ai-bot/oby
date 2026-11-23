@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { BookOpen, Check, Mail, UserPlus, ChevronDown, ChevronRight, EllipsisVertical, Folder, FolderPlus, Plus, Search, type LucideIcon } from 'lucide-react';
+import { BookOpen, Check, Mail, UserPlus, ChevronDown, ChevronRight, EllipsisVertical, Folder, FolderPlus, Frame, Plus, Search, type LucideIcon } from 'lucide-react';
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
 import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
@@ -27,7 +27,8 @@ import { ACTIONS, RESTART, pickGroups, tasksMatching, useObidSearch } from './se
 import { ariaKeys, composing, JUMPS, registerCommands, shortcutLabel, withShortcut } from './shortcuts';
 import { adjacent, panelOrder, pinnedFirst, projectGroups as groupsOf } from './panelOrder';
 import SearchMore from './SearchMore';
-import { say, useLive, useWaitingCount } from './live';
+import { realId, say, useLive, useWaitingCount } from './live';
+import { kindName, openArtifact, useArtifactsByConversation, useNewArtifacts, useOpenArtifact } from './artifacts/store';
 import { has } from '../../shared/capabilities';
 import { loadProfiles, openProfile, profileChats, useProfiles } from './profiles';
 import type { Profile } from './obid';
@@ -35,7 +36,7 @@ import ProfileMenu, { EditProfileModal, NewProfileModal } from './ProfileMenu';
 import { useProjects, useProjectsOn } from './projects';
 import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
-import { kidLine, kidTitle, kidsLine, kidsOf } from './nested';
+import { keepKids, keptKids, kidLine, kidTitle, kidsLine, kidsOf, onRevealKids } from './nested';
 
 import { AGENTS_SHOWN } from './panelFlags';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
@@ -82,7 +83,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   atHome: boolean;  // on Home's own page, nothing open over it
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
-  onOpenAgent?: (id: string) => void;  // a nested task: the conversation that started it, at its card (LIVETASK-28)
+  onOpenAgent?: (id: string) => void;  // a nested task: its own thread, over the conversation that started it (LIVETASK-22)
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
@@ -122,6 +123,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     t.addEventListener('pointercancel', up);
   };
   const tasks = useTasks();
+  // every artifact, by its conversation, each a row under it (ARTIFACTSAPP-17): one read for the panel
+  const artifactsBy = useArtifactsByConversation(), newArtifacts = useNewArtifacts(), openArt = useOpenArtifact();
   const convos = useConvos();
   // the open profile's (profiles.ts): on the mock its own conversations, on obid all of them
   const profiles = useProfiles();
@@ -331,14 +334,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // A conversation's tasks, nested under its row (LIVETASK-19 to 21): shown for the open conversation,
   // the one holding the open task and one whose task needs you, unless the owner folded it; what the
   // owner chose is kept (oby.kidsShown: conversation id to shown or not)
-  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(() => {
-    try { const kept: unknown = JSON.parse(localStorage.getItem('oby.kidsShown') ?? '{}'); return kept && typeof kept === 'object' && !Array.isArray(kept) ? Object.fromEntries(Object.entries(kept).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean> : {}; } catch { return {}; }
-  });
+  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(keptKids);
   const showKids = (id: string, shown: boolean) => {
     const next = { ...kidsShown, [id]: shown };
     setKidsShown(next);
-    try { localStorage.setItem('oby.kidsShown', JSON.stringify(next)); } catch { /* not remembered, that's all */ }
+    keepKids(next);
   };
+  // a task's own thread opened: its conversation's rows show once, even folded (revealKids, LIVETASK-22)
+  useEffect(() => onRevealKids((chat) => setKidsShown((k) => { const { [chat]: _, ...rest } = k; return rest; })), []);
   const chatIdOf = (taskId: string) => chatOfTask(taskId)?.id;
   // the chats are searched, never the agents (Agents has no search)
   const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
@@ -408,13 +411,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const searchMore = q ? <SearchMore settings={finds.settings} actions={finds.actions} onPick={runPick} /> : null;
   const convoRow = (c: Chat) => {
     const kids = chatFirst ? kidsOf(tasks, c.id, chatIdOf) : [];
+    const arts = chatFirst ? artifactsBy.get(realId(c.id)) ?? [] : [];
     // its one mark (CHATSTATE-5): needs you, working, unread, then how its latest task ended
     const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
     const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
-    const shown = kids.length > 0 && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
+    const nested = kids.length + arts.length > 0;
+    // one of its tasks' own thread showing: its row lit, so its rows show unless the owner folded them
+    // (opening that thread unfolds them once: revealKids)
+    const lit = kids.some((k) => k.id === active);
+    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
     return (
-    <div key={c.id} className={`convo-nest${kids.length ? ' has-kids' : ''}`}>
-    {kids.length > 0 && (
+    <div key={c.id} className={`convo-nest${nested ? ' has-kids' : ''}`}>
+    {nested && (
       <button className="convo-twist" aria-expanded={shown} aria-label={`${shown ? 'Hide' : 'Show'} ${c.title}’s agents`} onClick={() => showKids(c.id, !shown)}>
         {shown ? <ChevronDown size={10} strokeWidth={2} /> : <ChevronRight size={10} strokeWidth={2} />}
       </button>
@@ -469,13 +477,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <EllipsisVertical size={14} strokeWidth={1.6} />
       </button>
     </div>
-    {/* its tasks, each a mark of its progress: its agent, its title, what it's on, its state (screen 03); a click opens this conversation at its card */}
+    {/* its tasks, each a session of its own: its agent, its title, what it's on, its state (screen 03); a click opens its own thread, its row lit */}
     {shown && (
       <div className="convo-kids" role="group" aria-label={`${c.title}’s tasks`}>
         {kids.map((k) => (
           <button
             key={k.id}
-            className="convo-kid"
+            className={`convo-kid${active === k.id ? ' is-active' : ''}`}
+            aria-current={active === k.id || undefined}
             title={kidTitle(k)}
             onClick={() => { markSeen(k.id); onOpenAgent?.(k.id); }}
             onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
@@ -483,6 +492,19 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             <BrandMark brand={k.brand} size={14} />
             <span className="convo-kid-text"><b>{k.title}</b> · {kidLine(k)}</span>
             <TaskMark task={k} />
+          </button>
+        ))}
+        {/* its artifacts, after its tasks: a click opens it beside this conversation; New until opened (board 1a), lit while open (board 1b) */}
+        {arts.map((a) => (
+          <button
+            key={a.id}
+            className={`convo-kid art-kid${openArt?.artifact.id === a.id ? ' is-on' : ''}`}
+            title={`${a.title}, made in this conversation`}
+            onClick={() => { onOpenTalk(c.id); openArtifact(a); }}
+          >
+            <span className="art-kid-icon"><Frame size={14} strokeWidth={1.6} aria-hidden="true" /></span>
+            <span className="convo-kid-text"><b>{a.title}</b> · {kindName(a.kind)}</span>
+            {newArtifacts.has(a.id) && <span className="status" role="img" aria-label="New"><span className="status-dot is-new" /></span>}
           </button>
         ))}
       </div>

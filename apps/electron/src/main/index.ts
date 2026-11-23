@@ -20,9 +20,10 @@ import { childGone, quit, quitting, renderFailed, rendererGone, started, windowL
 import { flag, https, string } from '../shared/decode';
 import { SCRATCH } from '../shared/build';
 import { ownFolder } from './appFolder';
-import { browsing } from './browser';
+import { browsing, hostBrowser } from './browser';
 import { macPill } from './macPill';
-import { sawInput } from './browserInput';
+import { previewing } from './artifactPreview';
+import { exporting } from './artifactExport';
 import { terminals } from './terminal';
 import { sawKey, sawMouse } from './terminalInput';
 
@@ -101,6 +102,10 @@ terminals(trusted);
 helping(trusted);
 // obid's browser, followed for the window (browser.ts, BROWSERAPP-8)
 const stopBrowsing = browsing(trusted, () => win);
+// an artifact's preview, drawn by Sandpack in a view of its own (artifactPreview.ts, ARTIFACTSAPP-1)
+const stopPreview = previewing(trusted, () => win);
+// an artifact's version saved where the owner picks, from its Export (artifactExport.ts, ARTIFACTSAPP-11)
+exporting(trusted, () => win);
 // an agent using the Mac: Oby's pill and frame over the screen (macPill.ts, BROWSERAPP-19)
 const stopPill = macPill(trusted, () => win, join(__dirname, '../preload/index.cjs'), process.env.ELECTRON_RENDERER_URL);
 const channels = ipc(trusted);
@@ -177,7 +182,8 @@ function createWindow() {
     // scrollBounce: macOS's rubber-band at the ends of a scroll (off by default in Electron).
     // sandbox: the page's process, the preload's world too, has no Node and runs in Chromium's
     // sandbox, so a script that takes it over reaches only what the preload hands main over IPC
-    webPreferences: { preload: join(__dirname, '../preload/index.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: !dev, scrollBounce: true },
+    // webviewTag: the agents' pages, each a <webview> main hardens and relays (browserGuest.ts, docs/plans/browser-t3.md)
+    webPreferences: { preload: join(__dirname, '../preload/index.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: !dev, scrollBounce: true, webviewTag: true },
   });
 
   chrome = windowStyle?.useToolbarWindow(win.getNativeWindowHandle()) ?? null;
@@ -194,7 +200,7 @@ function createWindow() {
   win.on('restore', () => track(true));
   win.on('hide', () => track(false));
   win.on('minimize', () => track(false));
-  win.on('closed', () => { track(false); win = null; windowLeft(); stopBrowsing(); stopPill(); });
+  win.on('closed', () => { track(false); stopPreview(); win = null; windowLeft(); stopBrowsing(); stopPill(); });
   // Oby's alerts (notify.ts): none for what the window shows while it's in front
   win.on('focus', windowSeen);
   for (const ev of ['blur', 'hide', 'minimize'] as const) win.on(ev as 'blur', windowLeft);
@@ -205,13 +211,12 @@ function createWindow() {
     if (!stays(url, win!.webContents.getURL(), dev)) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  hostBrowser(win);
   // its page loaded: this start counts as a good one (runMarker.ts)
   win.webContents.on('did-finish-load', windowLoaded);
   // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign
   // one request of the owner's words right after it (words.ts, device.ts)
   win.webContents.on('before-input-event', (_, i) => {
-    // every real key, for the owner's keys on a browser tab they hold (browser.ts)
-    if (i.type === 'keyDown' || i.type === 'keyUp') sawInput(i.type, i.key);
     // every real key, auto-repeat too, for what the owner types into a terminal (terminalInput.ts)
     if (i.type === 'keyDown') sawKey({ key: i.key, control: i.control, alt: i.alt, meta: i.meta, shift: i.shift, composing: !!i.isComposing });
     if (i.type !== 'keyDown' || i.isAutoRepeat) return;
@@ -220,7 +225,7 @@ function createWindow() {
   });
   win.webContents.on('before-mouse-event', (_, m) => {
     if (m.type === 'mouseDown') input();
-    if (m.type === 'mouseDown' || m.type === 'mouseUp' || m.type === 'mouseMove' || m.type === 'mouseWheel') { sawInput(m.type); sawMouse(); }
+    if (m.type === 'mouseDown' || m.type === 'mouseUp' || m.type === 'mouseMove' || m.type === 'mouseWheel') sawMouse();
   });
   // full screen hides the traffic lights: the page moves its title bar over.
   // Besides entering and leaving, re-check whenever the window comes back

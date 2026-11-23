@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde_json::Value;
 
-use super::{Job, Lease, Refused, Start, Take, browser_off, tab_rec::TabRec};
+use super::{Job, Lease, Refused, Take, browser_off, tab_rec::TabRec};
 use crate::browser::contract as c;
 
 /// The browser's API: who may call, tabs and their holds, asks, downloads, settings and events.
@@ -59,6 +59,12 @@ impl Api {
     /// A job starts. Who it is comes from obid's broker token (`crate::connections`), not from
     /// here.
     pub fn add_job(&mut self, id: &str, agent: &str) {
+        self.add_job_for(id, agent, c::Origin::Own);
+    }
+
+    /// A job the API hears of, working for `origin` (BROWSER-18): its tabs open in the partition
+    /// that follows from it (`Origin::partition`).
+    pub fn add_job_for(&mut self, id: &str, agent: &str, origin: c::Origin) {
         self.jobs.insert(
             id.into(),
             Job {
@@ -69,8 +75,33 @@ impl Api {
                 seen_downloads: BTreeSet::new(),
                 browser: c::BrowserState::NotStarted,
                 browser_reason: None,
+                partition: origin.partition(id, agent),
+                origin,
             },
         );
+    }
+
+    /// Job `id`, known as the owner's, is foreign by `origin`: it works for that one from now on,
+    /// in its box's partition, told as a `browser` event. A foreign job's origin is kept as it was
+    /// first found. Answers whether it changed.
+    pub fn found_foreign(&mut self, id: &str, origin: c::Origin) -> bool {
+        if !origin.foreign() {
+            return false;
+        }
+        let Some(j) = self.jobs.get_mut(id).filter(|j| !j.origin.foreign()) else {
+            return false;
+        };
+        j.partition = origin.partition(id, &j.agent);
+        j.origin = origin;
+        if let Some(browser) = self.job_browser(id) {
+            self.push(c::EventBody::Browser { browser });
+        }
+        true
+    }
+
+    /// Every job the API knows.
+    pub fn job_ids(&self) -> Vec<String> {
+        self.jobs.keys().cloned().collect()
     }
 
     pub fn job(&self, id: &str) -> Option<&Job> {
@@ -261,8 +292,19 @@ impl Api {
     /// The person's way out of a page state (board 10, BROWSER-26), `verb` one of the contract's:
     /// only on a tab the signing device holds, and a dialog's answer only while the page shows one.
     /// Answers the tab's job.
-    pub fn way_out(&self, device: &str, tab: &str, verb: &str) -> Result<String, Refused> {
-        let job = self.person_holds(Some(device), tab)?;
+    /// The person's Reload, Back or dialog answer on a tab (the window's browser: the page is
+    /// theirs to use as they like, no hold to take first): the tab's job.
+    pub fn way_out(&self, tab: &str, verb: &str) -> Result<String, Refused> {
+        let job = match &self.rec(tab)?.tab.owner {
+            c::Owner::Agent { job, .. } => job.clone(),
+            _ => {
+                return Err(Refused::new(
+                    404,
+                    "no_such_tab",
+                    format!("There is no agent's tab {tab}."),
+                ));
+            }
+        };
         if verb == c::VERB_DIALOG && self.rec(tab)?.tab.dialog.is_none() {
             return Err(Refused::new(
                 409,
@@ -278,7 +320,11 @@ impl Api {
     /// A job's tabs as the engine's status says (`tabs` and the quoted titles): changes become
     /// `tab` and `tabClosed` events.
     pub fn sync_job(&mut self, job: &str, engine_tabs: &[Value], titles: &Value) {
-        let Some(agent) = self.jobs.get(job).map(|j| j.agent.clone()) else {
+        let Some((agent, partition)) = self
+            .jobs
+            .get(job)
+            .map(|j| (j.agent.clone(), j.partition.clone()))
+        else {
             return;
         };
         let mut present = BTreeSet::new();
@@ -307,6 +353,7 @@ impl Api {
                     computer: c::Computer::this_mac(),
                     ask: None,
                     dialog: None,
+                    partition: Some(partition.clone()),
                 },
                 inflight: 0,
                 last_error: None,
@@ -405,6 +452,7 @@ impl Api {
             agent: j.agent.clone(),
             state: j.browser,
             reason: j.browser_reason.clone(),
+            origin: j.origin.clone(),
         })
     }
 
@@ -420,19 +468,6 @@ impl Api {
         j.browser_reason = reason;
         if let Some(browser) = self.job_browser(job) {
             self.push(c::EventBody::Browser { browser });
-        }
-    }
-
-    /// Who starts a job's browser: the first caller, while the others wait for it.
-    pub fn claim_start(&mut self, job: &str) -> Start {
-        match self.jobs.get(job).map(|j| j.browser) {
-            None => Start::NoJob,
-            Some(c::BrowserState::Ready) => Start::Up,
-            Some(c::BrowserState::Starting) => Start::Wait,
-            Some(c::BrowserState::NotStarted | c::BrowserState::Failed) => {
-                self.set_browser(job, c::BrowserState::Starting, None);
-                Start::Mine
-            }
         }
     }
 
@@ -679,6 +714,26 @@ mod tests {
         );
     }
 
+    /// A job found foreign is told to the stream: one `browser` event with its new origin, after
+    /// the last `seq` (BROWSER-18); found foreign again, nothing new.
+    #[test]
+    fn browser_18_a_job_found_foreign_is_one_browser_event() {
+        let mut a = api();
+        a.add_job("j1", "claude");
+        let before = a.events_after(0).last().map_or(0, |e| e.seq);
+        a.found_foreign("j1", c::Origin::Untrusted);
+        let new = a.events_after(before);
+        assert_eq!(new.len(), 1, "{new:?}");
+        match &new[0].body {
+            c::EventBody::Browser { browser } => {
+                assert_eq!(browser.origin, c::Origin::Untrusted);
+            }
+            other => panic!("{other:?}"),
+        }
+        a.found_foreign("j1", c::Origin::Untrusted);
+        assert_eq!(a.events_after(new[0].seq).len(), 0);
+    }
+
     #[test]
     fn browser_25_an_ended_jobs_tabs_leave_the_list() {
         let mut a = api();
@@ -889,7 +944,7 @@ mod tests {
             a.lease("j1", "nope").unwrap_err(),
             a.saveable("dl-9").unwrap_err(),
             a.answer("ask-9", c::AnswerBody::default()).unwrap_err(),
-            a.way_out("d1", "tab-1", c::VERB_RELOAD).unwrap_err(),
+            a.way_out("tab-9", c::VERB_RELOAD).unwrap_err(),
             browser_off(),
         ];
         for r in rs {
@@ -899,28 +954,20 @@ mod tests {
     }
 
     #[test]
-    fn browser_26_a_way_out_needs_the_holding_device_and_a_dialog_answer_needs_a_dialog() {
+    fn browser_26_a_way_out_needs_an_agents_tab_and_a_dialog_answer_needs_a_dialog() {
         let mut a = api();
         with_tab(&mut a, "j1", "tab-1");
-        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
-            assert_eq!(
-                a.way_out("d1", "tab-1", verb).unwrap_err().reason,
-                "not_held"
-            );
-        }
-        a.take("d1", "tab-1").unwrap();
-        for verb in [c::VERB_RELOAD, c::VERB_BACK, c::VERB_DIALOG] {
-            assert_eq!(
-                a.way_out("d2", "tab-1", verb).unwrap_err().reason,
-                "not_holder"
-            );
-        }
-        assert_eq!(a.way_out("d1", "tab-1", c::VERB_RELOAD).unwrap(), "j1");
-        assert_eq!(a.way_out("d1", "tab-1", c::VERB_BACK).unwrap(), "j1");
-        let no = a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap_err();
+        // The window's browser: the page is the person's to use, no hold taken first.
+        assert_eq!(a.way_out("tab-1", c::VERB_RELOAD).unwrap(), "j1");
+        assert_eq!(a.way_out("tab-1", c::VERB_BACK).unwrap(), "j1");
+        assert_eq!(
+            a.way_out("tab-9", c::VERB_BACK).unwrap_err().reason,
+            "no_such_tab"
+        );
+        let no = a.way_out("tab-1", c::VERB_DIALOG).unwrap_err();
         assert_eq!((no.status, no.reason), (409, "no_dialog"));
         a.dialog("tab-1", Some("Leave this page?".into()));
-        assert_eq!(a.way_out("d1", "tab-1", c::VERB_DIALOG).unwrap(), "j1");
+        assert_eq!(a.way_out("tab-1", c::VERB_DIALOG).unwrap(), "j1");
         let body: c::DialogBody = serde_json::from_value(json!({"accept": false})).unwrap();
         assert_eq!((body.accept, body.prompt_text), (false, None));
         assert!(serde_json::from_value::<c::ReloadBody>(json!({})).is_ok());

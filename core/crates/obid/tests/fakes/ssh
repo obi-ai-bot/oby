@@ -1,0 +1,57 @@
+#!/bin/sh
+# A stand-in for the person's own ssh (docs/contracts/remote.md, COMPUTERS-25), for obid's tests and
+# obid-spec: put first on a scratch obid's PATH, from a folder of the test's own (a link to this
+# file). Never the real ssh, and it reaches no other machine.
+#
+# In its folder (the link's):
+#   calls          written here: a line per call, its arguments joined by spaces.
+#   hosts/<dest>   what that destination's computer runs when ssh runs a command there (its
+#                  `obid pair-computer`, stdin as it came), or says and exits as ssh would: an
+#                  executable the test writes. A destination with none is one ssh can't resolve.
+#   tunnel-<port>.pid  written here: the pid holding each tunnel's port on this machine.
+#
+# With `-L 127.0.0.1:<port>:127.0.0.1:<remote>` it holds the forward as ssh does: perl takes
+# connections on this machine's port and relays each to <remote> on 127.0.0.1, until it's killed.
+here=$(cd "$(dirname "$0")" && pwd)
+echo "$*" >> "$here/calls"
+spec=
+dest=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -L) spec=$2; shift ;;
+    --) dest=$2; break ;;
+  esac
+  shift
+done
+if [ -n "$spec" ]; then
+  local=$(echo "$spec" | cut -d: -f2)
+  remote=$(echo "$spec" | cut -d: -f4)
+  echo $$ > "$here/tunnel-$local.pid"
+  exec perl -e '
+    use IO::Socket::INET; use IO::Select;
+    my ($l, $r) = @ARGV;
+    my $s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => $l, Listen => 16, ReuseAddr => 1)
+      or die "bind [127.0.0.1]:$l: Address already in use\n";
+    $SIG{CHLD} = "IGNORE";
+    while (my $c = $s->accept) {
+      if (fork() == 0) {
+        close $s;
+        my $u = IO::Socket::INET->new(PeerAddr => "127.0.0.1", PeerPort => $r) or exit 1;
+        my $sel = IO::Select->new($c, $u);
+        while (my @ready = $sel->can_read) {
+          for my $h (@ready) {
+            my $n = sysread($h, my $b, 65536);
+            exit 0 unless $n;
+            syswrite($h == $c ? $u : $c, $b);
+          }
+        }
+        exit 0;
+      }
+      close $c;
+    }' "$local" "$remote"
+fi
+if [ -n "$dest" ] && [ -x "$here/hosts/$dest" ]; then
+  exec "$here/hosts/$dest"
+fi
+echo "ssh: Could not resolve hostname $dest: Name or service not known" >&2
+exit 255

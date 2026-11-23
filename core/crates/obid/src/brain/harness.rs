@@ -210,7 +210,7 @@ impl Session {
     /// turn as a question the apps show with its choices, and tells the agent so. The owner's pick,
     /// or their own words, comes back as their next words. What the agent wrote there is data for
     /// the owner to read: the question and its options' labels, cut as a job's question card's.
-    fn put_question(&self, input: &Value) -> Answer {
+    pub(super) fn put_question(&self, input: &Value) -> Answer {
         let call = Call::new(crate::permissions::ASK_USER_QUESTION, input);
         let Some(asked) = call.questions.first() else {
             return Answer::Deny("obid couldn't read that question: ask it in your answer.".into());
@@ -1110,7 +1110,7 @@ fn write_mcp(mcp: &Path, url: &str, tetrix: Option<&str>, token: &str) -> Result
         json!({"type": "http", "url": url, "alwaysLoad": true,
                "headers": {"Authorization": format!("Bearer {token}")}})
     };
-    let mut servers = json!({"oby": server(url)});
+    let mut servers = json!({ agent::OBY_SERVER: server(url) });
     if let Some(tetrix) = tetrix {
         servers["tetrix"] = server(tetrix);
     }
@@ -1421,6 +1421,9 @@ pub(super) struct Place {
     pub(super) cursor: PathBuf,
     /// Its session id and account, never shown to it.
     session: PathBuf,
+    /// The folders an own session may write besides its room this turn (WORKSPACE-1): none but
+    /// once a turn has found them ([`super::folder_writes::of`]).
+    pub(super) writable: Vec<super::folder_writes::Writable>,
 }
 
 impl Place {
@@ -1434,6 +1437,7 @@ impl Place {
             config: folder.join("config"),
             cursor: crate::conversation::cursor_folder(home, conversation),
             session: folder.join("session.json"),
+            writable: Vec::new(),
             room,
             folder,
         }
@@ -2043,6 +2047,10 @@ async fn attempts(
         _ => None,
     };
     let own = own_lane(shared, tool, account, &control.conversation);
+    // The folders it may write this turn, checked again now (WORKSPACE-1): an own session's only.
+    let mut place = place.clone();
+    place.writable = super::folder_writes::of(shared, &control.conversation, own).await;
+    let place = &place;
     // The mode an own Codex run starts in, whose settings it's held to (LANES-13).
     let mode = shared.jobs.default_mode();
     // The budget is the turn's, both runs together.
@@ -2125,7 +2133,44 @@ async fn attempts(
     });
     let heard = session.control.asked_mentioned();
     let goes_to = super::briefing::default_account_line(shared, &control.conversation);
+    // The artifact open where the owner said the words (ARTIFACTS-12): what they're about, its
+    // files in the room (ARTIFACTS-21). Text someone else's made reaches the turn with them
+    // (ARTIFACTS-24, 25): it read something untrusted, before any of them is in the room.
+    // An unproxied one's (LANE-3a) makes the conversation's work LANE-3a's for good, kept first.
+    let open = session.control.artifact().map(|open| {
+        let carried = (shared.artifacts.get(&open.id))
+            .map(|a| crate::artifacts::seed::carried(&a, open.version));
+        if carried.as_ref().is_none_or(crate::artifacts::Marks::taints) {
+            session.taint();
+        }
+        let kept = match carried {
+            Some(marks) if marks.unproxied => {
+                super::open_artifact::note_unproxied(shared, &control.conversation)
+            }
+            _ => Ok(()),
+        };
+        let laid = kept
+            .and_then(|()| super::open_artifact::into_room(shared, &place.room, &open))
+            .inspect_err(|why| {
+                tracing::warn!(
+                    "conversation {}: artifact {} isn't in its room: {why}",
+                    control.conversation,
+                    open.id
+                )
+            })
+            .ok();
+        super::open_artifact::told_line(&open, &session.nonce, laid.as_deref())
+    });
+    let working = super::folder_writes::note(&place.writable);
     let with = |prompt: String| {
+        let prompt = match &open {
+            Some(open) => format!("{open}\n\n{prompt}"),
+            None => prompt,
+        };
+        let prompt = match &working {
+            Some(working) => format!("{working}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = match &heard {
             Some(heard) => format!("{heard}\n\n{prompt}"),
             None => prompt,
@@ -2250,7 +2295,7 @@ async fn attempts(
                     &url,
                     tetrix.as_deref(),
                     &resume,
-                    own.then_some(place.room.as_path()),
+                    own.then_some(place),
                     helper,
                 )
                 .await;
@@ -3100,14 +3145,38 @@ async fn one(
         true => shared.jobs.claude_folders(),
         false => Vec::new(),
     };
+    // The owner's own MCP servers in an own Codex session (CONVERSATION-AGENT-18), as T3 Code:
+    // Bypass runs their tools; every other mode asks the owner, whose signed "Allow once" to the
+    // question Oby's last turn asked lets that tool run this turn.
+    let bypass = launched == crate::permissions::Mode::Bypass;
+    let granted = own_codex
+        .then(|| {
+            super::server_asks::granted(
+                shared,
+                &control.conversation,
+                &control.turn,
+                control.signed(),
+            )
+        })
+        .flatten();
     let decide = |tool: &str, input: &Value| {
         if tool == crate::permissions::ASK_USER_QUESTION {
             return Ruling::Now(session.put_question(input));
+        }
+        if own_codex
+            && let Some(answer) =
+                super::server_asks::rule(tool, bypass, granted.as_deref(), session)
+        {
+            return Ruling::Now(answer);
         }
         let quiet = crate::jobs::Jobs::OWN_QUIET.contains(&tool);
         if own
             && (quiet || crate::jobs::claude_place(tool, input, &place.room, None, &folders, false))
         {
+            return Ruling::Now(Answer::Allow);
+        }
+        // The folders it works in (WORKSPACE-1): obid's rule is the limit there for its file tools.
+        if own && super::folder_writes::allows(&place.writable, tool, input, &place.room) {
             return Ruling::Now(Answer::Allow);
         }
         Ruling::Now(rule(tool, input, &bounds, &place.repos, own, &|| {
@@ -3133,8 +3202,11 @@ async fn one(
         }
         (Run::Cold(launch), Protocol::Claude) => {
             match crate::conn::Conn::spawn(&launch, limit, stop, false).await {
-                Ok(conn) => Ok(agent::turn_with(conn, message, decide, on_event, true).await)
-                    .map(|(turn, conn)| (turn, conn.map(Waiting::Claude))),
+                Ok(mut conn) => {
+                    with_obys_tools(&mut conn, &control.turn).await;
+                    Ok(agent::turn_with(conn, message, decide, on_event, true).await)
+                        .map(|(turn, conn)| (turn, conn.map(Waiting::Claude)))
+                }
                 Err(e) => Err(e),
             }
         }
@@ -3146,6 +3218,7 @@ async fn one(
             .map(|(turn, kept)| (turn, kept.map(Waiting::Codex))),
             (Waiting::Claude(mut conn), Protocol::Claude) => {
                 conn.renew(limit, stop);
+                with_obys_tools(&mut conn, &control.turn).await;
                 Ok(agent::turn_with(conn, message, decide, on_event, true).await)
                     .map(|(turn, conn)| (turn, conn.map(Waiting::Claude)))
             }
@@ -3158,6 +3231,17 @@ async fn one(
     watching.abort();
     delta(streamed.finish(&secrets));
     ran.map(|(turn, running)| (turn, streamed.raw, running, tokens))
+}
+
+/// Oby's tools in the conversation's Claude Code, its token good for the turn, before the turn is
+/// written to it (CONVERSATION-AGENT-53): one that holds none (its listing of them failed or came
+/// too late, which Claude Code never asks again) connects to Oby's server again, said in the log.
+async fn with_obys_tools(conn: &mut crate::conn::Conn, turn: &str) {
+    if let agent::ObysTools::Again(tools) = agent::obys_tools(conn).await {
+        tracing::warn!(
+            "turn {turn}: its Claude Code held none of Oby's tools, so it connected to them again ({tools} now)"
+        );
+    }
 }
 
 /// How a run of a conversation's agent is spoken to: Claude Code's stream-json, Codex's app-server
@@ -3577,9 +3661,9 @@ fn step_text(name: &str, input: &Value) -> String {
         Some("oby_offer") => "Offering a task".into(),
         Some("oby_tell_job") => "Telling a task".into(),
         Some("oby_stop_job") => "Stopping a task".into(),
-        Some("oby_inbox") => "Looking at the inbox".into(),
+        Some("oby_inbox") => "Looking at Waiting for you".into(),
         Some("oby_github") => "Looking at GitHub".into(),
-        Some("oby_answer") => "Answering an inbox item".into(),
+        Some("oby_answer") => "Answering a card".into(),
         Some("oby_members") => "Looking at who's in the Obysphere".into(),
         Some("oby_ask") => "Asking another Oby".into(),
         Some("oby_asks") => "Reading what other Obys said".into(),

@@ -4,6 +4,8 @@
 intake → spec → build → gate → prove → review → approve, where only a job whose intake names the `proofs` (Kani)
 or `model` (Quint) surface must pass through `prove`, and every other job may still go from gate straight to review.
 How to run it and what each piece does: `.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
+The builder works by pstack's method, its own review and verification included, and the factory shows each round
+and keeps the owner's decision points: `pstack.md`.
 
 ```
 config.json     concurrency, rounds, the active sprint, routing, protected paths, prices
@@ -15,6 +17,9 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 set too, obid's test binaries in shards on the VM's slots, the Mac worker and this Mac, all at
                 once, with one verdict; `gate --idle` deallocates the idle VM (job queue runs it); `gate --checkout
                 <worktree> <commit> <branch> <out-dir>` is the same gate with no job folder (oby-feed's)
+bin/gate-ci     the gate from GitHub's CI: waits for GitHub Actions' `Check` (and each `--also <name>`) at the pull
+                request's exact head and writes round-N/checks.md from its conclusion and gate's protected paths,
+                checks.log on FAIL; it runs no check itself; exit 0 PASS, 1 FAIL, 2 couldn't judge
 bin/oby-feed    feeds the task files to the factory's own obid, each as intake, then spec, then build (Oby builds
                 against the spec and reviews it), and merges what Oby approved twice, once the models, Kani and
                 bin/gate passed on the head; a task intake holds for the owner waits `blocked`; state in
@@ -27,7 +32,25 @@ bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proof
 bin/mutants     runs cargo-mutants on the core/crates/ Rust a job's gated commit changes, through bin/test-run on a gate
                 VM builder slot, within a time budget → round-N/mutants.md, the missed mutants for reviewer-code and the
                 approver; advisory only, it never moves a job (docs/contracts/factory.md, MUTANTS)
-bin/route       risk + surfaces → the job's reviewers and models
+bin/route       the job's reviews: pstack's, which the builder writes, and with --lenses the lens reviewers and models
+                risk + surfaces give; bin/job adds Codex's when the round starts, for a job that needs two
+bin/review-codex  Codex's review of a job's gated head: it copies the head's text files as git stores them
+                (ls-tree and cat-file, no .gitattributes applied, no .git, its .codex* and .agents/ withheld), the
+                job's spec, intake, issue, diff and log, the exact prompt and the AGENTS.md Codex reads from
+                CODEX_HOME by itself into a folder of its own, refuses a head whose changed files aren't all in it,
+                scans it all with gitleaks (the main checkout's config, nothing of the head's: no .gitleaksignore,
+                .gitleaks.toml or gitleaks:allow), and points Codex at it in its read-only sandbox, the prompt read
+                back from the scanned copy, on a private CODEX_HOME (0700, removed after) holding only the scanned
+                AGENTS.md and a login copy whose refresh token is emptied, with none of the owner's Codex config,
+                rules or MCP servers, no web search or skill list, none of Codex's own apps, plugins, browser,
+                computer use, hooks, skill installs or memories, and an environment of PATH, HOME, CODEX_HOME and
+                LANG; with codex-review.md →
+                round-N/review-codex.md, which it records in job.json under the job's lock once the worktree and the
+                copy are unchanged (only the recorded file counts); exit 0 PASS, 1 CHANGES, 2 couldn't judge. Known
+                limit, the owner's to accept: the read-only sandbox can still read any file on this Mac (no Codex
+                setting limits reads, the same reach as every Claude Code agent here); only the copy is scanned, and
+                codex-review.md tells Codex only the copy is in scope
+pstack.md       how the factory works by pstack; pstack/ holds the pinned pstack files the agents read
 bin/test-run    a builder's or approver's own test, clippy or build run at nice 15, half the cores; only runs that can
                 build Rust or Xcode code take turns on its own lock, other runs start at once; it refuses a run whose
                 CARGO_TARGET_DIR is the shared Cargo folder: they build in <worktree>/core/target; with
@@ -79,6 +102,20 @@ throttles disk I/O and keeps the run on the efficiency cores even when no gate r
 `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores. Commands that read none of those (`npm test`,
 `npm run typecheck`, `swift test`) are held only by the priority (and `swift test` by the lock), and an explicit
 `-j` or `--test-threads` overrides them.
+
+When the gate's hosts are gone, the orchestrator runs `bin/gate-ci <job-id>` in place of `bin/gate`: GitHub
+Actions already runs the required `Check` on every head pushed to a pull request, drafts included. gate-ci refuses
+(exit 2, no checks.md) a worktree with uncommitted changes, an `origin/<branch>` or a pull request head other than
+the worktree's HEAD; then it reads the head's check runs every 30 seconds until the newest `Check` from the GitHub
+Actions app, and the newest run of each `--also <name>` (`--also app-mac`), is completed, at most `--timeout`
+seconds (5400 by default). PASS needs every one `success` and no protected path modified or deleted (`bin/gate`'s
+own rule, imported); `skipped`, `neutral`, `cancelled` and the rest are FAIL. checks.md carries `GATE`, `COMMIT`,
+`HOST: github-actions`, `PR` and `RUNS` (the Actions run ids), so `bin/job advance` and `bin/job merge` read it as
+the gate's; on FAIL checks.log holds each failed run's last 300 lines of `gh run view <run> --log-failed`, fenced
+as quoted data from GitHub. Exit 0 is PASS, 1 FAIL, and 2 couldn't judge: a refusal above, or a run that didn't
+appear or finish in time, or a `gh` that can't run, fails, hangs or prints something that isn't JSON, none of which
+writes a checks.md (no `Check` at all usually means CI didn't start for that head: push again); a failed poll is
+tried again until the deadline. It never calls az, ssh, checks.sh, cargo or npm.
 
 Gates run on the Mac until the owner adds `remote_gate` to `config.json` (`docs/factory-remote-gate.md`, "The
 owner's steps"). With it, `bin/gate` reads the check's plan, starts the gate VM `oby-gate` when it is stopped

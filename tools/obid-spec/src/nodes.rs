@@ -54,12 +54,21 @@ pub const NODES: &[(&str, &str)] = &[
     ("desktop.read", "Reads one menu's items by name, or one element by role and name, in a surface of the app's, through agent-desktop; with expect."),
     ("desktop.click", "Runs one of the app's menu items through agent-desktop (its window brought forward for the moment, the front given back)."),
     ("desktop.press", "Presses a key chord through macOS with agent-desktop (cmd+b), which runs the app's menu item that carries it, as a person's keys do."),
-    ("artifacts-fixture", "Writes one of the lab's artifact fixtures (lab.artifacts.fixture's `name`, `break`, `files`, `count`) into a scratch obid's conversation room, at `into` (a path inside the room) of `conversation`, for its `oby_artifact` to publish; `drop` takes files of it out again: {path, files, blobs}."),
+    ("artifacts-fixture", "Writes one of the lab's artifact fixtures (lab.artifacts.fixture's `name`, `break`, `files`, `count`) into a scratch obid's conversation room, at `into` (a path inside the room) of `conversation`, for its `oby_artifact` to publish; `drop` takes files of it out again: {path, files, blobs}. With no `conversation`, it goes in the run's scratch folder instead, and `zip: true` also writes it as Claude Design's project zip: {path, zip, zipEntries}."),
+    ("artifacts-import", "POST /v1/artifacts/import to a scratch obid with the bytes of `file` (`contentType`, default application/zip), `as` device (signed over them by `device`, a device-pair step's output; the default), unsigned, or other-bytes (signed over other bytes): {status, body}; with expect."),
+    ("artifacts-export", "GET /v1/artifacts/{id}/export/{version}?as=zip|html from a scratch obid, saved in the run's scratch folder: {status, type, disposition, policy, bytes, sha256, saved, entries (a zip's: [{name, bytes, sha256}]), outside (an HTML file's references past itself), files (the HTML file's embedded files), inlined}; with expect."),
+    ("artifacts-roundtrip", "Imports `zip` into a scratch obid (signed by `device`), exports it as a zip and compares them entry by entry, then imports and exports the export again: {imported, entries, same, onlyInSource, onlyInExport, changed, stable (the second export's bytes are the first's)}; with expect."),
+    ("artifacts-zip", "Writes a zip of the suite's own into the run's scratch folder: `kind` link (an entry that is a link), dotdot (`../escape.html`), absolute (`/etc/escape.html`), oversize (an SVG one byte over 2 MB) and many (513 files), each one an import refuses whole; export-file (a page with a file named `export`), which it takes: {zip}."),
     ("artifacts-same", "Reads every file of the room's `from` (of `conversation`) back from a scratch obid as `artifact`'s `version` (a design's `_blob/<id>` through its alias): {same, compared, differ, types, policies}, `same` when each answered 200 with the length and text written, `types` each file's Content-Type, `policies` every Content-Security-Policy served; with expect."),
     ("browser-site", "Serves the browser API's fixture site on 127.0.0.1 (a free port) for this workflow: a sign-in form, a download, an animated counter, each at a fixed place; `/second`, and `/leave`, whose Leave asks the page's confirm: {url, port, name: {x, y}, download: {x, y}}."),
     ("browser-https-site", "Serves an HTTPS fixture on 127.0.0.1 (a free port) with a self-signed P-256 certificate for 127.0.0.1 made at run time (the lab's, src/lab/browserapi.rs): `certificate` names it (default `first`); naming another while the `site` (default `main`) is up swaps it behind the same port, the same origin with a new certificate. {url, port, site, certificate, fingerprint}."),
     ("browser-flaky-site", "A site that fails, then works, at one address (the lab's): `up: false` keeps a port nobody listens on (a navigation there is refused), `up: true` serves the fixture site on it. {url, port, up}."),
     ("browser-job", "Has a scratch obid (started with `browser: true`) start a stand-in job that stays active, a Codex job whose stand-in sleeps and hands back its broker token: {job, token}. With `end: true` and `job`, stops that job and waits until it isn't running: {job, ended, status}."),
+    ("browser-window", "Starts a stand-in for Oby's window for `obid` (docs/plans/browser-t3.md): it follows the browser's events and relay, mounts each agent tab (a `tab` event with a partition) as a page of a headless Chrome obid-spec runs (test tooling; obid has none), one browser context per partition, relays obid's page-level CDP to it, and keeps the window's guards (the CDP domains it lets through, the two partition shapes, downloads only into obid's folder). {window}"),
+    ("browser-window-seen", "What `obid`'s stand-in window refused (a CDP domain or session id it doesn't let through, a partition, a download folder), each tab's partition, and how many contexts it holds: {refused, partitions, contexts}."),
+    ("browser-reach", "Owner B against owner A's browser (BROWSER-20): every route under `/v1/browser` on A's obid (`a`) and its gateway, with no token, B's obid's token (`b`), B's device's signed words (`bDevice`) and a made-up token, A's tab (`tab`) in the paths. A route that answers 2xx, names the tab, or keeps streaming past 5 s reached it: {tried, reached, answers}."),
+    ("browser-sphere-site", "Serves the Obysphere's fixture site on 127.0.0.1 (the lab's, src/lab/browsersphere.rs): `/` with words that try to steer an agent, `/login` that signs in with a cookie, `/account` that says whether it's signed in, `/token` with a fresh token-like string, `/form` with a password field. {url, port, token}."),
+    ("browser-agent-job", "Has a scratch obid (started with `browser: true`) start a job of `agent` (claude or codex; `mode` optional) whose stand-in uses Oby's browser only through what its agent was given (BROWSE: `url`): its MCP configuration's `browser` server and rules; `then` [{tool, args}, …] calls those after, in order; `stay: true` keeps the job (and its browser) running after. `until` (a dotted path) waits until what it found has it. With `job` instead, waits on that job already there (another Oby's task whose quoted goal says `BROWSE: <url>`, BROWSER-18). Waits for what it found and got (.obi/browsed.json in its worktree): {job, status, browsed}."),
     ("browser-mcp", "One MCP request to a scratch obid's browser server (`POST /v1/browser/mcp`) as a job's agent: `method` (initialize, tools/list, tools/call), `tool`, `args`, `token` (the job's broker token; or `as`: none, wrong). `refFor` {role, name} picks a ref from `snapshot`'s result. `within`: asked again while the browser is still starting (its first download). {status, rpc, result, isError, structured, toolNames}; with expect."),
     ("browser-events", "Reads a scratch obid's browser events stream for `ms` (from `after`, default every event kept): {events, types, count, of, inOrder}; with expect."),
     ("browser-race", "The agent's act sent, then `takeAfterMs` later the device's signed take while the act still waits to run (a scratch obid started with OBID_TEST_BROWSER_COMMIT_DELAY_MS): {act, take}; with expect."),
@@ -90,7 +99,10 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
         let mut out = if name.starts_with("app.") {
             crate::app::act(run, name, &input).await?
         } else if name.starts_with("browser-") {
-            crate::browser::run_node(name, &input).await?
+            match crate::browser_window::run_node(run, name, &input).await {
+                Some(out) => out?,
+                None => crate::browser::run_node(name, &input).await?,
+            }
         } else if name.starts_with("artifacts-") {
             crate::artifacts::run_node(run, name, &input).await?
         } else if name.starts_with("lab.") {
@@ -236,9 +248,7 @@ pub async fn run_node(run: &Run, name: &str, input: Value) -> Result<Value> {
             "stopped": crate::procs::stop_all().await,
             "lab": crate::lab::cleanup().await,
             "browser": crate::browser::cleanup().await,
-            // Once every obid stopped: an engine one of them downloaded and checked, kept for the
-            // next workflows (obid-start's `browser`).
-            "browserCache": obid::keep_browser_engine(),
+            "testWindow": crate::browser_window::cleanup(),
         })),
         // `within`: asked again until it holds, for a file obid writes a moment later.
         "home-file" => {
@@ -443,6 +453,8 @@ pub fn judges(name: &str) -> &'static [&'static str] {
         "call" | "call-wait" | "sphere-admin" | "sphere-owner" => ANSWER,
         "home-file" | "conversations.person-file" => &["exists", "mode", "json", "text"],
         "conversations.list-dir" => VALUE,
+        // coverage_accounts_openai: an answer checked with expect::check_status and expect::check
+        "accounts.visit" | "accounts.tokens" | "accounts.openai-saw" => ANSWER,
         "check" | "events-wait" => VALUE,
         "app.launch" => &[],
         n if n.starts_with("app.")

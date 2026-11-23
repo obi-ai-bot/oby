@@ -3497,6 +3497,245 @@ mod tests {
         }
     }
 
+    /// What a generated path is to its entry, by how it was built (V01-03): caught, a near miss,
+    /// or one of the two findings, a folder's own name (V01-39) and a Unicode case fold (V01-40).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Group {
+        Caught,
+        NearMiss,
+        OwnName,
+        UnicodeFold,
+    }
+
+    /// A changed path built from one `SECURITY_PATHS` entry, with the answer it should get.
+    struct Case {
+        path: String,
+        entry: &'static str,
+        caught: bool,
+        group: Group,
+    }
+
+    impl std::fmt::Display for Case {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let expected = if self.caught { "caught" } else { "not caught" };
+            write!(
+                f,
+                "{:?} on entry {:?} expected {expected}",
+                self.path, self.entry
+            )
+        }
+    }
+
+    /// Depth 0 to 3, and a prefix that begins two entries.
+    const PREFIXES: [&str; 5] = ["", "a/", "src/a/", "x/y/z/", ".github/"];
+
+    /// How `entry` is anchored, from its shape as `SECURITY_PATHS`'s doc states the rule.
+    fn anchor_of(entry: &str) -> Anchor {
+        if entry.ends_with('/') {
+            Anchor::Folder
+        } else if entry.contains('/') {
+            Anchor::Whole
+        } else {
+            Anchor::Name
+        }
+    }
+
+    /// `entry` in every letter case for up to 10 letters; for more, every one- and two-letter
+    /// flip of it as written, all upper and all lower.
+    fn case_variants(entry: &str) -> Vec<String> {
+        let letters: Vec<usize> = (0..entry.len())
+            .filter(|&i| entry.as_bytes()[i].is_ascii_alphabetic())
+            .collect();
+        let flip = |flips: &[usize]| -> String {
+            (entry.bytes().enumerate())
+                .map(|(i, b)| match flips.contains(&i) {
+                    true if b.is_ascii_uppercase() => b.to_ascii_lowercase() as char,
+                    true => b.to_ascii_uppercase() as char,
+                    false => b as char,
+                })
+                .collect()
+        };
+        if letters.len() <= 10 {
+            return (0..1u32 << letters.len())
+                .map(|mask| {
+                    let flips: Vec<usize> = (letters.iter().enumerate())
+                        .filter(|(bit, _)| mask >> bit & 1 == 1)
+                        .map(|(_, &i)| i)
+                        .collect();
+                    flip(&flips)
+                })
+                .collect();
+        }
+        let mut variants = vec![entry.to_ascii_uppercase(), entry.to_ascii_lowercase()];
+        for (n, &i) in letters.iter().enumerate() {
+            variants.push(flip(&[i]));
+            variants.extend(letters[n + 1..].iter().map(|&j| flip(&[i, j])));
+        }
+        variants
+    }
+
+    /// MERGING-15's bounded space over every `SECURITY_PATHS` entry, each path's answer from how
+    /// it was built, never from `caught_by`.
+    fn security_path_cases() -> Vec<Case> {
+        let mut cases = Vec::new();
+        for entry in SECURITY_PATHS {
+            let anchor = anchor_of(entry);
+            let mut add = |path: String, caught: bool, group: Group| {
+                cases.push(Case {
+                    path,
+                    entry,
+                    caught,
+                    group,
+                })
+            };
+            // A folder is caught for what lies inside it; near misses take its shortest inside.
+            let (suffixes, tail): (&[&str], _) = match anchor {
+                Anchor::Folder => (&["f", "a/b/f"], "f"),
+                _ => (&[""], ""),
+            };
+            let (stem, slash) = entry.strip_suffix('/').map_or((entry, ""), |s| (s, "/"));
+            let variants = case_variants(entry);
+            for prefix in PREFIXES {
+                // A whole path is on its entry only from the root; under a folder it's a near miss.
+                let caught = anchor != Anchor::Whole || prefix.is_empty();
+                let group = |found: Group| if caught { found } else { Group::NearMiss };
+                for variant in &variants {
+                    for suffix in suffixes {
+                        add(
+                            format!("{prefix}{variant}{suffix}"),
+                            caught,
+                            group(Group::Caught),
+                        );
+                    }
+                    if anchor == Anchor::Folder {
+                        let own = variant.trim_end_matches('/');
+                        add(format!("{prefix}{own}"), true, Group::OwnName);
+                    }
+                }
+                // APFS takes `ſ` for `s` and `K` (Kelvin) for `k`: the same name to macOS.
+                for (i, b) in entry.bytes().enumerate() {
+                    let fold = match b {
+                        b's' | b'S' => '\u{17f}',
+                        b'k' | b'K' => '\u{212a}',
+                        _ => continue,
+                    };
+                    let path = format!("{prefix}{}{fold}{}{tail}", &entry[..i], &entry[i + 1..]);
+                    add(path, caught, group(Group::UnicodeFold));
+                }
+                // One character added before or after; a folder's goes before its `/`, as one
+                // after it is inside the folder.
+                add(format!("{prefix}x{entry}{tail}"), false, Group::NearMiss);
+                add(
+                    format!("{prefix}{stem}x{slash}{tail}"),
+                    false,
+                    Group::NearMiss,
+                );
+                match anchor {
+                    Anchor::Name => {
+                        add(format!("{prefix}{entry}.bak"), false, Group::NearMiss);
+                        add(format!("{prefix}{entry}/f"), false, Group::NearMiss);
+                    }
+                    Anchor::Folder => add(format!("{prefix}{stem}.json"), false, Group::NearMiss),
+                    Anchor::Whole => {}
+                }
+                // One character removed; never a folder's `/`, which leaves its own name.
+                for i in 0..stem.len() {
+                    let path = format!("{prefix}{}{}{slash}{tail}", &stem[..i], &stem[i + 1..]);
+                    add(path, false, Group::NearMiss);
+                }
+            }
+        }
+        cases
+    }
+
+    /// MERGING-15: every `SECURITY_PATHS` entry is caught in any letter case and at any depth, a
+    /// folder for anything inside it, a whole path from the root.
+    #[test]
+    fn merging_15_every_entry_is_caught_in_any_case_and_depth() {
+        let cases = security_path_cases();
+        for case in cases.iter().filter(|c| c.group == Group::Caught) {
+            assert!(caught_by(&case.path, case.entry), "{case}");
+        }
+        for entry in SECURITY_PATHS {
+            assert!(
+                (cases.iter()).any(|c| c.group == Group::Caught && c.entry == entry),
+                "entry {entry:?} has no caught case"
+            );
+        }
+    }
+
+    /// MERGING-15: a path one character off an entry, an entry's name inside another name, a
+    /// name used as a folder or a whole path under another folder is caught by no entry.
+    #[test]
+    fn merging_15_no_near_miss_is_caught() {
+        let cases = security_path_cases();
+        for case in cases.iter().filter(|c| c.group == Group::NearMiss) {
+            assert!(
+                security_paths(std::slice::from_ref(&case.path), None).is_empty(),
+                "{case}"
+            );
+        }
+        for entry in SECURITY_PATHS {
+            assert!(
+                (cases.iter()).any(|c| c.group == Group::NearMiss && c.entry == entry),
+                "entry {entry:?} has no near miss"
+            );
+        }
+    }
+
+    /// MERGING-15: `security_paths` returns exactly the changed paths some entry catches, in the
+    /// order they changed.
+    #[test]
+    fn merging_15_security_paths_returns_exactly_the_caught_paths() {
+        let cases: Vec<Case> = security_path_cases()
+            .into_iter()
+            .filter(|c| matches!(c.group, Group::Caught | Group::NearMiss))
+            .collect();
+        let changed: Vec<String> = cases.iter().map(|c| c.path.clone()).collect();
+        let got = security_paths(&changed, None);
+        // Walk the input beside the answer, so the first path it differs on is the one named.
+        let mut next = got.iter().peekable();
+        for case in &cases {
+            let returned = next.next_if(|path| **path == case.path).is_some();
+            assert_eq!(returned, case.caught, "{case}");
+        }
+        assert_eq!(next.next(), None, "returned a path that didn't change");
+    }
+
+    /// MERGING-15: a folder entry's own name (`.claude`, which git prints for a symlink or a file
+    /// of that name) is caught in any letter case and at any depth.
+    #[test]
+    #[ignore = "finding V01-39"]
+    fn merging_15_a_folder_entrys_own_name_is_caught() {
+        for case in security_path_cases()
+            .iter()
+            .filter(|c| c.group == Group::OwnName)
+        {
+            assert!(caught_by(&case.path, case.entry), "{case}");
+            assert!(
+                !security_paths(std::slice::from_ref(&case.path), None).is_empty(),
+                "{case}"
+            );
+        }
+    }
+
+    /// MERGING-15: an entry with `ſ` for an `s` or `K` (Kelvin) for a `k`, one name to APFS, is
+    /// caught as its entry is.
+    #[test]
+    #[ignore = "finding V01-40"]
+    fn merging_15_a_unicode_case_fold_of_an_entry_is_caught() {
+        for case in security_path_cases()
+            .iter()
+            .filter(|c| c.group == Group::UnicodeFold)
+        {
+            assert!(caught_by(&case.path, case.entry), "{case}");
+            assert!(
+                !security_paths(std::slice::from_ref(&case.path), None).is_empty(),
+                "{case}"
+            );
+        }
+    }
+
     /// Oby's own review of the exact head is the review for the owner's own pull request (the
     /// owner's decision of 2026-10-24): no reviewer account, no GitHub review. A head Oby didn't
     /// approve doesn't merge, and where GitHub's rules require an approving review, another

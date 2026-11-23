@@ -1,28 +1,26 @@
 //! The browser's API on the real obid (docs/contracts/browser.md), for what its workflows can't
-//! easily show: the person's input from a device that doesn't hold the tab never reaching the page
-//! (BROWSER-7), the agents' server refusing a missing, made-up or ended job's token (BROWSER-16),
-//! a secret in no file under obid's home (BROWSER-8), the switches kept across a restart
-//! (BROWSER-15), and a refused call reading its whole 401, never a reset (BROWSER-28). obid runs the tests' stand-in agent-browser (`OBID_TEST_BROWSER_STAND_IN`, a debug
-//! build's only), whose live stream is a WebSocket server of the test's own; a Codex job sleeping as
-//! its agent hands back its broker token (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
+//! easily show: the agents' server refusing a missing, made-up or ended job's token (BROWSER-16),
+//! the switches kept across a restart (BROWSER-15), a refused call reading its whole 401, never a
+//! reset (BROWSER-28), the window's relay taking only obid's runner token and the routes the window
+//! does now answering 410 (BROWSER-30, 31), and the owner's signed take and give back of an agent's
+//! tab, driven through a stand-in window on the relay (BROWSER-5, 6). A Codex job sleeping as its
+//! agent hands back its broker token (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
 mod support;
 
-use std::io::{Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use support::*;
 
-/// A scratch obid on the stand-in agent-browser, with a Codex account for its jobs.
+/// A scratch obid with a Codex account for its jobs.
 fn browser_obid(folder: &Folder) -> Obid {
-    start_with(&folder.0, &browser_config(folder), None, &stand_in_env())
-}
-
-fn stand_in_env() -> [(&'static str, &'static str); 1] {
-    [("OBID_TEST_BROWSER_STAND_IN", "1")]
+    start_with(&folder.0, &browser_config(folder), None, &[])
 }
 
 fn browser_config(folder: &Folder) -> Value {
@@ -72,8 +70,19 @@ fn raw(
     headers: &[(&str, &str)],
     body: &Value,
 ) -> (u16, Value) {
+    raw_at(obid.port, method, path, headers, body)
+}
+
+/// [`raw`] to the obid on `port`, for a thread that has no `Obid` of its own.
+fn raw_at(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> (u16, Value) {
     let body = body.to_string();
-    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(120)))
         .unwrap();
@@ -123,124 +132,6 @@ fn tool(obid: &Obid, token: &str, name: &str, args: Value) -> Value {
     rpc["result"]["structuredContent"].clone()
 }
 
-/// A second device of the owner's, its own key: registered as the Mac app registers one.
-struct Device {
-    id: String,
-    key: p256::ecdsa::SigningKey,
-}
-
-impl Device {
-    fn register(obid: &Obid, seed: u8) -> Device {
-        use base64::Engine as _;
-        use p256::elliptic_curve::sec1::ToEncodedPoint as _;
-        let secret = p256::SecretKey::from_slice(&[seed; 32]).unwrap();
-        let public = base64::engine::general_purpose::STANDARD
-            .encode(secret.public_key().to_encoded_point(false).as_bytes());
-        std::fs::write(obid.home.join("pairing"), &public).unwrap();
-        let added = call(
-            obid,
-            "POST",
-            "/v1/devices",
-            Some(&json!({"name": "Test owner's other device", "publicKey": public})),
-        );
-        assert_eq!(added.status, 200, "{}", added.text);
-        Device {
-            id: added.body["id"].as_str().unwrap().to_string(),
-            key: p256::ecdsa::SigningKey::from(secret),
-        }
-    }
-
-    /// `X-Oby-Words` for that request, as the apps sign it.
-    fn words(&self, method: &str, path: &str, body: &Value) -> String {
-        use base64::Engine as _;
-        use p256::ecdsa::signature::Signer as _;
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_millis();
-        let whole = obi_protocol::time::format(obi_protocol::time::now());
-        let at = format!("{}.{millis:03}Z", &whole[..19]);
-        let digest = hex::encode(obi_protocol::keys::sha256(body.to_string().as_bytes()));
-        let message = format!("oby-words\n{method}\n{path}\n{digest}\n{at}");
-        let signature: p256::ecdsa::Signature = self.key.sign(message.as_bytes());
-        format!(
-            "{} {at} {}",
-            self.id,
-            base64::engine::general_purpose::STANDARD.encode(signature.to_der())
-        )
-    }
-
-    fn post(&self, obid: &Obid, path: &str, body: &Value) -> Answer {
-        let words = self.words("POST", path, body);
-        call_with_headers(
-            obid,
-            TOKEN,
-            "POST",
-            path,
-            Some(body),
-            &[("X-Oby-Words", &words)],
-        )
-    }
-}
-
-/// agent-browser's live stream, stood in: a WebSocket server on 127.0.0.1 that sends nothing and
-/// hands back every message it gets. Its port goes where the stand-in agent-browser's `stream
-/// status` reads it, the job's browser's own `HOME`.
-fn stream_server(home: &Path, job: &str) -> mpsc::Receiver<Value> {
-    let (tx, rx) = mpsc::channel();
-    let (port_tx, port_rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async move {
-            use futures_util::StreamExt as _;
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            port_tx.send(listener.local_addr().unwrap().port()).unwrap();
-            while let Ok((conn, _)) = listener.accept().await {
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let Ok(socket) = tokio_tungstenite::accept_async(conn).await else {
-                        return;
-                    };
-                    let (_out, mut incoming) = socket.split();
-                    while let Some(Ok(m)) = incoming.next().await {
-                        if let tokio_tungstenite::tungstenite::Message::Text(t) = m
-                            && let Ok(v) = serde_json::from_str::<Value>(&t)
-                        {
-                            let _ = tx.send(v);
-                        }
-                    }
-                });
-            }
-        });
-    });
-    let port = port_rx.recv().unwrap();
-    let dir = home.join("browser/jobs").join(job).join("home");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("stream-port"), port.to_string()).unwrap();
-    rx
-}
-
-/// A job with a tab open on the stand-in, its stream stood in, held by the test owner's device.
-fn held_tab(obid: &Obid) -> (String, String, String, mpsc::Receiver<Value>) {
-    let (job, token) = sleeping_job(obid);
-    let opened = tool(
-        obid,
-        &token,
-        "oby_browser_open",
-        json!({"url": "http://127.0.0.1:1/"}),
-    );
-    assert_eq!(opened["ok"], true, "{opened}");
-    let tab = opened["result"]["tab"].as_str().unwrap().to_string();
-    let got = stream_server(&obid.home, &job);
-    let take = format!("/v1/browser/tabs/{tab}/take");
-    let taken = call_signed(obid, "POST", &take, Some(&json!({})));
-    assert_eq!(taken.status, 200, "{}", taken.text);
-    (job, token, tab, got)
-}
-
 /// obid stopped (SIGTERM): every browser it started stops with it, its record gone (BROWSER-25).
 fn stop_with_no_browser_left(obid: &mut Obid) {
     assert!(obid.stop().success());
@@ -251,44 +142,6 @@ fn stop_with_no_browser_left(obid: &mut Obid) {
         .map(|e| e.path())
         .collect();
     assert!(live.is_empty(), "browsers still recorded live: {live:?}");
-}
-
-fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let p = e.path();
-        match std::fs::symlink_metadata(&p) {
-            Ok(m) if m.is_dir() => files_under(&p, out),
-            Ok(m) if m.is_file() => out.push(p),
-            _ => {}
-        }
-    }
-}
-
-#[test]
-fn browser_7_another_devices_input_never_reaches_the_page_and_the_holders_does() {
-    let folder = Folder::new("browser-7");
-    let mut obid = browser_obid(&folder);
-    let (_job, _token, tab, got) = held_tab(&obid);
-    let other = Device::register(&obid, 7);
-    let input = format!("/v1/browser/tabs/{tab}/input");
-    let click = |x: f64| json!({"type": "mouse", "eventType": "mousePressed", "x": x, "y": 5, "button": "left", "clickCount": 1});
-    // Device B, registered and signing, doesn't hold the tab: refused, and nothing is sent.
-    let refused = other.post(&obid, &input, &click(1.0));
-    assert_eq!(refused.status, 403, "{}", refused.text);
-    assert_eq!(refused.body["reason"], "not_holder");
-    // Unsigned input is refused too.
-    let unsigned = call(&obid, "POST", &input, Some(&click(1.0)));
-    assert_eq!(unsigned.status, 401, "{}", unsigned.text);
-    assert_eq!(unsigned.body["reason"], "unsigned");
-    // Device A, the holder: its input reaches the page, and it is the first thing that does.
-    let reached = call_signed(&obid, "POST", &input, Some(&click(2.0)));
-    assert_eq!(reached.status, 200, "{}", reached.text);
-    let first = within(10, "the holder's input reaches the stream", || {
-        got.try_recv().ok()
-    });
-    assert_eq!(first["type"], "input_mouse", "{first}");
-    assert_eq!(first["x"], 2.0, "B's input reached the page first: {first}");
-    stop_with_no_browser_left(&mut obid);
 }
 
 #[test]
@@ -328,6 +181,196 @@ fn browser_16_no_token_a_made_up_one_the_owners_or_an_ended_jobs_is_refused() {
         let (status, body) = mcp(&obid, Some(&token), "tools/list", json!({}));
         (status == 401 && body["reason"] == "bad_token").then_some(())
     });
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// The box switched on, for a test that drives it: off, a foreign job gets no browser
+/// (`box_edge::foreign_browser`, BROWSER-18).
+const BOX_ON: &[(&str, &str)] = &[("OBID_TEST_FOREIGN_BROWSER", "1")];
+
+/// A Codex job that stays running, its file written before obid starts as `mark` leaves it, with
+/// `env` (`BOX_ON`, or none), and its broker token.
+fn seeded_job(
+    folder: &Folder,
+    id: &str,
+    env: &[(&str, &str)],
+    mark: impl FnOnce(&mut obid::job::Job),
+) -> (Obid, String) {
+    let config = browser_config(folder);
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "build".into(),
+        "SLEEP TOKEN FILE".into(),
+        "codex".into(),
+        "codex".into(),
+    );
+    job.branch = format!("oby/build-{id}");
+    mark(&mut job);
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(
+        jobs.join(format!("{id}.json")),
+        serde_json::to_vec(&job).unwrap(),
+    )
+    .unwrap();
+    let obid = start_with(&folder.0, &config, None, env);
+    let file = obid.home.join(format!("worktrees/{id}/.obi/mcp-token"));
+    let token = within(90, "the job hands back its token", || {
+        std::fs::read_to_string(&file)
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| t.len() == 64)
+    });
+    (obid, token)
+}
+
+/// While the box is off, a job marked `untrusted` gets no browser: its agent, which holds its
+/// broker token, has every tool refused `browser_off`, its navigate to obid's own API on loopback
+/// too (BROWSER-18, `box_edge::foreign_browser`). Written before obid starts, as a foreign job is.
+#[test]
+fn browser_18_a_foreign_job_gets_no_browser_while_the_box_is_off() {
+    let folder = Folder::new("browser-18-off");
+    let (mut obid, token) = seeded_job(&folder, "aaaa1818", &[], |job| job.untrusted = true);
+    let url = format!("http://127.0.0.1:{}/v1/jobs", obid.port);
+    for (name, args) in [
+        ("oby_browser_navigate", json!({"url": url})),
+        ("oby_browser_snapshot", json!({})),
+    ] {
+        let refused = tool(&obid, &token, name, args);
+        assert_eq!(refused["error"]["code"], "browser_off", "{refused}");
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("no browser on this Oby yet"), "{refused}");
+    }
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// A foreign job's tab, opened by its agent in the stand-in window, is in its box partition
+/// (`oby-box-<job>`), and its navigate to obid's own API on loopback is outside the box
+/// (BROWSER-18).
+fn browses_in_its_box(obid: &Obid, token: &str, job: &str) {
+    let window = Window::follow(obid);
+    let opening = {
+        let (port, token) = (obid.port, token.to_string());
+        std::thread::spawn(move || {
+            let bearer = format!("Bearer {token}");
+            raw_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_open", "arguments": {"url": PAGE}}}),
+            )
+        })
+    };
+    let tab = window.attach(obid, job);
+    let (status, opened) = opening.join().unwrap();
+    assert_eq!(status, 200, "{opened}");
+    assert_eq!(
+        opened["result"]["structuredContent"]["ok"], true,
+        "{opened}"
+    );
+    let tabs = call(obid, "GET", "/v1/browser", None).body;
+    let shown = tabs["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == tab.as_str())
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(shown["partition"], format!("oby-box-{job}"), "{tabs}");
+    let url = format!("http://127.0.0.1:{}/v1/jobs", obid.port);
+    let refused = tool(obid, token, "oby_browser_navigate", json!({"url": url}));
+    assert_eq!(refused["error"]["code"], "outside_box", "{refused}");
+}
+
+/// With the box on, a job marked `untrusted` gets the browser in its box (BROWSER-18): its agent's tab opens in
+/// `oby-box-<job>`, and its navigate to obid's own API is refused. Written before obid starts, as
+/// a foreign job is.
+#[test]
+fn browser_18_a_foreign_jobs_tabs_open_in_its_box_and_its_navigate_to_obid_is_outside_box() {
+    let folder = Folder::new("browser-18");
+    let (mut obid, token) = seeded_job(&folder, "bbbb1818", BOX_ON, |job| job.untrusted = true);
+    browses_in_its_box(&obid, &token, "bbbb1818");
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// With the box on, a foreign job's worktree is its box's to write, links included: its screenshot goes into obid's
+/// own folder for the job, never through a linked `screens`, and an upload of a link, or of a path
+/// through a linked folder, to a file outside the room is refused `upload_outside_room`
+/// (BROWSER-18).
+#[test]
+fn browser_18_a_foreign_jobs_screenshot_and_upload_go_through_no_link() {
+    let folder = Folder::new("browser-18-links");
+    let (mut obid, token) = seeded_job(&folder, "ffff1818", BOX_ON, |job| job.untrusted = true);
+    browses_in_its_box(&obid, &token, "ffff1818");
+    let outside = folder.0.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret"), "the owner's").unwrap();
+    let worktree = obid.home.join("worktrees/ffff1818");
+    std::os::unix::fs::symlink(&outside, worktree.join("screens")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret"), worktree.join("leak")).unwrap();
+    std::os::unix::fs::symlink(&outside, worktree.join("linked")).unwrap();
+    let shot = tool(&obid, &token, "oby_browser_screenshot", json!({}));
+    assert_eq!(shot["ok"], true, "{shot}");
+    let path = shot["result"]["path"].as_str().unwrap_or_default();
+    let own = obid.home.join("browser/jobs/ffff1818/room/screens");
+    assert!(Path::new(path).starts_with(&own), "{shot}");
+    let left: Vec<_> = std::fs::read_dir(&outside).unwrap().flatten().collect();
+    assert_eq!(left.len(), 1, "nothing written through the link");
+    // A file of the worktree obid kept as the agent started is uploaded, as its copy.
+    std::fs::write(worktree.join("cv.txt"), "mine").unwrap();
+    let snapshot = tool(&obid, &token, "oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let uploaded = tool(
+        &obid,
+        &token,
+        "oby_browser_act",
+        json!({"action": "upload", "ref": "e1", "paths": [worktree.join("cv.txt")]}),
+    );
+    assert_eq!(uploaded["ok"], true, "{uploaded}");
+    for linked in [worktree.join("leak"), worktree.join("linked/secret")] {
+        let refused = tool(
+            &obid,
+            &token,
+            "oby_browser_act",
+            json!({"action": "upload", "ref": "e1", "paths": [linked]}),
+        );
+        assert_eq!(refused["error"]["code"], "upload_outside_room", "{refused}");
+    }
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// A follow-up whose earlier job is gone (a received review the owner deleted, then obid
+/// restarted) can't show where its line came from: with the box on it browses in its box, never the owner's
+/// partition (BROWSER-18). It carries the `foreign` mark obid gives a follow-up of someone else's
+/// job.
+#[test]
+fn browser_18_a_follow_up_whose_earlier_job_is_gone_browses_in_its_box() {
+    let folder = Folder::new("browser-18-gone");
+    let (mut obid, token) = seeded_job(&folder, "cccc1818", BOX_ON, |job| {
+        job.follow_up_of = Some("dddd1818".into());
+        job.foreign = Some(
+            "it follows up a job whose check got none of them (another Oby asked for this job)"
+                .into(),
+        );
+    });
+    browses_in_its_box(&obid, &token, "cccc1818");
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// The owner's review saved by an obid from before its start mark (`someone_elses_code`), marked
+/// `foreign` alone, is someone else's code once read again: with the box on it browses in its box, whether or not
+/// its worktree is there to find who wrote it (BROWSER-18).
+#[test]
+fn browser_18_a_review_saved_before_its_start_mark_browses_in_its_box() {
+    let folder = Folder::new("browser-18-saved-review");
+    let (mut obid, token) = seeded_job(&folder, "eeee1818", BOX_ON, |job| {
+        job.kind = "review".into();
+        job.foreign = Some("as it started, someone else wrote in pull request #90".into());
+    });
+    browses_in_its_box(&obid, &token, "eeee1818");
     stop_with_no_browser_left(&mut obid);
 }
 
@@ -422,94 +465,6 @@ fn browser_28_a_refused_call_reads_its_whole_401_never_a_reset() {
 }
 
 #[test]
-fn browser_8_a_secret_goes_to_the_page_and_is_in_no_file_under_obids_home() {
-    let folder = Folder::new("browser-8");
-    let mut obid = browser_obid(&folder);
-    let (_job, _token, tab, got) = held_tab(&obid);
-    let value = format!(
-        "browser-8-{}",
-        hex::encode(obi_protocol::keys::sha256(
-            format!("{:?}", std::time::SystemTime::now()).as_bytes()
-        ))
-    );
-    let path = format!("/v1/browser/tabs/{tab}/secret");
-    let answer = call_signed(
-        &obid,
-        "POST",
-        &path,
-        Some(&json!({"field": "#pw", "value": value})),
-    );
-    assert_eq!(answer.status, 200, "{}", answer.text);
-    assert_eq!(answer.body["filled"], true);
-    assert!(!answer.text.contains(&value), "the answer has the secret");
-    // The page got it, key by key, after a click on the field.
-    let mut typed = String::new();
-    within(10, "every key of the secret reaches the page", || {
-        while let Ok(m) = got.try_recv() {
-            if m["type"] == "input_keyboard" && m["eventType"] == "keyDown" {
-                typed.push_str(m["key"].as_str().unwrap_or_default());
-            }
-        }
-        (typed == value).then_some(())
-    });
-    // Nothing obid wrote has it: no file under its folder (its home, the browser's, its log).
-    let mut files = vec![];
-    files_under(&obid.folder, &mut files);
-    assert!(!files.is_empty());
-    let leaked: Vec<&PathBuf> = files
-        .iter()
-        .filter(|f| {
-            std::fs::read(f)
-                .is_ok_and(|bytes| bytes.windows(value.len()).any(|w| w == value.as_bytes()))
-        })
-        .collect();
-    assert!(leaked.is_empty(), "the secret is in {leaked:?}");
-    stop_with_no_browser_left(&mut obid);
-}
-
-#[test]
-fn browser_25_obid_stopping_ends_a_browser_slow_to_die_within_its_own_stop() {
-    let folder = Folder::new("browser-25-stop");
-    let mut obid = browser_obid(&folder);
-    let (_job, token) = sleeping_job(&obid);
-    let opened = tool(
-        &obid,
-        &token,
-        "oby_browser_open",
-        json!({"url": "http://127.0.0.1:1/"}),
-    );
-    assert_eq!(opened["ok"], true, "{opened}");
-    // Its daemon now ignores SIGTERM, as a Chrome slow to close does under load.
-    let live_dir = obid.home.join("browser/live");
-    let record: Value = std::fs::read_dir(&live_dir)
-        .unwrap()
-        .flatten()
-        .find_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
-        .expect("the browser's live record");
-    let daemon = record["daemon"].as_u64().expect("its daemon's pid") as u32;
-    let socket_dir = PathBuf::from(record["socketDir"].as_str().unwrap());
-    let session = record["session"].as_str().unwrap();
-    std::fs::write(socket_dir.join(format!("{session}.stubborn")), "").unwrap();
-    let alive = |pid: u32| {
-        std::process::Command::new("/bin/kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    };
-    assert!(alive(daemon));
-    assert!(obid.stop().success());
-    let live: Vec<_> = std::fs::read_dir(&live_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    assert!(live.is_empty(), "browsers still recorded live: {live:?}");
-    assert!(!alive(daemon), "its daemon {daemon} outlived obid");
-}
-
-#[test]
 fn browser_15_the_switches_are_kept_across_a_restart() {
     let folder = Folder::new("browser-15");
     let mut obid = browser_obid(&folder);
@@ -529,7 +484,7 @@ fn browser_15_the_switches_are_kept_across_a_restart() {
     let config: Value =
         serde_json::from_str(&std::fs::read_to_string(folder.0.join("config.json")).unwrap())
             .unwrap();
-    let mut again = start_with(&folder.0, &config, None, &stand_in_env());
+    let mut again = start_with(&folder.0, &config, None, &[]);
     let after = call(&again, "GET", "/v1/browser/settings", None);
     assert_eq!(
         after.body,
@@ -540,4 +495,861 @@ fn browser_15_the_switches_are_kept_across_a_restart() {
     let refused = tool(&again, &token, "oby_browser_snapshot", json!({}));
     assert_eq!(refused["error"]["code"], "browser_off", "{refused}");
     stop_with_no_browser_left(&mut again);
+}
+
+/// The head of a `GET` that streams: its status line and headers, then the connection dropped.
+fn stream_head(obid: &Obid, path: &str, token: Option<&str>) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let auth = token
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n{auth}\r\n"
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+        head.push(byte[0]);
+    }
+    String::from_utf8_lossy(&head).into_owned()
+}
+
+/// The window's relay (T3 Code's design) is the window's alone: obid's runner token follows its
+/// commands and posts its events; no token, and an agent's own job token, reach neither.
+#[test]
+fn relay_only_the_runner_token_reaches_the_windows_relay() {
+    let folder = Folder::new("relay-token");
+    let mut obid = browser_obid(&folder);
+    let (_job, job_token) = sleeping_job(&obid);
+    let shown =
+        json!({"events": [{"type": "shown", "threadId": "j1", "tabId": "tab-1", "shown": true}]});
+    let auth = format!("Bearer {TOKEN}");
+    let (status, body) = raw(&obid, "POST", "/v1/browser/relay", &[], &shown);
+    assert_eq!(status, 401, "{body}");
+    let agent = format!("Bearer {job_token}");
+    let (status, body) = raw(
+        &obid,
+        "POST",
+        "/v1/browser/relay",
+        &[("Authorization", &agent)],
+        &shown,
+    );
+    assert_eq!(
+        status, 401,
+        "an agent's token never posts the window's events: {body}"
+    );
+    let (status, body) = raw(
+        &obid,
+        "POST",
+        "/v1/browser/relay",
+        &[("Authorization", &auth)],
+        &shown,
+    );
+    assert_eq!(status, 204, "{body}");
+    let (status, body) = raw(
+        &obid,
+        "POST",
+        "/v1/browser/relay",
+        &[("Authorization", &auth)],
+        &json!({"events": "not a list"}),
+    );
+    assert_eq!(status, 400, "{body}");
+    // A type obid doesn't know yet is ignored, never refused.
+    let (status, body) = raw(
+        &obid,
+        "POST",
+        "/v1/browser/relay",
+        &[("Authorization", &auth)],
+        &json!({"events": [{"type": "somethingNew", "threadId": "j1"}]}),
+    );
+    assert_eq!(status, 204, "{body}");
+    let head = stream_head(&obid, "/v1/browser/relay", Some(TOKEN));
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(
+        head.to_ascii_lowercase().contains("text/event-stream"),
+        "{head}"
+    );
+    for token in [None, Some(job_token.as_str())] {
+        let head = stream_head(&obid, "/v1/browser/relay", token);
+        assert!(head.starts_with("HTTP/1.1 401"), "{token:?}: {head}");
+    }
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// Retired with obid's own browser (the window's browser, docs/plans/browser-t3.md): the person
+/// uses the webview itself, and Fill in is the window's. Each route stays, answering 410 with
+/// `retired`, so an app that still calls one is told, never left hanging (the add-only API).
+#[test]
+fn browser_30_input_secret_and_stream_still_answer_410_retired() {
+    let folder = Folder::new("relay-retired");
+    let mut obid = browser_obid(&folder);
+    let auth = format!("Bearer {TOKEN}");
+    for (method, path, body) in [
+        (
+            "POST",
+            "/v1/browser/tabs/tab-1/input",
+            json!({"type": "mouse"}),
+        ),
+        (
+            "POST",
+            "/v1/browser/tabs/tab-1/secret",
+            json!({"field": "#pw", "value": "v"}),
+        ),
+        ("GET", "/v1/browser/tabs/tab-1/stream", json!(null)),
+    ] {
+        let (status, answer) = raw(&obid, method, path, &[("Authorization", &auth)], &body);
+        assert_eq!(
+            (status, answer["reason"].as_str()),
+            (410, Some("retired")),
+            "{method} {path}: {answer}"
+        );
+    }
+    stop_with_no_browser_left(&mut obid);
+}
+
+/// The address every page of the stand-in window is at.
+const PAGE: &str = "https://example.com/";
+
+/// An answer the stand-in window keeps back: for the first frame of this method, until the test's
+/// condition holds.
+type Hold = (&'static str, Box<dyn Fn() -> bool + Send>);
+
+/// A stand-in for Oby's window on the relay (`browser/relay.rs`): it follows `GET
+/// /v1/browser/relay`, answers each CDP frame by its id as a page at [`PAGE`] with one button would,
+/// and records every method it was sent. One answer may be held back ([`Window::hold`]).
+struct Window {
+    port: u16,
+    methods: Arc<Mutex<Vec<String>>>,
+    hold: Arc<Mutex<Option<Hold>>>,
+}
+
+impl Window {
+    /// The window, following the relay before this returns.
+    fn follow(obid: &Obid) -> Window {
+        let window = Window {
+            port: obid.port,
+            methods: Arc::default(),
+            hold: Arc::default(),
+        };
+        let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+        write!(
+            stream,
+            "GET /v1/browser/relay HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+        let (port, methods, hold) = (window.port, window.methods.clone(), window.hold.clone());
+        std::thread::spawn(move || {
+            while {
+                line.clear();
+                reader.read_line(&mut line).unwrap_or(0) > 0
+            } {
+                let Some(command) = line
+                    .trim()
+                    .strip_prefix("data: ")
+                    .and_then(|d| serde_json::from_str::<Value>(d).ok())
+                    .filter(|c| c["type"] == "cdp")
+                else {
+                    continue;
+                };
+                let frame: Value =
+                    serde_json::from_str(command["message"].as_str().unwrap()).unwrap();
+                let method = frame["method"].as_str().unwrap_or_default().to_string();
+                methods.lock().unwrap().push(method.clone());
+                let events = page_answers(&command, &frame);
+                let held = {
+                    let mut hold = hold.lock().unwrap();
+                    match hold.take() {
+                        Some((m, until)) if m == method => Some(until),
+                        other => {
+                            *hold = other;
+                            None
+                        }
+                    }
+                };
+                match held {
+                    Some(until) => {
+                        std::thread::spawn(move || {
+                            within(60, "the test lets the held answer go", || {
+                                until().then_some(())
+                            });
+                            relay_post(port, events);
+                        });
+                    }
+                    None => relay_post(port, events),
+                }
+            }
+        });
+        window
+    }
+
+    /// Posts `attached` for `job`'s new tab, once `GET /v1/browser` shows it: its id.
+    fn attach(&self, obid: &Obid, job: &str) -> String {
+        let tab = within(30, "the job's new tab shows", || {
+            let tabs = call(obid, "GET", "/v1/browser", None).body;
+            tabs["tabs"]
+                .as_array()?
+                .iter()
+                .find(|t| t["owner"]["job"] == job)
+                .and_then(|t| t["id"].as_str().map(str::to_string))
+        });
+        relay_post(
+            self.port,
+            vec![json!({"type": "attached", "threadId": job, "tabId": tab})],
+        );
+        tab
+    }
+
+    /// How many frames of `method` the window was sent.
+    fn sent(&self, method: &str) -> usize {
+        self.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == method)
+            .count()
+    }
+
+    /// Holds back the answer to the next frame of `method` until `until` holds.
+    fn hold(&self, method: &'static str, until: impl Fn() -> bool + Send + 'static) {
+        *self.hold.lock().unwrap() = Some((method, Box::new(until)));
+    }
+}
+
+/// What a page at [`PAGE`] with one button answers a CDP `frame`: its answer by id, and for a
+/// navigate, its load after.
+fn page_answers(command: &Value, frame: &Value) -> Vec<Value> {
+    let result = match frame["method"].as_str().unwrap_or_default() {
+        "Runtime.evaluate" => json!({"result": {"value": {"url": PAGE, "title": "A page"}}}),
+        "Page.navigate" => json!({"frameId": "f1", "loaderId": "l1"}),
+        "Accessibility.getFullAXTree" => {
+            json!({"nodes": [{"nodeId": "1", "role": {"value": "button"},
+            "name": {"value": "Go"}, "backendDOMNodeId": 7, "childIds": []}]})
+        }
+        "DOM.getContentQuads" => json!({"quads": [[10, 10, 30, 10, 30, 20, 10, 20]]}),
+        _ => json!({}),
+    };
+    let cdp = |message: Value| {
+        json!({"type": "cdp", "threadId": command["threadId"], "tabId": command["tabId"],
+               "message": message.to_string()})
+    };
+    let mut events = vec![cdp(json!({"id": frame["id"], "result": result}))];
+    if frame["method"] == "Page.navigate" {
+        events.push(cdp(
+            json!({"method": "Page.loadEventFired", "params": {"timestamp": 1}}),
+        ));
+    }
+    events
+}
+
+/// The window's events, posted to obid's relay in order.
+fn relay_post(port: u16, events: Vec<Value>) {
+    let auth = format!("Bearer {TOKEN}");
+    let (status, body) = raw_at(
+        port,
+        "POST",
+        "/v1/browser/relay",
+        &[("Authorization", &auth)],
+        &json!({ "events": events }),
+    );
+    assert_eq!(status, 204, "{body}");
+}
+
+/// A sleeping job's agent with a tab of its own in the stand-in window (BROWSER-5, 6).
+struct AgentTab {
+    obid: Obid,
+    window: Window,
+    token: String,
+    job: String,
+    tab: String,
+    folder: Folder,
+}
+
+/// `job`'s agent opens a tab at [`PAGE`] in the stand-in window: its id.
+fn open_tab(obid: &Obid, window: &Window, token: &str, job: &str) -> String {
+    let opening = {
+        let (port, token) = (obid.port, token.to_string());
+        std::thread::spawn(move || {
+            let bearer = format!("Bearer {token}");
+            raw_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_open", "arguments": {"url": PAGE}}}),
+            )
+        })
+    };
+    let tab = window.attach(obid, job);
+    let (status, opened) = opening.join().unwrap();
+    assert_eq!(status, 200, "{opened}");
+    let opened = &opened["result"]["structuredContent"];
+    assert_eq!(opened["ok"], true, "{opened}");
+    tab
+}
+
+impl AgentTab {
+    fn open(name: &str) -> AgentTab {
+        AgentTab::open_with(name, &[])
+    }
+
+    /// [`AgentTab::open`] on an obid with `env`.
+    fn open_with(name: &str, env: &[(&str, &str)]) -> AgentTab {
+        let folder = Folder::new(name);
+        let obid = start_with(&folder.0, &browser_config(&folder), None, env);
+        let (job, token) = sleeping_job(&obid);
+        let window = Window::follow(&obid);
+        let tab = open_tab(&obid, &window, &token, &job);
+        AgentTab {
+            obid,
+            window,
+            token,
+            job,
+            tab,
+            folder,
+        }
+    }
+
+    fn tool(&self, name: &str, args: Value) -> Value {
+        tool(&self.obid, &self.token, name, args)
+    }
+
+    fn navigate(&self) -> Value {
+        self.tool("oby_browser_navigate", json!({"url": PAGE}))
+    }
+
+    fn path(&self, verb: &str) -> String {
+        format!("/v1/browser/tabs/{}/{verb}", self.tab)
+    }
+
+    /// The owner's signed take or give back.
+    fn signed(&self, verb: &str) -> Answer {
+        call_signed(&self.obid, "POST", &self.path(verb), Some(&json!({})))
+    }
+
+    /// The tab as `GET /v1/browser` shows it.
+    fn shown(&self) -> Value {
+        let tabs = call(&self.obid, "GET", "/v1/browser", None).body;
+        tabs["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == self.tab.as_str())
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    /// The agent's navigate, on a thread of its own: it says `act` on `done` once answered.
+    fn navigate_on_thread(&self, done: mpsc::Sender<&'static str>) -> JoinHandle<(u16, Value)> {
+        let (port, token) = (self.obid.port, self.token.clone());
+        std::thread::spawn(move || {
+            let bearer = format!("Bearer {token}");
+            let answer = raw_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_navigate", "arguments": {"url": PAGE}}}),
+            );
+            done.send("act").unwrap();
+            answer
+        })
+    }
+
+    /// The owner's signed take, on a thread of its own: it says `take` on `done` once answered.
+    /// Its words are signed here: the thread has no obid of its own to sign with.
+    fn take_on_thread(&self, done: mpsc::Sender<&'static str>) -> JoinHandle<(u16, Value)> {
+        let (port, path) = (self.obid.port, self.path("take"));
+        let header = words_header(&self.obid, "POST", &path, Some(&json!({})));
+        std::thread::spawn(move || {
+            let auth = format!("Bearer {TOKEN}");
+            let answer = raw_at(
+                port,
+                "POST",
+                &path,
+                &[("Authorization", &auth), ("X-Oby-Words", &header)],
+                &json!({}),
+            );
+            done.send("take").unwrap();
+            answer
+        })
+    }
+
+    /// Holds back the page's answer to the next navigate until `go` is set; `page` hears when it
+    /// goes.
+    fn hold_navigate(&self, go: &Arc<AtomicBool>, page: mpsc::Sender<&'static str>) {
+        let (go, page) = (go.clone(), Mutex::new(page));
+        self.window.hold("Page.navigate", move || {
+            let going = go.load(Ordering::SeqCst);
+            if going {
+                page.lock().unwrap().send("page").unwrap();
+            }
+            going
+        });
+    }
+
+    fn stop(mut self) {
+        stop_with_no_browser_left(&mut self.obid);
+    }
+}
+
+/// The test owner's device, which signs the owner's words.
+fn device(obid: &Obid) -> String {
+    let header = words_header(obid, "GET", "/", None);
+    header.split(' ').next().unwrap().to_string()
+}
+
+/// The first event `GET /v1/browser/events` holds, from its start, that `matches`.
+fn browser_event(obid: &Obid, matches: impl Fn(&Value) -> bool) -> Value {
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /v1/browser/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+    )
+    .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line).unwrap_or(0);
+        assert!(read > 0, "no such browser event");
+        if let Some(event) = line
+            .trim()
+            .strip_prefix("data: ")
+            .and_then(|d| serde_json::from_str::<Value>(d).ok())
+            .filter(|e| matches(e))
+        {
+            return event;
+        }
+    }
+}
+
+#[test]
+fn browser_5_a_signed_take_refuses_the_agents_act_human_control() {
+    let agent = AgentTab::open("browser-5-take");
+    let before = agent.shown()["holdGeneration"].as_u64().unwrap();
+    let taken = agent.signed("take");
+    assert_eq!(taken.status, 200, "{}", taken.text);
+    assert_eq!(taken.body["tabId"], agent.tab.as_str());
+    assert_eq!(taken.body["heldBy"], device(&agent.obid));
+    assert!(
+        taken.body["holdGeneration"].as_u64().unwrap() > before,
+        "{}",
+        taken.text
+    );
+    let navigates = agent.window.sent("Page.navigate");
+    let refused = agent.navigate();
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["error"]["code"], "human_control", "{refused}");
+    assert_eq!(
+        agent.window.sent("Page.navigate"),
+        navigates,
+        "no navigate reached the page"
+    );
+    browser_event(&agent.obid, |e| {
+        e["type"] == "action"
+            && e["tool"] == "oby_browser_navigate"
+            && e["outcome"] == "refused"
+            && e["reason"] == "human_control"
+    });
+    agent.stop();
+}
+
+#[test]
+fn browser_5_while_the_owner_holds_a_tab_the_agents_reads_still_answer() {
+    let agent = AgentTab::open("browser-5-reads");
+    let taken = agent.signed("take");
+    assert_eq!(taken.status, 200, "{}", taken.text);
+    let read = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(read["ok"], true, "{read}");
+    agent.stop();
+}
+
+#[test]
+fn browser_5_give_back_lets_the_agents_next_act_run() {
+    let agent = AgentTab::open("browser-5-give-back");
+    let taken = agent.signed("take");
+    assert_eq!(taken.status, 200, "{}", taken.text);
+    let given = agent.signed("giveBack");
+    assert_eq!(given.status, 200, "{}", given.text);
+    assert_eq!(given.body["heldBy"], Value::Null, "{}", given.text);
+    let navigates = agent.window.sent("Page.navigate");
+    let act = agent.navigate();
+    assert_eq!(act["ok"], true, "{act}");
+    assert_eq!(agent.window.sent("Page.navigate"), navigates + 1);
+    agent.stop();
+}
+
+#[test]
+fn browser_6_a_take_during_an_act_answers_once_the_act_ends() {
+    let agent = AgentTab::open("browser-6-wait");
+    let go = Arc::new(AtomicBool::new(false));
+    let (done, order) = mpsc::channel();
+    // The act ends when the page answers its navigate: the stand-in says so, then answers.
+    agent.hold_navigate(&go, done.clone());
+    let navigates = agent.window.sent("Page.navigate");
+    let acting = agent.navigate_on_thread(done.clone());
+    within(30, "the act reaches the page", || {
+        (agent.window.sent("Page.navigate") > navigates).then_some(())
+    });
+    let taking = agent.take_on_thread(done);
+    let device = device(&agent.obid);
+    within(30, "the tab shows held while the act runs", || {
+        (agent.shown()["heldBy"] == device.as_str()).then_some(())
+    });
+    assert!(order.try_recv().is_err(), "nothing answered yet");
+    go.store(true, Ordering::SeqCst);
+    let (status, act) = acting.join().unwrap();
+    assert_eq!(status, 200, "{act}");
+    assert_eq!(act["result"]["structuredContent"]["ok"], true, "{act}");
+    let (status, taken) = taking.join().unwrap();
+    assert_eq!(status, 200, "{taken}");
+    assert_eq!(taken["heldBy"], device.as_str(), "{taken}");
+    // The act counts as ended once the page answered it (`Api::done`), before its own answer is
+    // shaped and sent: the take answers after the page's answer, the act's answer either side.
+    let order: Vec<&str> = order.iter().take(3).collect();
+    let at = |what| order.iter().position(|o| *o == what).unwrap();
+    assert!(
+        at("page") < at("take"),
+        "the take answers after the act: {order:?}"
+    );
+    assert!(at("page") < at("act"), "{order:?}");
+    agent.stop();
+}
+
+/// T3's epoch check (`SessionControl.take`): a give back while the device's own take still waits
+/// for the agent's act ends that take, so the engine is never left holding a tab the API shows free.
+#[test]
+fn browser_6_a_give_back_while_its_take_waits_leaves_the_agent_free() {
+    let agent = AgentTab::open("browser-6-give-back-waiting");
+    let go = Arc::new(AtomicBool::new(false));
+    let (done, order) = mpsc::channel();
+    agent.hold_navigate(&go, done.clone());
+    let navigates = agent.window.sent("Page.navigate");
+    let acting = agent.navigate_on_thread(done.clone());
+    within(30, "the act reaches the page", || {
+        (agent.window.sent("Page.navigate") > navigates).then_some(())
+    });
+    let taking = agent.take_on_thread(done);
+    let device = device(&agent.obid);
+    within(30, "the tab shows held while the act runs", || {
+        (agent.shown()["heldBy"] == device.as_str()).then_some(())
+    });
+    let given = agent.signed("giveBack");
+    assert_eq!(given.status, 200, "{}", given.text);
+    assert_eq!(given.body["heldBy"], Value::Null, "{}", given.text);
+    assert!(order.try_recv().is_err(), "nothing answered yet");
+    go.store(true, Ordering::SeqCst);
+    let (status, act) = acting.join().unwrap();
+    assert_eq!(status, 200, "{act}");
+    assert_eq!(act["result"]["structuredContent"]["ok"], true, "{act}");
+    let (status, taken) = taking.join().unwrap();
+    assert_eq!(
+        (status, taken["reason"].as_str()),
+        (409, Some("control_changed")),
+        "{taken}"
+    );
+    assert_eq!(agent.shown()["heldBy"], Value::Null);
+    let navigates = agent.window.sent("Page.navigate");
+    let next = agent.navigate();
+    assert_eq!(next["ok"], true, "{next}");
+    assert_eq!(agent.window.sent("Page.navigate"), navigates + 1);
+    agent.stop();
+}
+
+#[test]
+fn browser_5_an_unsigned_wrongly_signed_or_job_token_take_is_refused_and_nothing_is_held() {
+    let agent = AgentTab::open("browser-5-refused");
+    let free = |why: &str| {
+        assert_eq!(agent.shown()["heldBy"], Value::Null, "{why}: nothing held");
+        let act = agent.navigate();
+        assert_eq!(act["ok"], true, "{why}: {act}");
+    };
+    for verb in ["take", "giveBack"] {
+        let path = agent.path(verb);
+        let unsigned = call(&agent.obid, "POST", &path, Some(&json!({})));
+        assert_eq!(
+            (unsigned.status, unsigned.body["reason"].as_str()),
+            (401, Some("unsigned")),
+            "{verb}: {}",
+            unsigned.text
+        );
+        free("unsigned");
+        let other = words_header(&agent.obid, "POST", &path, Some(&json!({"other": true})));
+        let wrong = call_with_headers(
+            &agent.obid,
+            TOKEN,
+            "POST",
+            &path,
+            Some(&json!({})),
+            &[("X-Oby-Words", &other)],
+        );
+        assert_eq!(
+            (wrong.status, wrong.body["reason"].as_str()),
+            (401, Some("bad_signature")),
+            "{verb}: {}",
+            wrong.text
+        );
+        free("signed over another body");
+        let words = words_header(&agent.obid, "POST", &path, Some(&json!({})));
+        let job = call_with_headers(
+            &agent.obid,
+            &agent.token,
+            "POST",
+            &path,
+            Some(&json!({})),
+            &[("X-Oby-Words", &words)],
+        );
+        assert_eq!(
+            (job.status, job.body["reason"].as_str()),
+            (401, Some("bad_token")),
+            "{verb}: {}",
+            job.text
+        );
+        free("the job's token");
+    }
+    agent.stop();
+}
+
+#[test]
+fn browser_5_a_ref_from_before_a_take_is_stale_after_give_back() {
+    let agent = AgentTab::open("browser-5-stale-ref");
+    let snapshot = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let click = json!({"action": "click", "ref": "e1"});
+    for verb in ["take", "giveBack"] {
+        let answer = agent.signed(verb);
+        assert_eq!(answer.status, 200, "{verb}: {}", answer.text);
+    }
+    let clicks = agent.window.sent("Input.dispatchMouseEvent");
+    let stale = agent.tool("oby_browser_act", click.clone());
+    assert_eq!(stale["ok"], false, "{stale}");
+    assert_eq!(stale["error"]["code"], "stale_ref", "{stale}");
+    assert_eq!(agent.window.sent("Input.dispatchMouseEvent"), clicks);
+    let snapshot = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let act = agent.tool("oby_browser_act", click);
+    assert_eq!(act["ok"], true, "{act}");
+    assert!(agent.window.sent("Input.dispatchMouseEvent") > clicks);
+    agent.stop();
+}
+
+/// A debug build's window after the last agent input in which a tab's download is still the
+/// agent's: 2 s, not T3's 5 (`OBID_TEST_BROWSER_AGENT_INPUT_MS`, BROWSER-34).
+const AGENT_INPUT_2_S: (&str, &str) = ("OBID_TEST_BROWSER_AGENT_INPUT_MS", "2000");
+
+/// How long apart a test's download rounds start: past an earlier round's 5 s watch.
+const ROUND: Duration = Duration::from_secs(6);
+
+/// The page's CDP event `method` with `params`, as the window posts it for `job`'s `tab`.
+fn page_event(job: &str, tab: &str, method: &str, params: Value) -> Value {
+    json!({"type": "cdp", "threadId": job, "tabId": tab,
+           "message": json!({"method": method, "params": params}).to_string()})
+}
+
+/// A download starting on the tab: its `Page.downloadWillBegin`.
+fn will_begin(job: &str, tab: &str, guid: &str, name: &str) -> Value {
+    page_event(
+        job,
+        tab,
+        "Page.downloadWillBegin",
+        json!({"frameId": "f1", "guid": guid, "url": format!("{PAGE}{name}"),
+               "suggestedFilename": name}),
+    )
+}
+
+/// A download's end: its `Page.downloadProgress` in `state`.
+fn progress(job: &str, tab: &str, guid: &str, state: &str) -> Value {
+    page_event(
+        job,
+        tab,
+        "Page.downloadProgress",
+        json!({"guid": guid, "totalBytes": 3, "receivedBytes": 3, "state": state}),
+    )
+}
+
+/// The file main saved for `job`'s download `name`, in the job's own folder.
+fn save_download(obid: &Obid, job: &str, name: &str) {
+    let folder = obid.home.join("browser/downloads").join(job);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(name), b"pdf").unwrap();
+}
+
+/// The window's `shown` for the tab.
+fn shown(job: &str, tab: &str, shown: bool) -> Value {
+    json!({"type": "shown", "threadId": job, "tabId": tab, "shown": shown})
+}
+
+/// `GET /v1/browser/downloads`'s listing of `name`, if any.
+fn listed(obid: &Obid, name: &str) -> Option<Value> {
+    call(obid, "GET", "/v1/browser/downloads", None).body["downloads"]
+        .as_array()?
+        .iter()
+        .find(|d| d["name"] == name)
+        .cloned()
+}
+
+/// The person's Downloads of the test's obid (its `HOME`'s).
+fn person_downloads(folder: &Folder) -> std::path::PathBuf {
+    folder.0.join("env-home/Downloads")
+}
+
+/// The owner's download `name` on the agent's tab, started again with a fresh guid every
+/// [`ROUND`] until it is listed (the first may come within the agent's window): its listing.
+fn owner_download(agent: &AgentTab, name: &str) -> Value {
+    let (job, tab) = (agent.job.as_str(), agent.tab.as_str());
+    let (mut round, mut next) = (0, std::time::Instant::now());
+    within(60, "the owner's download is listed", || {
+        if std::time::Instant::now() >= next {
+            round += 1;
+            next = std::time::Instant::now() + ROUND;
+            let guid = format!("{name}-{round}");
+            relay_post(agent.obid.port, vec![will_begin(job, tab, &guid, name)]);
+            save_download(&agent.obid, job, name);
+            relay_post(
+                agent.obid.port,
+                vec![progress(job, tab, &guid, "completed")],
+            );
+        }
+        listed(&agent.obid, name)
+    })
+}
+
+/// BROWSER-34: a download the owner starts on their own job's tab, no agent input past the
+/// window, is listed `person` / `delivered` and moved into their Downloads.
+#[test]
+fn browser_34_a_download_the_owner_starts_is_delivered_into_their_downloads() {
+    let agent = AgentTab::open_with("browser-34-owner", &[AGENT_INPUT_2_S]);
+    let name = "statement-oct.pdf";
+    let download = owner_download(&agent, name);
+    assert_eq!(
+        (download["startedBy"].as_str(), download["place"].as_str()),
+        (Some("person"), Some("delivered")),
+        "{download}"
+    );
+    assert!(person_downloads(&agent.folder).join(name).is_file());
+    let profile = agent.obid.home.join("browser/downloads").join(&agent.job);
+    assert!(
+        !profile.join(name).exists(),
+        "moved out of the job's folder"
+    );
+    agent.stop();
+}
+
+/// BROWSER-35: a download right after the agent's act is the agent's: the act's own watch lists
+/// it `agent` / `profile` (BROWSER-13), it stays in the job's folder and never reaches Downloads,
+/// even once the owner's own download on the same tab, the witness, is delivered.
+#[test]
+fn browser_35_a_download_right_after_the_agents_act_stays_the_agents() {
+    let agent = AgentTab::open_with("browser-35-act", &[AGENT_INPUT_2_S]);
+    let (job, tab) = (agent.job.as_str(), agent.tab.as_str());
+    let name = "agent-report.pdf";
+    let snapshot = agent.tool("oby_browser_snapshot", json!({}));
+    assert_eq!(snapshot["ok"], true, "{snapshot}");
+    let act = agent.tool("oby_browser_act", json!({"action": "click", "ref": "e1"}));
+    assert_eq!(act["ok"], true, "{act}");
+    relay_post(agent.obid.port, vec![will_begin(job, tab, "guid-1", name)]);
+    save_download(&agent.obid, job, name);
+    relay_post(
+        agent.obid.port,
+        vec![progress(job, tab, "guid-1", "completed")],
+    );
+    let download = within(30, "the act's watch lists the agent's download", || {
+        listed(&agent.obid, name)
+    });
+    assert_eq!(
+        (download["startedBy"].as_str(), download["place"].as_str()),
+        (Some("agent"), Some("profile")),
+        "{download}"
+    );
+    let witness = owner_download(&agent, "owner.pdf");
+    assert_eq!(witness["place"], "delivered", "{witness}");
+    assert!(person_downloads(&agent.folder).join("owner.pdf").is_file());
+    let profile = agent.obid.home.join("browser/downloads").join(job);
+    assert!(profile.join(name).is_file(), "it stays in the job's folder");
+    assert!(!person_downloads(&agent.folder).join(name).exists());
+    agent.stop();
+}
+
+/// BROWSER-35: in the round the owner's witness `b.pdf` is delivered, a download on their tab
+/// while it was off screen, one cancelled, and one on an `untrusted` job's tab are not: none is
+/// in Downloads or listed `person`, and each stays in its job's folder.
+#[test]
+fn browser_35_a_download_on_a_tab_not_shown_or_cancelled_is_not_delivered() {
+    let folder = Folder::new("browser-35-not");
+    let env = [BOX_ON[0], AGENT_INPUT_2_S];
+    let (mut obid, foreign_token) =
+        seeded_job(&folder, "cccc3535", &env, |job| job.untrusted = true);
+    let (own, own_token) = sleeping_job(&obid);
+    let window = Window::follow(&obid);
+    let own_tab = open_tab(&obid, &window, &own_token, &own);
+    let foreign_tab = open_tab(&obid, &window, &foreign_token, "cccc3535");
+    let (mut round, mut next) = (0, std::time::Instant::now());
+    let witness = within(60, "the owner's witness download is delivered", || {
+        if std::time::Instant::now() >= next {
+            round += 1;
+            next = std::time::Instant::now() + ROUND;
+            let guid = |n: &str| format!("{n}-{round}");
+            relay_post(
+                obid.port,
+                vec![
+                    shown(&own, &own_tab, false),
+                    will_begin(&own, &own_tab, &guid("a"), "a.pdf"),
+                    shown(&own, &own_tab, true),
+                    will_begin(&own, &own_tab, &guid("c"), "c.pdf"),
+                    progress(&own, &own_tab, &guid("c"), "canceled"),
+                    will_begin(&own, &own_tab, &guid("b"), "b.pdf"),
+                    will_begin("cccc3535", &foreign_tab, &guid("d"), "d.pdf"),
+                ],
+            );
+            for name in ["a.pdf", "b.pdf", "c.pdf"] {
+                save_download(&obid, &own, name);
+            }
+            save_download(&obid, "cccc3535", "d.pdf");
+            relay_post(
+                obid.port,
+                vec![
+                    progress(&own, &own_tab, &guid("a"), "completed"),
+                    progress(&own, &own_tab, &guid("c"), "completed"),
+                    progress(&own, &own_tab, &guid("b"), "completed"),
+                    progress("cccc3535", &foreign_tab, &guid("d"), "completed"),
+                ],
+            );
+        }
+        listed(&obid, "b.pdf")
+    });
+    assert_eq!(
+        (witness["startedBy"].as_str(), witness["place"].as_str()),
+        (Some("person"), Some("delivered")),
+        "{witness}"
+    );
+    let downloads = person_downloads(&folder);
+    assert!(downloads.join("b.pdf").is_file());
+    for (job, name) in [
+        (own.as_str(), "a.pdf"),
+        (own.as_str(), "c.pdf"),
+        ("cccc3535", "d.pdf"),
+    ] {
+        assert!(!downloads.join(name).exists(), "{name} isn't delivered");
+        assert_eq!(listed(&obid, name), None, "{name} isn't listed");
+        let profile = obid.home.join("browser/downloads").join(job);
+        assert!(
+            profile.join(name).is_file(),
+            "{name} stays in its job's folder"
+        );
+    }
+    stop_with_no_browser_left(&mut obid);
 }

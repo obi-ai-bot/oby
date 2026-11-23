@@ -27,6 +27,7 @@ import { outOfSphere, useSpheres } from './spheres';
 import { chatFirst, everything, onObid, welcome } from './lean';
 import { realId, shownId, talkReady, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
+import { revealKids } from './nested';
 import { askOby, chatOfTask, latestChat, moveChat, renameChat, restingChat, tellAbout, useChats } from './chats';
 import { useProjectsOn } from './projects';
 import { ProjectChip } from './ProjectSheet';
@@ -40,9 +41,12 @@ import { panelFit } from './panelFit';
 import { useBrowser } from './browser/store';
 import { browserFit } from './browser/fit';
 import { BrowserGlobe, BrowserPane } from './browser/BrowserPane';
+import { ArtifactPane } from './artifacts/Pane';
+import { useOpenArtifact } from './artifacts/store';
 import { MacSheet, useMacPill } from './browser/Mac';
 import { composing, registerCommands } from './shortcuts';
 import { ComputerLine, ComputerStage, useComputerStage } from './computers/ComputerHome';
+import { computerSays, messageOby, useComputers } from './computers/store';
 import { TYPES, renameTask, tell, countOf, runningCount, firstTab, hasFresh, toDoOf, useTasks, asksWaiting, type Tab } from './tasks';
 
 // the Settings tip over the message box: off for now (its bar, SettingsTip.tsx, kept for tips to come)
@@ -105,6 +109,8 @@ export default function Home() {
   const convos = useConvos();
   const threads = useThreads();
   const spheres = useSpheres();
+  // the computer the window works on, for the message box's words (computers/store.ts)
+  const computers = useComputers();
   // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
   const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length;
 
@@ -184,9 +190,9 @@ export default function Home() {
   };
   // a page whose subject went: the step before it, or from the first step, as back does
   const backOut = (i: number) => { if (i > 0 || !chatFirst) backTo(i - 1); else home(); };
-  // deleted from its page or a conversation: its page goes too
+  // deleted from its page, its own thread or a conversation: its page or thread goes too
   useEffect(() => {
-    const i = live.findIndex((l) => l.kind === 'task' && !tasks.some((t) => t.id === l.id));
+    const i = live.findIndex((l) => (l.kind === 'task' || l.kind === 'thread') && !tasks.some((t) => t.id === l.id));
     if (i >= 0) backOut(i);
   }, [tasks]);
   // an Obysphere deleted or left (from its settings): its settings, Knowledge, room and threads go too
@@ -212,6 +218,11 @@ export default function Home() {
   // over what's open (back returns to it), or a fresh start
   const [flash, setFlash] = useState<{ task: string; n: number } | null>(null);
   const openAt = (id: string, how: (step: Step) => void = start) => { how(conversationOf(id)); setFlash({ task: id, n: ++flashes }); };
+  // its card in a conversation, or its nested row: the task's own thread, all it did as it happens and
+  // its box telling its agent, over the conversation that started it (back returns there), its row lit
+  // (LIVETASK-22)
+  const openOwn = (id: string) => { const c = chatOfTask(id); if (c) revealKids(c.id); start(...(c ? [{ kind: 'talk', id: c.id } as Step] : []), { kind: 'thread', id }); };
+  const openOwnOver = (id: string) => { const c = chatOfTask(id); if (c) revealKids(c.id); push({ kind: 'thread', id }); };
   // chat first, a task opens in its conversation; Home's earlier design (?home) keeps its page
   const openTask = (id: string) => (chatFirst ? openAt(id, push) : push({ kind: 'task', id }));
   const goToConversation = (id: string) => push(conversationOf(id));
@@ -317,9 +328,12 @@ export default function Home() {
   const browser = useBrowser();
   // an agent using the Mac: main's pill and frame over the screen follow it (BROWSERAPP-19)
   useMacPill();
-  const browserShown = browser.offered && browser.ui.open;
+  // an artifact opened from its card takes the browser's place beside the conversation, at the
+  // browser's width (artifacts/Pane.tsx, docs/contracts/artifacts-app.md, ARTIFACTSAPP-4)
+  const artifactOpen = !!useOpenArtifact();
+  const browserShown = artifactOpen || (browser.offered && browser.ui.open);
   const sideFit = panelFit(windowWidth, sidebarWidth, SIDEBAR_MIN);
-  const besideBrowser = browserShown && !browser.ui.full ? browserFit(windowWidth, sideFit.docked && sidebar ? sideFit.width : 0, browser.ui.width) : null;
+  const besideBrowser = browserShown && (artifactOpen || !browser.ui.full) ? browserFit(windowWidth, sideFit.docked && sidebar ? sideFit.width : 0, browser.ui.width) : null;
   const fit = besideBrowser && !besideBrowser.sidebarDocks ? { docked: false, width: sideFit.width } : sideFit;
   const [floating, setFloating] = useState(false);
   useEffect(() => { if (fit.docked) setFloating(false); }, [fit.docked]);
@@ -406,7 +420,8 @@ export default function Home() {
   const label = (l: Layer) => {
     if (l.kind === 'group') return TYPES.find((t) => t.id === l.id)?.label ?? '';
     if (l.kind === 'task') { const t = tasks.find((k) => k.id === l.id); return t ? `${t.who ? `${t.who} ` : ''}${t.title}` : ''; }
-    if (l.kind === 'thread') { const t = tasks.find((k) => k.id === l.id); return t ? convoTitle(t.job) : ''; }
+    // a task's own thread: its title when a conversation started it (that conversation is the step before)
+    if (l.kind === 'thread') { const t = tasks.find((k) => k.id === l.id); return t ? (chatOfTask(t.id) ? t.title : convoTitle(t.job)) : ''; }
     if (l.kind === 'talk') return chats.find((c) => c.id === l.id)?.title ?? '';
     if (l.kind === 'archive') return 'Archived';
     if (l.kind === 'waiting') return 'Waiting for you';
@@ -429,7 +444,7 @@ export default function Home() {
   const rootTask = top?.kind === 'task' || top?.kind === 'thread' ? top.id : top?.kind === 'talk' && under?.kind === 'task' ? under.id : null;
 
   return (
-    <div className={`app${panelShown ? ' has-sidebar' : ''}${browserShown ? (browser.ui.full ? ' has-browser is-browser-full' : ' has-browser') : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
+    <div className={`app${panelShown ? ' has-sidebar' : ''}${browserShown ? (browser.ui.full && !artifactOpen ? ' has-browser is-browser-full' : ' has-browser') : ''}${fit.docked ? '' : ' is-floating'}${resizing ? ' is-resizing' : ''}${settling ? ' is-settling' : ''}${noLights ? ' no-lights' : ''}`} style={{ '--sidebar': `${fit.width}px`, '--sidebar-min': `${SIDEBAR_MIN}px` } as React.CSSProperties}>
       <Sidebar
         open={panelShown}
         atHome={!away}
@@ -438,7 +453,7 @@ export default function Home() {
         onHome={home}
         onOpenGroup={(id) => start({ kind: 'group', id, tab: firstTab(id) })}
         onOpenTask={(id) => (chatFirst ? openAt(id) : start({ kind: 'task', id }))}
-        onOpenAgent={(id) => openAt(id)}
+        onOpenAgent={openOwn}
         onOpenChat={(id) => start({ kind: 'task', id }, conversationOf(id))}
         onOpenOby={(name) => start({ kind: 'oby', id: name })}
         onOpenMember={(owner) => start({ kind: 'member', id: owner })}
@@ -612,7 +627,8 @@ export default function Home() {
         className={enterIn ? (arriving ? 'is-waiting' : 'is-arrival') : ''}
         // (chat first, the line over it asks already: the canvas's words, Sangam's to change)
         prompts={!chatFirst}
-        placeholder={chatFirst ? 'Message Oby…' : undefined}
+        // on another computer, its name (COMPUTERSAPP-13, Sangam's screen 06)
+        placeholder={chatFirst ? messageOby(computers) : undefined}
         // the tip bar over the box (SettingsTip.tsx, its look kept for tips to come): the Settings tip is
         // off for now (Sangam, 2026-10-28: not needed)
         note={SETTINGS_TIP && tipShown && <SettingsTip onOpen={() => start({ kind: 'settings', id: 'general' })} />}
@@ -648,14 +664,14 @@ export default function Home() {
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         // opened at a task: the conversation on top lights its card
         const at = flash && i === live.length - 1 && kind !== 'peer' ? flash : undefined;
-        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
+        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} onOpenTask={openOwnOver} onFollowUp={(id) => openAt(id)} />;
       })}
       {/* chat first: nothing over a conversation but its own: what it and its tasks ask waits in the
           drawer over its box (ChatView, DecisionBar), what other conversations ask on their rows and
           in Waiting for you; with none open, all of it on the stage, as on Home (CHATFIRST-8) */}
     </div>
       {/* the browser, beside the conversation or across the window (docs/contracts/browser-app.md) */}
-      <BrowserPane width={besideBrowser?.width ?? browser.ui.width} />
+      {artifactOpen ? <ArtifactPane width={besideBrowser?.width ?? browser.ui.width} /> : <BrowserPane width={besideBrowser?.width ?? browser.ui.width} />}
       {/* the first time an agent would use the Mac: Oby's sheet before macOS asks (BROWSERAPP-20) */}
       <MacSheet />
       {/* stays next to the traffic lights whether the side panel is open or not.
@@ -672,6 +688,8 @@ export default function Home() {
 // or what last went wrong; nothing while all's well
 function Connection() {
   const { connection, problem } = useLive();
+  // a switch under way, or the computer in use unreachable: the picker's line says it (ComputerLine)
+  if (computerSays(useComputers())) return null;
   if (connection === 'live' && !problem) return null;
   return <p className={`connection is-${connection}`} role="status">{problem ?? 'Connecting to Oby’s engine…'}</p>;
 }

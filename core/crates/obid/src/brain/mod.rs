@@ -19,14 +19,17 @@ pub mod briefing;
 pub mod calls;
 pub mod defaults;
 pub mod find;
+pub mod folder_writes;
 pub mod harness;
 pub mod harness_codex;
 pub mod harness_cursor;
+pub mod open_artifact;
 pub mod owners_word;
 pub mod plan;
 pub mod read;
 pub mod recap;
 pub mod room;
+pub mod server_asks;
 pub mod talk;
 pub mod tools;
 pub mod turn;
@@ -88,6 +91,9 @@ struct Request {
     /// Where a new conversation works (docs/contracts/folders.md, WORKSPACE-3): `folder` (the
     /// default) or `worktree`; only with `new`, never changed after.
     workspace: Option<crate::workspace::Workspace>,
+    /// The artifact open where the words were said (docs/contracts/artifacts.md, ARTIFACTS-12):
+    /// they land in its conversation, whatever `conversation` says. Add-only (`artifacts-v2`).
+    artifact: Option<open_artifact::Open>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -182,7 +188,19 @@ pub async fn plan(
         .transpose()?;
     // Left out, a request joins the latest conversation, as it did when there was only one: the
     // apps from before #493 send none and show one thread.
+    // Words said with an artifact open go to its conversation (ARTIFACTS-12): checked first, so
+    // none for an artifact obid hasn't is a 404 before anything is kept.
+    if req.artifact.is_some() && req.new == Some(true) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Words with an artifact open go to its conversation: send artifact or new, not both.",
+        ));
+    }
+    let opened = (req.artifact)
+        .map(|open| open_artifact::opened(&shared, &scope, open))
+        .transpose()?;
     let target = match (req.conversation, req.new.unwrap_or(false)) {
+        _ if opened.is_some() => opened.as_ref().map_or(Target::Latest, |o| o.target()),
         (Some(_), true) => {
             return Err(ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -271,18 +289,26 @@ pub async fn plan(
         let mut projects = shared.projects.lock();
         let project = (req.project.zip(root))
             .map(|(p, root)| crate::projects::joined(projects.at(&root), &p));
-        shared.conversations.begin(
-            &scope,
-            target,
-            said,
-            jobs,
-            attachments,
-            id,
-            foreign,
-            folders,
-            signed,
-            project.transpose(),
-        )?
+        let begin = |target| {
+            (shared.conversations)
+                .begin(
+                    &scope,
+                    target,
+                    said,
+                    jobs,
+                    attachments,
+                    id,
+                    foreign,
+                    folders,
+                    signed,
+                    project.transpose(),
+                )
+                .map_err(ApiError::from)
+        };
+        match &opened {
+            Some(opened) => open_artifact::begin_in(&shared, opened, begin)?,
+            None => begin(target)?,
+        }
     };
     drop_uploads(&shared, begun.forgotten.clone()).await;
     // The new conversation's workspace, kept before its first turn runs (WORKSPACE-3). One that
@@ -338,6 +364,7 @@ pub async fn plan(
         defaults,
         ask,
         skill,
+        artifact: opened.map(|o| o.told),
         turns,
         back,
         now,
@@ -476,6 +503,7 @@ async fn answer(
     control.set_signed(words.signed);
     control.set_mentioned(asking.ask.clone());
     control.set_skill(asking.skill.clone());
+    control.set_artifact(asking.artifact.clone());
     let asked = Asked {
         said,
         attachments: &words.attachments,
@@ -484,6 +512,7 @@ async fn answer(
         turn: &control.turn,
         signed: words.signed,
         defaults: words.defaults.as_ref(),
+        artifact: control.artifact(),
     };
     // The recap is written while the brain thinks; a background call is bounded and
     // tried once, and when it fails the answer is the same as without it.
@@ -619,15 +648,18 @@ pub fn written_after(shared: &Shared, conversation: &str) -> Option<String> {
 
 /// `new`, a job Oby's brain starts with words it wrote in `conversation` (crate::secretspec): the
 /// owner's own words only while the conversation read nothing off obid's allowlist; otherwise
-/// someone else's from the start, in a clone apart.
+/// someone else's from the start, in a clone apart. In a conversation that laid an unproxied
+/// version it's LANE-3a's too (`ran_unproxied`: no declared secrets for its check).
 pub fn written_in(
     shared: &Shared,
     conversation: &str,
     new: crate::jobs::NewJob,
 ) -> crate::jobs::NewJob {
+    let ran_unproxied = new.ran_unproxied || open_artifact::laid_unproxied(shared, conversation);
     match shared.conversations.foreign(conversation) {
         None => crate::jobs::NewJob {
             vetted: true,
+            ran_unproxied,
             ..new
         },
         Some(why) => crate::jobs::NewJob {
@@ -635,6 +667,7 @@ pub fn written_in(
             foreign: Some(format!(
                 "Oby's conversation that wrote its words read {why}"
             )),
+            ran_unproxied,
             ..new
         },
     }

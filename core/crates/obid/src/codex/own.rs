@@ -38,6 +38,10 @@ pub struct Policy {
     pub base: &'static str,
     /// What its commands never read, each as Codex's sandbox names a path (a `*` and `**` match).
     denied: Vec<String>,
+    /// What its commands write besides the working folder, and what stays read-only inside it: a
+    /// conversation's folder and its git (WORKSPACE-1), only where Codex writes without asking.
+    writes: Vec<String>,
+    kept: Vec<String>,
 }
 
 /// The policy an own Codex run gets in `mode`, as T3 Code maps its runtime modes: Ask and Plan
@@ -57,6 +61,8 @@ pub fn policy(mode: Mode) -> Policy {
         approval,
         base,
         denied: Vec::new(),
+        writes: Vec::new(),
+        kept: Vec::new(),
     }
 }
 
@@ -70,6 +76,25 @@ impl Policy {
             self.denied.dedup();
         }
         self
+    }
+
+    /// This policy, its commands also writing `writes` and never `kept` inside them (WORKSPACE-1):
+    /// only where Codex's sandbox writes its working folder without asking (`:workspace`, Accept
+    /// edits and Sandbox); in Ask and Plan a write still asks, and Bypass has no sandbox.
+    pub fn writing(mut self, writes: Vec<String>, kept: Vec<String>) -> Self {
+        if self.base == ":workspace" {
+            (self.writes, self.kept) = (writes, kept);
+        }
+        self
+    }
+
+    /// Its `filesystem` entries: each path and what its commands may do there.
+    fn entries(&self) -> std::collections::BTreeMap<&str, &'static str> {
+        let mut all = std::collections::BTreeMap::new();
+        all.extend(self.writes.iter().map(|p| (p.as_str(), "write")));
+        all.extend(self.kept.iter().map(|p| (p.as_str(), "read")));
+        all.extend(self.denied.iter().map(|p| (p.as_str(), "none")));
+        all
     }
 
     /// Whether its commands run in a sandbox obid's profile can add denies to: all but Bypass.
@@ -99,8 +124,8 @@ impl Policy {
             format!("default_permissions=\"{}\"", self.profile()),
         ];
         if self.guarded() {
-            let denied: Vec<String> = (self.denied.iter())
-                .map(|path| format!("{} = \"none\"", json!(path)))
+            let denied: Vec<String> = (self.entries().into_iter())
+                .map(|(path, mode)| format!("{} = \"{mode}\"", json!(path)))
                 .collect();
             set.push(format!("permissions.{PROFILE}.extends=\"{}\"", self.base));
             set.push(format!(
@@ -143,9 +168,13 @@ impl Policy {
         let added = (origins.as_object().into_iter().flatten())
             .find(|(key, at)| key.starts_with(&prefix) && at["name"]["type"] != "sessionFlags")
             .map(|(key, _)| key.as_str());
-        let undenied = (self.denied.iter())
-            .find(|path| profile["filesystem"][path.as_str()] != "deny")
-            .map(|path| format!("{prefix}filesystem.{path}"));
+        // Codex says a `none` entry as `"deny"` (codex-cli 0.163.0).
+        let undenied = (self.entries().into_iter())
+            .find(|(path, mode)| {
+                let said = if *mode == "none" { "deny" } else { mode };
+                profile["filesystem"][*path] != said
+            })
+            .map(|(path, _)| format!("{prefix}filesystem.{path}"));
         let guarded = self.guarded();
         let wrong = [
             ("approval_policy", c["approval_policy"] != self.approval()),

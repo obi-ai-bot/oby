@@ -1,4 +1,4 @@
-//! The agents' tools over obid's driver (BROWSER-1 to 3, 5, 6, 9 to 13, 15), in the lab's order
+//! The agents' tools over obid's driver (BROWSER-1 to 3, 5, 6, 9 to 13, 15, 34), in the lab's order
 //! (`browserapi.rs`, `call_tool`): the switch first, an unknown tool next, the job's browser up
 //! (within its own allowance) before any tool that reaches a page, then each act let through,
 //! committed right before it runs and done after, with its `action` events (started, done,
@@ -15,9 +15,10 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::Service;
-use super::api::{Refused, browser_up, mcp_refusal, mcp_result};
+use super::api::{Refused, browser_off_for_another_oby, mcp_refusal, mcp_result};
+use super::box_edge;
+use super::box_files;
 use super::contract as c;
-use super::driver::Session;
 use super::engine::{self, Actor, DownloadFate, Kind, download_rule};
 
 /// How long after an act (or the person's click) a download is looked for.
@@ -34,8 +35,17 @@ impl Service {
         name: &str,
         args: &Value,
     ) -> Value {
+        let foreign = self.api(|a| a.job(job).is_some_and(|j| j.origin.foreign()));
+        if foreign && !box_edge::foreign_browser() {
+            return mcp_refusal(&box_edge::not_yet());
+        }
         if let Err(e) = self.api(|a| a.tools_allowed()) {
-            return mcp_refusal(&e);
+            // Another Oby's task finishes without one: its own owner can't turn it on (BROWSER-18).
+            return mcp_refusal(&if foreign {
+                browser_off_for_another_oby()
+            } else {
+                e
+            });
         }
         if !c::MCP_TOOLS.contains(&name) {
             return mcp_refusal(&Refused::new(
@@ -44,26 +54,53 @@ impl Service {
                 format!("There is no browser tool named {name}."),
             ));
         }
-        let actor = Actor::Agent(job.into());
-        // Every tool that reaches a page waits for the job's browser first, within its own
-        // allowance; one that closed itself meanwhile starts again.
-        if !matches!(name, "oby_browser_list_tabs" | "oby_browser_ask_person") {
-            if !self.driver().is_live(job).await {
-                self.api(|a| {
-                    if a.job(job)
-                        .is_some_and(|j| j.browser == c::BrowserState::Ready)
-                    {
-                        a.set_browser(job, c::BrowserState::NotStarted, None);
-                    }
-                });
-                self.sync(job);
-            }
-            let allowance = Duration::from_millis(c::BROWSER_START_ALLOWANCE_MS);
-            let flush = || self.flush();
-            if let Err(e) =
-                browser_up(self.api_lock(), &**self.driver(), job, allowance, &flush).await
-            {
+        // The box's edge: another Oby's task opens web pages, never the host's own services or
+        // files (BROWSER-18).
+        if foreign && matches!(name, "oby_browser_open" | "oby_browser_navigate") {
+            let url = args["url"].as_str().unwrap_or_default();
+            if let Err(e) = box_edge::in_box(url, &self.host_ports()) {
+                let tab = args["tab"].as_str().map(str::to_string);
+                self.act_event(job, tab, name, args, c::Outcome::Refused, Some(e.reason));
                 return mcp_refusal(&e);
+            }
+        }
+        // Its worktree is the box's to write, links included: an upload is a copy in obid's own
+        // folder for the job, read through no link, and its screenshots go into that folder
+        // (box_files, BROWSER-18).
+        let own = self.window().room(job);
+        let boxed;
+        let (room, args) = match foreign {
+            false => (room, args),
+            true => match box_files::uploads(room, self.room(job).as_deref(), &own, name, args) {
+                Ok(copied) => {
+                    boxed = copied;
+                    (own.as_path(), &boxed)
+                }
+                Err(path) => {
+                    let refused = engine::Refusal::UploadOutsideRoom(path).to_json();
+                    return mcp_result(self.api(|a| a.for_agent(refused)));
+                }
+            },
+        };
+        let actor = Actor::Agent(job.into());
+        // Every tool that reaches a page needs Oby's window: its tabs are the window's webviews
+        // (T3 Code's design). With no window the call is refused, never run elsewhere.
+        if !matches!(name, "oby_browser_list_tabs" | "oby_browser_ask_person") {
+            if !self.relay().window() {
+                let (reason, message) = super::relay::RelayError::NoWindow.reason();
+                return mcp_refusal(&Refused::new(409, reason, message));
+            }
+            let up = self.api(|a| {
+                let ready = a
+                    .job(job)
+                    .is_some_and(|j| j.browser == c::BrowserState::Ready);
+                if !ready {
+                    a.set_browser(job, c::BrowserState::Ready, None);
+                }
+                ready
+            });
+            if !up {
+                self.flush();
             }
         }
         match name {
@@ -82,7 +119,7 @@ impl Service {
     }
 
     fn core_status(&self, actor: &Actor) -> Value {
-        self.driver()
+        self.window()
             .core()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -103,7 +140,7 @@ impl Service {
         };
         let reason = args["reason"].as_str().unwrap_or("").to_string();
         let said = self
-            .driver()
+            .window()
             .core()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -192,12 +229,12 @@ impl Service {
             self.act_event(job, tab.clone(), name, args, c::Outcome::Started, None);
         }
         let begun = {
-            let driver = self.driver();
-            let mut core = driver.core().lock().unwrap_or_else(|e| e.into_inner());
-            core.begin(actor, name, args, room, driver.now_ms())
+            let window = self.window();
+            let mut core = window.core().lock().unwrap_or_else(|e| e.into_inner());
+            core.begin(actor, name, args, room, window.now_ms())
         };
         let v = match begun {
-            Ok(ticket) => self.driver().run(job, &ticket).await,
+            Ok(ticket) => self.window().run(job, &ticket).await,
             Err(r) => r.to_json(),
         };
         if let Some(l) = &lease {
@@ -238,7 +275,9 @@ impl Service {
                 self.act_event(job, the_tab.clone(), name, args, c::Outcome::Done, None);
             }
             if name == "oby_browser_act" {
-                self.watch_downloads(job, the_tab, Actor::Agent(job.into()));
+                // ponytail: only an act's next 5 s are watched, so an agent's download a navigate
+                // starts, or one slower than that, stays in its profile unlisted.
+                self.watch_downloads(job, the_tab, Actor::Agent(job.into()), None);
             }
         }
         self.flush();
@@ -325,12 +364,15 @@ impl Service {
     }
 
     /// Looks at a job's downloads for a few seconds after an act (BROWSER-13): an agent's stays in
-    /// its profile; the person's is delivered into their Downloads.
+    /// its profile; the person's is delivered into their Downloads (BROWSER-34), quarantined, under
+    /// a name not taken there, and never opened. With `only`, only the unseen file of that name is
+    /// taken; every other stays for the act's own watch.
     pub(super) fn watch_downloads(
         self: &Arc<Self>,
         job: &str,
         tab: Option<String>,
         started_by: Actor,
+        only: Option<String>,
     ) {
         let me = self.clone();
         let job = job.to_string();
@@ -344,10 +386,11 @@ impl Service {
                         .unwrap_or_default()
                 });
                 let new: Vec<_> = me
-                    .driver()
+                    .window()
                     .downloads(&job)
                     .into_iter()
                     .filter(|f| !seen.contains(&f.name))
+                    .filter(|f| only.as_ref().is_none_or(|n| *n == f.name))
                     .collect();
                 if new.is_empty() {
                     continue;
@@ -361,15 +404,13 @@ impl Service {
                     if place == c::Place::Delivered {
                         let to = me.downloads_to().to_path_buf();
                         let _ = crate::store::make_private_dir(&to);
-                        match me.driver().save_copy(&job, &file.name, &to) {
+                        let from = me.window().downloads_folder(&job).join(&file.name);
+                        match me.window().save_copy(&job, &file.name, &to) {
                             Ok(copy) => {
                                 if let Some(n) = copy.file_name() {
                                     name = n.to_string_lossy().into_owned();
                                 }
-                                let home = me.driver().home().to_path_buf();
-                                let _ = std::fs::remove_file(
-                                    Session::downloads_of(&home, &job).join(&file.name),
-                                );
+                                let _ = std::fs::remove_file(&from);
                             }
                             Err(e) => {
                                 tracing::warn!("job {job}: a download wasn't delivered: {e}");

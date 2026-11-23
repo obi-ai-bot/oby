@@ -26,6 +26,12 @@
 //                    then ends its turn; resumed, says what it heard. ASK OWNER HOLD keeps its turn
 //                    open after the call answers, as codex-cli 0.163 did in a drive (2026-11-17),
 //                    writing .obi/held.log, until obid ends it
+//   BROWSE: <url>    uses Oby's browser as Codex would (BROWSER-17): finds the `browser` server in its
+//                    `-c` settings, its token in the variable they name; each call an mcpToolCall
+//                    item, run at once when the server was approved before the run, else refused
+//                    in an own run that asks nobody, else asked of obid; lists the tools, opens <url> and
+//                    snapshots it; writes what it found and got to .obi/browsed.json and ends
+//                    "Browsed." (or "Not browsed: <why>")
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
 //   QUIET            says nothing until it is ended, then in the turn obid continues says "Carried
 //                    on.", having heard its task again under "What you were last sent"
@@ -333,6 +339,40 @@ async function runTurn(turnId, prompt) {
       questions: [{ id: "store", header: "Store", question: "Which store?", isOther: true, isSecret: task.includes("SECRET"),
         options: [{ label: "SQLite", description: "One file" }, { label: "Postgres", description: "A server" }] }] });
     return complete(turnId, `question: ${JSON.stringify(answer)}`);
+  }
+  const browse = task.match(/BROWSE: (\S+)/);
+  if (browse) {
+    const url = setting("mcp_servers.browser.url");
+    const tokenVar = setting("mcp_servers.browser.bearer_token_env_var");
+    const seen = { server: url && { url, bearer: typeof tokenVar === "string" && !!process.env[tokenVar] },
+      approval: setting("mcp_servers.browser.default_tools_approval_mode"), lane: own ? "own" : "boxed", calls: {} };
+    const done = (said) => {
+      mkdirSync(".obi", { recursive: true });
+      writeFileSync(".obi/browsed.json", JSON.stringify(seen, null, 2));
+      return complete(turnId, said);
+    };
+    if (!url) return done("Not browsed: no browser server");
+    let id = 0;
+    const post = (method, params) => fetch(url, { method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env[tokenVar]}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }) }).then((r) => r.json());
+    const tool = async (name, args) => {
+      const item = { type: "mcpToolCall", id: randomUUID(), server: "browser", tool: name, arguments: args, status: "inProgress" };
+      send({ method: "item/started", params: { threadId: thread, turnId, item } });
+      // Approved before the run, Codex asks nobody; else in Bypass it refuses, and otherwise asks obid.
+      const approved = seen.approval === "approve" ? { action: "accept" }
+        : asksNobody ? { action: "MCP tool call requires approval, but approval policy is never" }
+        : await ask("mcpServer/elicitation/request", { threadId: thread, turnId, serverName: "browser", mode: "form",
+          _meta: { codex_approval_kind: "mcp_tool_call", tool_params: args }, message: `Allow the browser MCP server to run tool "${name}"?`, requestedSchema: { type: "object", properties: {} } });
+      const answer = approved.action === "accept" ? await post("tools/call", { name, arguments: args }) : { declined: approved.action };
+      send({ method: "item/completed", params: { threadId: thread, turnId, item: { ...item, status: answer.declined ? "failed" : "completed" } } });
+      return answer;
+    };
+    seen.calls.list = await post("tools/list", {});
+    seen.calls.open = await tool("oby_browser_open", { url: browse[1] });
+    seen.calls.snapshot = await tool("oby_browser_snapshot", {});
+    const ok = seen.calls.open.result?.structuredContent?.ok === true && seen.calls.snapshot.result?.structuredContent?.ok === true;
+    return done(ok ? "Browsed." : "Not browsed: a call failed");
   }
   if (task.includes("ASK OWNER")) {
     if (state.asked) return complete(turnId, `heard: ${prompt}`);

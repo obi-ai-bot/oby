@@ -567,6 +567,60 @@ fn conversation_agent_25_a_claude_code_started_ahead_that_ran_its_hooks_takes_th
     );
 }
 
+/// CONVERSATION-AGENT-53 (docs/contracts/conversation-agent.md): a Claude Code whose listing of
+/// Oby's tools failed as it started (obid answered it past Claude Code's 30 s, which Claude Code
+/// never asks again) still has them on its turn: a new one's first turn, and the next new
+/// conversation's Claude Code, started ahead, on that conversation's first turn. The stand-in loses
+/// its first listing as Claude Code 2.1.325 does (tests/agents/fake-harness).
+#[test]
+fn conversation_agent_53_a_claude_code_that_lost_obys_tools_has_them_on_its_turn() {
+    let (_folder, obid) = obid_env(
+        "harness-agent-53",
+        true,
+        json!({"agent": "claude"}),
+        &[("OBID_PRESTART", "on")],
+        json!({}),
+    );
+    std::fs::write(obid.home.join("accounts/stub/oby-list-lost"), "").unwrap();
+    let has_tools = |answer: &Answer| {
+        let text = answer.body["text"].as_str().unwrap_or_default();
+        assert!(
+            text.starts_with("oby: ") && !text.contains("refused"),
+            "Oby's tools on the turn: {}",
+            answer.text
+        );
+    };
+    let first = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    has_tools(&first);
+    let one = first.body["conversation"].as_str().unwrap().to_owned();
+    let conversations = obid.home.join("conversations");
+    let (next, record) = within(30, "the next conversation's Claude Code started", || {
+        std::fs::read_dir(&conversations)
+            .ok()?
+            .flatten()
+            .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy() != one)
+            .find_map(|e| {
+                let line = std::fs::read_to_string(e.path().join("config/started.jsonl")).ok()?;
+                let record: Value = serde_json::from_str(line.lines().next()?).ok()?;
+                Some((e.file_name().to_string_lossy().into_owned(), record))
+            })
+    });
+    let second = said(&obid, json!({"said": "OBY oby_jobs {}", "new": true}));
+    assert_eq!(
+        second.body["conversation"],
+        next.as_str(),
+        "{}",
+        second.text
+    );
+    has_tools(&second);
+    let recorded = recorded(&conversations.join(format!("{next}/config/turns.jsonl")));
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(
+        recorded[0]["id"], record["id"],
+        "the turn went to the Claude Code started ahead"
+    );
+}
+
 /// A waiting Claude Code that wrote a line while it waited isn't given the next turn (the line
 /// would be taken for the turn's): a new one answers it.
 #[test]
@@ -2901,6 +2955,149 @@ fn a_job_hears_the_owners_words_and_the_agents_only_quoted() {
     );
     // Its step shows the owner's words, not the agent's quoted after them.
     assert_eq!(heard["step"], format!("You: {again}"), "{heard}");
+}
+
+/// A job `conversation`'s turn starts after reading the web (`task` its task), so it's untrusted
+/// and boxed: its own run never makes it LANE-3a's. Its id, and the conversation.
+fn boxed_job(obid: &Obid, conversation: Option<&str>, task: &str) -> (String, String) {
+    let mut body = json!({"said": format!(r#"WEB OBY oby_dispatch {{"repo": "obi-e2e/fixture-app", "task": "{task}", "kind": "research"}}"#)});
+    match conversation {
+        Some(c) => body["conversation"] = json!(c),
+        None => body["new"] = json!(true),
+    }
+    let started = said(obid, body);
+    let job = &started.body["jobs"][0];
+    assert_eq!(job["untrusted"], true, "{}", started.text);
+    (
+        job["id"].as_str().unwrap().to_owned(),
+        started.body["conversation"].as_str().unwrap().to_owned(),
+    )
+}
+
+/// Job `id` once its agent `tool` is quiet at work (`STALLS-ONCE`, Cursor's `QUIET`).
+fn at_work(obid: &Obid, id: &str, tool: &str) {
+    within(60, "the job is at work", || {
+        let body = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (body["status"] == "running" && body["step"] == format!("Starting {tool}")).then_some(())
+    });
+}
+
+/// LANE-3a (docs/contracts/lanes.md): a follow-up the brain starts in a conversation that laid an
+/// unproxied version (ARTIFACTS-24) is LANE-3a's from the start, though it and the job it follows
+/// run boxed; one a clean conversation starts isn't.
+#[test]
+fn lane_3a_a_follow_up_the_brain_starts_in_a_flagged_conversation_withholds_the_secrets() {
+    let (_folder, obid) = obid("lane-3a-follow-up", true);
+    let follow_up = |conversation: &str, flag: bool| {
+        let (id, _) = boxed_job(&obid, Some(conversation), "Look around");
+        ended(&obid, &id);
+        assert!(!ran_unproxied(&obid, &id), "{id}");
+        if flag {
+            laid_unproxied(&obid, conversation);
+        }
+        let tell = format!(r#"WEB OBY oby_tell_job {{"id": "{id}", "words": "And the docs"}}"#);
+        let told = said(&obid, json!({"said": tell, "conversation": conversation}));
+        assert!(
+            oby_said(&told).contains("started a follow-up"),
+            "{}",
+            told.text
+        );
+        let next = told.body["jobs"][0].clone();
+        assert_eq!(next["followUpOf"], id.as_str(), "{next}");
+        assert_eq!(next["untrusted"], true, "{next}");
+        ran_unproxied(&obid, next["id"].as_str().unwrap())
+    };
+    let new = |words: &str| {
+        let answer = said(&obid, json!({"said": words, "new": true}));
+        answer.body["conversation"].as_str().unwrap().to_owned()
+    };
+    assert!(follow_up(&new("HELLO"), true));
+    assert!(!follow_up(&new("HELLO"), false));
+}
+
+/// LANE-3a (docs/contracts/lanes.md): the brain's words from a conversation that laid an unproxied
+/// version (ARTIFACTS-24) reach a job that exists already only once it's LANE-3a's in its file: a
+/// boxed job at work told something, the boxed follow-up at work that "Already on it" tells, and a
+/// boxed job that was stopped (on Cursor, so the clean conversation's turn continues it at once),
+/// continued. Each hears them.
+#[test]
+fn lane_3a_a_message_relayed_from_a_flagged_conversation_marks_the_running_job() {
+    let folder = Folder::new("lane-3a-relay");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &harness());
+    config["conversation"] = json!({"agent": "claude"});
+    with_cursor(&folder.0, &mut config);
+    signed_in(&config);
+    let obid = start(&folder.0, &config, None);
+    let (running, conversation) = boxed_job(&obid, None, "Hold on. STALLS-ONCE");
+    let (ended_one, _) = boxed_job(&obid, Some(&conversation), "Look around");
+    ended(&obid, &ended_one);
+    let tell = format!(r#"WEB OBY oby_tell_job {{"id": "{ended_one}", "words": "STALLS-ONCE"}}"#);
+    let told = said(&obid, json!({"said": tell, "conversation": conversation}));
+    let following = told.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no follow-up: {}", told.text))
+        .to_owned();
+    let quiet = said(
+        &obid,
+        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "QUIET", "kind": "research", "agent": "cursor", "account": "Cursor account"}"#, "new": true}),
+    );
+    let stopped = quiet.body["jobs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no job: {}", quiet.text))
+        .to_owned();
+    let clean = quiet.body["conversation"].as_str().unwrap().to_owned();
+    at_work(&obid, &running, "Claude Code");
+    at_work(&obid, &following, "Claude Code");
+    at_work(&obid, &stopped, "Cursor");
+    let stop = call(&obid, "POST", &format!("/v1/jobs/{stopped}/stop"), None);
+    assert!(stop.status < 300, "{}", stop.text);
+    assert_eq!(ended(&obid, &stopped)["status"], "stopped");
+    for id in [&running, &following, &stopped] {
+        assert!(!ran_unproxied(&obid, id), "{id}");
+    }
+    laid_unproxied(&obid, &conversation);
+    laid_unproxied(&obid, &clean);
+
+    let say = |words: String, conversation: &str| {
+        said(&obid, json!({"said": words, "conversation": conversation}))
+    };
+    let notes =
+        |id: &str| call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body["notes"].to_string();
+    let relayed = say(
+        format!(r#"OBY oby_tell_job {{"id": "{running}", "words": "LANE-3A-RELAYED"}}"#),
+        &conversation,
+    );
+    assert!(
+        oby_said(&relayed).contains("what you said"),
+        "{}",
+        relayed.text
+    );
+    assert!(ran_unproxied(&obid, &running), "{running}");
+    assert!(notes(&running).contains("LANE-3A-RELAYED"));
+
+    let on_it = say(
+        format!(r#"OBY oby_tell_job {{"id": "{ended_one}", "words": "LANE-3A-ON-IT"}}"#),
+        &conversation,
+    );
+    assert!(
+        oby_said(&on_it).contains("Already on it in"),
+        "{}",
+        on_it.text
+    );
+    assert!(ran_unproxied(&obid, &following), "{following}");
+    assert!(notes(&following).contains("LANE-3A-ON-IT"));
+
+    let continued = say(
+        format!(r#"OBY oby_continue_job {{"id": "{stopped}", "words": "LANE-3A-CONTINUED"}}"#),
+        &clean,
+    );
+    assert!(
+        oby_said(&continued).contains("Continuing"),
+        "{}",
+        continued.text
+    );
+    assert!(ran_unproxied(&obid, &stopped), "{stopped}");
 }
 
 /// `oby_jobs` lists obid's own fields only, never a job's step (its agent's own words could steer

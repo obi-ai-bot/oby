@@ -74,6 +74,7 @@ impl Jobs {
                 // Whatever ended it (a limit, a stop, a failure), what it committed is on its
                 // branch, and counted, so a follow-up starts from them and Dismiss warns (#757).
                 // Done counted its own.
+                end_gate(id).await;
                 match self.keep_commits(id).await {
                     Ok(_) => {
                         let made = match self.get(id) {
@@ -294,6 +295,10 @@ impl Jobs {
         // Its builds take what memory leaves them next to the other jobs (crate::meter).
         extra.extend(self.build_env(&job.id, false));
         let tetrix = self.tetrix_mcp(job);
+        // Oby's browser for a Codex job of the owner's (BROWSER-17), with the job's token too.
+        let browser = (tool == Tool::Codex)
+            .then(|| self.browser_server(job))
+            .flatten();
         // On a ChatGPT login, no run holds a token: Codex goes through obid's relay, with the job's
         // broker token (crate::chatgpt_relay).
         let relay = chatgpt
@@ -450,12 +455,20 @@ impl Jobs {
                 if let Some((base, _)) = &relay {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
                 }
+                if let Some(server) = &browser {
+                    for setting in server.codex("OBY_MCP_TOKEN") {
+                        argv.splice(1..1, ["-c".into(), setting.into()]);
+                    }
+                }
                 if own {
                     let settings = self.own_codex_policy(Self::mode_of(job)).settings();
                     argv.splice(1..1, settings.into_iter().map(OsString::from));
                     // Codex may ask nobody (Bypass): Oby's own tools are approved (LANES-21).
                     if broker.is_some() {
                         argv.splice(1..1, codex::OWN_OBY_TOOLS.map(OsString::from));
+                    }
+                    if browser.is_some() {
+                        argv.splice(1..1, codex::OWN_BROWSER_TOOLS.map(OsString::from));
                     }
                 }
                 argv
@@ -1603,6 +1616,23 @@ impl Stepped {
         change(&mut held);
         *kept.lock().unwrap_or_else(|e| e.into_inner()) = Some(held);
     }
+}
+
+/// Holds a job's end just before its commits are kept: never, but in a debug build's test
+/// (`OBID_TEST_END_GATE`, a folder): it writes `<id>.reached` there, then waits for `<id>.open`,
+/// at most 10 s. That is the window PUBLISHING-2's test moves the job's branch in (#2831), as it
+/// ends `done`.
+async fn end_gate(id: &str) {
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("OBID_TEST_END_GATE").map(std::path::PathBuf::from) {
+        let _ = std::fs::write(dir.join(format!("{id}.reached")), "");
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while !dir.join(format!("{id}.open")).exists() && std::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = id;
 }
 
 #[cfg(test)]

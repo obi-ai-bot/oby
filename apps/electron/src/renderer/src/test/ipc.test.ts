@@ -66,6 +66,8 @@ vi.mock('electron', async () => {
     safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) },
     clipboard: { readText: () => '' },
+    // the artifact preview's view and its partition (artifactPreview.ts): made only when an artifact first shows
+    WebContentsView: class {}, session: { fromPartition: () => ({}) },
     shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
@@ -83,7 +85,7 @@ vi.mock('../../../main/obid', async (original) => ({
   obid: async (...a: unknown[]) => { the.calls.push(a); return { status: 200, text: '[]' }; },
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
-  chooseProfile: () => false,
+  chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
   openedProfile: () => null,
 }));
 vi.mock('../../../shared/sphere', async (original) => ({
@@ -153,10 +155,15 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
   help: { args: ['reveal-log'], refusal: 'Not this app’s page.' },
   'browser-follow': { args: [], refusal: null },
-  'browser-watch': { args: ['t1'], refusal: null },
-  'browser-unwatch': { args: ['t1'], refusal: null },
+  'browser-register': { args: ['j1', 't1', 5], refusal: 'Not this app’s page.' },
+  'browser-shown': { args: ['j1', 't1', true], refusal: null },
+  'browser-nav': { args: ['j1', 't1', 'back'], refusal: 'Not this app’s page.' },
   'browser-fill': { args: ['t1', '#pw', 'x', '', true], refusal: 'Not this app’s page.' },
   'browser-reveal': { args: ['statement-oct.pdf'], refusal: false },
+  'artifact-preview': { args: [null], refusal: null },
+  'artifact-export': { args: ['3f0c2a1e-1111-4222-8333-944455556666', 1, 'zip'], refusal: null },
+  'artifact-thumb': { args: [{ id: '3f0c2a1e-1111-4222-8333-944455556666', version: 1 }], refusal: null },
+  'artifact-reload': { args: [], refusal: null },
   'mac-pill': { args: [null], refusal: null },
   'mac-pill-stop': { args: [], refusal: undefined },
   'mac-pill-now': { args: [], refusal: null },
@@ -217,6 +224,16 @@ describe('IPC-1', () => {
     the.windows[0].fullScreen = false;
     expect(await call('full-screen', own())).toBe(false);
     expect(await call('window-chrome', own())).toEqual(CHROME);
+  });
+});
+
+describe('BROWSERAPP-35: the owner\'s Back, Forward, Reload and Stop loading reach no obid route', () => {
+  it('browserapp_35: from the window\'s own page, browser-nav takes only its four acts, and none calls obid', async () => {
+    const before = the.calls.length;
+    expect(await call('browser-nav', own(), 'j1', 't1', 'hardReload')).toBe('Not this app’s page.');
+    // no webview of this window's is that tab: nothing moves, and main says why
+    for (const op of ['back', 'forward', 'reload', 'stop']) expect(await call('browser-nav', own(), 'j1', 't1', op)).toBe('This tab has no page in this window.');
+    expect(the.calls.length).toBe(before);
   });
 });
 
@@ -362,6 +379,35 @@ describe('IPC-4', () => {
     expect(files).toContain('index.ts');
     const raw = files.filter((f) => /ipcMain\s*\.\s*(handle|on)\s*\(/.test(readFileSync(join(main, f), 'utf8')));
     expect(raw).toEqual([]);
+  });
+});
+
+describe('ARTIFACTSAPP-11', () => {
+  it('artifactsapp_11_pdf_and_png_stay_off', async () => {
+    const before = { calls: the.calls.length, dialogs: the.dialogs };
+    // send never answers here, so a kind let through would hang: bounded, it fails instead
+    const bounded = (p: unknown) => Promise.race([p, new Promise((r) => setTimeout(() => r('hung'), 300))]);
+    for (const as of ['pdf', 'png']) {
+      expect(await bounded(call('artifact-export', own(), '3f0c2a1e-1111-4222-8333-944455556666', 1, as)), as).toBeNull();
+    }
+    expect(the.calls.length).toBe(before.calls);
+    expect(the.dialogs).toBe(before.dialogs);
+  });
+});
+
+describe('ARTIFACTSAPP-18', () => {
+  it('artifactsapp_18_the_channel_refuses_a_bad_ask', async () => {
+    const before = the.calls.length;
+    // send never answers here, so an ask let through would hang: bounded, it fails instead
+    const bounded = (p: unknown) => Promise.race([p, new Promise((r) => setTimeout(() => r('hung'), 300))]);
+    const id = '3f0c2a1e-1111-4222-8333-944455556666';
+    for (const bad of [
+      { id: 'not-a-uuid', version: 1 }, { id: id.toUpperCase(), version: 1 }, { id, version: 0 }, { id, version: 1.5 }, { id, version: '1' },
+      { id, version: 1, bounds: { x: 0, y: 0, width: 10, height: 10 } }, { id, version: 1, edits: {} }, { id, version: 1, extra: 1 }, null,
+    ]) {
+      expect(await bounded(call('artifact-thumb', own(), bad)), JSON.stringify(bad)).toBeNull();
+    }
+    expect(the.calls.length).toBe(before);
   });
 });
 

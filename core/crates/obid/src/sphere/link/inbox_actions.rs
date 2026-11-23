@@ -1541,7 +1541,7 @@ impl Link {
                 .inbox
                 .get(id)
                 .cloned()
-                .ok_or_else(|| api(StatusCode::NOT_FOUND, "There's no such inbox item."))?;
+                .ok_or_else(|| api(StatusCode::NOT_FOUND, "There's no such card."))?;
             if item.done.is_some() {
                 return Err(api(StatusCode::CONFLICT, "That item is done already."));
             }

@@ -188,7 +188,9 @@ export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: number; 
 // way, folded over its words (looked: how many were lookups; asked: whose Obys
 // it asked); streaming: its words still coming in. files: what went with yours
 // (a photo with a preview of itself); obys: the Obys it @mentions
-export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep; offer?: Offer; confirm?: { id: string; ask: Ask }; askCard?: AskMark; fixes?: Fix[] } & Attachments;
+export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep; offer?: Offer; confirm?: { id: string; ask: Ask }; askCard?: AskMark; fixes?: Fix[]; artifacts?: string[]; reports?: string } & Attachments;
+// artifacts (obid only): the artifacts an Oby turn published; reports: the job a report turn tells
+// the end of. Their cards go in the first message that tells of them (ChatView, ARTIFACTSAPP-16)
 // fixes (obid only): on Oby's words that a task couldn't start on the account named, Install or Sign in
 // under them (RefusalFixes.tsx, ACCOUNTS-37)
 // askCard (obid only): a question to another Oby, one card that updates in place (AskCard.tsx)
@@ -210,7 +212,7 @@ export type Attachments = { files?: { name: string; preview?: string; file?: Fil
   defaults?: { mode?: string; agent?: string; model?: string; effort?: string };
   // the skill picked in the box (docs/contracts/composer.md, COMPOSER-27): beside the words, never in them
   skill?: string;
-  // where the conversation these words start works (WORKSPACE-3): "This folder" or "A new worktree"
+  // where the conversation these words start works (WORKSPACE-3): this folder, or New worktree checked
   workspace?: 'folder' | 'worktree' };
 // (a skill picked is something to send, words or none: COMPOSER-27)
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length || a?.skill);

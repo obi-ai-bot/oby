@@ -6,11 +6,13 @@
 // the window shows (obid's job files only say when a task ended, as evidence). Tasks stay tiny: one
 // line in one file of the scratch repository, a file of its own for each scenario that makes a
 // pull request, so the run never conflicts with itself.
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 const MIN = 60_000;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const ASKS = 'section[aria-label="Oby is asking"]';
 const REPLY = '.msg.is-oby .msg-bubble';
-const PR_OPEN = /Pull request open · waiting for your review on GitHub|Merged into \S+|Oby is reviewing|Waiting for review[^\n]*/;
 const ended = (j) => ['done', 'failed', 'interrupted', 'stopped'].includes(j?.status);
 const stamp = new Date().toISOString().slice(0, 16);
 // a task name no earlier run used: the side panel finds tasks by name
@@ -21,19 +23,21 @@ async function home(t) {
   if (await t.page.getByRole('button', { name: 'Show sidebar' }).isVisible()) await t.click('Show sidebar');
   const oby = t.page.locator('.rail-button[aria-label="Chats"]');
   if ((await oby.getAttribute('aria-pressed')) !== 'true') await oby.click();
-  await t.click('New conversation');
+  // its accessible name ends with its shortcut, “New conversation ⌘N” (#2789)
+  await t.click(/^New conversation/);
   await t.see('What do you want me to work on?', { label: 'the empty chat' });
 }
 
-// the task the words just said started: its job (obid's evidence, which says which one: only ever
-// one in this run's repository, never the owner's other work) and its card, as the conversation
-// shows it. Its kind must be one of `kinds`.
+// the task the words just said started, and only it: a job in this run's repository whose card is in
+// the conversation the words were said in (data-task), never merely the newest job there, which may be
+// the owner's own started meanwhile (its pull request and branch would be this run's to clean up). Its
+// kind must be one of `kinds`.
 async function newTask(t, since, kinds = ['build', 'fix']) {
-  const deadline = Date.now() + 5 * MIN;
+  const deadline = Date.now() + 7 * MIN;
   let job;
-  while (!(job = t.newestJob(since))) {
-    if (Date.now() > deadline) throw new Error(`no task started in ${t.repo} in 5 minutes`);
-    await sleep(500);
+  while (!(job = (await tiedJobs(t, since))[0])) {
+    if (Date.now() > deadline) throw new Error(`no task's card in this conversation in 7 minutes (jobs in ${t.repo} since: ${t.jobsSince(since).map((j) => `${j.id} “${j.title}”`).join(', ') || 'none'}, none of them in it)`);
+    await sleep(1000);
   }
   if (job.repo.toLowerCase() !== t.repo || !kinds.includes(job.kind)) throw new Error(`the task Oby started is a ${job.kind} in ${job.repo}, not a ${kinds.join(' or ')} in ${t.repo}`);
   // this run's, for the cleanup at its end
@@ -41,6 +45,14 @@ async function newTask(t, since, kinds = ['build', 'fix']) {
   await t.see(job.title, { ms: 2 * MIN, label: `its card, “${job.title}”` });
   await t.shot('task-card');
   return { title: job.title, job };
+}
+
+// the jobs in this run's repository since then whose card is in the open conversation (data-task):
+// the only ones a scenario may take as its own
+async function tiedJobs(t, since) {
+  const chat = t.page.locator('.chat-layer:not(.is-leaving):not(.is-covered)').last(), mine = [];
+  for (const j of t.jobsSince(since)) if (await chat.locator(`[data-task="${j.id}"]`).count().catch(() => 0)) mine.push(j);
+  return mine;
 }
 
 // Home's cards for the tasks this run started, answered in one click each until `done`: a card counts
@@ -101,6 +113,41 @@ async function openTask(t, title) {
   await t.see('Reply to Oby…', { label: 'its conversation' });
 }
 
+// a task's nested row's menu, View details: its conversation opens at its card (LIVETASK-28), the
+// conversation's row lit. (A click on the row itself opens the task's own thread, LIVETASK-22: ownThread.)
+// Whether the card is in view, above the decision drawer, is noted, not failed on (#2786)
+async function openAtTask(t, kid, title) {
+  await kid.click({ button: 'right' });
+  await t.page.getByRole('menuitem', { name: 'View details', exact: true }).click();
+  const card = t.page.locator('.msg-task', { has: t.page.locator('.msg-task-title', { hasText: title }) }).last();
+  await card.waitFor({ state: 'attached', timeout: 10_000 });
+  await t.page.locator('.convo-row.is-active').first().waitFor({ timeout: 10_000 });
+  await sleep(800);
+  const inView = await card.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const bar = [...document.querySelectorAll('.decision-bar')].filter((e) => e.checkVisibility()).pop();
+    return r.top >= 0 && r.bottom <= (bar ? bar.getBoundingClientRect().top : innerHeight);
+  });
+  t.note(`its conversation opened; its card is ${inView ? 'in view' : 'NOT in view (LIVETASK-28, #2786)'}`);
+  return card;
+}
+
+// a task's nested row clicked: its own thread opens over the conversation that started it, its box
+// telling its agent, and the row lit while it shows (LIVETASK-22)
+async function ownThread(t, kid, task) {
+  await kid.click();
+  t.step(`clicked its row, “${task.title}”`);
+  const top = t.page.locator('.chat-layer:not(.is-leaving):not(.is-covered)').last();
+  const box = top.locator(`[aria-label="Tell the agent about ${task.title}"]`);
+  const lit = t.page.locator('.convo-kid.is-active', { hasText: task.title });
+  const opened = await until(t, async () => (await top.locator(`[data-task="${task.job.id}"]`).count()) && (await box.count()) && (await lit.count()), 10_000).then(() => true, () => false);
+  await t.shot('own-thread');
+  if (!opened) {
+    throw new Error(`its row didn't open its own thread (LIVETASK-22): its box telling its agent ${(await box.count()) ? 'shows' : 'is missing'}, its row ${(await lit.count()) ? 'lit' : 'not lit'}, the conversation's row ${(await t.page.locator('.convo-row.is-active').count()) ? 'lit' : 'not lit'}`);
+  }
+  t.note('its row opened its own thread, its box telling its agent, the row lit');
+}
+
 // this run's repository and pull request only, never another of the owner's: `<repo>#<n>`
 const prRef = (t, url) => `${t.repo}#${url.match(/\/pull\/(\d+)$/)?.[1]}`;
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -139,9 +186,12 @@ async function rebaseThenMerge(t, url, merged) {
   await confirmMerge(t, url, ref).catch(() => t.note('no Confirm under its answer'));
   await home(t);
   // its rebase: a task it starts for it is this run's (its cards answered, its branch cleaned up)
+  // (only a job obid's record ties to this run: in the task's conversation, or following up one of
+  // this run's jobs; never another job of the owner's started meanwhile)
+  const convo = t.state.task.job.conversation;
   const rebased = () => {
-    const job = t.newestJob(since);
-    if (job && !t.state.jobs.includes(job.id)) {
+    for (const job of t.jobsSince(since)) {
+      if (t.state.jobs.includes(job.id) || !((convo && job.conversation === convo) || t.state.jobs.includes(job.followUpOf))) continue;
       t.state.jobs.push(job.id);
       track(t, job);
       t.note(`it started a task for the rebase: ${job.id}, a ${job.kind}, “${job.title}”`);
@@ -162,6 +212,78 @@ const track = (t, task) => {
   (t.state.titles ??= []).push(task.title);
   return task;
 };
+
+// the agents' names as the window says them (browser/view.ts, AGENT_NAME)
+const AGENT = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' };
+// the conversation that's open (the top chat layer), never one leaving under it
+const openChat = (t) => t.page.locator('.chat-layer:not(.is-leaving)').last();
+// a public page whose heading is known and doesn't change
+const PAGE = 'https://example.com';
+const HEADING = /Example Domain/i;
+
+// what the task asks in the bar over the message box of its conversation (a new conversation holds
+// only this run's task), answered yes with the owner's click; false when it asks nothing
+async function answerBar(t) {
+  const bar = t.page.locator('.decision-bar').filter({ visible: true }).last();
+  if (!(await bar.count())) return false;
+  const yes = bar.getByRole('button', { name: /^(Yes|yes|Allow|Allow once|Approve|Confirm|Start|No check)/ }).first();
+  if (!(await yes.count())) return false;
+  await sleep(700); // (a click in a card's first half second answers nothing: AskBlock)
+  t.note(`the task asked: ${(await bar.innerText()).replace(/\n+/g, ' · ')} → ${await yes.innerText()}`);
+  await t.shot('asked');
+  await yes.click();
+  t.step('answered the bar');
+  return true;
+}
+
+// the job the words just said started in this run's repository, its card in this conversation
+// (tiedJobs), Oby asked once to start it if it asks first (as the owner would say yes); null when none
+// by `ms`
+async function startedJob(t, since, { ms = 5 * MIN, yes = 'Yes, start it.' } = {}) {
+  const deadline = Date.now() + ms;
+  let job, nudged = false;
+  while (!(job = (await tiedJobs(t, since))[0]) && Date.now() < deadline) {
+    const busy = await t.page.locator('.msg.is-streaming, .msg-step').count();
+    const last = (await openChat(t).locator(REPLY).count()) ? (await openChat(t).locator(REPLY).last().innerText()).trim() : '';
+    if (!nudged && !busy && /\?\s*$/.test(last)) {
+      t.note(`Oby asked first: ${last.replace(/\n+/g, ' ')}`);
+      await t.say(yes);
+      nudged = true;
+    }
+    await sleep(1000);
+  }
+  return job ?? null;
+}
+
+// a job as obid keeps it, or null once its file is gone (deleted)
+const jobOrNone = (t, id) => { try { return t.job(id); } catch { return null; } };
+
+// in the preview's frame: its Count button (its centre, in the frame) and the numbers the page shows
+const COUNTER = `(() => {
+  const b = [...document.querySelectorAll('button')].find((x) => /^\\s*count\\s*$/i.test(x.textContent));
+  const values = [...document.querySelectorAll('body *')].filter((e) => !e.children.length && /^\\s*\\d+\\s*$/.test(e.textContent)).map((e) => e.textContent.trim());
+  const r = b?.getBoundingClientRect();
+  return { button: b ? b.textContent.trim() : null, values, x: r ? r.left + r.width / 2 : 0, y: r ? r.top + r.height / 2 : 0 };
+})()`;
+// in the preview's host page: where the artifact's frame sits (not Sandpack's hidden relay frame)
+const FRAME_AT = `(() => {
+  const f = [...document.querySelectorAll('iframe')].filter((i) => !i.src.includes('/__csb_relay/') && i.getBoundingClientRect().width > 0)
+    .sort((a, b) => b.getBoundingClientRect().width * b.getBoundingClientRect().height - a.getBoundingClientRect().width * a.getBoundingClientRect().height)[0];
+  const r = f?.getBoundingClientRect();
+  return r ? { x: r.left, y: r.top } : null;
+})()`;
+
+// main's artifact preview (a view of main's own over the pane), asked through main: evidence only
+const inHost = (t, js) => t.app.evaluate(async ({ webContents }, js) => {
+  const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+  return wc ? Promise.race([wc.executeJavaScript(js), new Promise((done) => setTimeout(() => done(null), 5_000))]) : null;
+}, js);
+const inFrame = (t, js) => t.app.evaluate(async ({ webContents }, js) => {
+  const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+  const frame = wc?.mainFrame.framesInSubtree.find((f) => /^http:\/\/[a-z0-9]+-preview\.localhost:\d+$/.test(f.origin) && !f.url.includes('/__csb_relay/'));
+  if (!frame) return null;
+  return Promise.race([frame.executeJavaScript(js), new Promise((done) => setTimeout(() => done(null), 5_000))]);
+}, js);
 
 export default [
   {
@@ -246,11 +368,17 @@ export default [
       await home(t);
       await answerCards(t, { done: () => { const j = t.job(id); return j?.published || ended(j); } });
       await openTask(t, t.state.task.title);
-      const seen = await t.see(PR_OPEN, { ms: 5 * MIN, label: 'its pull request in its conversation' });
-      await t.shot('pull-request');
+      // its pull request: the link on its card's head (a done card shows its head alone, LIVETASK-29;
+      // nothing there says whether it's open or merging, #2785)
       const job = t.job(id);
+      const n = job.published?.match(/\/pull\/(\d+)$/)?.[1];
+      if (!n) throw new Error(`the task published no pull request: ${job.publishError ?? job.status}`);
+      const card = t.page.locator('.msg-task', { has: t.page.locator('.msg-task-title', { hasText: t.state.task.title }) }).last();
+      const link = card.locator('.tc-result a', { hasText: new RegExp(`#${n}$`) });
+      await until(t, () => link.isVisible(), 5 * MIN).catch(() => { throw new Error(`its card doesn't show its pull request #${n}`); });
+      await t.shot('pull-request');
       t.state.job = job;
-      t.note(`it says: ${seen}; evidence: ${job.agent}/${job.account}, mode ${job.mode}, vetted ${job.vetted}, ${job.published ?? job.publishError}`);
+      t.note(`its card: ${(await card.innerText()).replace(/\n+/g, ' · ')}; evidence: ${job.agent}/${job.account}, mode ${job.mode}, vetted ${job.vetted}, ${job.published}`);
     },
   },
   {
@@ -409,12 +537,12 @@ export default [
   },
   {
     id: 'nested',
-    title: 'A task nests under its conversation and opens its own thread',
-    contract: 'live-task.md (LIVETASK-19 to 22)',
+    title: 'A task nests under its conversation; its row opens its own thread, its menu the conversation at its card',
+    contract: 'live-task.md (LIVETASK-19 to 22, 28)',
     run: async (t) => {
       await home(t);
       const since = Date.now();
-      await t.say(`Start a task now in ${t.repo} on Claude Code, in Ask mode: before writing anything, its agent asks me (not you) one question: should the word be "yes" or "no"? Then it makes docs/oby-decision.md with that one word. Change nothing else.`);
+      await t.say(`Start a task now in ${t.repo} on Claude Code, in Ask mode: before writing anything, its agent asks me (not you) one question: should the word be "yes" or "no"? Then it makes docs/oby-decision.md with that one word. Change nothing else. Call the task "Oby decision ${stamp.slice(11)}".`);
       const task = track(t, await newTask(t, since));
       t.state.decision = task;
       // its conversation's row, with the task under it
@@ -429,13 +557,12 @@ export default [
       const row = t.page.locator('.convo-row.is-active');
       if (await row.count()) t.note(`its conversation's row: ${(await row.innerText()).replace(/\n+/g, ' · ')}`);
       await t.shot('nested-row');
-      await kid.click();
-      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
-      t.note(`its thread: ${(await t.page.locator('.agent-layer').last().innerText()).slice(0, 300).replace(/\n+/g, ' · ')}`);
-      await t.shot('task-thread');
-      await t.page.keyboard.press('Escape');
-      await sleep(600);
-      await t.shot('back');
+      // a click on its row opens its own thread over the conversation, the row lit (LIVETASK-22)
+      await ownThread(t, kid, task);
+      // its row's menu, View details: its conversation at its card (LIVETASK-28)
+      const card = await openAtTask(t, kid, task.title);
+      t.note(`its card: ${(await card.innerText()).replace(/\n+/g, ' · ')}`);
+      await t.shot('at-its-card');
     },
   },
   {
@@ -463,15 +590,10 @@ export default [
       // found again: its nested row
       const kid = t.page.locator('.convo-kid', { hasText: task.title }).first();
       t.note(`its row after Later: ${(await kid.isVisible()) ? (await kid.innerText()).replace(/\n+/g, ' ') : 'not shown'}`);
-      // its own thread
-      await kid.click();
-      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
-      await sleep(600);
-      const inThread = await t.page.locator('.agent-layer .decision-bar').count();
-      t.note(`in its thread the decision is ${inThread ? 'there' : 'MISSING'}`);
-      await t.shot('in-thread');
-      await t.page.keyboard.press('Escape');
-      await sleep(600);
+      // its row's menu, View details: its conversation opened at it, where Later's decision is back (LIVETASK-24 to 28)
+      await openAtTask(t, kid, task.title);
+      t.note(`opened at its task the decision is ${(await bar().count()) ? 'back' : 'MISSING'}`);
+      await t.shot('at-its-card');
       // Waiting for you
       const waiting = t.page.getByRole('button', { name: /Waiting for you/ });
       if (await waiting.count()) {
@@ -606,25 +728,318 @@ export default [
   },
   {
     id: 'stop-left',
-    title: 'Stop a task an earlier run left running, from its own thread (OBY_DRIVE_STOP names it)',
-    contract: 'live-task.md (LIVETASK-22)',
+    title: 'Stop a task an earlier run left running, from its card’s menu (OBY_DRIVE_STOP names it)',
+    contract: 'live-task.md (LIVETASK-28, 29)',
     run: async (t) => {
       const title = process.env.OBY_DRIVE_STOP;
       if (!title) { t.note('nothing named in OBY_DRIVE_STOP'); return; }
       await home(t);
-      // its conversation's row, unfolded, then its own row
+      // its conversation's row, unfolded, then its own row's menu
       const kid = t.page.locator('.convo-kid', { hasText: title }).first();
       for (let i = 0; i < Math.min(15, await t.page.locator('.convo-nest').count()) && !(await kid.isVisible()); i++) {
         const twist = t.page.locator('.convo-nest').nth(i).locator('.convo-twist[aria-expanded="false"]');
         if (await twist.count()) { await twist.click(); await sleep(300); }
       }
-      await kid.click();
-      await t.page.locator('.agent-layer').filter({ visible: true }).waitFor({ timeout: 10_000 });
-      await t.shot('its-thread');
-      await t.click('Stop', '.agent-layer');
+      // its row's menu: its conversation at its card (LIVETASK-28), then Stop from the card's menu
+      await openAtTask(t, kid, title);
+      await t.shot('at-its-card');
+      await t.click(`More for ${title}`);
+      await t.page.getByRole('menuitem', { name: 'Stop task', exact: true }).click();
       await sleep(3000);
       await t.shot('stopped');
       t.note(`its row now: ${(await kid.innerText()).replace(/\n+/g, ' ')}`);
+    },
+  },
+  {
+    id: 'browser',
+    title: 'An agent opens a page in Oby’s browser: its tab beside the conversation, Take control, Give back, its answer',
+    contract: 'browser-app.md (BROWSERAPP-1, 2, 9, 26, 40, 41), browser.md (BROWSER-3, 5, 25)',
+    run: async (t) => {
+      // Oby's own turn has no browser (brain/harness_cursor.rs: "A conversation's agent gets the
+      // browser with the rest of BROWSER-17"): a task's agent does, so the words ask for a task. It
+      // changes nothing in the repository; it waits two minutes so its tab is there to take (a task's
+      // tabs leave the list when it ends, BROWSER-25).
+      await home(t);
+      const since = Date.now(), name = `Oby browser ${stamp.slice(11)}`;
+      await t.say(`Start a task now in ${t.repo} on Claude Code: open ${PAGE} in Oby's browser (your oby_browser tools) and read the page's main heading. Keep that tab open for me: once you have read it, wait two minutes (sleep 120) before you finish. End by telling me the heading. Change no files and open no pull request. Call the task "${name}".`);
+      if (!(await startedJob(t, since))) throw new Error(`no task started in ${t.repo} in 5 minutes`);
+      const task = track(t, await newTask(t, since, ['investigate', 'research', 'build', 'fix', 'test']));
+      const id = task.job.id, who = AGENT[task.job.agent] ?? task.job.agent;
+      t.note(`its task: ${id}, a ${task.job.kind} on ${task.job.agent}/${task.job.account}, mode ${task.job.mode}`);
+      // the globe at the title bar's end says how many tabs, and who uses one (BROWSERAPP-1)
+      const globe = t.page.locator('[data-browser="globe"]');
+      const label = () => globe.getAttribute('aria-label', { timeout: 1000 }).catch(() => '');
+      const deadline = Date.now() + 8 * MIN;
+      while (!/^Show the browser, [1-9]/.test((await label()) ?? '')) {
+        const job = t.job(id);
+        if (ended(job)) throw new Error(`the task ended ${job.status} and no tab showed in the window (globe: “${await label()}”): ${(job.summary ?? job.error ?? '').split('\n')[0]}`);
+        if (Date.now() > deadline) throw new Error(`no tab in the window in 8 minutes (globe: “${await label()}”)`);
+        await answerBar(t);
+        await sleep(1000);
+      }
+      // Oby's replies so far: its answer is one that comes after (the task is running, its tab open)
+      const repliesBefore = await openChat(t).locator(REPLY).count();
+      t.note(`the globe: “${await label()}”`);
+      await t.shot('globe');
+      await globe.click();
+      t.step('clicked the globe');
+      const panel = t.page.locator('aside[data-browser="browser"]');
+      await panel.waitFor({ timeout: 10_000 });
+      // its tab: one showing the page, and the one this task owns, as Full width's line names its task
+      // (BROWSERAPP-5: "<its task> · <what its agent is at>"), never another of the owner's agents' tabs
+      const candidates = panel.locator('.br-tab', { hasText: /Example Domain|example\.com/i });
+      await until(t, () => candidates.first().isVisible(), 60_000).catch(async () => { throw new Error(`no tab for ${PAGE} in the panel: ${(await panel.locator('.br-tabs').innerText()).replace(/\n+/g, ' · ')}`); });
+      let tab = null;
+      for (let i = 0; i < (await candidates.count()) && !tab; i++) {
+        await candidates.nth(i).click();
+        await t.click('Full width');
+        const peek = await until(t, async () => (await t.page.locator('.peek-text b').innerText()).trim(), 10_000).catch(() => '');
+        if (i === 0) await t.shot('full-width');
+        t.note(`tab ${i + 1}, “${(await candidates.nth(i).innerText()).trim()}”, is the task “${peek}”'s`);
+        await t.click('Back beside the conversation');
+        if (peek === task.title) tab = candidates.nth(i);
+      }
+      if (!tab) throw new Error(`no tab of ${PAGE} is this task's (“${task.title}”)`);
+      await tab.click();
+      const address = panel.locator('.br-address');
+      await until(t, async () => /example\.com/.test(await address.innerText()), 30_000).catch(async () => { throw new Error(`the address doesn't say example.com: “${await address.innerText()}”`); });
+      const strip = panel.locator('[data-browser="control"]');
+      const said = await strip.innerText();
+      t.note(`tabs: ${(await panel.locator('.br-tab').allInnerTexts()).map((s) => s.replace(/\n+/g, ' ')).join(' | ')}; address: ${await address.innerText()}; strip: ${said.replace(/\n+/g, ' · ')}; webviews in the window: ${await t.page.locator('webview').count()}`);
+      await t.shot('panel');
+      if (!said.includes(who)) throw new Error(`the strip doesn't name ${who}: “${said}”`);
+      // Take control (signed by its own label, BROWSERAPP-9): the strip says it's yours, the page ringed
+      if (!(await tab.isVisible())) throw new Error(`the tab left before Take control (the task is ${t.job(id).status})`);
+      await strip.getByRole('button', { name: 'Take control' }).click();
+      t.step('clicked “Take control”');
+      await until(t, async () => (await strip.innerText()).includes('You have this tab.'), 20_000).catch(async () => { throw new Error(`Take control didn't hold the tab: the strip says “${(await strip.innerText()).replace(/\n+/g, ' · ')}”`); });
+      // the keyboard moves once obid has answered the take (BROWSERAPP-40): waited for, not sampled once
+      const onPage = await until(t, () => t.page.evaluate(() => document.activeElement?.tagName === 'WEBVIEW'), 5000).then(() => true, () => false);
+      const ringed = (await panel.locator('.br-view.is-held').count()) > 0;
+      const focus = onPage ? 'WEBVIEW' : await t.page.evaluate(() => document.activeElement?.tagName ?? 'nothing');
+      t.note(`held: “${(await strip.innerText()).replace(/\n+/g, ' · ')}”; the page ringed: ${ringed ? 'yes' : 'NO'}; the keyboard on the page within 5 s: ${onPage ? 'yes' : `NO (focus on ${focus})`}`);
+      await t.shot('held');
+      if (!ringed) throw new Error('held, the page isn’t ringed (BROWSERAPP-9, 41)');
+      if (!onPage) throw new Error(`held, the keyboard didn't move to the page within 5 s: focus on ${focus} (BROWSERAPP-40)`);
+      // Give back: the strip is the agent's again, the keyboard back in the message box (BROWSERAPP-41)
+      await strip.getByRole('button', { name: 'Give back' }).click();
+      t.step('clicked “Give back”');
+      await until(t, async () => { const now = await strip.innerText(); return !now.includes('You have this tab.') && now.includes(who); }, 20_000)
+        .catch(async () => { throw new Error(`Give back didn't give the tab back: the strip says “${(await strip.innerText().catch(() => 'nothing')).replace(/\n+/g, ' · ')}”`); });
+      const inBox = await until(t, () => t.page.evaluate(() => !!document.activeElement?.closest('[contenteditable="true"]')), 5000).then(() => true, () => false);
+      const back = inBox ? 'the message box' : await t.page.evaluate(() => document.activeElement?.tagName ?? 'nothing');
+      t.note(`given back: “${(await strip.innerText()).replace(/\n+/g, ' · ')}”; the keyboard in the message box within 5 s: ${inBox ? 'yes' : `NO (focus on ${back})`}`);
+      await t.shot('given-back');
+      if (!inBox) throw new Error(`given back, the keyboard didn't come back to the message box within 5 s: focus on ${back} (BROWSERAPP-41)`);
+      if (await panel.locator('.br-view.is-held').count()) throw new Error('given back, the page is still ringed (BROWSERAPP-9)');
+      // its end, and its answer in the conversation (not the panel's tab title)
+      const end = Date.now() + 10 * MIN;
+      while (!ended(t.job(id)) && Date.now() < end) { await answerBar(t); await sleep(2000); }
+      const job = t.job(id);
+      if (!ended(job)) throw new Error('the task didn’t end in 10 minutes');
+      t.note(`it ended ${job.status}, ${job.commits ?? 0} commits, ${job.published ?? 'nothing published'}; its summary: ${(job.summary ?? '').replace(/\n+/g, ' ').slice(0, 300)}`);
+      // its answer: a reply of Oby's that came after the tab showed (the task's report), never an
+      // earlier message, nor the task's card or its log
+      const answer = await until(t, async () => (await openChat(t).locator(REPLY).allInnerTexts()).slice(repliesBefore).find((m) => HEADING.test(m)), 3 * MIN).catch(() => null);
+      await t.shot('answer');
+      t.note(`after it ended the globe says “${await label()}”, the panel shows ${(await panel.count()) ? `“${(await panel.locator('.br-tabs').innerText().catch(() => '')).replace(/\n+/g, ' · ')}”` : 'nothing'}`);
+      if (await t.page.getByRole('button', { name: 'Hide the browser' }).count()) await t.click('Hide the browser');
+      if (!answer) throw new Error(`no reply of Oby's after the task names the heading (“Example Domain”)${HEADING.test(job.summary ?? '') ? ', though the task’s summary does' : ''}`);
+      t.note(`its answer: …${answer.replace(/\n+/g, ' ').match(/[^.]{0,160}Example Domain[^.]{0,80}/i)?.[0] ?? ''}…`);
+    },
+  },
+  {
+    id: 'artifact',
+    title: 'Oby makes a page as an artifact: its card, the pane, the preview, Code, its version, Download',
+    contract: 'artifacts-app.md (ARTIFACTSAPP-1, 4, 5, 11, 15, 18), artifacts.md',
+    run: async (t) => {
+      await home(t);
+      const since = Date.now(), name = `Oby drive counter ${stamp.slice(11)}`;
+      await t.say(`Make me a small self-contained HTML page as an Oby artifact: a counter, with a button labelled "Count" and the number of clicks beside it, everything in one index.html and nothing fetched from outside. Call it "${name}".`);
+      // Oby's turn publishes it (oby_artifact), or a task does and its report brings the card
+      const chat = openChat(t), card = chat.locator('button.art-card').last();
+      const deadline = Date.now() + 10 * MIN;
+      let nudged = false;
+      while (!(await card.isVisible().catch(() => false))) {
+        if (Date.now() > deadline) throw new Error(`no artifact card in the conversation in 10 minutes; Oby said: ${((await chat.locator(REPLY).allInnerTexts()).at(-1) ?? 'nothing').replace(/\n+/g, ' ').slice(0, 300)}`);
+        // a task Oby started for it: only one whose card is in this conversation (never the owner's own)
+        for (const job of await tiedJobs(t, since)) if (!(t.state.jobs ?? []).includes(job.id)) { (t.state.jobs ??= []).push(job.id); track(t, job); t.note(`Oby started a task for it: ${job.id}, a ${job.kind}, “${job.title}”`); }
+        const busy = await t.page.locator('.msg.is-streaming, .msg-step').count();
+        const last = (await chat.locator(REPLY).count()) ? (await chat.locator(REPLY).last().innerText()).trim() : '';
+        if (!nudged && !busy && /\?\s*$/.test(last)) { t.note(`Oby asked first: ${last.replace(/\n+/g, ' ')}`); await t.say('Yes, make it.'); nudged = true; }
+        await answerBar(t);
+        await sleep(1000);
+      }
+      t.step('saw its card');
+      t.note(`its card: ${(await card.innerText()).replace(/\n+/g, ' · ')}`);
+      // its picture (ARTIFACTSAPP-18): the board's blocks until main has taken it
+      const picture = await until(t, () => card.locator('img.art-thumb-img').evaluate((i) => i.complete && i.naturalWidth > 0), 30_000).then(() => true, () => false);
+      t.note(`its picture: ${picture ? 'shown' : 'NOT shown in 30 s (the board’s blocks)'}`);
+      await t.shot('card');
+      const problems = [];
+      if (!picture) problems.push('its card shows no picture of its page within 30 s (ARTIFACTSAPP-18)');
+      if (!/Oby artifact · Page · v\d+/.test(await card.innerText())) problems.push(`its card doesn't say “Oby artifact · Page · v<n>”: “${(await card.innerText()).replace(/\n+/g, ' · ')}”`);
+      // the pane: an artifact made in the conversation on view may open by itself (ARTIFACTSAPP-6)
+      const strip = t.page.locator('[data-artifact-strip]');
+      t.note(`before its card's click the pane is ${(await strip.isVisible()) ? 'open already' : 'closed'}`);
+      await card.click();
+      t.step('clicked its card');
+      await strip.waitFor({ timeout: 15_000 });
+      const head = (await strip.locator('.art-strip-title').innerText()).replace(/\n+/g, ' · ');
+      t.note(`the pane: ${head}${(await strip.locator('select.art-version').count()) ? `; versions: ${(await strip.locator('select.art-version option').allInnerTexts()).join(', ')}` : ''}`);
+      if (!/Oby artifact · Page · v\d+/.test(head)) problems.push(`the pane's strip doesn't say “Oby artifact · Page · v<n>”: “${head}”`);
+      // Preview: main's view draws it, Sandpack's status settled (evidence only)
+      const status = await until(t, () => inHost(t, 'Promise.race([window.obyStatus, new Promise((r) => setTimeout(() => r(null), 100))])'), 60_000).catch(() => null);
+      const text = await inFrame(t, 'document.body.innerText').catch(() => null);
+      t.note(`its preview: status ${JSON.stringify(status)}; the page says “${(text ?? '(no frame)').replace(/\n+/g, ' · ').slice(0, 200)}”`);
+      const pageError = await t.page.locator('.art-page-error').innerText().catch(() => '');
+      if (pageError) t.note(`the pane's error strip: ${pageError.replace(/\n+/g, ' · ')}`);
+      await t.shot('preview');
+      if (!status?.drawn || status.error) problems.push(`the preview didn't draw: ${JSON.stringify(status)}`);
+      else {
+        // the counter the words asked for: its Count button, 0 beside it, and 1 after one click, a real
+        // mouse press main sends the preview's view (the view is main's, out of the page's reach)
+        const counter = await inFrame(t, COUNTER);
+        t.note(`its counter: ${JSON.stringify(counter)}`);
+        if (!counter?.button) problems.push(`the preview drew no Count button: “${text}”`);
+        else if (!counter.values.includes('0')) problems.push(`the preview shows no 0 beside its button: ${JSON.stringify(counter.values)}`);
+        else {
+          const at = await inHost(t, FRAME_AT);
+          // the view focused, then a press and a release a moment apart, as a person's click is
+          const clicked = at && await t.app.evaluate(async ({ webContents }, p) => {
+            const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+            if (!wc) return false;
+            const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+            wc.focus();
+            wc.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y });
+            await pause(100);
+            wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 });
+            await pause(80);
+            wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 });
+            return true;
+          }, { x: Math.round(at.x + counter.x), y: Math.round(at.y + counter.y) });
+          t.step('clicked its Count button');
+          const one = async () => { const c = await inFrame(t, COUNTER); return c?.values.includes('1') && c; };
+          const after = clicked ? await until(t, one, 5000).catch(() => null) : null;
+          t.note(`after one click: ${after ? JSON.stringify(after.values) : (clicked ? 'no 1' : 'no frame to click')}`);
+          await t.shot('counted');
+          if (!after) {
+            // the page's own button, clicked by script: tells a press that didn't reach the view from a page that doesn't count
+            await inFrame(t, `[...document.querySelectorAll('button')].find((x) => /^\\s*count\\s*$/i.test(x.textContent))?.click(), true`);
+            // (main's press into a hidden window's preview has been seen to hover the button and not click
+            // it: whether a person's click in a shown window reaches it isn't known from here, so that is a
+            // note; a page that doesn't count when its own button is clicked is a failure)
+            const scripted = await until(t, one, 3000).then(() => true, () => false);
+            if (scripted) t.note('OPEN: main\'s press into the preview didn\'t count, its button clicked by script did (0 → 1): whether a person\'s click in a shown window reaches the preview isn\'t proved here');
+            else problems.push('the page doesn\'t count: neither a press nor its own button clicked by script made it 1');
+          }
+        }
+      }
+      // Code: its files as tabs, index.html first, the one picked shown (ARTIFACTSAPP-5)
+      await t.page.getByRole('tab', { name: 'Code', exact: true }).click();
+      t.step('clicked “Code”');
+      const files = t.page.locator('.art-files [role="tab"]');
+      await until(t, () => files.count(), 15_000).catch(() => {});
+      const editor = t.page.locator('.art-code-editor');
+      const code = await until(t, async () => (await editor.innerText()).trim(), 15_000).catch(() => '');
+      t.note(`its files: ${(await files.allInnerTexts()).join(', ') || 'none'}; the code starts “${code.replace(/\n+/g, ' ').slice(0, 120)}”`);
+      await t.shot('code');
+      if (!(await files.count())) problems.push('Code shows no file tabs');
+      else if (!/<button/i.test(code)) problems.push('Code doesn’t show the page’s button');
+      await t.page.getByRole('tab', { name: 'Preview', exact: true }).click();
+      t.step('clicked “Preview”');
+      // Download (board 1c): main's save dialog answered for the owner with a file in this run's
+      // folder (no one can click a hidden window's sheet), never their Downloads; the pane says where
+      const to = join(t.out, 'artifact-export.zip');
+      await t.app.evaluate(({ dialog }, to) => { globalThis.__obyDriveSave ??= dialog.showSaveDialog; dialog.showSaveDialog = async () => ({ canceled: false, filePath: to }); }, to);
+      try {
+        await t.click('Export');
+        await t.page.getByRole('menu', { name: 'Download' }).waitFor({ timeout: 5000 });
+        await t.shot('export-menu');
+        await t.page.getByRole('menuitem', { name: 'Project archive (.zip)' }).click();
+        t.step('clicked “Project archive (.zip)”');
+        const saved = await until(t, async () => (await t.page.locator('.art-saved').innerText()).trim(), 30_000).catch(() => '');
+        const zip = existsSync(to) ? readFileSync(to) : null;
+        t.note(`the pane says “${saved}”; the file: ${zip ? `${zip.length} bytes, ${zip.subarray(0, 2).toString() === 'PK' ? 'a zip' : 'NOT a zip'}` : 'none'}`);
+        await t.shot('downloaded');
+        if (saved !== `Saved to ${to}`) problems.push(`the pane doesn't say where the download went: “${saved}”`);
+        if (!zip || zip.subarray(0, 2).toString() !== 'PK') problems.push(`no zip saved at ${to}`);
+      } finally {
+        await t.app.evaluate(({ dialog }) => { if (globalThis.__obyDriveSave) dialog.showSaveDialog = globalThis.__obyDriveSave; }).catch(() => {});
+      }
+      await t.click('Close the artifact');
+      if (problems.length) throw new Error(problems.join('; '));
+    },
+  },
+  {
+    id: 'delete-task',
+    title: 'Delete a finished task from its card’s menu: it’s gone at once, or obid asks first, or says why not',
+    contract: 'tasks.md (TASKS-3, 11)',
+    run: async (t) => {
+      // a task of this run's that changes nothing, ended
+      await home(t);
+      const since = Date.now(), name = `Oby delete ${stamp.slice(11)}`;
+      await t.say(`Start a task now in ${t.repo} on Claude Code: read the README and tell me its first line. Change no files and open no pull request. Call the task "${name}".`);
+      if (!(await startedJob(t, since))) throw new Error(`no task started in ${t.repo} in 5 minutes`);
+      const task = track(t, await newTask(t, since, ['investigate', 'research', 'build', 'fix', 'test']));
+      const id = task.job.id, title = task.title;
+      const end = Date.now() + 10 * MIN;
+      while (!ended(t.job(id)) && Date.now() < end) { await answerBar(t); await sleep(2000); }
+      const job = t.job(id);
+      if (!ended(job)) throw new Error('the task didn’t end in 10 minutes');
+      t.note(`it ended ${job.status}, ${job.commits ?? 0} commits, ${job.published ?? 'nothing published'}`);
+      const more = t.page.getByRole('button', { name: `More for ${title}`, exact: true }).filter({ visible: true });
+      const row = t.page.locator('.convo-kid', { hasText: title });
+      await until(t, () => more.count(), 30_000).catch(() => { throw new Error(`no “More for ${title}” on its card`); });
+      t.note(`before Delete: its rows in the side panel ${await row.count()}`);
+      await t.shot('ended');
+      const before = new Set((await t.shown()).split('\n').map((l) => l.trim()).filter(Boolean));
+      // Delete, from its card's menu
+      await more.first().click();
+      t.step(`clicked “More for ${title}”`);
+      const del = t.page.getByRole('menuitem', { name: 'Delete task', exact: true });
+      await del.waitFor({ timeout: 5000 });
+      await t.shot('menu');
+      await del.click();
+      t.step('clicked “Delete task”');
+      // gone (TASKS-3), at once, with no reload: its card (data-task) out of its conversation, no menu
+      // for it, no row in the side panel
+      const chat = openChat(t), card = chat.locator(`[data-task="${id}"]`);
+      const gone = async () => !(await card.count()) && !(await more.count()) && !(await row.count());
+      // or obid's Confirm (TASKS-11) for this run's task only: in the open conversation (never Home's
+      // cards under it, which may be the owner's), on its card or in the drawer naming its title
+      if (!(t.state.titles ?? []).includes(title)) throw new Error(`“${title}” isn't this run's task`);
+      const asks = chat.locator('.msg-ask, .decision-bar').filter({ visible: true }).filter({ hasText: title }).filter({ hasText: /lost|isn.t committed|aren.t published|Delete/i }).or(card);
+      const confirm = asks.getByRole('button', { name: 'Confirm', exact: true }).first();
+      const outcome = await until(t, async () => ((await gone()) ? 'gone' : (await confirm.count()) ? 'confirm' : null), 10_000).catch(() => null);
+      await t.shot('after-delete');
+      if (outcome === 'confirm') {
+        t.note(`obid asked first: ${(await asks.filter({ has: confirm }).first().innerText()).replace(/\n+/g, ' · ')}`);
+        await sleep(700); // (a click in a card's first half second answers nothing: AskBlock)
+        await confirm.click();
+        t.step('clicked “Confirm”');
+        const after = await until(t, gone, 10_000).then(() => true, () => false);
+        await t.shot('confirmed');
+        if (!after) throw new Error(`after Delete then Confirm the task is still shown: its card ${(await card.count()) ? 'still there' : 'gone'}, ${await row.count()} side-panel rows, its card's menu ${(await more.count()) ? 'still there' : 'gone'}`);
+      } else if (outcome !== 'gone') {
+        // still there: what's new on screen (obid's words, a 409's), and whether its menu still offers Delete
+        const added = (await t.shown()).split('\n').map((l) => l.trim()).filter((l) => l && !before.has(l));
+        let offers = 'no menu';
+        if (await more.count()) {
+          await more.first().click();
+          offers = (await del.waitFor({ timeout: 3000 }).then(() => true, () => false)) ? 'still offers Delete task' : 'no longer offers Delete task';
+          await t.shot('menu-again');
+          await t.page.keyboard.press('Escape');
+        }
+        const kept = jobOrNone(t, id) ? `obid still keeps it (${jobOrNone(t, id).status})` : 'obid deleted its job file';
+        throw new Error(`10 s after Delete task it is still shown: its card ${(await card.count()) ? 'still in the conversation' : 'gone'}; ${await row.count()} side-panel rows; its card's menu ${offers}; ${kept}; new on screen: ${added.length ? added.slice(0, 6).map((l) => `“${l.slice(0, 120)}”`).join(', ') : 'nothing (no words from obid)'}`);
+      }
+      // Home and the side panel, as the owner comes back to them: no card, no row
+      await home(t);
+      const left = await t.page.locator('article.ask-card, .convo-kid, .convo-row').filter({ hasText: title }).count();
+      await t.shot('home');
+      if (left) throw new Error(`deleted, the task is still on Home or in the side panel (${left})`);
+      t.note(`obid's job file is ${jobOrNone(t, id) ? 'still there' : 'gone'}`);
     },
   },
 ];

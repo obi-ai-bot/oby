@@ -45,11 +45,14 @@ mod input_answer;
 mod job_browser;
 mod mcp_annotations;
 mod mcp_tool;
+mod origin;
 mod outcome;
 mod outside;
 mod owner;
 mod place;
 mod point;
+mod relay_command;
+mod relay_event;
 mod reload_body;
 mod save_copy_answer;
 mod secret_answer;
@@ -80,11 +83,14 @@ pub use input_answer::InputAnswer;
 pub use job_browser::JobBrowser;
 pub use mcp_annotations::McpAnnotations;
 pub use mcp_tool::McpTool;
+pub use origin::Origin;
 pub use outcome::Outcome;
 pub use outside::Outside;
 pub use owner::Owner;
 pub use place::Place;
 pub use point::Point;
+pub use relay_command::{PointerPhase, RelayCommand};
+pub use relay_event::{RelayEvent, RelayEvents};
 pub use reload_body::ReloadBody;
 pub use save_copy_answer::SaveCopyAnswer;
 pub use secret_answer::SecretAnswer;
@@ -191,10 +197,6 @@ pub const TAB_STATES: &[&str] = &[
     "crashed",
 ];
 
-/// How long a job's browser may take to start (Chrome launching for its profile), apart from
-/// any command's deadline: a command's deadline counts only once the browser is up.
-pub const BROWSER_START_ALLOWANCE_MS: u64 = 60_000;
-
 pub const BROWSER_STATES: &[&str] = &["notStarted", "starting", "ready", "failed"];
 
 pub const ASK_KINDS: &[&str] = &["signIn", "captcha", "choice", "code", "passkey"];
@@ -249,6 +251,12 @@ pub const REASONS: &[&str] = &[
     "bad_request",
     "browser_starting",
     "no_dialog",
+    // The window's relay (T3 Code's design): nobody follows `GET /v1/browser/relay`.
+    "no_window",
+    // A route retired with obid's own browser: the window's browser does it now (410).
+    "retired",
+    // The box's edge (BROWSER-18).
+    "outside_box",
 ];
 
 // ── The agents' tools (MCP) ─────────────────────────────────────────────────────────────────────
@@ -394,6 +402,7 @@ mod tests {
                 choice: None,
             }),
             dialog: None,
+            partition: None,
         }
     }
 
