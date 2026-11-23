@@ -169,6 +169,8 @@ describe('a conversation\'s tasks, nested under it', () => {
     const { side, opened } = await on(TWO);
     const html = side({ activeTalk: 'c1' });
     expect(nestOf(html, 'Two fixes for today')).toMatch(/<button class="convo-kid" title="Fix iOS signing on Deskree Team"/);
+    // it carries its task's id (the human drive finds the task's own row by it, never by its title)
+    expect(nestOf(html, 'Two fixes for today')).toMatch(/<button class="convo-kid" title="Fix iOS signing on Deskree Team"[^>]*data-task-row="j2"/);
     expect(html).not.toContain('convo-kid is-active');
     clicks['Fix iOS signing on Deskree Team']();
     expect(opened).toHaveBeenCalledWith('j2');
