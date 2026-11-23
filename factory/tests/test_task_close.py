@@ -285,6 +285,65 @@ class TaskClose(unittest.TestCase):
                          self.git(self.wt, "rev-parse", "HEAD").strip())
         self.assertEqual(self.git(self.wt, "ls-remote", "--tags", "origin"), "")
 
+    def origin_holds(self, token):
+        """Whether anything on origin's branch holds the token."""
+        tip = self.git(self.wt, "ls-remote", "origin", self.branch).split()[0]
+        return subprocess.run(["git", "--git-dir", str(self.dir / "origin.git"), "log", "-p", "-S", token, tip],
+                              env=self.env, capture_output=True, text=True, check=True).stdout != ""
+
+    def a_branch_with_an_unpushed_secret(self, salt):
+        """The branch merged dev and pushed it; a later commit holding a token isn't pushed. Made here, so this
+        file holds no token."""
+        token = "ghp_" + hashlib.sha256(salt).hexdigest()[:36]
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it()
+        self.push()
+        self.write("notes.txt", f"token = {token}\n")
+        self.commit("chore: notes")
+        return token
+
+    def test_taskclose_1_the_re_close_pushes_only_the_commit_it_scanned_from_a_detached_head(self):
+        token = self.a_branch_with_an_unpushed_secret(b"taskclose-detached")
+        self.git(self.wt, "checkout", "-q", "--detach", "HEAD~1")
+        self.advance()
+        self.assertFalse(self.origin_holds(token))
+
+    def test_taskclose_1_a_tag_named_like_origins_branch_pushes_nothing_unscanned(self):
+        token = self.a_branch_with_an_unpushed_secret(b"taskclose-tag-name")
+        self.git(self.wt, "tag", f"origin/{self.branch}")
+        self.advance()
+        self.assertFalse(self.origin_holds(token))
+
+    def test_taskclose_1_an_unfinished_merge_pushes_nothing_unscanned(self):
+        token = self.a_branch_with_an_unpushed_secret(b"taskclose-open-merge")
+        self.git(self.wt, "branch", "side")
+        self.git(self.wt, "reset", "-q", "--hard", "HEAD~1")
+        self.git(self.wt, "merge", "-q", "-s", "ours", "--no-commit", "side")
+        before = self.git(self.wt, "ls-remote", "origin", self.branch).split()[0]
+        res = self.advance()
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("nothing was pushed", res.stderr)
+        self.assertEqual(self.git(self.wt, "ls-remote", "origin", self.branch).split()[0], before)
+        self.assertFalse(self.origin_holds(token))
+
+    def test_taskclose_1_the_branchs_gitleaksignore_hides_no_secret_when_job_runs_in_the_worktree(self):
+        # gitleaks reads a .gitleaksignore from the folder it runs in; the branch's own must not silence it.
+        token = "ghp_" + hashlib.sha256(b"taskclose").hexdigest()[:36]
+        self.write(".gitleaksignore", "".join(f":github-pat:{n}\n" for n in range(1, 80)))
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it(TASK + f"token = {token}\n")
+        self.push()
+        before = self.git(self.wt, "ls-remote", "origin", self.branch).split()[0]
+        res = subprocess.run([str(self.job), "advance", JOB_ID, "gate"], cwd=self.wt, env=self.env,
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("the secret scan found a secret", res.stderr)
+        self.assertEqual(self.git(self.wt, "ls-remote", "origin", self.branch).split()[0], before)
+
     def test_taskclose_1_a_git_that_cant_write_the_scans_copy_refuses_the_push(self):
         self.write("code.txt", "the change\n")
         self.write(DONE, EARLIER)
