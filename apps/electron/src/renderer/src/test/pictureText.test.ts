@@ -75,6 +75,20 @@ describe('SPHEREAPP-18: the text in a picture is scanned before it leaves', () =
     expect(await scanPicture(TOKEN_PNG, { read: async () => printed([first[0], first[2]], second), gitleaks: fakeGitleaks })).toEqual({ kind: 'clean' });
   });
 
+  it('sphereapp_18: a `j` read as `]` in a prefix a rule needs is still found', async () => {
+    // a scanner whose rule needs a fixed prefix with a `j` in it (made up: `pj_` and 30 letters or digits)
+    const suffix = token().slice(4, 34);
+    const needsJ: Gitleaks = async (input, report) => {
+      const found = readFileSync(input, 'utf8').split('\n').flatMap((line, i) => (/pj_[A-Za-z0-9]{30}/.test(line) || /ghp_[A-Za-z0-9]{36}/.test(line) ? [{ StartLine: i + 1, RuleID: 'made-up' }] : []));
+      writeFileSync(report, JSON.stringify(found));
+      return found.length ? 99 : 0;
+    };
+    // the prefix's `j` read as `]`, alone, beside a `|` read for an `l` in the rest, and over two lines
+    for (const lines of [[[`p]_${suffix}`]], [[`p]_${suffix.slice(0, 9)}|${suffix.slice(10)}`]], [['p]_'], [suffix]]]) {
+      expect(await scanPicture(LOGO_PNG, { read: async () => printed(...lines), gitleaks: needsJ })).toEqual({ kind: 'found', rules: ['made-up'] });
+    }
+  });
+
   it('sphereapp_18: a text reader that isn’t there, fails or takes too long sends nothing', async () => {
     const couldNotRun = expect.objectContaining({ kind: 'couldNotRun' });
     expect(await scanPicture(LOGO_PNG, { read: null, gitleaks: fakeGitleaks })).toEqual({ kind: 'couldNotRun', why: 'the picture’s text reader isn’t there' });
@@ -122,7 +136,7 @@ describe('SPHEREAPP-18: the text in a picture is scanned before it leaves', () =
   it('sphereapp_18: what the scan reads of the text: each reading, each next pair, the best run together, and mended', () => {
     expect(textToScan(readings(printed(['ab]c', 'abjc'], [' de f|g ']))).split('\n')).toEqual([
       'ab]c', 'abjc', 'de f|g', 'ab]cde f|g', 'abjcde f|g', 'ab]cde f|g',
-      'ablc', 'abjc', 'deflg', 'ablcdeflg', 'abjcdeflg', 'ablcdeflg',
+      'ablc', 'abjc', 'abjc', 'deflg', 'ablcdeflg', 'abjcdeflg', 'abjcdeflg', 'ablcdeflg', 'abjcdeflg',
     ]);
     expect(textToScan([])).toBe('\n');
   });

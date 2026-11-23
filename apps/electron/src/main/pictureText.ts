@@ -54,8 +54,10 @@ export function readings(printed: string): string[][] {
 // What the scan reads of the picture's text: every reading of every line alone; every reading of a
 // line run together with every reading of the next (a token drawn over two lines: at most 9 a
 // pair, so the right halves always meet whatever readings come between them); the best readings of
-// all lines run together; and each of those again with the marks a reading puts for a letter (`]`
-// for `j`, `|` for `l`) as a letter and no spaces, so a token read a little wrong still reads as one
+// all lines run together; and each of those again, no spaces, with the marks a reading puts for a
+// letter as a letter, so a token read a little wrong still reads as one: each as `l` (`|`, `]`,
+// `!`, …), and, where there's a `]`, once more with every `]` as `j` (a `j` in a fixed prefix a
+// rule needs). Two mended forms at most, never one for each mix of them: the count stays small.
 const MISREAD = /[[\]|!(){}]/g;
 export function textToScan(lines: string[][]): string {
   const read = lines.map((l) => l.map((r) => r.replace(/\s*\n\s*/g, ' ').trim()));
@@ -64,7 +66,11 @@ export function textToScan(lines: string[][]): string {
     ...read.slice(1).flatMap((next, i) => read[i].flatMap((a) => next.map((b) => a + b))),
     read.map((l) => l[0]).join(''),
   ];
-  return [...all, ...all.map((r) => r.replace(MISREAD, 'l').replace(/\s+/g, ''))].join('\n');
+  const mended = all.flatMap((r) => {
+    const bare = r.replace(/\s+/g, '');
+    return [bare.replace(MISREAD, 'l'), ...(bare.includes(']') ? [bare.replace(/]/g, 'j').replace(MISREAD, 'l')] : [])];
+  });
+  return [...all, ...mended].join('\n');
 }
 
 const appReader = (): TextReader | null => { const bin = pictureTextBin(); return bin ? runPictureText(bin) : null; };
