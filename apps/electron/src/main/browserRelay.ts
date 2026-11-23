@@ -147,7 +147,7 @@ export const AGAIN_MS = 1_000;
 export const ATTACH_WAIT_MS = 10_000;
 /** the most commands kept for one tab while it waits; the oldest are answered first */
 export const WAITING_MAX = 256;
-/** the most bytes of commands kept for one tab while it waits; the oldest are answered first */
+/** the most bytes (UTF-8) of commands kept for one tab while it waits; the oldest are answered first */
 export const WAITING_BYTES = 4 * 1024 * 1024;
 /** the most tabs whose commands wait at once; a command for one more is answered at once */
 export const WAITING_TABS = 64;
@@ -164,7 +164,10 @@ export function insideDownloads(home: string, path: unknown): path is string {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
-type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; queue: Promise<unknown>; broken: boolean; drain?: Promise<void> | null };
+type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; queue: Promise<unknown>; broken: boolean; drain?: Drain | null };
+/** what waited for a tab's first attach, running one at a time: what's left, and whether it was called off */
+type Drain = { left: Extract<RelayCommand, { type: 'cdp' }>[]; off: boolean };
+const size = (c: { message: string }) => Buffer.byteLength(c.message, 'utf8');
 
 /** a page's address with none of these values in it: no query or fragment, and no path if that holds one */
 function bare(url: string, values: string[]): string {
@@ -243,14 +246,14 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
   // WAITING_MAX commands and WAITING_BYTES for the tab and WAITING_TABS tabs (BROWSERAPP-49)
   const hold = (c: Extract<RelayCommand, { type: 'cdp' }>) => {
     const k = key(c);
-    if (c.message.length > WAITING_BYTES || (!waiting.has(k) && waiting.size >= WAITING_TABS)) { unattached(c); return; }
+    if (size(c) > WAITING_BYTES || (!waiting.has(k) && waiting.size >= WAITING_TABS)) { unattached(c); return; }
     const w = waiting.get(k) ?? { commands: [], bytes: 0, timer: setTimeout(() => giveUp(k), ATTACH_WAIT_MS) };
     waiting.set(k, w);
     w.commands.push(c);
-    w.bytes += c.message.length;
+    w.bytes += size(c);
     while (w.commands.length > WAITING_MAX || w.bytes > WAITING_BYTES) {
       const old = w.commands.shift()!;
-      w.bytes -= old.message.length;
+      w.bytes -= size(old);
       unattached(old);
     }
   };
@@ -302,6 +305,15 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     }
   }
 
+  // a drain called off (its tab detached, or obid's relay connected again): what it hasn't run yet is
+  // answered "isn't attached", never run; the one running now can't be called back
+  const callOff = (t: Tab) => {
+    const d = t.drain;
+    if (!d) return;
+    d.off = true;
+    t.drain = null;
+    d.left.splice(0).forEach(unattached);
+  };
   // one command on an attached tab: while guarded, the tab's commands run one at a time, so no act of
   // the agent's runs between a read and main's check of what it read; a page dialog's answer never
   // waits behind a read it holds up. Settles once it has run.
@@ -334,9 +346,13 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       if (w) {
         clearTimeout(w.timer);
         waiting.delete(key(k));
-        const drain = w.commands.reduce<Promise<void>>((p, c) => p.then(() => dispatch(t, c)), Promise.resolve());
-        t.drain = drain;
-        void drain.finally(() => { if (t.drain === drain) t.drain = null; });
+        const d: Drain = { left: [...w.commands], off: false };
+        t.drain = d;
+        void (async () => {
+          while (!d.off && d.left.length) await dispatch(t, d.left.shift()!);
+          // nothing awaited between the last check and this: a command that came meanwhile is in `left`
+          if (t.drain === d) t.drain = null;
+        })();
       }
     },
     /** the webview went: closed, crashed, swapped, or DevTools took its debugger */
@@ -344,9 +360,14 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       const t = tabs.get(key(k));
       if (!t) return;
       tabs.delete(key(k));
+      // obid fails what it had sent this tab when it hears `detached`: nothing of it runs after, even
+      // on a reattach within the debugger's 250 ms
+      const was = t.attached;
+      t.attached = false;
+      callOff(t);
       // whether it shows outlives a detach (DevTools, a crash): it's said again when it attaches again
       early.set(key(k), { failed: null, shown: t.shown });
-      if (t.attached) emit({ ...k, type: 'detached' });
+      if (was) emit({ ...k, type: 'detached' });
     },
     /** a CDP event of the page's: to obid as it came, unless it carries a password the owner filled */
     event(k: TabKey, method: string, params: unknown) {
@@ -404,18 +425,15 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       // on a message too big) is answered at once
       if (!t?.attached) { if (everAttached.has(key(c))) unattached(c); else hold(c); return; }
       // behind what waited for its first attach, still running
-      if (t.drain) {
-        const after = t.drain.then(() => dispatch(t, c));
-        t.drain = after;
-        void after.finally(() => { if (t.drain === after) t.drain = null; });
-        return;
-      }
+      if (t.drain) { t.drain.left.push(c); return; }
       void dispatch(t, c);
     },
     /** obid's relay stream (re)connected: every live tab is announced again (T3's announceAll); no command runs again */
     reconnected() {
-      // a restarted obid names its tabs anew: nothing the last one sent waits for them
+      // a restarted obid names its tabs anew, and the last stream's calls are failed: nothing it sent
+      // waits for them, nor runs from a drain
       for (const k of [...waiting.keys()]) giveUp(k);
+      for (const t of tabs.values()) callOff(t);
       for (const t of tabs.values()) {
         if (!t.attached) continue;
         emit({ ...t.k, type: 'attached' });

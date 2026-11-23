@@ -246,6 +246,59 @@ describe('BROWSERAPP-49: obid\'s first commands wait for the tab\'s webview to a
     expect(replies(o.all()).map((r) => r.id)).toEqual([1, 2, 3]);
   });
 
+  // a guest whose Page.navigate stays unanswered until `release`
+  function holding() {
+    let release!: () => void;
+    const g = fakeGuest();
+    g.send = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      g.sent.push({ method, params });
+      if (method === 'Page.navigate') await new Promise<void>((done) => { release = done; });
+      return { from: method };
+    });
+    return { g, release: () => release() };
+  }
+  const NOT_ATTACHED = { code: -32000, message: 'This tab isn’t attached in the window.' };
+
+  it('browserapp_49: obid\'s relay connecting again calls off a drain: the first command still pending, none after it runs, each answered', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const { g, release } = holding();
+    host.command(cdp(1, 'Page.navigate', { url: 'https://example.test/' }));
+    host.command(cdp(2, 'Runtime.evaluate'));
+    host.command(cdp(3, 'Input.dispatchMouseEvent', { type: 'mousePressed' }));
+    host.attach(K, g);
+    for (let i = 0; i < 4; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate']);
+    host.reconnected();
+    // after the reconnect, a command of the new stream still runs (the tab is attached)
+    host.command(cdp(4, 'Runtime.evaluate', { expression: 'location.href' }));
+    release();
+    for (let i = 0; i < 8; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate', 'Runtime.evaluate']);
+    expect(g.sent[1].params).toEqual({ expression: 'location.href' });
+    const r = replies(o.all());
+    expect(r.filter((x) => x.id === 2 || x.id === 3)).toEqual([{ id: 2, error: NOT_ATTACHED }, { id: 3, error: NOT_ATTACHED }]);
+  });
+
+  it('browserapp_49: a detach and a reattach within the debugger\'s 250 ms call off a drain: none after the pending first command runs, on either webview', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const { g, release } = holding();
+    host.command(cdp(1, 'Page.navigate', { url: 'https://example.test/' }));
+    host.command(cdp(2, 'Runtime.evaluate'));
+    host.command(cdp(3, 'Input.dispatchMouseEvent', { type: 'mousePressed' }));
+    host.attach(K, g);
+    for (let i = 0; i < 4; i++) await settle();
+    host.detach(K);
+    const again = fakeGuest();
+    host.attach(K, again);
+    release();
+    for (let i = 0; i < 8; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate']);
+    expect(again.sent).toEqual([]);
+    expect(replies(o.all()).filter((x) => x.id === 2 || x.id === 3)).toEqual([{ id: 2, error: NOT_ATTACHED }, { id: 3, error: NOT_ATTACHED }]);
+  });
+
   it('browserapp_49: at most WAITING_MAX commands wait for one tab: one more answers the oldest at once', async () => {
     const o = fakeObid();
     const host = relayHost(o.post, { home: HOME });
