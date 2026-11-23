@@ -22,6 +22,13 @@ import landingHtml from '../../resources/sandpack-relay/index.html?raw';
 // and nothing else of that folder (its licences and README stay 404). The worker sends a `/__csb…`
 // path of the preview's own origin to the network, so it reaches this server. So does the bridge
 // every page gets (ARTIFACTSAPP-22 and 23), resources/preview-bridge/, at `/__csb_oby/bridge.js`.
+//
+// A Claude Design design is drawn by obid's own canvas host and runtime (ARTIFACTS-13 to 15), whose
+// paths are root-relative, so it needs an origin of its version's own (ARTIFACTSAPP-29 and 30). This
+// server gives it one: `<id>-v<n>.localhost` on its port, for the version main shows and no other,
+// each path read from obid's file route (`GET /v1/artifacts/<id>/<n>/<path>`) with main's token and
+// sent on with obid's status, type, policy and CORS as obid sent them. An answer of obid's that
+// carries no policy is never sent on.
 
 // import.meta.glob takes a literal: its keys start with this
 const VENDOR = '../../resources/sandpack-vendor/';
@@ -91,13 +98,65 @@ export function servedHost(host: string | undefined, port: number): boolean {
   return !!m && Number(m[2]) === port;
 }
 
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+/** A design's version this server's host names: `<id>-v<n>.localhost` on its port, else null. */
+export function designHost(host: string | undefined, port: number): { id: string; version: number } | null {
+  const m = new RegExp(`^(${UUID})-v([1-9][0-9]{0,5})\\.localhost:(\\d{1,5})$`).exec(host ?? '');
+  return m && Number(m[3]) === port ? { id: m[1], version: Number(m[2]) } : null;
+}
+
+/** The path of a design's file as asked, kept percent-encoded for obid, or null: one that climbs
+ * (`..`, `.`, an empty segment, a backslash, a NUL, either encoded too) is never asked of obid. */
+export function designPath(raw: string): string | null {
+  if (!raw.startsWith('/') || raw.length > 2048) return null;
+  const parts = raw.slice(1).split('/');
+  for (const p of parts) {
+    let d: string;
+    try { d = decodeURIComponent(p); } catch { return null; }
+    if (!d || d === '.' || d === '..' || /[\\/\0]/.test(d)) return null;
+  }
+  return raw;
+}
+
+// the headers of obid's that a design's answer keeps
+const PASSED = ['content-type', 'content-security-policy', 'access-control-allow-origin', 'x-content-type-options', 'referrer-policy'];
+
+/** How the relay reaches obid for a design: whether main shows that version, and obid's answer for
+ * one of its files (a Response, or why obid didn't answer). */
+export type Designs = {
+  shown(id: string, version: number): boolean;
+  read(id: string, version: number, path: string): Promise<Response | { status: number; text: string }>;
+};
+
 export type Relay = { port: number; origin: string; close(): Promise<void> };
 
-/** The relay, listening on 127.0.0.1 on a port the system picks. */
-export async function startRelay(): Promise<Relay> {
+const notHere = (res: ServerResponse, status = 404, text = 'Not here.') => {
+  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Security-Policy': RELAY_CSP, 'Cache-Control': 'no-store' }).end(text);
+};
+
+async function design(req: IncomingMessage, res: ServerResponse, at: { id: string; version: number }, designs: Designs) {
+  const path = designPath((req.url ?? '/').split('?')[0]);
+  if ((req.method !== 'GET' && req.method !== 'HEAD') || !path || !designs.shown(at.id, at.version)) return notHere(res);
+  const r = await designs.read(at.id, at.version, path).catch((e: unknown) => ({ status: 0, text: String(e) }));
+  if (!(r instanceof Response)) return notHere(res, 502, r.text || 'obid isn’t answering.');
+  const body = new Uint8Array(await r.arrayBuffer());
+  // never a file of a design without obid's policy on it
+  if (r.ok && !r.headers.get('content-security-policy')) return notHere(res, 502, 'obid sent no policy.');
+  const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+  for (const h of PASSED) { const v = r.headers.get(h); if (v) headers[h] = v; }
+  if (!r.ok) headers['content-security-policy'] ??= RELAY_CSP;
+  res.writeHead(r.status, headers);
+  res.end(req.method === 'HEAD' ? undefined : body);
+}
+
+/** The relay, listening on 127.0.0.1 on a port the system picks; with `designs`, a design's
+ * version on its own origin too. */
+export async function startRelay(designs?: Designs): Promise<Relay> {
   const served = files();
   let port = 0;
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const at = designs ? designHost(req.headers.host, port) : null;
+    if (at && designs) { void design(req, res, at, designs).catch(() => { if (!res.headersSent) notHere(res, 502, 'obid isn’t answering.'); else res.end(); }); return; }
     const path = (req.url ?? '/').split('?')[0];
     const file = served.get(path);
     if ((req.method !== 'GET' && req.method !== 'HEAD') || !servedHost(req.headers.host, port) || !file) {

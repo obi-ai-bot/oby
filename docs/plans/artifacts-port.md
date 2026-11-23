@@ -275,7 +275,9 @@ route workflow, red before green. Sangam's artifact screens (the Oby Artifacts c
 - **P4** (Oby's runtime for Claude Design boards), **P5** (agent tools), **P6** and **P7** (the
   artifact tab in obid's browser API, and the `oby-artifact://` view) and **P9** to **P13**
   (sharing, the Sphere, public links, Share in the app, Settings) wait, as the owner said.
-  - P4 and P9 are built and held (P9 is #2796, disarmed).
+  - P9 is built and held (#2796, disarmed). P4 landed with its app side: the pane draws a design
+    with obid's canvas host on its version's own loopback origin, `<id>-v<n>.localhost` on main's
+    relay (artifacts-app.md, ARTIFACTSAPP-29 and 30), until P7's `oby-artifact://` view.
   - P7's `oby-artifact://` protocol stays the plan for designs. Sandpack's per-preview origin
     already gives each preview its own origin.
 - **P8**'s pieces moved into the loop: the card (L2), Export and Import (L4) and the `artifact` on
@@ -575,7 +577,7 @@ the lab scenario each comes from), the files it owns, and its Blok proof.
 | **L4** Export and import (app) | L2, P2 | L5 | merged (#2847) |
 | **L5** React artifacts, local | L1 | L3b, L4 | built (W01-17) |
 | **L6** The real drive | L1 to L5 | none | |
-| P4 Oby's runtime | P1 | | after the loop (built, held) |
+| P4 Oby's runtime | P1 | | landed, drawn in the pane |
 | P5 Agent tools | P4 | | after the loop |
 | P6 The artifact tab (obid) | the browser's own ports | | after the loop |
 | P7 The artifact tab (app) | P4, P6 | | after the loop |

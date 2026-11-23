@@ -60,65 +60,19 @@
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts
 // (obid: core/target/debug/obid by default).
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { buildFixture } from '../../../e2e/lib/fixture.mjs';
 import { appRoot, launch, until, skipFirstRun } from './drive-lib.mjs';
+import { startObid as scratchObid, stopObid } from './artifacts-obid.mjs';
 
 const repoRoot = resolve(appRoot, '../..');
-const agents = join(repoRoot, 'core/crates/obid/tests/agents');
 const binary = process.env.OBY_TEST_OBID || join(repoRoot, 'core/target/debug/obid');
 const shots = process.env.OBY_ARTIFACTS_SHOTS;
 const scratch = mkdtempSync(join(tmpdir(), 'oby-artifacts-'));
-const json = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 let daemon, app;
+const startObid = async () => { const s = await scratchObid(scratch, binary); daemon = s.daemon; return s; };
 const mainLogs = [];
-
-async function freePort() {
-  const server = createServer();
-  await new Promise((done) => server.listen(0, '127.0.0.1', done));
-  const { port } = server.address();
-  await new Promise((done) => server.close(done));
-  return port;
-}
-
-// A scratch obid: one stand-in Claude account, the fixture repository
-async function startObid() {
-  const root = scratch, home = join(root, 'home');
-  for (const dir of ['home/accounts/stub', 'env-home', 'tmp', 'electron-data']) mkdirSync(join(root, dir), { recursive: true });
-  const fixture = buildFixture(join(root, 'fixture'));
-  json(join(home, 'accounts/stub/.credentials.json'), { claudeAiOauth: { accessToken: 'fake-claude', expiresAt: (Math.floor(Date.now() / 1000) + 86400) * 1000 } });
-  const port = await freePort();
-  json(join(root, 'config.json'), {
-    listen: `127.0.0.1:${port}`, home, owner: 'alex',
-    claudeKeychain: false, cursorKeychain: false, allowFileRemotes: true,
-    agents: { claude: { bin: join(agents, 'fake-harness-jobs'), accounts: [{ id: 'stub', name: 'Stub', configDir: join(home, 'accounts/stub') }] } },
-    repos: [{ repo: 'obi-e2e/fixture-app', remote: fixture.remoteUrl, defaultBranch: 'main', check: 'node --test', pullRequests: true }],
-  });
-  const logs = [];
-  daemon = spawn(binary, ['serve', '--config', join(root, 'config.json')], { env: {
-    PATH: `${agents}:${process.env.PATH}`, HOME: join(root, 'env-home'), TMPDIR: join(root, 'tmp'),
-    OBID_SECURITY_BIN: join(agents, 'fake-security'), OBID_PRESTART: 'off', OBID_USAGE_READS: 'off',
-    OBID_LOAD: '0', OBID_MEMORY_AVAILABLE: '1099511627776',
-  }, stdio: ['ignore', 'pipe', 'pipe'] });
-  daemon.stdout.on('data', (b) => logs.push(b.toString()));
-  daemon.stderr.on('data', (b) => logs.push(b.toString()));
-  const call = async (method, path, body) => {
-    const token = readFileSync(join(home, 'api-token'), 'utf8').trim();
-    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-      method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-    const text = await response.text();
-    assert.ok(response.ok, `${method} ${path}: ${response.status}: ${text}`);
-    return text ? JSON.parse(text) : null;
-  };
-  await until('the scratch obid', () => call('GET', '/v1/status'));
-  return { root, home, port, call, logs };
-}
 
 // Main's preview view, and the frame Sandpack shows the artifact in, asked through main
 async function inFrame(js) {
@@ -847,6 +801,6 @@ async function main() {
 
 main().then(() => { console.log('test-artifacts: all passed'); }, (e) => { console.error(e); console.error('main said:', mainLogs.join('').slice(-3000)); process.exitCode = 1; }).finally(async () => {
   await app?.close().catch(() => {});
-  if (daemon && daemon.exitCode === null) { const gone = new Promise((done) => daemon.once('exit', done)); daemon.kill(); await gone; }
+  await stopObid(daemon);
   if (!process.env.OBY_KEEP) rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
