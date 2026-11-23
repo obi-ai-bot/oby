@@ -416,9 +416,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
     const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
     const nested = kids.length + arts.length > 0;
-    // one of its tasks' own thread showing: its row lit, so its rows show
+    // one of its tasks' own thread showing: its row lit, so its rows show, even folded by the owner before
     const lit = kids.some((k) => k.id === active);
-    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
+    const shown = nested && (lit || (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs'))));
     return (
     <div key={c.id} className={`convo-nest${nested ? ' has-kids' : ''}`}>
     {nested && (

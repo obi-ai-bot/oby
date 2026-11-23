@@ -18,8 +18,8 @@ export const SHOWN = 4;
 // words (what changed, the test run, the commit, the result) with the lines before them folded. Long
 // words fold behind Show more, as T3 Code's do. The card above it stays progress only.
 // said: the owner's words in the thread around it; words told it that are there already show once,
-// there, as the owner's message (#2787). whole: every line shown, nothing folded (a task's own thread,
-// LIVETASK-22)
+// there, as the owner's message (#2787). whole: every line and all of its words shown, nothing folded (a
+// task's own thread, LIVETASK-22)
 export default function TaskLog({ task, said, whole = false }: { task: Task; said?: ReadonlySet<string>; whole?: boolean }) {
   const entries = useEntries(task.id);
   const [open, setOpen] = useState(false);
@@ -57,12 +57,12 @@ export default function TaskLog({ task, said, whole = false }: { task: Task; sai
       {shown.length > 0 && (
         <ol className="ss-entries">
           {shown.map((e, i) => (e.kind === 'said'
-            ? <Words key={e.n ?? `s${i}`} text={e.live ? live.shown : e.text} streaming={e.live} brand={agent.brand} />
+            ? <Words key={e.n ?? `s${i}`} text={e.live ? live.shown : e.text} streaming={e.live} brand={agent.brand} whole={whole} />
             : <Line key={e.n ?? i} entry={e} job={task.id} brand={agent.brand} live={liveFor(e, live)} />))}
         </ol>
       )}
       {says && <p className="lt-log-now"><span className="sheen">{says}</span></p>}
-      {result && <ol className="ss-entries"><Words text={result.text} brand={agent.brand} /></ol>}
+      {result && <ol className="ss-entries"><Words text={result.text} brand={agent.brand} whole={whole} /></ol>}
       {/* a decision answered: one line where it was asked, until obid asks something else (LIVETASK-27) */}
       {answered && <p className="lt-answered"><Check size={12} strokeWidth={2} />{j.ask!.label ?? ASK_LABEL[j.ask!.kind] ?? j.ask!.kind} · {task.answer}</p>}
       {context && <ContextMeter used={context.used} size={context.size} />}
@@ -71,27 +71,29 @@ export default function TaskLog({ task, said, whole = false }: { task: Task; sai
   );
 }
 
-// The agent's words, folded past a few lines behind Show more
-function Words({ text, streaming, brand }: { text: string; streaming?: boolean; brand: Parameters<typeof BrandMark>[0]['brand'] }) {
+// The agent's words, folded past a few lines behind Show more; whole (its own thread, LIVETASK-22), never folded
+function Words({ text, streaming, brand, whole = false }: { text: string; streaming?: boolean; brand: Parameters<typeof BrandMark>[0]['brand']; whole?: boolean }) {
   return (
     <li className="ss-said">
       <span className="ss-mark"><BrandMark brand={brand} size={16} mono /></span>
-      <Fold><Said text={text} streaming={streaming} /></Fold>
+      <Fold whole={whole}><Said text={text} streaming={streaming} /></Fold>
       {/* its Copy (CHATFIRST-37), once all its words are in */}
       {!streaming && <CopyButton text={text} className="msg-copy" />}
     </li>
   );
 }
 
-// Something long, cut to a few lines with Show more; only when it's longer than that
-export function Fold({ children }: { children: React.ReactNode }) {
+// Something long, cut to a few lines with Show more; only when it's longer than that. whole: shown whole,
+// laid out the same, with nothing to fold (a task's own thread, LIVETASK-22)
+export function Fold({ children, whole = false }: { children: React.ReactNode; whole?: boolean }) {
   const body = useRef<HTMLDivElement>(null);
   const [long, setLong] = useState(false);
   const [open, setOpen] = useState(false);
   useLayoutEffect(() => {
     const el = body.current;
-    if (el && !open) setLong(el.scrollHeight > el.clientHeight + 2);
+    if (el && !open && !whole) setLong(el.scrollHeight > el.clientHeight + 2);
   });
+  if (whole) return <div className="lt-fold is-open"><div className="lt-fold-body">{children}</div></div>;
   return (
     <div className={`lt-fold${long ? ' is-long' : ''}${open ? ' is-open' : ''}`}>
       <div ref={body} className="lt-fold-body">{children}</div>

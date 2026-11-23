@@ -101,6 +101,25 @@ describe('a task in its conversation', () => {
     expect(opened).toHaveBeenCalledWith('j1');
   });
 
+  it('LIVETASK-22: in a task\'s own thread the agent\'s words show whole; in the conversation they fold past a few lines', async () => {
+    const { SESSIONS } = await import('../session');
+    const kept = SESSIONS.j1;
+    const long = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of what I found.`).join('\n\n');
+    SESSIONS.j1 = [{ kind: 'said', text: long, at: '10:04 AM' }];
+    try {
+      const { default: ChatView } = await import('../ChatView');
+      const words = () => host.querySelector('[data-task="j1"] .lt-log .ss-said')!;
+      // in the conversation, cut to a few lines (its Show more once laid out: a real browser's, taskLogLayout)
+      await show();
+      expect(words().querySelector('.lt-fold:not(.is-open)')).not.toBeNull();
+      // its own thread: open from the start, all of it, nothing to fold
+      await act(async () => root.render(<ChatView kind="task" id="j1" leaving={false} onBack={() => {}} onGone={() => {}} />));
+      expect(words().querySelector('.lt-fold.is-open > .lt-fold-body')).not.toBeNull();
+      expect(words().querySelector('.lt-log-more')).toBeNull();
+      expect(words().textContent).toContain('Line 30 of what I found.');
+    } finally { SESSIONS.j1 = kept; }
+  });
+
   it('LIVETASK-22: a task\'s own thread shows all it did, not only its last lines', async () => {
     const { SESSIONS } = await import('../session');
     const kept = SESSIONS.j1;
