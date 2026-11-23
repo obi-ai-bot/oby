@@ -87,7 +87,8 @@ function driver(page, record, state) {
   const shown = () => page.evaluate(() => document.body.innerText);
   const t = {
     // app: the window as main holds it, only for what a person does to the window itself (maximize)
-    page, app, repo, state, shown,
+    // out: the run's folder, for a file a scenario keeps (an artifact's download, saved there)
+    page, app, repo, state, shown, out,
     step(label) { record.steps.push({ label, at: Date.now() - record.started }); },
     note(text) { record.notes.push(text); },
     async shot(name) {
@@ -95,6 +96,19 @@ function driver(page, record, state) {
       const file = `${record.id}-${String(record.shots.length + 1).padStart(2, '0')}-${name}.png`;
       await page.screenshot({ path: join(out, file) });
       record.shots.push(file);
+      // main's artifact preview is a view of its own laid over the page, which a page screenshot
+      // doesn't hold (docs/contracts/artifacts-app.md, "The view"): while it shows, its picture too
+      const preview = await app.evaluate(async ({ BrowserWindow, webContents }) => {
+        const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
+        const win = BrowserWindow.getAllWindows().find((w) => w.contentView.children.some((c) => c.webContents === wc));
+        const view = win?.contentView.children.find((c) => c.webContents === wc);
+        return view?.getVisible() ? (await wc.capturePage()).toPNG().toString('base64') : null;
+      }).catch(() => null);
+      if (preview) {
+        const also = file.replace(/\.png$/, '-preview.png');
+        writeFileSync(join(out, also), Buffer.from(preview, 'base64'));
+        record.shots.push(also);
+      }
       return file;
     },
     // waits until the window shows this (a string or a RegExp), and gives what matched
