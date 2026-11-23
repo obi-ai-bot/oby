@@ -253,7 +253,7 @@ describe('signed words', () => {
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const plan = (workspace: unknown, more: Record<string, unknown> = { new: true }) =>
       ({ said: 'Fix the login', folders: ['/Users/me/api'], ...more, workspace });
-    // the shape: this folder, or New worktree checked, with new only, never one of the words
+    // the shape: this folder, or Worktree checked, with new only, never one of the words
     for (const workspace of ['folder', 'worktree']) {
       expect(wordsOf('POST', '/v1/plans', plan(workspace))).toEqual(['Fix the login']);
       expect(owners('POST', '/v1/plans', plan(workspace), ['Fix the login'], [])).toEqual([0]);

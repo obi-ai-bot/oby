@@ -195,12 +195,13 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // how many folders the conversation works in: a file of one of several is named after its folder
   const chat = chats.find((c) => c.id === conversation);
   // where the conversation Home's words start works (WORKSPACE-3): this folder by default, or a new
-  // worktree with New worktree checked, as Claude Code offers one (the owner's choice, 2026-11-23),
-  // chosen with its first message and never after: Home's box only, with folders or a project to
-  // work in, once obid takes it
+  // worktree with Worktree checked, as Claude Code offers one (the owner's choice, 2026-11-23),
+  // chosen with its first message and never after: only in the box that starts a new conversation
+  // (Home's), never a reply's, a follow-up's or a task's, with folders or a project to work in, once
+  // obid takes it
   const workspaceOn = takesWorkspace(useLive());
   const [workspace, setWorkspace] = useState<'folder' | 'worktree'>('folder');
-  const choosesWorkspace = home && workspaceOn && (homeFolders.length > 0 || !!project);
+  const choosesWorkspace = home && talk === true && !conversation && workspaceOn && (homeFolders.length > 0 || !!project);
   const workFolders = inProject ? projects.find((p) => p.id === chat?.project)?.folders.length ?? 1 : kept.length;
   // the tool the conversation talks through, for the commands' list when no chip names one
   const [accounts] = useAccounts();
@@ -227,20 +228,67 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const askable = useAskable();
   // a name typed out in full is done: the list goes, and Enter sends
   const fullName = at !== null && askable.some((o) => o.name.toLowerCase() === at.toLowerCase());
-  const listing = !(wordsOnly || at === null || atClosed || view || fullName);
+  const listing = !(wordsOnly || hidden || at === null || atClosed || view || fullName);
   // after the Obys, the files of the conversation's folders (COMPOSER-14)
   const atFiles = useMentionFiles(listing && conversation ? conversation : undefined, listing ? at : null);
   const matches: ({ kind: 'oby' } & Askable | { kind: 'file'; file: ConversationFile })[] = listing
     ? [...askableFor(at!, askable).map((o) => ({ kind: 'oby' as const, ...o })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
-  const slashShown = slash !== null && !slashClosed && !view;
+  const slashShown = slash !== null && !slashClosed && !view && !hidden;
   // the skills `/` lists: asked as it opens (null till obid answers), those matching what's typed after it
   const skillsAnswer = useSkills(skillsOn ? skillsWhere : undefined, slashShown && !matches.length);
   const skillRows = skillsAnswer ? skillsMatching(skillsAnswer.skills, slash ?? '') : [];
   const [skillLit, setSkillLit] = useState(0);
   useEffect(() => setSkillLit(0), [slash]);
+  // the list as Claude's own slash menu draws it: a popover over the box's left edge, as tall as fits
+  // above the box (at most about 13 rows) and scrolling inside, the lit row kept in view as the
+  // arrows move, its description beside it
+  const skillList = useRef<HTMLDivElement>(null);
+  const [skillTip, setSkillTip] = useState<{ top: number; left: number } | null>(null);
+  const placeSkillTip = () => {
+    const panel = skillList.current, row = panel?.querySelector<HTMLElement>('.is-lit');
+    const form = (panel?.offsetParent ?? panel?.parentElement)?.getBoundingClientRect();
+    if (!panel || !row || !form) return setSkillTip(null);
+    const r = row.getBoundingClientRect(), p = panel.getBoundingClientRect();
+    // beside the row while it shows in the list; a row scrolled out of it has none
+    const next = p.height > 0 && (r.bottom <= p.top || r.top >= p.bottom) ? null : { top: Math.round(r.top - form.top + r.height / 2), left: Math.round(p.right - form.left + 6) };
+    setSkillTip((was) => (was && next && was.top === next.top && was.left === next.left ? was : next));
+  };
+  const skillsListed = slashShown && !matches.length && skillRows.length > 0;
+  useLayoutEffect(() => {
+    const panel = skillList.current;
+    if (!panel) return setSkillTip(null);
+    panel.style.maxHeight = `${Math.max(120, Math.min(376, panel.getBoundingClientRect().bottom - 12))}px`;
+    panel.querySelector('.is-lit')?.scrollIntoView({ block: 'nearest' });
+    placeSkillTip();
+  }, [skillsListed, skillLit, skillRows.length]);
   // one picked: the /words go, and it's the box's chip (another picked replaces it)
   const pickSkill = (name: string) => { setSkill(name); box.current?.clear(); box.current?.focus(); };
   useClicksEverywhere(matches.length > 0 || slashShown);
+  // a click anywhere outside the list (the conversation, the side panel, elsewhere in the box) closes
+  // it, picking nothing, as Claude's own menus do
+  const listOpen = matches.length > 0 || slashShown, atListOpen = matches.length > 0;
+  useEffect(() => {
+    if (!listOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (e.target instanceof Element && e.target.closest('.mention-panel, .slash-panel')) return;
+      if (atListOpen) setAtClosed(true);
+      else setSlashClosed(true);
+    };
+    // Esc wherever the focus is: the box's own keys hear it only while the box has the focus, and a
+    // click elsewhere (the side panel, the window's edge) takes it away while the list stays. It's
+    // the list's alone: nothing under it (a conversation going back) hears it too
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (atListOpen) setAtClosed(true);
+      else setSlashClosed(true);
+      box.current?.focus();
+    };
+    addEventListener('pointerdown', onDown, true);
+    addEventListener('keydown', onKey, true);
+    return () => { removeEventListener('pointerdown', onDown, true); removeEventListener('keydown', onKey, true); };
+  }, [listOpen, atListOpen]);
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
   const pickMatch = (m: (typeof matches)[number]) => pickOby(m.kind === 'oby' ? m.name : fileWords(m.file, workFolders));
   const onMentionKey = (key: MentionKey) => {
@@ -365,7 +413,15 @@ export default function Composer({ placeholder, prompts = false, note, label, on
     return () => { gone = true; };
   }, [attached, repoPick, homeProject, homeFolders, tagsOf, draft]);
   // Home's box stepping aside (a page opened over it) puts its panel away
-  useEffect(() => { if (hidden) setView(null); }, [hidden]);
+  // and its lists, `/`'s and @'s: a box no one sees holds none open, nor their keys and clicks on the
+  // window (Esc in the page over it is that page's)
+  useEffect(() => {
+    if (!hidden) return;
+    setView(null);
+    // only a list that is open: one closed with nothing typed would stay closed until a / is typed and taken out
+    if (slash !== null) setSlashClosed(true);
+    if (at !== null) setAtClosed(true);
+  }, [hidden]);
   // a click outside the box and its panel closes the panel (anywhere in the window)
   useClicksEverywhere(!!view);
   useEffect(() => {
@@ -530,8 +586,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
         )}
         {/* a / at the start: the skills of the agent the words go to, where obid gives them
             (COMPOSER-25); with none to list, obid's why, else what's missing (COMPOSER-16) */}
-        {slashShown && !matches.length && skillRows.length > 0 && (
-          <div className="add-panel mention-panel" role="listbox" aria-label="Skills">
+        {skillsListed && (
+          <div ref={skillList} className="add-panel mention-panel skill-panel" role="listbox" aria-label="Skills" onScroll={placeSkillTip}>
             {skillRows.map((k, i) => (
               <button
                 type="button"
@@ -543,12 +599,16 @@ export default function Composer({ placeholder, prompts = false, note, label, on
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setSkillLit(i)}
                 onClick={() => pickSkill(k.name)}
-                title={k.description}
+                aria-description={k.description || undefined}
               >
-                <span className="add-item-text">{`/${k.name}`}{k.description && <span className="add-item-about">{k.description}</span>}</span>
+                <span className="add-item-text">{k.name}</span>
               </button>
             ))}
           </div>
+        )}
+        {/* the lit row's description, in a tip beside it */}
+        {slashShown && !matches.length && skillTip && skillRows[Math.min(skillLit, skillRows.length - 1)]?.description && (
+          <div className="skill-tip" role="tooltip" style={{ top: skillTip.top, left: skillTip.left }}>{skillRows[Math.min(skillLit, skillRows.length - 1)].description}</div>
         )}
         {slashShown && !matches.length && !skillRows.length && (!skillsOn || skillsAnswer) && (
           <div className="add-panel slash-panel" role="dialog" aria-label="Commands">
@@ -623,6 +683,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             handle={box}
             autoFocus={autoFocus}
             placeholder={prompts ? prompt : placeholder ?? ''}
+            // after a lone /, what to do next, as Claude's own slash menu says it
+            hint={skillsListed && slash === '' ? { after: '/', text: 'Type to filter' } : undefined}
             label={label}
             onText={(t) => { setFilled(!!t.trim()); setNamed(mentioned(t)); setTyped(t); drafts.current!.typed(t); }}
             // each change narrows the list, so the first is lit again

@@ -183,15 +183,41 @@ describe('a task at work', () => {
   });
 
   it('LIVETASK-31: ended, its last words show under the card (what changed, the test run, the commit), its steps folded behind Show more', async () => {
+    // the agent's words as obid's transcript has them, its goal line last (TASKS-19)
     const result = 'Changes\n- Added divide(a, b)\n\nTest run\n- 4 passed\n\nCommit abc123\n\nGOAL MET';
-    const { card, log } = await views([plan, tool('Read', 'a.ts'), tool('Edited', 'math.ts'), { kind: 'said', text: result, at: '2:10 PM' }], {}, 'done');
+    const [said] = sessionOf([wire(9, { kind: 'said', summary: result, text: result, state: undefined })]);
+    const { card, log } = await views([plan, tool('Read', 'a.ts'), tool('Edited', 'math.ts'), said], {}, 'done');
     expect(log).toContain('>Show 2 more<');
     for (const word of ['a.ts', 'math.ts', 'ss-plan']) expect(log).not.toContain(word);
     const text = log.replace(/<[^>]+>/g, '');
-    for (const word of ['Added divide(a, b)', '4 passed', 'Commit abc123', 'GOAL MET']) expect(text).toContain(word);
+    for (const word of ['Added divide(a, b)', '4 passed', 'Commit abc123']) expect(text).toContain(word);
     // long words are cut to a few lines with Show more (lt-fold), and none of it is on the card
     expect(log).toContain('class="lt-fold');
+    // the goal line is between the agent and obid: a person never reads it, here or on the card (TASKS-19)
+    expect(text).not.toContain('GOAL MET');
     expect(card).not.toContain('GOAL MET');
+  });
+
+  it('TASKS-19: the goal line is never shown: `GOAL MET` goes, and `GOAL NOT MET: …` reads as Not done yet', () => {
+    const said = (text: string) => (sessionOf([wire(1, { kind: 'said', summary: text, text, state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text;
+    expect(said('Added it.\n\nGOAL MET')).toBe('Added it.');
+    expect(said('Half of it.\nGOAL NOT MET: the tests still fail')).toBe('Half of it.\nNot done yet: the tests still fail');
+    expect(said('GOAL NOT MET')).toBe('Not done yet.');
+    // words that only mention it stay as they are
+    expect(said('It ends with a GOAL MET line.')).toBe('It ends with a GOAL MET line.');
+  });
+
+  // round 2 of #2887: while the words stream, a last line that may still become the goal line waits
+  it('TASKS-19: streaming, a goal line being written never flashes', () => {
+    const streamed = (text: string, tail: string) => (sessionOf([wire(1, { kind: 'said', summary: text, text, tail, state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text;
+    for (const tail of ['G', 'GOAL', 'GOAL ', 'GOAL N', 'GOAL NOT', 'GOAL NOT ME', 'GOAL ME']) expect(streamed('Added it.\n\n', tail)).toBe('Added it.');
+    expect(streamed('Added it.\n\n', 'GOAL MET')).toBe('Added it.');
+    expect(streamed('Half.\n', 'GOAL NOT MET: the te')).toBe('Half.\nNot done yet: the te');
+    // a line that can't be one any more shows as it comes
+    expect(streamed('Added it.\n', 'Good')).toBe('Added it.\nGood');
+    expect(streamed('Added it.\n', 'GOALS')).toBe('Added it.\nGOALS');
+    // whole words, not streaming, are never held
+    expect((sessionOf([wire(2, { kind: 'said', summary: 'GOAL', text: 'GOAL', state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text).toBe('GOAL');
   });
 
   it('LIVETASK-5: what it did shows in the conversation under its card, outside it, with the box talking to Oby', async () => {
@@ -529,6 +555,21 @@ describe('a task at work', () => {
     // refused isn't failed
     expect(lines[3]).toMatchObject({ meta: 'Declined', state: 'declined' });
     expect(lines[2]).toMatchObject({ state: 'failed' });
+  });
+
+  // the drive of 2026-11-23: "Asking you a question" showed "you a question" in code font
+  it('LIVETASK-10: what a step acts on is code only for a file, a command or a pattern; obid\'s words stay words', async () => {
+    const lines = sessionOf([
+      wire(1, { summary: 'Asking you a question', state: 'running', tool: 'AskUserQuestion', activity: 'other' }),
+      wire(2, { summary: 'Reading the web', state: 'done', tool: 'WebFetch', activity: 'web' }),
+      wire(3, { summary: 'Reading a.ts', state: 'done', tool: 'Read', activity: 'read' }),
+      wire(4, { summary: 'Running npm test', state: 'done', tool: 'Bash', activity: 'command' }),
+    ]);
+    const { log } = await views(lines);
+    expect(log).toContain('<span class="ss-verb">Asking</span> you a question</span>');
+    expect(log).toContain('<span class="ss-verb">Read</span> the web</span>');
+    expect(log).toContain('<span class="ss-verb">Read</span> <code>a.ts</code>');
+    expect(log).toContain('<span class="ss-verb">Ran</span> <code>npm test</code>');
   });
 });
 

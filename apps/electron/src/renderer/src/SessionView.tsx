@@ -251,6 +251,9 @@ export const Line = memo(function Line({ entry: e, job, brand, live }: { entry: 
   }
 });
 
+// what a call acts on is code (a file, a command, a pattern, a symbol) only for the tools that act on
+// code; any other's is obid's words ("Asking you a question", "Reading the web"), set as words
+const CODE = new Set<string>(['Read', 'Grep', 'Edit', 'Bash', 'Tetrix']);
 // A tool call as a quiet line; a click opens what it ran and what came back, from obid then (and
 // again when it ends, if it was opened running), or the mock's own
 function Tool({ call: e, job, tick }: { call: Extract<Entry, { kind: 'tool' }>; job: string; tick: number }) {
@@ -272,7 +275,7 @@ function Tool({ call: e, job, tick }: { call: Extract<Entry, { kind: 'tool' }>; 
         <span className="ss-tool-mark">
           {e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : e.state === 'failed' ? 'is-failed' : 'is-queued'}`} />}
         </span>
-        <span className="ss-tool-text"><span className="ss-verb">{e.verb}</span> <code>{e.target}</code></span>
+        <span className="ss-tool-text"><span className="ss-verb">{e.verb}</span> {CODE.has(e.tool) ? <code>{e.target}</code> : e.target}</span>
         {e.meta && <span className="ss-tool-meta">{e.meta}</span>}
         <span className="ss-took">{took(secs)}</span>
         {opens && <ChevronRight size={12} strokeWidth={1.8} className="ss-chev" />}

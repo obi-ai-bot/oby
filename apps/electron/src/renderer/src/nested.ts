@@ -1,4 +1,4 @@
-import { agentOf, ENDED } from './view';
+import { agentOf, asksWords, ENDED } from './view';
 import type { Task } from './tasks';
 
 // A conversation's tasks as the side panel nests them under its row (Sangam's screens 03 and 04,
@@ -20,11 +20,11 @@ export const kidState = (t: Task): KidState =>
 export const kidsOf = (tasks: Task[], chat: string, of: (taskId: string) => string | undefined) =>
   tasks.filter((t) => !t.job.archived && of(t.id) === chat).sort((a, b) => b.job.created - a.job.created);
 
-// What a task waits on, as the words after its agent's name: "asks to run a command"
+// What a task waits on, as the words after its agent's name: "asks to run a command", "asks to edit a file"
 export function asksFor(t: Task): string {
   const ask = t.job.ask;
   if (!ask) return 'needs you';
-  if (ask.kind === 'permission') return ask.detail ? 'asks to run a command' : 'asks for permission';
+  if (ask.kind === 'permission') return asksWords(ask.tool, ask.detail);
   if (ask.kind === 'question') return 'has a question';
   if (ask.kind === 'merge') return 'is ready to merge';
   if (ask.kind === 'failed') return 'stopped and needs you';

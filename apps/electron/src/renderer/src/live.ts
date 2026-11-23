@@ -3,7 +3,7 @@ import { knownUpTo, withEntries, withLine, withOutput, withTail } from './liveTa
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
 import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type AgentQuestion, type CheckRun, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark, type SkillsAnswer } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
-import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './view';
+import { STEER, TELL, agentOf, asksTo, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './view';
 import { replaceChats, type Chat } from './chats';
 import { repoTicks } from './sharing';
 import { replaceTasks, type Asking, type PersonQuestion, type PersonReview, type Task } from './tasks';
@@ -22,6 +22,7 @@ import { lookAgain, takeRoomPost } from './room';
 import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 import { added, adopted, answered as planAnswered, awaited, awaitedIn, conversationOf, failed as sendFailed, gone as goneWith, settled, starts, type Pendings } from './pending';
 import { shortTitle, titled } from './titles';
+import { MODES, SANDBOX } from './modes';
 
 // What obid has (docs/runner-api.md), as main's one follower of its events keeps it (main/live.ts):
 // main's snapshot when the page opens and after each sync, then each event main applied, applied
@@ -243,7 +244,10 @@ export function chatOf(s: Live, c: Conversation): Chat {
     if (t.who === 'oby') dealCards();
   }
   const words = p ? wordsOf(p.to).slice(0, p.n).join('') : s.words[c.id], q = s.waiting[c.id];
-  if (p || words) said.push({ who: 'oby', text: words ?? '', ago: 0, streaming: true });
+  // what the words being answered started, once obid has it (the side panel lists it then): its card
+  // where Oby's answer to them will be, under its words so far, and still there once they land
+  const starting = coming && last ? byTurn.filter((j) => j.turn === last.id && !carded.has(j.id)).map((j) => j.id) : [];
+  if (p || words || starting.length) said.push({ who: 'oby', text: words ?? '', ago: 0, streaming: true, ...(starting.length ? { jobs: starting } : {}) });
   dealCards();
   // its answer still coming (under the words so far), or an event turn's offer: last
   const placed = new Set(said.flatMap((m) => (m.offer ? [m.offer.id] : [])));
@@ -311,7 +315,7 @@ export function askOf(s: Live, j: Job): Ask | undefined {
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   if (limitHolds(s, j) && (!item || item.kind === 'limit')) return undefined;
   if (item) {
-    const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined, j.permission?.question);
+    const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined, j.permission?.question, j);
     if (item.kind === 'permission' && j.permission?.always) ask.always = j.permission.always;
     // Oby's own question about a task that stopped: its own Done, and his question card's Tell it
     // something (#1795); a stalled task's takes no answer, so Tell it something alone. Try again and
@@ -335,7 +339,22 @@ export function askOf(s: Live, j: Job): Ask | undefined {
 // for the owner's own words (obid takes any words as the answer), so one with no options is
 // answered too.
 const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
-export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuestion | null): Ask => {
+// A permission as Sangam's card asks it (mock.ts: "Let Codex fetch one package from npm?", a sentence of
+// why, then the command once): a plain question naming its agent and what it asks ("Let Codex run a
+// command?", "Let Codex edit hello.md?"), why it asks (obid's why, else the job's mode, in its own line),
+// and its command or files under them (docs/contracts/live-task.md, LIVETASK-24)
+const permissionAsk = (j: Pick<Job, 'agent' | 'mode'> & { permission: NonNullable<Job['permission']> }) => {
+  const p = j.permission, who = agentOf(j.agent).name;
+  const mode = j.mode ? MODES.find((m) => m.id === j.mode) ?? (j.mode === SANDBOX.id ? SANDBOX : undefined) : undefined;
+  const why = { text: p.why ?? (mode ? `${mode.label} mode: ${mode.help}.` : ''), tool: p.tool };
+  // a title of obid's addressed to the owner already ("Let Cursor run this repository's hooks: …",
+  // or one that asks) is asked as obid wrote it, with one question mark
+  const title = p.title?.trim() ?? '';
+  if (title.startsWith('Let ') || title.endsWith('?')) return { ...why, headline: `${title.replace(/\?+$/, '')}?` };
+  const what = p.tool === 'Bash' ? 'run a command' : p.title ? p.title[0].toLowerCase() + p.title.slice(1) : asksTo(p.tool, p.detail) ?? 'go on';
+  return { ...why, headline: `Let ${who} ${what}?` };
+};
+export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuestion | null, job?: Job): Ask => {
   // a kind this build doesn't know: obid's words, its kind as its label, and nothing to answer (WIRE-2)
   if (!isInboxKind(item.kind)) return { kind: item.kind as AskKind, headline: item.headline ?? item.title, text: item.text, options: [], unknown: true };
   // Oby's ask for a repository's check (set_check): the command under the question, and the
@@ -368,11 +387,14 @@ export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuesti
   // head: what it asks is obid's text, the permission's own title ("Run npm test", "Edit word.md";
   // docs/api/inbox.md), and that is its headline (LIVETASK-24, #2788)
   const asks = item.kind === 'permission' && !item.headline && item.text ? item.text : undefined;
+  // with its job's permission at hand, Sangam's question in place of obid's title
+  const permits = item.kind === 'permission' && !item.headline && job?.permission && !job.permission.question ? permissionAsk({ ...job, permission: job.permission }) : undefined;
   return {
     // obid's own question (Oby's escalation, a stalled task): its why and what Oby recommends are
     // its text, shown under its title (TASKS-14)
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? asks ?? item.title, text: item.headline || item.kind === 'question' ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
+    ...permits,
     ...(label ? { label } : {}),
     repos: repoTicks(item),
   };
