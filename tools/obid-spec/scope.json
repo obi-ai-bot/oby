@@ -2099,7 +2099,8 @@
             "REMOTE-62": "factory remote gate scripts, not obid.",
             "REMOTE-63": "factory remote gate scripts, not obid.",
             "REMOTE-64": "factory remote gate scripts, not obid.",
-            "REMOTE-65": "factory remote gate scripts, not obid."
+            "REMOTE-65": "factory remote gate scripts, not obid.",
+            "REMOTE-66": "factory remote gate scripts, not obid."
           }
         },
         "obid-spec.md": {
