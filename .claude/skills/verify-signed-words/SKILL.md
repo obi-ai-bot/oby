@@ -1,6 +1,6 @@
 ---
 name: verify-signed-words
-description: Re-run the generated-input test of main's signed words (WORDS-7, WORDS-1, WORDS-16) and read what it covers. Use when a change touches `apps/electron/src/main/words.ts`; `wordsOf` or `WITHIN_MS` in `apps/electron/src/shared/words.ts`; `ownersWords`, `fillSecret` or `confirming`'s `takeInput` calls in `apps/electron/src/main/device.ts`; or the input handlers (`before-input-event`, `input-event`) in `apps/electron/src/main/index.ts`.
+description: Re-run the generated-input test of main's signed words (WORDS-7, WORDS-1, WORDS-16) and read what it covers. Use when a change touches `apps/electron/src/main/words.ts`; `wordsOf` or `WITHIN_MS` in `apps/electron/src/shared/words.ts`; `ownersWords`, `fillSecret` or `confirming`'s `takeInput` calls in `apps/electron/src/main/device.ts`; or the input handlers (`before-input-event`, `before-mouse-event`) in `apps/electron/src/main/index.ts`.
 ---
 
 # Verifying main's signed words (WORDS-7, WORDS-1, WORDS-16)
@@ -46,13 +46,13 @@ Every case is built from a seeded PRNG and carries its expected answer from how 
 - **Read only:** `notificationWords` signs with no window input by design (WORDS-15), on main's own notification callback. This test doesn't call it.
 - **Left to other tests:**
   - The ECDSA signature itself (`signedHeader`, node's `sign`): library code. `words.test.ts` checks its sentence.
-  - Where inputs come from: `before-input-event` (Enter, Space) and `input-event` (mouseDown) in `src/main/index.ts`. The test calls `input` and `space` as those handlers do.
+  - Where inputs come from: `before-input-event` (Enter, Space) and `before-mouse-event` (mouseDown) in `apps/electron/src/main/index.ts`. The test calls `input` and `space` as those handlers do.
   - The preload's `owners`, which held text the words are: WORDS-2 and WORDS-3 in `words.test.ts`.
   - `fillSecret` and `confirming`: `device.test.ts`.
 
 ## 4. Open findings
 
-None.
+None. A finding goes here only by section 7's last rule, shown failing on `origin/dev`.
 
 ## 5. Sync
 
@@ -68,10 +68,11 @@ To replay a failure, put its seed in front: `OBY_SEED=<n> npx vitest run src/ren
 
 ## 7. A bug or a test error
 
-A failure prints the seed, the case number, its steps with each call's answer, and the expected answer, as `seed 20261122, case 29 (replay: OBY_SEED=20261122): expected false at step 10`.
+A failure prints the seed and its context: a case's number, its steps with each call's answer and the expected answer, as `seed 20261122, case 29 (replay: OBY_SEED=20261122): expected false at step 10`; or, for WORDS-1's coverage and WORDS-16's outcome counts, the cases run and what was checked or reached.
 
-- If the expected answer is wrong by the property in section 1, the generator is in error: fix its model, never weaken an answer to match the code.
-- A signature with no unused input in the window, an input used twice, a wrong shape or an unpicked folder signed, or an extra signature with no input is a bug in main. It becomes a finding: the property stays as written as `it.skip` with the finding's key in its title, a task file goes in `factory/queue/tasks/`, and section 4 lists it.
+- **The generator's error.** The expected answer is judged by the property in section 1 and `docs/contracts/signed-words.md`, never by what the code does now. Only when it is wrong by them is the generator in error: fix its model, and never weaken an answer, a count or a mutation to match the code. A change that means to alter a property changes the contract first.
+- **A bug the change under review made.** A signature with no unused input in the window, an input used twice, a wrong shape or an unpicked folder signed, or an extra signature with no input is a bug in main. When the change under review brings it, the change is fixed until the test is green. The property is never skipped, removed or weakened for it, and no task file stands in for the fix.
+- **A bug already on the base.** Only a property that fails the same way on `origin/dev` before the change becomes a finding. Show it first: run the section 6 command with the same `OBY_SEED` in a checkout of `origin/dev` (`git worktree add <scratch> origin/dev`), and keep its failing output. Then the property stays as written as `it.skip` with the finding's key in its title, a task file goes in `factory/queue/tasks/` with that output, and section 4 lists it. A property green on `origin/dev` and red on the change is the change's bug, above.
 
 ## 8. New shapes
 
