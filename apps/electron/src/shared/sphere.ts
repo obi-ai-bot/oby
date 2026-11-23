@@ -414,9 +414,11 @@ const ONLY_ADMINS_CHANGE = 'Only the Obysphere’s admins can change who’s adm
 // is the Sphere's `image_sha256` (null when it gives none): the picture is fetched again only when
 // it changes. Nothing here throws.
 export const PICTURE_MAX = 131_072;
-// the Sphere's own sides (128 to 1,024 px); a picture read waits at most PICTURE_WAIT
+// the Sphere's own sides (128 to 1,024 px); a whole picture read (token, the Sphere's answer about
+// itself, the picture and its body) settles within PICTURE_WAIT
 export const PICTURE_SIDE = { min: 128, max: 1024 };
-export const PICTURE_WAIT = 10_000;
+export const PICTURE_WAIT = 15_000;
+const TOO_LONG = 'the Obysphere’s picture took too long';
 // at: the Sphere's address and id it's of (`<url>/<sphere>`), what a kept answer is matched on
 export type PictureAnswer = { sphere: string | null; at?: string; sha256: string | null; image: string | null; refused: PolicyAnswer['refused']; why: string | null };
 const noPicture = (sphere: string | null, refused: PolicyAnswer['refused'], why: string): PictureAnswer => ({ sphere, sha256: null, image: null, refused, why });
@@ -493,8 +495,19 @@ export function fitPicture(encode: (side: number) => Uint8Array): Uint8Array | n
 
 // last: what the previous read answered, kept by main; the same Sphere (its address and id) and
 // sha256 answer it again. A 404 after the Sphere said it has one is kept under no sha256, so the
-// next read fetches again. The picture itself is read bounded (bounded) within PICTURE_WAIT.
+// next read fetches again. The picture itself is read bounded (bounded). The whole read has one
+// deadline, PICTURE_WAIT: every request it makes is aborted then, and it answers that it took too
+// long, whatever was still waiting, so it always settles.
 export async function readPicture(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch, last: PictureAnswer | null = null): Promise<PictureAnswer> {
+  const stop = new AbortController();
+  let late: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<PictureAnswer>((settle) => {
+    late = setTimeout(() => { stop.abort(new Error(TOO_LONG)); settle(noPicture(null, 'failed', TOO_LONG)); }, PICTURE_WAIT);
+  });
+  const timed: typeof fetch = (input, init) => http(input, { ...init, signal: stop.signal });
+  try { return await Promise.race([pictureNow(call, ownerKey, timed, last), deadline]); } finally { clearTimeout(late); }
+}
+async function pictureNow(call: Call, ownerKey: () => KeyObject, http: typeof fetch, last: PictureAnswer | null): Promise<PictureAnswer> {
   let sphere: string | null = null;
   try {
     const m = await must(call, 'GET', '/v1/obid/sphere');
@@ -505,17 +518,13 @@ export async function readPicture(call: Call, ownerKey: () => KeyObject, http: t
     const about = (await read(http, sphereAt(m), token)) as { image_sha256?: unknown } | null;
     const sha256 = sha256Of(about?.image_sha256);
     if (last && last.refused === null && last.at === at && last.sha256 === sha256) return last;
-    const stop = new AbortController();
-    const late = setTimeout(() => stop.abort(new Error('the Obysphere’s picture took too long')), PICTURE_WAIT);
-    try {
-      const r = await http(`${sphereAt(m)}/image`, { redirect: 'error', headers: { authorization: `Bearer ${token}` }, signal: stop.signal });
-      if (r.status === 404) return { sphere, at, sha256: null, image: null, refused: null, why: null };
-      if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
-      if (!(r.headers.get('content-type') ?? '').startsWith('image/png')) throw new Error('the Obysphere’s picture isn’t one Oby can show');
-      const png = await bounded(r, PICTURE_MAX);
-      if (!sideFits(wholePng(png))) throw new Error('the Obysphere’s picture isn’t one Oby can show');
-      return { sphere, at, sha256, image: dataUrl(png), refused: null, why: null };
-    } finally { clearTimeout(late); }
+    const r = await http(`${sphereAt(m)}/image`, { redirect: 'error', headers: { authorization: `Bearer ${token}` } });
+    if (r.status === 404) return { sphere, at, sha256: null, image: null, refused: null, why: null };
+    if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
+    if (!(r.headers.get('content-type') ?? '').startsWith('image/png')) throw new Error('the Obysphere’s picture isn’t one Oby can show');
+    const png = await bounded(r, PICTURE_MAX);
+    if (!sideFits(wholePng(png))) throw new Error('the Obysphere’s picture isn’t one Oby can show');
+    return { sphere, at, sha256, image: dataUrl(png), refused: null, why: null };
   } catch (e) { return noPicture(sphere, 'failed', e instanceof Error ? e.message : String(e)); }
 }
 

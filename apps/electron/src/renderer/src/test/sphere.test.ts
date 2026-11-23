@@ -504,6 +504,30 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     } finally { vi.useRealTimers(); }
   });
 
+  it('sphereapp_15: a whole picture read settles within its deadline, a stalled token or answer about the Sphere included', async () => {
+    const sphere = fakeSphere({ image: realPng(256) });
+    // stalls: which request never answers (it ignores the abort, as a stuck one might)
+    let stalls: 'token' | 'about' | null = null;
+    const http = (async (url: string, init?: RequestInit) => {
+      if (stalls === 'token' && url.endsWith('/oauth/token')) return new Promise(() => {});
+      if (stalls === 'about' && url === `${BASE}/spheres/demo`) return new Response(new ReadableStream({ start() {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return sphere.http(url, init);
+    }) as unknown as typeof fetch;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      for (const stalled of ['token', 'about'] as const) {
+        stalls = stalled;
+        const reading = readPicture(obid(), () => key, http);
+        await vi.advanceTimersByTimeAsync(PICTURE_WAIT);
+        const settled = await Promise.race([reading, new Promise((ok) => setImmediate(() => ok('still waiting')))]);
+        expect(settled, stalled).toMatchObject({ image: null, refused: 'failed', why: 'the Obysphere’s picture took too long' });
+        // the next read starts and gets the picture
+        stalls = null;
+        expect(await readPicture(obid(), () => key, http), stalled).toMatchObject({ refused: null, image: dataOf(realPng(256)) });
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
   it('sphereapp_15: the kept picture is the same Sphere’s, and a 404 under a hash is read again', async () => {
     const sphere = fakeSphere({ image: realPng(256) });
     const first = await readPicture(obid(), () => key, sphere.http);

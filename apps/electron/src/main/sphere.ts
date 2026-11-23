@@ -145,7 +145,9 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // changed: counts each set, removal and membership change, so a read started before one is dropped
   let picture: PictureAnswer | null = null;
   let changed = 0;
-  const forget = () => { picture = null; changed++; };
+  let reading: Promise<PictureAnswer> | null = null;
+  // a read still out is let go too, so the next one starts at once and never waits on it
+  const forget = () => { picture = null; changed++; reading = null; };
 
   // The one join path (SPHEREAPP-3 and 4): a link opened as oby://, or pasted in the app (first
   // run's Obysphere step, Settings › Obysphere). The owner's Join in this native dialog is what
@@ -311,7 +313,6 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // a read: dropped for what main holds now when a set, removal or membership change came meanwhile
   // One read at a time: a request while one is out shares it, so an older read can never finish after
   // a newer one and put its picture back
-  let reading: Promise<PictureAnswer> | null = null;
   const readOnce = async (): Promise<PictureAnswer> => {
     const at = changed;
     const a = await readPicture(obid, ownerKey, fetch, picture);
@@ -319,7 +320,12 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     if (a.refused === null) picture = a;
     return a;
   };
-  const read = () => (reading ??= readOnce().finally(() => { reading = null; }));
+  // cleared when it settles (readPicture always does, within PICTURE_WAIT), unless a newer one took its place
+  const read = () => {
+    if (reading) return reading;
+    const now: Promise<PictureAnswer> = readOnce().finally(() => { if (reading === now) reading = null; });
+    return (reading = now);
+  };
   const noPicture = (why: string): PictureAnswer => ({ sphere: null, sha256: null, image: null, refused: 'failed', why });
   ipc(trusted).handle('sphere-picture', [], read, null);
   ipc(trusted).handle('sphere-set-picture', [], async (e): Promise<PictureAnswer | null> => {

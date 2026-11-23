@@ -714,6 +714,19 @@ describe('SPHEREAPP-16 and 17', () => {
     } finally { the.holdRead = null; the.held = false; letGo(); }
   });
 
+  it('sphereapp_15: a membership change never waits on a picture read that’s stuck', async () => {
+    let letGo = () => {};
+    the.holdRead = new Promise((r) => { letGo = r; });
+    try {
+      void call('sphere-picture', own());
+      // Leave: the stuck read is let go, and the next read starts at once and answers
+      await call('sphere-leave', own());
+      const next = call('sphere-picture', own());
+      const settled = await Promise.race([next, new Promise((ok) => setImmediate(() => ok('still waiting')))]);
+      expect(settled).toMatchObject({ refused: null, image: 'data:image/png;base64,NEW' });
+    } finally { the.holdRead = null; the.held = false; letGo(); }
+  });
+
   it('sphereapp_17_the_picture_is_removed_only_right_after_a_click_main_saw', async () => {
     while (takeInput()) { /* other tests' */ }
     const before = the.invites;
