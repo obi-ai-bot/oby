@@ -1110,7 +1110,7 @@ fn write_mcp(mcp: &Path, url: &str, tetrix: Option<&str>, token: &str) -> Result
         json!({"type": "http", "url": url, "alwaysLoad": true,
                "headers": {"Authorization": format!("Bearer {token}")}})
     };
-    let mut servers = json!({"oby": server(url)});
+    let mut servers = json!({ agent::OBY_SERVER: server(url) });
     if let Some(tetrix) = tetrix {
         servers["tetrix"] = server(tetrix);
     }
@@ -3202,8 +3202,11 @@ async fn one(
         }
         (Run::Cold(launch), Protocol::Claude) => {
             match crate::conn::Conn::spawn(&launch, limit, stop, false).await {
-                Ok(conn) => Ok(agent::turn_with(conn, message, decide, on_event, true).await)
-                    .map(|(turn, conn)| (turn, conn.map(Waiting::Claude))),
+                Ok(mut conn) => {
+                    with_obys_tools(&mut conn, &control.turn).await;
+                    Ok(agent::turn_with(conn, message, decide, on_event, true).await)
+                        .map(|(turn, conn)| (turn, conn.map(Waiting::Claude)))
+                }
                 Err(e) => Err(e),
             }
         }
@@ -3215,6 +3218,7 @@ async fn one(
             .map(|(turn, kept)| (turn, kept.map(Waiting::Codex))),
             (Waiting::Claude(mut conn), Protocol::Claude) => {
                 conn.renew(limit, stop);
+                with_obys_tools(&mut conn, &control.turn).await;
                 Ok(agent::turn_with(conn, message, decide, on_event, true).await)
                     .map(|(turn, conn)| (turn, conn.map(Waiting::Claude)))
             }
@@ -3227,6 +3231,17 @@ async fn one(
     watching.abort();
     delta(streamed.finish(&secrets));
     ran.map(|(turn, running)| (turn, streamed.raw, running, tokens))
+}
+
+/// Oby's tools in the conversation's Claude Code, its token good for the turn, before the turn is
+/// written to it (CONVERSATION-AGENT-53): one that holds none (its listing of them failed or came
+/// too late, which Claude Code never asks again) connects to Oby's server again, said in the log.
+async fn with_obys_tools(conn: &mut crate::conn::Conn, turn: &str) {
+    if let agent::ObysTools::Again(tools) = agent::obys_tools(conn).await {
+        tracing::warn!(
+            "turn {turn}: its Claude Code held none of Oby's tools, so it connected to them again ({tools} now)"
+        );
+    }
 }
 
 /// How a run of a conversation's agent is spoken to: Claude Code's stream-json, Codex's app-server

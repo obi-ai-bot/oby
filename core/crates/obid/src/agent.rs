@@ -496,6 +496,91 @@ pub async fn run_turn_steered(
 /// obid's own servers are still connected first (their `alwaysLoad`).
 pub const MCP_STARTUP_WAIT: (&str, &str) = ("CLAUDE_CODE_MCP_STARTUP_WAIT_MS", "0");
 
+/// The name Oby's own tools have in every `--mcp-config` obid writes.
+pub const OBY_SERVER: &str = "oby";
+/// How long obid waits for a Claude Code to say which tools its MCP servers gave it before a turn
+/// (CONVERSATION-AGENT-53): a waiting one answers at once, a new one once it has started.
+const SERVERS_WAIT: Duration = Duration::from_secs(20);
+/// How long a connection to Oby's server again may take: Claude Code's own 30 s to connect, and
+/// the listing after it.
+const RECONNECT_WAIT: Duration = Duration::from_secs(40);
+
+/// What [`obys_tools`] found in a Claude Code before its turn.
+#[derive(Debug, PartialEq)]
+pub enum ObysTools {
+    /// It holds them, or it didn't say (no answer in time, no Oby server): nothing done.
+    Left,
+    /// It held none, so it connected to Oby's server again: how many it holds now.
+    Again(usize),
+}
+
+/// Before a turn is written to the Claude Code on `conn`: whether it holds Oby's tools, and when it
+/// doesn't, has it connect to Oby's server again (CONVERSATION-AGENT-53). Claude Code 2.1.325 lists
+/// a server's tools once, as it connects, and never again by itself: a `tools/list` refused, or one
+/// obid answered past Claude Code's 30 s, leaves the server connected with no tools for as long as
+/// that Claude Code runs (measured 2026-11-23). Asked with its own control requests, `mcp_status`
+/// and `mcp_reconnect`; its hooks' lines that come meanwhile are dropped, as a waiting one's are
+/// (CONVERSATION-AGENT-25), and any other line is kept for the turn and ends the look.
+pub async fn obys_tools(conn: &mut Conn) -> ObysTools {
+    let held = |status: &Value| {
+        let servers = status["mcpServers"].as_array().cloned().unwrap_or_default();
+        let oby = servers.into_iter().find(|s| s["name"] == OBY_SERVER)?;
+        // One still connecting gets its tools as it connects.
+        (oby["status"] != "pending").then(|| oby["tools"].as_array().map_or(0, Vec::len))
+    };
+    let status = control(
+        conn,
+        "oby-status",
+        json!({"subtype": "mcp_status"}),
+        SERVERS_WAIT,
+    )
+    .await;
+    if status.as_ref().and_then(held) != Some(0) {
+        return ObysTools::Left;
+    }
+    let again = json!({"subtype": "mcp_reconnect", "serverName": OBY_SERVER});
+    if control(conn, "oby-again", again, RECONNECT_WAIT)
+        .await
+        .is_none()
+    {
+        return ObysTools::Again(0);
+    }
+    let status = control(
+        conn,
+        "oby-again-status",
+        json!({"subtype": "mcp_status"}),
+        SERVERS_WAIT,
+    );
+    ObysTools::Again(status.await.as_ref().and_then(held).unwrap_or(0))
+}
+
+/// Claude Code's answer to the control request `request`, sent as `id`, within `wait`; none when
+/// it refused it, said nothing in time, or wrote a line of something else first.
+async fn control(conn: &mut Conn, id: &str, request: Value, wait: Duration) -> Option<Value> {
+    conn.send(&json!({"type": "control_request", "request_id": id, "request": request}))
+        .await;
+    let answer = async {
+        loop {
+            let line = conn.next().await.ok()?;
+            let response = &line["response"];
+            if line["type"] == "control_response" && response["request_id"] == id {
+                return (response["subtype"] == "success")
+                    .then(|| response.get("response").cloned().unwrap_or(Value::Null));
+            }
+            let hook = line["type"] == "system"
+                && matches!(
+                    line["subtype"].as_str(),
+                    Some("hook_started" | "hook_progress" | "hook_response")
+                );
+            if !hook {
+                conn.put_back(&line);
+                return None;
+            }
+        }
+    };
+    tokio::time::timeout(wait, answer).await.ok().flatten()
+}
+
 /// The flags of Claude Code's own `/usage`, run by itself ([`read_usage`]): it answers from its
 /// account's usage without asking a model (claude 2.1.302), with no tool, setting or MCP server.
 /// A Claude Code without it would take `/usage` for a prompt: haiku and one turn at most, then.
