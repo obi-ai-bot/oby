@@ -19,7 +19,7 @@ The business behavior contract for what obid's log writer takes out of each line
 ### Rules
 
 - The writer takes each event whole: it holds every byte the subscriber writes for one event and writes nothing until the event ends (it's flushed or dropped). A line that reaches it in several writes, or a message over several lines, is redacted as one text.
-- It takes out every secret in `secrets::known()`, in every form the set knows (plain, base64 standard or URL-safe, hex in either case, URL-encoded), each replaced by `[redacted: <name>]` or the set's own marker.
+- It takes out every secret in `secrets::known()`, in every form the set knows (plain, base64 standard or URL-safe, hex in either case, URL-encoded), each replaced by `[redacted: <name>]` or the set's own marker. Values whose copies overlap in a line, or where one holds another, go as one marker naming each of them (`[redacted: x, y]`), so no byte of either is left; values that only touch keep a marker each.
 - It redacts with the values the set learned last: it reads no vault and waits on no lock of the vault's or the set's, so a line logged while one is held can't hang obid. A value `obid vault add` put there joins the log's set the next time obid redacts anything else with the set (a `/v1` answer, a push), which reads the vault again.
 - Bytes that aren't UTF-8 are read lossily before they're redacted.
 
@@ -30,5 +30,5 @@ The business behavior contract for what obid's log writer takes out of each line
 
 ## Acceptance scenarios
 
-- **LOGS-1.** Given a value V obid holds, when obid logs a line holding V plain, base64, hex or URL-encoded, then what reaches the log holds none of them, `[redacted: <name>]` in each one's place, and the rest of each line. Test: `logs_1_every_form_of_a_secret_is_taken_out` (core/crates/obid/src/secrets.rs).
+- **LOGS-1.** Given a value V obid holds, when obid logs a line holding V plain, base64, hex or URL-encoded, then what reaches the log holds none of them, `[redacted: <name>]` in each one's place, and the rest of each line; and no byte of V is left outside a marker, also when another value overlaps it (one marker naming both, `[redacted: x, y]`). Tests: `logs_1_every_form_of_a_secret_is_taken_out`, `logs_1_no_part_of_overlapping_values_is_left`, `logs_1_overlapping_values_go_as_one_marker_naming_both` and the Kani harness `logs_1_an_overlapping_span_is_joined_whole` (core/crates/obid/src/secrets.rs).
 - **LOGS-2.** Given a log line that reaches the writer in two writes with V split across them, then nothing is written before the event ends, and then the line is written once with V taken out, neither half of it left. Test: `logs_2_a_secret_split_across_writes_is_taken_out` (core/crates/obid/src/secrets.rs).

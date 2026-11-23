@@ -336,17 +336,13 @@ fn redacted(needles: &[Needle], text: &str, label: &str) -> String {
     // A value over lines first, whole (a key as a log writes it); then wrapped runs, judged
     // whole: a shorter value's needle inside one line would break the run and leave the rest.
     if text.contains('\n') || text.contains("\\n") {
-        for needle in needles
+        let over_lines = needles
             .iter()
-            .filter(|n| n.text.contains('\n') || n.text.contains("\\n"))
-        {
-            text = replace(&text, needle, label);
-        }
+            .filter(|n| n.text.contains('\n') || n.text.contains("\\n"));
+        text = taken_out(&text, over_lines, label);
         text = unwrapped(needles, &text, label);
     }
-    for needle in needles {
-        text = replace(&text, needle, label);
-    }
+    text = taken_out(&text, needles, label);
     // What is left: runs that decode to a value (hex inside base64, a value partly
     // URL-encoded, base64 cut where the needles' offsets don't reach).
     for run in runs() {
@@ -496,10 +492,71 @@ fn is_base64_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_')
 }
 
-/// `text` with every copy of `needle` replaced by its marker; for a base64 form, the whole run
-/// of base64 characters (and its padding) around each copy.
-fn replace(text: &str, needle: &Needle, label: &str) -> String {
-    let marker = marker(label, std::slice::from_ref(&needle.name));
+/// Bytes `start..end` of a text: one copy of a value's form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Span {
+    start: usize,
+    end: usize,
+}
+
+/// The one stretch `held` and `next` cover when they overlap (`next` starts no earlier than
+/// `held`), so no byte of either is left between two markers; `None` when `next` starts at
+/// or after `held`'s end.
+fn joined(held: Span, next: Span) -> Option<Span> {
+    if next.start >= held.end {
+        return None;
+    }
+    let end = held.end.max(next.end);
+    Some(Span {
+        start: held.start,
+        end,
+    })
+}
+
+/// `text` with every copy of the `needles` replaced by a marker, all found in `text` as it is:
+/// copies that overlap, or one inside another, go as one marker naming each of their values
+/// in the needles' order, so no byte of one is left beside another's marker.
+fn taken_out<'a>(text: &str, needles: impl IntoIterator<Item = &'a Needle>, label: &str) -> String {
+    let needles: Vec<&Needle> = needles.into_iter().collect();
+    let mut found: Vec<(Span, usize)> = needles
+        .iter()
+        .enumerate()
+        .flat_map(|(i, needle)| copies(text, needle).into_iter().map(move |span| (span, i)))
+        .collect();
+    // Stable: copies that start together keep the needles' order.
+    found.sort_by_key(|(span, _)| span.start);
+    let mut stretches: Vec<(Span, Vec<usize>)> = Vec::new();
+    for (span, i) in found {
+        if let Some((stretch, held)) = stretches.last_mut()
+            && let Some(both) = joined(*stretch, span)
+        {
+            *stretch = both;
+            held.push(i);
+        } else {
+            stretches.push((span, vec![i]));
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (stretch, mut held) in stretches {
+        held.sort_unstable();
+        let mut names: Vec<String> = Vec::new();
+        for i in held {
+            if !names.contains(&needles[i].name) {
+                names.push(needles[i].name.clone());
+            }
+        }
+        out.push_str(&text[at..stretch.start]);
+        out.push_str(&marker(label, &names));
+        at = stretch.end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// Where each copy of `needle` is in `text`; for a base64 form, the whole run of base64
+/// characters (and its padding) around each copy.
+fn copies(text: &str, needle: &Needle) -> Vec<Span> {
     // ASCII lower case keeps every byte where it was, so positions found in the lower-cased
     // copy are the same in `text`.
     let (haystack, wanted) = if needle.any_case {
@@ -508,11 +565,14 @@ fn replace(text: &str, needle: &Needle, label: &str) -> String {
         (text.to_owned(), needle.text.clone())
     };
     let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
+    let mut spans = Vec::new();
     let mut at = 0;
     while let Some(found) = haystack[at..].find(&wanted) {
         let mut start = at + found;
         let mut end = start + wanted.len();
+        // The next search starts one character on, not at `end`: a copy can overlap the one
+        // before it (`aaaaaaaa` twice in `aaaaaaaaa`), and no byte of either may be left.
+        let next = start + wanted.chars().next().map_or(1, char::len_utf8);
         if needle.run {
             while start > at && is_base64_char(bytes[start - 1]) {
                 start -= 1;
@@ -524,12 +584,10 @@ fn replace(text: &str, needle: &Needle, label: &str) -> String {
                 end += 1;
             }
         }
-        out.push_str(&text[at..start]);
-        out.push_str(&marker);
-        at = end;
+        spans.push(Span { start, end });
+        at = next;
     }
-    out.push_str(&text[at..]);
-    out
+    spans
 }
 
 /// The names of the values `run` decodes to text holding (in any form), each once.
@@ -1278,8 +1336,68 @@ mod tests {
 
     /// LOGS-1, bounded-exhaustive: no byte of either of two overlapping values is left.
     #[test]
-    #[ignore = "finding V01-43"]
     fn logs_1_no_part_of_overlapping_values_is_left() {
         no_byte_left(&overlapping());
+    }
+
+    /// LOGS-1: two values that overlap go as one marker naming both; two that only touch keep a
+    /// marker each.
+    #[test]
+    fn logs_1_overlapping_values_go_as_one_marker_naming_both() {
+        let secrets = Secrets::default();
+        secrets.learn("x", "aaaaaaaa");
+        secrets.learn("y", "abaaaaaa");
+        for (text, expected) in [
+            ("caaaaaaaabaaaaaac", "c[redacted: x, y]c"),
+            ("caaaaaaaaabaaaaaac", "c[redacted: x][redacted: y]c"),
+        ] {
+            assert_eq!(secrets.redact(text), expected, "redact");
+            assert_eq!(
+                secrets.try_redact(text).as_deref(),
+                Some(expected),
+                "try_redact"
+            );
+            assert_eq!(secrets.snapshot().redact(text), expected, "snapshot");
+        }
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proof of [`joined`]: `kani::any()` stands for every pair of spans, the second
+    //! starting no earlier than the first, and every byte position.
+
+    use super::*;
+
+    /// PROOF-1, LOGS-1: an overlapping span is joined whole, covering exactly the bytes of both;
+    /// one that starts at or after the first's end isn't joined.
+    #[kani::proof]
+    fn logs_1_an_overlapping_span_is_joined_whole() {
+        let s = usize::from(kani::any::<u8>());
+        let l = usize::from(kani::any::<u8>());
+        let d = usize::from(kani::any::<u8>());
+        let m = usize::from(kani::any::<u8>());
+        let held = Span {
+            start: s,
+            end: s + 1 + l,
+        };
+        let start = s + d;
+        let next = Span {
+            start,
+            end: start + 1 + m,
+        };
+        let at = usize::from(kani::any::<u16>());
+        let inside = |span: Span| span.start <= at && at < span.end;
+        match joined(held, next) {
+            Some(both) => {
+                assert!(next.start < held.end, "only an overlapping span is joined");
+                assert!(
+                    inside(both) == (inside(held) || inside(next)),
+                    "the joined span covers exactly the bytes of both"
+                );
+            }
+            None => assert!(next.start >= held.end, "an overlapping span is joined"),
+        }
     }
 }

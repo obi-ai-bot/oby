@@ -1,6 +1,6 @@
 ---
 name: verify-redaction
-description: Rerun and read obid's bounded-exhaustive LOGS-1 redaction tests, and tell a bug from a test error. Use when a change touches `redact`, `try_redact`, `Snapshot::redact`, `redacted`, `replace`, `unwrapped`, `needles_of`, `needles_for`, `runs` or `SHORTEST` in core/crates/obid/src/secrets.rs.
+description: Rerun and read obid's bounded-exhaustive LOGS-1 redaction tests, and tell a bug from a test error. Use when a change touches `redact`, `try_redact`, `Snapshot::redact`, `redacted`, `taken_out`, `copies`, `joined`, `unwrapped`, `needles_of`, `needles_for`, `runs` or `SHORTEST` in core/crates/obid/src/secrets.rs.
 ---
 
 # Verifying redaction
@@ -15,7 +15,9 @@ obid takes every value it holds out of text before the text goes to its log, an 
 
 ## Coverage record
 
-The code: `core/crates/obid/src/secrets.rs`, through its real functions: `Secrets::default()`, `learn`, `forget`, `redact`, `try_redact`, `snapshot().redact`, which all go through `redacted`, and so `replace`, `hits`, `decodings`, `runs` and `needles_of`; the forms come from `needles_for`, with `SHORTEST` = 8.
+The code: `core/crates/obid/src/secrets.rs`, through its real functions: `Secrets::default()`, `learn`, `forget`, `redact`, `try_redact`, `snapshot().redact`, which all go through `redacted`, and so `taken_out`, `copies`, `joined`, `hits`, `decodings`, `runs` and `needles_of`; the forms come from `needles_for`, with `SHORTEST` = 8.
+
+The join decision, `joined`, is also proved by Kani in `secrets::proofs::logs_1_an_overlapping_span_is_joined_whole`, run with `cd core && cargo kani -p obid --tests --harness secrets::proofs::`.
 
 The families, over values learned as `x` (A) and `y` (B):
 - **(a) overlap.** Every 8-byte A, k = 1 to 7, and every B that begins with A's last k bytes: `c` + A + B[k..] + `c`. 64,770 texts (A equal to B skipped).
@@ -42,7 +44,7 @@ Values are 8 bytes over the two letters `a` and `b` (9 bytes for A in (b)), over
 
 ## Sync
 
-SYNC: 50e200d5e88413a764e6366f775e76cb3b11bda1
+SYNC: bad4e6198a595b209c3b8f1755ac018fb96f0de2
 
 The commit the tests were last checked against. Move it forward only after you have read the covered code at the new commit and confirmed the tests still describe it.
 
@@ -67,4 +69,4 @@ Property 1 reads `needles_for` itself, so a form added there is checked with no 
 
 ## Open findings
 
-- **V01-43** (`factory/queue/tasks/V01-43.md`): when two values overlap, the first `replace` takes leaves the rest of the second outside its marker. `logs_1_no_part_of_overlapping_values_is_left` is ignored as `finding V01-43` until it lands.
+None.
