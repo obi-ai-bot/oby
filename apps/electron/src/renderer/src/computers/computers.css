@@ -43,7 +43,7 @@
 .computer-hint { margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
 .computer-hint code, .computer-sheet .modal-list code, .computer-tried code { font: 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); }
 .computer-switch-link { display: block; margin: 20px 0 -4px; color: var(--text); font-size: var(--text-md); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
-.computer-sheet .modal-field.is-mono { font: 13px ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; mask-image: var(--fade-out); }
+.computer-sheet .modal-field.is-mono { font: 13px ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); }
 .computer-sheet .modal-field.is-code { width: 140px; font-size: 17px; letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
 .computer-found + .modal-label { margin-top: 20px; }
 .computer-found { display: flex; gap: 12px; align-items: flex-start; margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
