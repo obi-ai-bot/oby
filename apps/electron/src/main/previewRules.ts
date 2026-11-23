@@ -14,7 +14,7 @@ export type Ask = { id: string; version: number; bounds: Bounds; edits?: Record<
 export const EDITS_MOST = 17 << 20;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const DESIGN_HOST = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-v[1-9][0-9]{0,5}\.localhost$/;
+const DESIGN_HOST = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-v[1-9][0-9]{0,5}-[0-9a-f]{16}\.localhost$/;
 const size = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100_000;
 /** `{ id, version, bounds, edits? }` (a lower-case UUID, a version from 1, a box in the window, and
  * the owner's unsaved text for some of its files, ARTIFACTSAPP-8), or null. */
@@ -86,7 +86,7 @@ export function oneColour(bitmap: Uint8Array): boolean {
 }
 
 /** Whether the preview's session lets a request go: its host page, or the relay on its port (a
- * preview's host, or a design's version's own, `<id>-v<n>.localhost`, ARTIFACTSAPP-30). */
+ * preview's host, or a design's version's own, `<id>-v<n>-<secret>.localhost`, ARTIFACTSAPP-30). */
 export function allowed(url: string, relayPort: number, hostPage: string, devOrigin?: string): boolean {
   let u: URL;
   try { u = new URL(url); } catch { return false; }

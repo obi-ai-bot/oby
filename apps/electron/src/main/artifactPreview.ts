@@ -122,10 +122,14 @@ const statusOf = (view: WebContentsView): Promise<Status> => Promise.race([
   new Promise<Status>((done) => setTimeout(() => done({ timeout: true }), 4_000)),
 ]);
 
-// a design's canvas host, what it says once every board drew, at most 4 s; anything else drawing still
+// a design's canvas host (its view's origin is the relay's designOrigin), what it says once every board drew, at most 4 s; anything else drawing still
 async function canvasOf(view: WebContentsView): Promise<Status> {
-  const read = () => view.webContents.executeJavaScript('window.__OBY_CANVAS ? JSON.parse(JSON.stringify({ ready: window.__OBY_CANVAS.ready, errors: window.__OBY_CANVAS.errors })) : null').catch(() => null);
   const end = Date.now() + 4_000;
+  // each read cut off at the ceiling: a page that stops answering never holds the pane
+  const read = () => Promise.race([
+    view.webContents.executeJavaScript('window.__OBY_CANVAS ? JSON.parse(JSON.stringify({ ready: window.__OBY_CANVAS.ready, errors: window.__OBY_CANVAS.errors })) : null').catch(() => null),
+    new Promise<null>((done) => setTimeout(() => done(null), Math.max(0, end - Date.now()))),
+  ]);
   for (;;) {
     const v = await read();
     const s = canvasStatus(v, Date.now() >= end);
@@ -173,7 +177,8 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
   let bounds = { x: 0, y: 0, width: 0, height: 0 };
   // whether the version on view is a design's, in the design's view
   let onDesign = false;
-  const hide = () => { wanted = ''; onView = ''; current?.view.setVisible(false); designView?.view.setVisible(false); };
+  // nothing on view: the relay serves no design either
+  const hide = () => { wanted = ''; onView = ''; designs.clear(); current?.view.setVisible(false); designView?.view.setVisible(false); };
   ipc(trusted).handle('artifact-preview', [previewAsk], async (_e, ask): Promise<Shown> => {
     const win = window();
     if (!ask || !win || win.isDestroyed()) { hide(); return { shown: true }; }
@@ -227,23 +232,27 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
   async function showDesign(key: string, id: string, version: number, since: number): Promise<Shown> {
     const win = window();
     if (!win || win.isDestroyed()) return { shown: true };
+    // the views taken away meanwhile (stop): nothing more is made, shown or served
+    const started = lifetime;
+    const gone = () => wanted !== key || lifetime !== started;
     designView ??= await makeView(win, false, true);
+    if (gone()) return { shown: true };
     const { view, relay } = designView;
     view.setBounds(bounds);
     const pair = `${id}/${version}`;
-    // the relay serves this version, and the one on view until this one shows; none other
+    // the relay serves this version alone; the design's view, opening it, is hidden until it drew
+    // (a page on view stays until then)
     designs.clear();
-    if (onDesign && onView) designs.add(onView.split('/').slice(0, 2).join('/'));
     designs.add(pair);
+    view.setVisible(false);
     try {
-      await view.webContents.loadURL(`http://${id}-v${version}.localhost:${relay.port}/__canvas.html`);
+      await view.webContents.loadURL(`${relay.designOrigin(id, version)}/__canvas.html`);
     } catch (e) {
-      if (wanted !== key) return { shown: true };
-      view.setVisible(false);
+      if (gone()) return { shown: true };
       return { error: `The design couldn’t open: ${e instanceof Error ? e.message : String(e)}` };
     }
     const status = await canvasOf(view);
-    if (wanted !== key) return { shown: true };
+    if (gone()) return { shown: true };
     designs.clear();
     designs.add(pair);
     onView = key; onDesign = true;

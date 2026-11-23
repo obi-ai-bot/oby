@@ -276,7 +276,7 @@ route workflow, red before green. Sangam's artifact screens (the Oby Artifacts c
   artifact tab in obid's browser API, and the `oby-artifact://` view) and **P9** to **P13**
   (sharing, the Sphere, public links, Share in the app, Settings) wait, as the owner said.
   - P9 is built and held (#2796, disarmed). P4 landed with its app side: the pane draws a design
-    with obid's canvas host on its version's own loopback origin, `<id>-v<n>.localhost` on main's
+    with obid's canvas host on its version's own loopback origin, `<id>-v<n>-<secret>.localhost` on main's
     relay (artifacts-app.md, ARTIFACTSAPP-29 and 30), until P7's `oby-artifact://` view.
   - P7's `oby-artifact://` protocol stays the plan for designs. Sandpack's per-preview origin
     already gives each preview its own origin.

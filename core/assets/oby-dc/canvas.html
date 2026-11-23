@@ -101,12 +101,24 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0b0b;color:#ececec;
       minX = Math.min(minX, num(n.x, 0)); minY = Math.min(minY, num(n.y, 0)); maxX = Math.max(maxX, num(n.x, 0) + num(n.w || n.maxW, 400)); maxY = Math.max(maxY, num(n.y, 0) + 80);
     });
     if (minX === Infinity) { minX = minY = 0; maxX = maxY = 1; }
-    var vw = view.clientWidth, vh = view.clientHeight, pad = 48;
-    state.scale = Math.min(1, (vw - pad * 2) / (maxX - minX), (vh - pad * 2) / (maxY - minY));
-    x = pad - minX * state.scale; y = pad - minY * state.scale;
-    place();
+    box = { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
+    moved = false;
+    fit();
     check();
   }
+
+  // Every board of the page in view, at most 100%: again whenever the view changes size (the app may
+  // lay it out while hidden, at no size at all), until the person pans or zooms.
+  var box = null, moved = false;
+  function fit() {
+    if (!box || moved) return;
+    var vw = view.clientWidth, vh = view.clientHeight, pad = 48;
+    if (vw <= pad * 2 || vh <= pad * 2) return;
+    state.scale = Math.max(0.05, Math.min(1, (vw - pad * 2) / (box.maxX - box.minX), (vh - pad * 2) / (box.maxY - box.minY)));
+    x = pad - box.minX * state.scale; y = pad - box.minY * state.scale;
+    place();
+  }
+  window.addEventListener('resize', fit);
 
   function check() {
     var files = Object.keys(state.frames);
@@ -138,9 +150,15 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0b0b;color:#ececec;
     if (m.oby === 'ready' && state.frames[file]) { state.frames[file].ready = true; state.frames[file].size = { width: m.width, height: m.height }; check(); }
     if (m.oby === 'error') state.errors.push({ board: file, message: String(m.message || '') });
     if (m.oby === 'open-outside' && typeof m.url === 'string') {
-      // The app stops this and asks the person first; the canvas never leaves.
-      state.asked.push(m.url);
-      try { location.href = m.url; } catch (_) {}
+      // Only a web address outside this version is asked for: never a script (javascript:), which
+      // would run here, out of the board's sandbox, nor data:, blob: or a page of this origin's. The
+      // app stops the navigation and asks the person first; the canvas never leaves.
+      var out = null;
+      try { out = new URL(m.url, location.href); } catch (_) {}
+      if (out && (out.protocol === 'http:' || out.protocol === 'https:') && out.origin !== location.origin) {
+        state.asked.push(out.href);
+        try { location.href = out.href; } catch (_) {}
+      }
     }
   });
 
@@ -163,14 +181,14 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0b0b;color:#ececec;
   // Pan by dragging the ground, zoom with the wheel about the pointer.
   var drag = null;
   view.addEventListener('pointerdown', function (e) { if (e.target === view || e.target === stage) { drag = { x: e.clientX - x, y: e.clientY - y }; view.setPointerCapture(e.pointerId); } });
-  view.addEventListener('pointermove', function (e) { if (drag) { x = e.clientX - drag.x; y = e.clientY - drag.y; place(); } });
+  view.addEventListener('pointermove', function (e) { if (drag) { moved = true; x = e.clientX - drag.x; y = e.clientY - drag.y; place(); } });
   view.addEventListener('pointerup', function () { drag = null; });
   view.addEventListener('wheel', function (e) {
     e.preventDefault();
     var r = view.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
     var next = Math.max(0.05, Math.min(4, state.scale * Math.exp(-e.deltaY / 500)));
     x = px - (px - x) * (next / state.scale); y = py - (py - y) * (next / state.scale);
-    state.scale = next; place();
+    state.scale = next; moved = true; place();
   }, { passive: false });
 
   draw();

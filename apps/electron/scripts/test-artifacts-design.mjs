@@ -6,9 +6,10 @@
 //                   in the pane, drawn by obid's canvas host: every board of each page in a sandboxed
 //                   frame of its own, each drawn at its size with no mistake, on Claude Design's launch
 //                   (Prototype, focused); Reload draws it again; Code hides it and Preview brings it back.
-//   ARTIFACTSAPP-30: it is drawn on its version's own origin, `<id>-v1.localhost` on main's relay: every
+//   ARTIFACTSAPP-30: it is drawn on its version's own origin, `<id>-v1-<secret>.localhost` on main's relay: every
 //                   request the view made went there, each board's origin is opaque (sandboxed), and a
-//                   board can fetch nothing, not even its own version's files.
+//                   board can fetch nothing, not even its own version's files, nor run a script in its
+//                   host by asking it to open a javascript: address.
 // Screenshots go to OBY_ARTIFACTS_SHOTS (a folder) when it's set: the window with the design's view laid
 // where main lays it, the view alone, and each board drawn alone at its own size.
 // Run on the Mac: npm run build, then OBY_TEST_OBID=<obid> npm run test:artifacts-design
@@ -29,7 +30,7 @@ let daemon, app;
 const mainLogs = [];
 
 // the design's view: its canvas host on <id>-v<n>.localhost, asked through main
-const DESIGN_URL = (id, v) => new RegExp(`^http://${id}-v${v}\\.localhost:(\\d+)/__canvas\\.html`);
+const DESIGN_URL = (id, v) => new RegExp(`^http://${id}-v${v}-[0-9a-f]{16}\\.localhost:(\\d+)/__canvas\\.html`);
 const inDesign = (id, v, js) => app.evaluate(async ({ webContents }, { source, js }) => {
   const wc = webContents.getAllWebContents().find((w) => new RegExp(source).test(w.getURL()));
   return wc ? Promise.race([wc.executeJavaScript(js), new Promise((done) => setTimeout(() => done(null), 5_000))]) : null;
@@ -73,7 +74,11 @@ async function main() {
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForLoadState('domcontentloaded');
   await skipFirstRun(page);
-  await until('Home', async () => (await page.locator('.app').count()) > 0);
+  await until('Home', async () => (await page.locator('.app').count()) > 0).catch(async (e) => {
+    console.error('the window shows:', (await page.evaluate(() => document.body.innerText).catch(() => '')).slice(0, 600));
+    console.error('obid says:', s.logs.join('').slice(-1500));
+    throw e;
+  });
   // the boards' size, 1280 by 800
   await until('the window at the boards’ size', () => app.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -145,6 +150,12 @@ async function main() {
 
   // the canvas itself: back from Play, every board laid out; then the second page
   await inDesign(id, 1, `document.getElementById('close').click(); true`);
+  // laid out while its view was hidden, it fits the pane once shown: every board of the page in view
+  const fitted = await until('the canvas fitted to the pane', async () => {
+    const f = await inDesign(id, 1, `(() => { const v = document.getElementById('view').getBoundingClientRect(); const out = [...document.querySelectorAll('#stage .board')].filter((b) => { const r = b.getBoundingClientRect(); return r.left < v.left || r.top < v.top || r.right > v.right + 1 || r.bottom > v.bottom + 1; }).map((b) => b.dataset.board); return { scale: window.__OBY_CANVAS.scale, zoom: document.getElementById('zoom').textContent, out }; })()`);
+    return f && f.scale > 0 && f.out.length === 0 && f;
+  }, 10_000).catch(async (e) => { console.error('the canvas is laid out as', JSON.stringify(await inDesign(id, 1, `({ scale: window.__OBY_CANVAS.scale, zoom: document.getElementById('zoom').textContent })`))); throw e; });
+  console.log(`ok artifactsapp_29_the_canvas_fits_the_pane (${fitted.zoom})`);
   await shot('d2-canvas', id, 1);
   const second = canvas.pages[1];
   await inDesign(id, 1, `document.querySelector('[data-page="${second.id}"]').click(); true`);
@@ -157,7 +168,7 @@ async function main() {
 
   // ARTIFACTSAPP-30: every request went to the version's own origin on main's relay; a board is held in
   const sent = await app.evaluate(() => globalThis.__designSent);
-  const origin = new RegExp(`^http://${id}-v1\\.localhost:\\d+/`);
+  const origin = new RegExp(`^http://${id}-v1-[0-9a-f]{16}\\.localhost:\\d+/`);
   const designSent = sent.filter((u) => origin.test(u));
   const away = sent.filter((u) => !origin.test(u) && !/^(file|data|blob|devtools):/.test(u) && !/^http:\/\/([a-z0-9]+-)?preview\.localhost:\d+\//.test(u));
   assert.deepEqual(away, [], `artifactsapp_30: nothing left loopback: ${JSON.stringify(away.slice(0, 10))}`);
@@ -171,9 +182,13 @@ async function main() {
       own: await board.executeJavaScript(`fetch('/canvas.json').then(() => 'loaded', () => 'blocked')`),
       away: await board.executeJavaScript(`fetch('https://example.com/').then(() => 'loaded', () => 'blocked')`),
       top: await board.executeJavaScript(`(() => { try { return String(top.location.href); } catch { return 'blocked'; } })()`),
+      // asking its host to open a script: the host asks for web addresses only, so nothing runs there
+      script: await board.executeJavaScript(`parent.postMessage({ oby: 'open-outside', url: 'javascript:document.title="taken";window.__taken=1' }, '*'); 'posted'`),
     };
   }, DESIGN_URL(id, 1).source);
-  assert.deepEqual(held, { origin: 'null', own: 'blocked', away: 'blocked', top: 'blocked' }, `artifactsapp_30: a board is held in: ${JSON.stringify(held)}`);
+  const hostAfter = await until('the host read after the board asked', async () => { await new Promise((r) => setTimeout(r, 500)); return inDesign(id, 1, `({ title: document.title, taken: window.__taken ?? null, asked: window.__OBY_CANVAS.asked, url: location.pathname })`); });
+  assert.deepEqual({ ...held, script: undefined }, { origin: 'null', own: 'blocked', away: 'blocked', top: 'blocked', script: undefined }, `artifactsapp_30: a board is held in: ${JSON.stringify(held)}`);
+  assert.deepEqual(hostAfter, { title: 'Canvas', taken: null, asked: [], url: '/__canvas.html' }, `artifactsapp_30: a board's javascript: ran nothing in its host: ${JSON.stringify(hostAfter)}`);
   console.log(`ok artifactsapp_30_a_design_is_drawn_on_its_versions_own_origin_from_loopback_only (${designSent.length} requests to it, none away; a board's origin ${held.origin})`);
 
   // Reload draws it again; Code hides it and Preview brings it back
@@ -191,25 +206,34 @@ async function main() {
   await until('the design’s view back', viewShown);
   console.log('ok artifactsapp_29_reload_and_code_keep_the_design');
 
-  // each board alone, at its size, as Claude Design draws a board: for comparing with its own render
+  // each board alone, at its size, as Claude Design draws a board: for comparing with its own render.
+  // The design's own view opens each board's file (its version's origin, the board policy), laid out
+  // at the board's size; the pane's canvas is opened again after
   if (shots) {
     for (const f of Object.keys(canvas.boards)) {
       const { w, h } = canvas.boards[f];
-      const png = await app.evaluate(async ({ webContents, WebContentsView }, { source, f, w, h }) => {
-        const wc = webContents.getAllWebContents().find((x) => new RegExp(source).test(x.getURL()));
+      const png = await app.evaluate(async ({ BrowserWindow, webContents }, { source, f, w, h }) => {
+        const wc = webContents.getAllWebContents().find((x) => new RegExp(source).test(x.getURL()) || x.getURL().includes('.localhost:') && /-v1-[0-9a-f]{16}\.localhost/.test(x.getURL()));
+        const view = BrowserWindow.getAllWindows()[0].contentView.children.find((c) => c.webContents === wc);
+        const was = view.getBounds();
         const base = new URL(wc.getURL()).origin;
-        // a board's own file, drawn at its own size in a view of its own of the same session, never shown
-        const v = new WebContentsView({ webPreferences: { partition: 'oby-artifact-preview', sandbox: true, contextIsolation: true, backgroundThrottling: false } });
-        v.setBounds({ x: 0, y: 0, width: w, height: h });
-        v.webContents.enableDeviceEmulation({ screenPosition: 'desktop', screenSize: { width: w, height: h }, viewSize: { width: w, height: h }, viewPosition: { x: 0, y: 0 }, deviceScaleFactor: 1, scale: 1 });
-        await v.webContents.loadURL(`${base}/${f}`);
+        view.setBounds({ x: 0, y: 0, width: w, height: h });
+        wc.enableDeviceEmulation({ screenPosition: 'desktop', screenSize: { width: w, height: h }, viewSize: { width: w, height: h }, viewPosition: { x: 0, y: 0 }, deviceScaleFactor: 1, scale: 1 });
+        await wc.loadURL(`${base}/${f}`);
         await new Promise((done) => setTimeout(done, 2_500));
-        const image = await v.webContents.capturePage({ x: 0, y: 0, width: w, height: h });
-        v.webContents.close();
+        const image = await wc.capturePage();
+        wc.disableDeviceEmulation();
+        view.setBounds(was);
         return image.toPNG().toString('base64');
-      }, { source: DESIGN_URL(id, 1).source, f, w, h }).catch((e) => { console.error(`${f}: ${e.message}`); return null; });
+      }, { source: DESIGN_URL(id, 1).source, f, w, h }).catch((e) => { console.error(`${f}: ${e.message.split('\n')[0]}`); return null; });
       if (png) writeFileSync(join(shots, `board-${f.replace('.dc.html', '')}.png`), Buffer.from(png, 'base64'));
     }
+    // the canvas again, as the pane had it
+    await app.evaluate(async ({ webContents }) => {
+      const wc = webContents.getAllWebContents().find((x) => /-v1-[0-9a-f]{16}\.localhost:\d+\//.test(x.getURL()));
+      await wc.loadURL(`${new URL(wc.getURL()).origin}/__canvas.html`);
+    });
+    await until('the canvas back', async () => (await inDesign(id, 1, 'window.__OBY_CANVAS?.ready === true')) === true, 30_000);
   }
 
   // Close takes it away

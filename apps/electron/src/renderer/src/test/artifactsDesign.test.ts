@@ -14,8 +14,11 @@ const the = vi.hoisted(() => ({
   views: [] as { loads: string[]; files: number; visible: boolean[]; reloads: number; webContents: { id: number } }[],
   designs: null as Designs | null,
   reads: [] as string[],
-  // what the canvas host's `window.__OBY_CANVAS` holds
+  // what the canvas host's `window.__OBY_CANVAS` holds; hung: its page never answers
   canvas: { ready: true, errors: [] } as unknown,
+  hung: false,
+  // a design's load held until let go
+  held: null as Promise<void> | null,
 }));
 vi.mock('electron', () => {
   class WebContentsView {
@@ -26,11 +29,11 @@ vi.mock('electron', () => {
     webContents = {
       id: the.views.length + 1,
       setWindowOpenHandler() {}, on() {},
-      loadURL: async (u: string) => { this.loads.push(u); },
+      loadURL: async (u: string) => { this.loads.push(u); await the.held; },
       loadFile: async () => { this.files++; },
       reload: () => { this.reloads++; },
       executeJavaScript: (js: string): Promise<unknown> => {
-        if (js.includes('__OBY_CANVAS')) return Promise.resolve(the.canvas);
+        if (js.includes('__OBY_CANVAS')) return the.hung ? new Promise(() => {}) : Promise.resolve(the.canvas);
         if (js === 'window.obyStatus') return Promise.resolve({ drawn: true });
         return Promise.resolve();
       },
@@ -63,7 +66,7 @@ vi.mock('../../../main/obid', () => ({
 }));
 vi.mock('../../../main/sandpackRelay', async (original) => ({
   ...await original<typeof import('../../../main/sandpackRelay')>(),
-  startRelay: async (designs: Designs) => { the.designs = designs; return { port: 4123, origin: 'http://preview.localhost:4123', close: async () => {} }; },
+  startRelay: async (designs: Designs) => { the.designs = designs; return { port: 4123, origin: 'http://preview.localhost:4123', designOrigin: (id: string, v: number) => `http://${id}-v${v}-0123456789abcdef.localhost:4123`, close: async () => {} }; },
 }));
 
 const DESIGN = '00000000-0000-4000-8000-00000000000d';
@@ -83,7 +86,7 @@ const shownLast = (v: { visible: boolean[] }) => v.visible.at(-1) === true;
 
 beforeEach(() => {
   the.handlers.clear();
-  Object.assign(the, { views: [], designs: null, reads: [], canvas: { ready: true, errors: [] } });
+  Object.assign(the, { views: [], designs: null, reads: [], canvas: { ready: true, errors: [] }, hung: false, held: null });
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -94,7 +97,7 @@ describe('ARTIFACTSAPP-29: a design drawn in the pane', () => {
     // the preview's view (preview.html) and the design's view
     expect(the.views).toHaveLength(2);
     const [page, design] = the.views;
-    expect(design.loads).toEqual([`http://${DESIGN}-v2.localhost:4123/__canvas.html`]);
+    expect(design.loads).toEqual([`http://${DESIGN}-v2-0123456789abcdef.localhost:4123/__canvas.html`]);
     expect(design.files).toBe(0);
     expect(shownLast(design)).toBe(true);
     expect(page.visible).not.toContain(true);
@@ -152,6 +155,58 @@ describe('ARTIFACTSAPP-29: a design drawn in the pane', () => {
     expect(shownLast(page)).toBe(false);
     expect(the.designs!.shown(DESIGN, 1)).toBe(false);
     m.stop();
+  });
+
+  it('artifactsapp_29_a_page_that_stops_answering_still_shows_at_4_s', async () => {
+    vi.useFakeTimers();
+    the.hung = true;
+    const m = await main();
+    let answered: unknown;
+    void m.preview(DESIGN).then((a) => { answered = a; });
+    await vi.advanceTimersByTimeAsync(4_500);
+    expect(answered).toEqual({ shown: true });
+    m.stop();
+  });
+
+  it('artifactsapp_29_another_design_opens_hidden_and_the_relay_serves_it_alone', async () => {
+    const m = await main();
+    await m.preview(DESIGN, 1);
+    const design = the.views[1];
+    let go!: () => void;
+    the.held = new Promise((done) => { go = done; });
+    const next = m.preview(DESIGN, 2);
+    await vi.waitFor(() => expect(design.loads).toHaveLength(2));
+    // while v2 opens: its view hidden (never a half-drawn board), and only v2 served
+    expect(shownLast(design)).toBe(false);
+    expect(the.designs!.shown(DESIGN, 1)).toBe(false);
+    expect(the.designs!.shown(DESIGN, 2)).toBe(true);
+    go();
+    expect(await next).toEqual({ shown: true });
+    expect(shownLast(design)).toBe(true);
+    m.stop();
+  });
+
+  it('artifactsapp_29_closed_the_relay_serves_no_design', async () => {
+    const m = await main();
+    await m.preview(DESIGN, 1);
+    expect(the.designs!.shown(DESIGN, 1)).toBe(true);
+    await the.handlers.get('artifact-preview')!({}, null);
+    expect(the.designs!.shown(DESIGN, 1)).toBe(false);
+    expect(shownLast(the.views[1])).toBe(false);
+    m.stop();
+  });
+
+  it('artifactsapp_29_a_design_opening_as_the_window_closes_shows_nothing', async () => {
+    const m = await main();
+    let go!: () => void;
+    the.held = new Promise((done) => { go = done; });
+    const opening = m.preview(DESIGN, 1);
+    await vi.waitFor(() => expect(the.views[1]?.loads).toHaveLength(1));
+    m.stop();
+    go();
+    expect(await opening).toEqual({ shown: true });
+    expect(the.views[1].visible).not.toContain(true);
+    expect(the.designs!.shown(DESIGN, 1)).toBe(false);
   });
 
   it('artifactsapp_29_a_designs_card_keeps_the_boards_blocks', async () => {
@@ -212,7 +267,10 @@ describe('ARTIFACTSAPP-30: a design’s own origin, loopback only', () => {
       },
     });
     try {
-      const host = `${DESIGN}-v2.localhost:${relay.port}`;
+      const origin = relay.designOrigin(DESIGN, 2);
+      expect(origin).toMatch(new RegExp(`^http://${DESIGN}-v2-[0-9a-f]{16}\\.localhost:${relay.port}$`));
+      const host = new URL(origin).host;
+      const secret = host.split('.')[0].slice(-16);
       const r = await get(relay.port, host, '/__dc/logic/Main.dc.html.js?x=1');
       expect(r.status).toBe(200);
       expect(r.body).toBe('/* /__dc/logic/Main.dc.html.js */');
@@ -225,9 +283,10 @@ describe('ARTIFACTSAPP-30: a design’s own origin, loopback only', () => {
       expect(asked).toEqual([`${DESIGN}/2/__dc/logic/Main.dc.html.js`]);
       // obid's 404 stays a 404
       expect((await get(relay.port, host, '/missing.dc.html')).status).toBe(404);
-      // another version, another artifact, another port, or a host that only looks like one: nothing asked of obid
       asked.length = 0;
-      for (const h of [`${DESIGN}-v1.localhost:${relay.port}`, `${PAGE}-v2.localhost:${relay.port}`, `${DESIGN}-v2.localhost:${relay.port + 1}`, `${DESIGN.toUpperCase()}-v2.localhost:${relay.port}`, `${DESIGN}-v2.localhost.evil.com:${relay.port}`, `x${DESIGN}-v2.localhost:${relay.port}`, `${DESIGN}-v0.localhost:${relay.port}`]) {
+      // another version, another artifact, another port, no secret or another, or a host that only looks like one: nothing asked of obid
+      const other = secret === '0'.repeat(16) ? '1'.repeat(16) : '0'.repeat(16);
+      for (const h of [`${DESIGN}-v1-${secret}.localhost:${relay.port}`, `${PAGE}-v2-${secret}.localhost:${relay.port}`, `${DESIGN}-v2-${secret}.localhost:${relay.port + 1}`, `${DESIGN}-v2.localhost:${relay.port}`, `${DESIGN}-v2-${other}.localhost:${relay.port}`, `${DESIGN.toUpperCase()}-v2-${secret}.localhost:${relay.port}`, `${DESIGN}-v2-${secret}.localhost.evil.com:${relay.port}`, `x${DESIGN}-v2-${secret}.localhost:${relay.port}`, `${DESIGN}-v0-${secret}.localhost:${relay.port}`]) {
         expect((await get(relay.port, h, '/__canvas.html')).status, h).toBe(404);
       }
       // a path that climbs, encoded or not, and a method but GET and HEAD
@@ -247,8 +306,9 @@ describe('ARTIFACTSAPP-30: a design’s own origin, loopback only', () => {
   });
 
   it('artifactsapp_30_a_designs_host_and_path_are_read_strictly', () => {
-    expect(designHost(`${DESIGN}-v12.localhost:4123`, 4123)).toEqual({ id: DESIGN, version: 12 });
-    for (const h of [undefined, '', `${DESIGN}-v1.localhost:4124`, `${DESIGN}-v01.localhost:4123`, `${DESIGN}-v1.localhost`, `${DESIGN}-preview.localhost:4123`, `a.${DESIGN}-v1.localhost:4123`]) expect(designHost(h, 4123), String(h)).toBeNull();
+    const S = '0123456789abcdef';
+    expect(designHost(`${DESIGN}-v12-${S}.localhost:4123`, 4123, S)).toEqual({ id: DESIGN, version: 12 });
+    for (const h of [undefined, '', `${DESIGN}-v12.localhost:4123`, `${DESIGN}-v12-fedcba9876543210.localhost:4123`, `${DESIGN}-v1-${S}.localhost:4124`, `${DESIGN}-v01-${S}.localhost:4123`, `${DESIGN}-v1-${S}.localhost`, `${DESIGN}-preview.localhost:4123`, `a.${DESIGN}-v1-${S}.localhost:4123`]) expect(designHost(h, 4123, S), String(h)).toBeNull();
     expect(designPath('/__canvas.html')).toBe('/__canvas.html');
     expect(designPath('/project/Board%20One.dc.html')).toBe('/project/Board%20One.dc.html');
     for (const p of ['', '/', 'x', '/a/', '/./a', '/a/..', '/%2E%2E/a']) expect(designPath(p), p).toBeNull();
@@ -256,7 +316,8 @@ describe('ARTIFACTSAPP-30: a design’s own origin, loopback only', () => {
 
   it('artifactsapp_30_the_preview_session_lets_a_designs_origin_go_on_the_relays_port_only', () => {
     const page = 'file:///Applications/Oby.app/Contents/Resources/app.asar/out/renderer/';
-    for (const u of [`http://${DESIGN}-v1.localhost:4123/__canvas.html`, `http://${DESIGN}-v2.localhost:4123/_blob/abc`]) expect(allowed(u, 4123, page), u).toBe(true);
-    for (const u of [`http://${DESIGN}-v1.localhost:4124/__canvas.html`, `https://${DESIGN}-v1.localhost:4123/`, `http://${DESIGN}-v0.localhost:4123/`, `http://x.${DESIGN}-v1.localhost:4123/`, `http://${DESIGN}-v1.localhost.evil.com:4123/`, `http://${DESIGN.slice(1)}-v1.localhost:4123/`, `ws://${DESIGN}-v1.localhost:4123/`]) expect(allowed(u, 4123, page), u).toBe(false);
+    const S = '0123456789abcdef';
+    for (const u of [`http://${DESIGN}-v1-${S}.localhost:4123/__canvas.html`, `http://${DESIGN}-v2-${S}.localhost:4123/_blob/abc`]) expect(allowed(u, 4123, page), u).toBe(true);
+    for (const u of [`http://${DESIGN}-v1-${S}.localhost:4124/__canvas.html`, `https://${DESIGN}-v1-${S}.localhost:4123/`, `http://${DESIGN}-v0-${S}.localhost:4123/`, `http://x.${DESIGN}-v1-${S}.localhost:4123/`, `http://${DESIGN}-v1-${S}.localhost.evil.com:4123/`, `http://${DESIGN.slice(1)}-v1-${S}.localhost:4123/`, `ws://${DESIGN}-v1-${S}.localhost:4123/`]) expect(allowed(u, 4123, page), u).toBe(false);
   });
 });

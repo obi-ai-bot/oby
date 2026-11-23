@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import bridge from '../../resources/preview-bridge/bridge.js?raw';
 import relayHtml from '../../resources/sandpack-relay/__csb_relay/index.html?raw';
@@ -25,7 +26,8 @@ import landingHtml from '../../resources/sandpack-relay/index.html?raw';
 //
 // A Claude Design design is drawn by obid's own canvas host and runtime (ARTIFACTS-13 to 15), whose
 // paths are root-relative, so it needs an origin of its version's own (ARTIFACTSAPP-29 and 30). This
-// server gives it one: `<id>-v<n>.localhost` on its port, for the version main shows and no other,
+// server gives it one: `<id>-v<n>-<secret>.localhost` on its port (the secret this run's own), for
+// the version main shows and no other,
 // each path read from obid's file route (`GET /v1/artifacts/<id>/<n>/<path>`) with main's token and
 // sent on with obid's status, type, policy and CORS as obid sent them. An answer of obid's that
 // carries no policy is never sent on.
@@ -99,10 +101,11 @@ export function servedHost(host: string | undefined, port: number): boolean {
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-/** A design's version this server's host names: `<id>-v<n>.localhost` on its port, else null. */
-export function designHost(host: string | undefined, port: number): { id: string; version: number } | null {
-  const m = new RegExp(`^(${UUID})-v([1-9][0-9]{0,5})\\.localhost:(\\d{1,5})$`).exec(host ?? '');
-  return m && Number(m[3]) === port ? { id: m[1], version: Number(m[2]) } : null;
+/** A design's version this server's host names: `<id>-v<n>-<secret>.localhost` on its port, the
+ * secret this server's own, else null. */
+export function designHost(host: string | undefined, port: number, secret: string): { id: string; version: number } | null {
+  const m = new RegExp(`^(${UUID})-v([1-9][0-9]{0,5})-([0-9a-f]{16})\\.localhost:(\\d{1,5})$`).exec(host ?? '');
+  return m && m[3] === secret && Number(m[4]) === port ? { id: m[1], version: Number(m[2]) } : null;
 }
 
 /** The path of a design's file as asked, kept percent-encoded for obid, or null: one that climbs
@@ -128,7 +131,7 @@ export type Designs = {
   read(id: string, version: number, path: string): Promise<Response | { status: number; text: string }>;
 };
 
-export type Relay = { port: number; origin: string; close(): Promise<void> };
+export type Relay = { port: number; origin: string; designOrigin(id: string, version: number): string; close(): Promise<void> };
 
 const notHere = (res: ServerResponse, status = 404, text = 'Not here.') => {
   res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Security-Policy': RELAY_CSP, 'Cache-Control': 'no-store' }).end(text);
@@ -154,8 +157,11 @@ async function design(req: IncomingMessage, res: ServerResponse, at: { id: strin
 export async function startRelay(designs?: Designs): Promise<Relay> {
   const served = files();
   let port = 0;
+  // a design's host names this run's secret, so only who main told it (the design's view) can ask
+  // for one: another program on this Mac that finds the port can't name a design's files
+  const secret = randomBytes(8).toString('hex');
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const at = designs ? designHost(req.headers.host, port) : null;
+    const at = designs ? designHost(req.headers.host, port, secret) : null;
     if (at && designs) { void design(req, res, at, designs).catch(() => { if (!res.headersSent) notHere(res, 502, 'obid isn’t answering.'); else res.end(); }); return; }
     const path = (req.url ?? '/').split('?')[0];
     const file = served.get(path);
@@ -179,6 +185,7 @@ export async function startRelay(designs?: Designs): Promise<Relay> {
   return {
     port,
     origin: `http://preview.localhost:${port}`,
+    designOrigin: (id, version) => `http://${id}-v${version}-${secret}.localhost:${port}`,
     close: () => new Promise<void>((done) => server.close(() => done())),
   };
 }
