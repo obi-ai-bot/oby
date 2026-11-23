@@ -168,6 +168,51 @@ pub const COMPUTER_ROUTES: &[(&str, &str, &str)] = &[
         "/v1/preview/tunnel",
         "a page's localhost in the window, on the computer in use (board 14)",
     ),
+    // COMPUTERS-29: the window's own browser, on the computer in use. The agents' `/mcp`, the
+    // retired `stream`, `input` and `secret`, and `reload`, `back` and `dialog` stay off.
+    ("GET", "/v1/browser", "the browser panel's tabs (board 2)"),
+    (
+        "GET",
+        "/v1/browser/events",
+        "the browser panel's tabs (board 2)",
+    ),
+    (
+        "GET",
+        "/v1/browser/relay",
+        "the browser panel's pages (board 2)",
+    ),
+    (
+        "POST",
+        "/v1/browser/relay",
+        "the browser panel's pages (board 2)",
+    ),
+    ("POST", "/v1/browser/tabs/*/take", "Take control (board 6)"),
+    ("POST", "/v1/browser/tabs/*/giveBack", "Give back (board 6)"),
+    (
+        "POST",
+        "/v1/browser/asks/*/answer",
+        "a page's question (board 7)",
+    ),
+    (
+        "GET",
+        "/v1/browser/downloads",
+        "the downloads shelf (board 12)",
+    ),
+    (
+        "POST",
+        "/v1/browser/downloads/*/saveCopy",
+        "the downloads shelf (board 12)",
+    ),
+    (
+        "GET",
+        "/v1/browser/settings",
+        "Settings › General, the browser",
+    ),
+    (
+        "PUT",
+        "/v1/browser/settings",
+        "Settings › General, the browser",
+    ),
 ];
 
 /// Whether another computer's token may `method` `path` through the gateway: a phone's
@@ -176,29 +221,38 @@ pub fn allows_computer(method: &Method, path: &str) -> bool {
     allows(method, path)
         || COMPUTER_ROUTES
             .iter()
-            .any(|(m, p, _)| *m == method.as_str() && *p == path)
+            .any(|(m, pattern, _)| *m == method.as_str() && fits(pattern, path))
 }
 
 /// Whether a phone may `method` `path` through the gateway: `*` is one path segment.
 pub fn allows(method: &Method, path: &str) -> bool {
+    ROUTES
+        .iter()
+        .any(|(m, pattern)| *m == method.as_str() && fits(pattern, path))
+}
+
+/// Whether a route's `pattern` fits `path`, split into segments: `*` is one, a final `**` one or
+/// more.
+fn fits(pattern: &str, path: &str) -> bool {
     let actual: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    ROUTES.iter().any(|(m, pattern)| {
-        let mut expected: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-        let rest = expected.last() == Some(&"**");
-        if rest {
-            expected.pop();
-        }
-        *m == method.as_str()
-            && (if rest {
-                actual.len() > expected.len()
-            } else {
-                actual.len() == expected.len()
-            })
-            && expected
-                .iter()
-                .zip(&actual)
-                .all(|(e, a)| *e == "*" || e == a)
-    })
+    let mut expected: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let rest = expected.last() == Some(&"**");
+    if rest {
+        expected.pop();
+    }
+    segments_fit(&expected, "*", rest, &actual)
+}
+
+/// Whether a route's pattern, segment by segment, fits a path's: `star` is any one segment, any
+/// other segment only itself; with `rest` (a final `**`) the path has more segments than the
+/// pattern, else exactly as many.
+fn segments_fit<S: Copy + PartialEq>(pattern: &[S], star: S, rest: bool, path: &[S]) -> bool {
+    let length_fits = if rest {
+        path.len() > pattern.len()
+    } else {
+        path.len() == pattern.len()
+    };
+    length_fits && pattern.iter().zip(path).all(|(e, a)| *e == star || e == a)
 }
 
 /// `path` as one route, decoded, before any list is read: `None` when a segment is empty, `.` or
@@ -2084,6 +2138,28 @@ mod tests {
     }
 
     #[test]
+    fn computers_29_the_windows_browser_routes_are_a_computers_with_star_as_one_segment() {
+        assert!(allows_computer(&Method::POST, "/v1/browser/tabs/t1/take"));
+        for (method, path) in [
+            (Method::POST, "/v1/browser/tabs/t1/secret"),
+            (Method::POST, "/v1/browser/tabs/t1/x/take"),
+            (Method::POST, "/v1/browser/tabs//take"),
+            (Method::POST, "/v1/browser/mcp"),
+            (Method::GET, "/v1/browser/tabs/t1/stream"),
+            (Method::POST, "/v1/browser/tabs/t1/close"),
+        ] {
+            assert!(!allows_computer(&method, path), "{method} {path}");
+        }
+        // Every phone route still passes, `*` as one segment and `**` as one or more.
+        for (method, pattern) in ROUTES {
+            let method = Method::from_bytes(method.as_bytes()).unwrap();
+            let path = pattern.replace("**", "a/b").replace('*', "x");
+            assert!(allows(&method, &path), "{method} {path}");
+            assert!(allows_computer(&method, &path), "{method} {path}");
+        }
+    }
+
+    #[test]
     fn computers_15_a_computers_invitation_names_its_key_only_when_owned() {
         let home = folder("computer-key");
         let gateway = Gateway::open(&home);
@@ -2103,5 +2179,59 @@ mod tests {
         let phone = gateway.redeem(&phone.code, "iPhone", now, None).unwrap();
         assert!(!gateway.is_computer(&phone.device_id));
         assert!(serde_json::to_string(&phone).unwrap().find("key").is_none());
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proofs of [`segments_fit`], the one segment matcher of both gateway lists
+    //! (COMPUTERS-29): `kani::any()` stands for every pattern of up to three segments, every path
+    //! of up to four, segment `0` the star, with and without a final `**`.
+
+    use super::*;
+
+    /// Any pattern of up to three segments, any path of up to four, and whether a `**` ends it.
+    fn any_route() -> ([u8; 3], usize, [u8; 4], usize, bool) {
+        let (pattern, path): ([u8; 3], [u8; 4]) = (kani::any(), kani::any());
+        let (n, m): (usize, usize) = (kani::any(), kani::any());
+        kani::assume(n <= 3);
+        kani::assume(m <= 4);
+        (pattern, n, path, m, kani::any())
+    }
+
+    /// PROOF-1, COMPUTERS-29: without a final `**` a pattern fits only a path of exactly as many
+    /// segments, with one only a longer path; a pattern of stars fits every such path.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn computers_29_a_star_is_one_path_segment() {
+        let (pattern, n, path, m, rest) = any_route();
+        let length_fits = if rest { m > n } else { m == n };
+        let fits = segments_fit(&pattern[..n], 0, rest, &path[..m]);
+        if fits {
+            assert!(length_fits);
+        }
+        if length_fits && pattern[..n].iter().all(|s| *s == 0) {
+            assert!(fits);
+        }
+    }
+
+    /// PROOF-2, COMPUTERS-29: a pattern fits a path exactly when the lengths fit and each of its
+    /// segments is the star or the path's segment at its place.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn computers_29_a_literal_segment_matches_only_itself() {
+        let (pattern, n, path, m, rest) = any_route();
+        let length_fits = if rest { m > n } else { m == n };
+        let mut each = true;
+        for i in 0..3 {
+            if i < n && i < m && pattern[i] != 0 && pattern[i] != path[i] {
+                each = false;
+            }
+        }
+        assert_eq!(
+            segments_fit(&pattern[..n], 0, rest, &path[..m]),
+            length_fits && each
+        );
     }
 }

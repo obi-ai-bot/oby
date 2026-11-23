@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
@@ -138,7 +138,12 @@ async fn forward(shared: &Arc<Shared>, id: &str, target: &str, request: Request)
             "too_large",
         );
     };
-    let stream = parts.uri.path() == "/v1/events";
+    // The window's streams (COMPUTERS-29): no whole-answer limit, and they end with the computer.
+    let stream = parts.method == Method::GET
+        && matches!(
+            parts.uri.path(),
+            "/v1/events" | "/v1/browser/events" | "/v1/browser/relay"
+        );
     // The route in use and those above it first, then the rest, so a cut route's fallback answers
     // this same request.
     let mut routes = shared.computers.to_probe(id);

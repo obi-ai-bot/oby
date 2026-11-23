@@ -2020,3 +2020,310 @@ fn computers_27_a_computer_forgotten_mid_handshake_gets_no_first_request() {
     );
     let _ = asking.join();
 }
+
+/// Studio's configuration as [`with_direct`]'s, with a Codex account for a job of its own whose
+/// agent opens a tab in its browser (tests/agents/fake-codex, `SLEEP TOKEN FILE`).
+fn with_direct_and_codex(folder: &Folder) -> Value {
+    let mut config = with_direct(folder);
+    let dir = folder.0.join("home/accounts/codex");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("auth.json"),
+        json!({"OPENAI_API_KEY": "fake-codex"}).to_string(),
+    )
+    .unwrap();
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-codex");
+    config["agents"]["codex"] = json!({"bin": codex,
+        "accounts": [{"id": "codex", "name": "Codex", "configDir": dir}]});
+    config
+}
+
+/// The page the agent opens: the stand-in window answers as it would.
+const PAGE: &str = "https://example.com/";
+
+/// One request to the obid on `port`, `Connection: close`: its status and its body.
+fn request_at(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> (u16, Value) {
+    let body = body.to_string();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(120)))
+        .unwrap();
+    let mut text = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    for (name, value) in headers {
+        text.push_str(&format!("{name}: {value}\r\n"));
+    }
+    text.push_str("\r\n");
+    text.push_str(&body);
+    stream.write_all(text.as_bytes()).unwrap();
+    let mut out = String::new();
+    stream.read_to_string(&mut out).unwrap();
+    let (head, rest) = out.split_once("\r\n\r\n").unwrap();
+    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+    (
+        status,
+        serde_json::from_str(rest.trim()).unwrap_or(Value::Null),
+    )
+}
+
+/// `GET path` on the Mac, naming computer `id`, followed as the window follows a stream, closed
+/// once its answer ends: each `data:` line's text as it comes. Its head is `200`
+/// `text/event-stream`. The receiver is disconnected once the stream ended.
+fn followed_through(mac: &Obid, path: &str, id: &str) -> std::sync::mpsc::Receiver<String> {
+    use std::io::BufRead as _;
+    let mut stream = TcpStream::connect(("127.0.0.1", mac.port)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nAuthorization: Bearer {TOKEN}\r\nOby-Computer: {id}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut reader = std::io::BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{path}: {line}");
+    let mut kind = String::new();
+    while {
+        line.clear();
+        reader.read_line(&mut line).unwrap() > 0 && line != "\r\n"
+    } {
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-type")
+        {
+            kind = value.trim().to_owned();
+        }
+    }
+    assert!(kind.starts_with("text/event-stream"), "{path}: {kind}");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while {
+            line.clear();
+            reader.read_line(&mut line).unwrap_or(0) > 0
+        } {
+            if let Some(data) = line.trim().strip_prefix("data: ")
+                && sender.send(data.to_owned()).is_err()
+            {
+                return;
+            }
+        }
+    });
+    receiver
+}
+
+/// A stand-in for Oby's window on computer `id`'s relay, through the Mac: each CDP frame of `relay`
+/// (followed through the Mac) answered by its id through the Mac's `POST /v1/browser/relay`, as a
+/// page at [`PAGE`] would. Each method it was sent comes on the receiver, disconnected once the
+/// relay stream ended.
+fn window_through(
+    mac: &Obid,
+    id: &str,
+    relay: std::sync::mpsc::Receiver<String>,
+) -> std::sync::mpsc::Receiver<String> {
+    let (port, id) = (mac.port, id.to_owned());
+    let (sender, methods) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for data in relay {
+            let Some(command) = serde_json::from_str::<Value>(&data)
+                .ok()
+                .filter(|c| c["type"] == "cdp")
+            else {
+                continue;
+            };
+            let frame: Value = serde_json::from_str(command["message"].as_str().unwrap()).unwrap();
+            let method = frame["method"].as_str().unwrap_or_default().to_owned();
+            let result = match method.as_str() {
+                "Runtime.evaluate" => {
+                    json!({"result": {"value": {"url": PAGE, "title": "A page"}}})
+                }
+                "Page.navigate" => json!({"frameId": "f1", "loaderId": "l1"}),
+                _ => json!({}),
+            };
+            let cdp = |message: Value| {
+                json!({"type": "cdp", "threadId": command["threadId"], "tabId": command["tabId"],
+                       "message": message.to_string()})
+            };
+            let mut events = vec![cdp(json!({"id": frame["id"], "result": result}))];
+            if method == "Page.navigate" {
+                events.push(cdp(
+                    json!({"method": "Page.loadEventFired", "params": {"timestamp": 1}}),
+                ));
+            }
+            let auth = format!("Bearer {TOKEN}");
+            let (status, body) = request_at(
+                port,
+                "POST",
+                "/v1/browser/relay",
+                &[("Authorization", &auth), ("Oby-Computer", &id)],
+                &json!({ "events": events }),
+            );
+            assert_eq!(status, 204, "{body}");
+            let _ = sender.send(method);
+        }
+    });
+    methods
+}
+
+/// Whether `stream` ended within 10 seconds: what it still held is read first.
+fn ends<T>(stream: &std::sync::mpsc::Receiver<T>, what: &str) {
+    within(10, what, || {
+        match stream.recv_timeout(Duration::from_millis(200)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Some(()),
+            _ => None,
+        }
+    });
+}
+
+/// COMPUTERS-29: with Studio in use, the window works Studio's browser through the Mac: its tabs,
+/// its relay's commands and the window's answers back, the owner's take signed by the Mac's key;
+/// never the agents' `/mcp` or a retired route. Back on This Mac, both of its streams end.
+#[test]
+fn computers_29_the_window_works_the_browser_of_the_computer_in_use() {
+    let studio_folder = Folder::new("remote-browser-studio");
+    let studio = start(
+        &studio_folder.0,
+        &with_direct_and_codex(&studio_folder),
+        None,
+    );
+    direct_of(&studio);
+    let mac_folder = Folder::new("remote-browser-mac");
+    let mac = started(&mac_folder);
+    let id = add_with_code(&mac, &studio);
+    let current = call(
+        &mac,
+        "PUT",
+        "/v1/computers/current",
+        Some(&json!({"id": id})),
+    );
+    assert_eq!(current.status, 200, "{}", current.text);
+    let on = [("Oby-Computer", id.as_str())];
+
+    // Studio's agent, in a job of its own there.
+    let made = call(
+        &studio,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build",
+            "task": "SLEEP TOKEN FILE", "agent": "codex"}}),
+        ),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let job = made.body["id"].as_str().unwrap().to_owned();
+    let file = studio
+        .home
+        .join("worktrees")
+        .join(&job)
+        .join(".obi/mcp-token");
+    let token = within(90, "the job's stand-in writes its broker token", || {
+        std::fs::read_to_string(&file)
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| t.len() == 64)
+    });
+
+    // The window follows Studio's relay through the Mac, and its agent opens a tab there.
+    let methods = window_through(&mac, &id, followed_through(&mac, "/v1/browser/relay", &id));
+    let opening = {
+        let (port, bearer) = (studio.port, format!("Bearer {token}"));
+        std::thread::spawn(move || {
+            request_at(
+                port,
+                "POST",
+                "/v1/browser/mcp",
+                &[("Authorization", &bearer)],
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "oby_browser_open", "arguments": {"url": PAGE}}}),
+            )
+        })
+    };
+    // Studio's tab is listed through the Mac, never in the Mac's own list.
+    let tab = within(30, "Studio's tab to show through the Mac", || {
+        let there = call_with_headers(&mac, TOKEN, "GET", "/v1/browser", None, &on);
+        assert_eq!(there.status, 200, "{}", there.text);
+        there.body["tabs"]
+            .as_array()?
+            .iter()
+            .find(|t| t["owner"]["job"] == job.as_str())
+            .and_then(|t| t["id"].as_str().map(str::to_owned))
+    });
+    let here = call(&mac, "GET", "/v1/browser", None);
+    assert!(
+        !here.text.contains(&tab),
+        "Studio's tab in the Mac's own list: {}",
+        here.text
+    );
+    // The window's events reach Studio's relay through the Mac: its tab attached, its agent's
+    // commands carried and answered, so the agent's open answers.
+    let auth = format!("Bearer {TOKEN}");
+    let (status, body) = request_at(
+        mac.port,
+        "POST",
+        "/v1/browser/relay",
+        &[("Authorization", &auth), ("Oby-Computer", &id)],
+        &json!({"events": [{"type": "attached", "threadId": job, "tabId": tab}]}),
+    );
+    assert_eq!(status, 204, "{body}");
+    let carried = methods.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(!carried.is_empty(), "a command of Studio's agent");
+    let (status, opened) = opening.join().unwrap();
+    assert_eq!(status, 200, "{opened}");
+    assert_eq!(
+        opened["result"]["structuredContent"]["ok"], true,
+        "{opened}"
+    );
+
+    // COMPUTERS-15: the owner's take, signed by the Mac's key, counts on Studio.
+    let path = format!("/v1/browser/tabs/{tab}/take");
+    let words = words_header(&mac, "POST", &path, Some(&json!({})));
+    let taken = call_with_headers(
+        &mac,
+        TOKEN,
+        "POST",
+        &path,
+        Some(&json!({})),
+        &[("Oby-Computer", id.as_str()), ("X-Oby-Words", &words)],
+    );
+    assert_eq!(taken.status, 200, "{}", taken.text);
+    let held = call(&studio, "GET", "/v1/browser", None);
+    let shown = held.body["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == tab.as_str())
+        .cloned()
+        .unwrap();
+    assert!(shown["heldBy"].is_string(), "held on Studio: {shown}");
+
+    // The agents' own server and a retired route stay Studio's own: refused on the Mac.
+    for target in [
+        "/v1/browser/mcp".to_owned(),
+        format!("/v1/browser/tabs/{tab}/secret"),
+    ] {
+        let refused = call_with_headers(&mac, TOKEN, "POST", &target, Some(&json!({})), &on);
+        assert_eq!(refused.status, 404, "{target}: {}", refused.text);
+        assert_eq!(
+            refused.body["reason"], "not_for_a_computer",
+            "{target}: {}",
+            refused.text
+        );
+    }
+
+    // Back on This Mac: Studio's relay and browser events, forwarded, both end.
+    let events = followed_through(&mac, "/v1/browser/events", &id);
+    let back = call(
+        &mac,
+        "PUT",
+        "/v1/computers/current",
+        Some(&json!({"id": "this"})),
+    );
+    assert_eq!(back.status, 200, "{}", back.text);
+    ends(&methods, "Studio's relay stream to end");
+    ends(&events, "Studio's browser events to end");
+}

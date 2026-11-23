@@ -1436,7 +1436,8 @@
             "COMPUTERS-1..13": "obid's unit tests (computers_<n>_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
             "COMPUTERS-15": "obid's unit tests (computers_15_…, src/remote/, src/gateway.rs, src/main.rs) and core/crates/obid/tests/remote.rs, on a real obid; end to end, the lab's lab-remote workflows (LAB-REMOTE-n), which coverage doesn't count (OBIDSPEC-16).",
             "COMPUTERS-17..18": "proposed: proven by the lab's lab-remote workflows (LAB-REMOTE-n) until obid's side is ported, then by its tests in core/crates/obid (docs/contracts/remote.md, Status).",
-            "COMPUTERS-27": "a proxy client through the door, which no workflow step has: core/crates/obid/tests/remote.rs `computers_27_…`"
+            "COMPUTERS-27": "a proxy client through the door, which no workflow step has: core/crates/obid/tests/remote.rs `computers_27_…`",
+            "COMPUTERS-29": "two obids and a stand-in window following the other computer's relay through the Mac, which no workflow step has: core/crates/obid/tests/remote.rs `computers_29_…`; the list and its matcher: gateway.rs's unit tests and Kani proofs"
           }
         }
       }
@@ -2194,7 +2195,10 @@
             "BROWSERAPP-41": "the Electron app's ring and pointer on a held tab, Give back's keyboard, and the live page seen through the panel (browser/store.tsx, browser/live.ts, browser/Webviews.tsx, browser/browser.css), as T3 Code keeps its overlays over its webview: browserHold.test.tsx; in the real app workflows/app/browser-104-live-webview.json; no obid API of its own",
             "BROWSERAPP-42": "the Electron main's hold around Fill in (main/device.ts fillSecret: take unless this device holds the tab, give back only the hold it took, each signed): device.test.ts; no obid API of its own",
             "BROWSERAPP-43": "the Electron main's typing into the tab's own webview (main/browserGuest.ts typeInto, FILL_PREP reload, focusField, FIELD_LENGTH; a password only into a password input, a code ask's kind read from obid; owner's agents' partitions only): browserFill.test.ts; no obid API of its own",
-            "BROWSERAPP-44": "the Electron main's guard after a fill (main/browserRelay.ts NO_SCRIPT, NOT_PASSED, filled, no screenshot while guarded, no read once a filled field shows, a guarded tab's commands one at a time, a filled tab's failed load bare; obid's agentCode, BROWSER-33): browserRelay.test.ts; no obid API of its own"
+            "BROWSERAPP-44": "the Electron main's guard after a fill (main/browserRelay.ts NO_SCRIPT, NOT_PASSED, filled, no screenshot while guarded, no read once a filled field shows, a guarded tab's commands one at a time, a filled tab's failed load bare; obid's agentCode, BROWSER-33): browserRelay.test.ts; no obid API of its own",
+            "BROWSERAPP-45": "the Electron app's partition of another computer's agent tab (shared/browserPartition.ts windowPartition; main/browserRelay.ts partitionOk, namedPartitions; main/browserGuest.ts harden, register), as T3 Code's resolvePartitionScope: browserComputer.test.ts; no obid API of its own",
+            "BROWSERAPP-46": "the Electron main's computer partition held to that computer's door (main/browserGuest.ts prepare, computerDoor, loopbackOnly; main/browserRelay.ts no downloads kept with no folder of this Mac's obid; obid's door is COMPUTERS-28), as T3 Code's LoopbackTunnel.ts: browserComputer.test.ts; no obid API of its own",
+            "BROWSERAPP-47": "the Electron app's board 14 words for the computer in use (browser/live.ts, browser/store.tsx; main/browser.ts following the computer in use; obid's routes are COMPUTERS-29): browserComputer.test.ts; no obid API of its own"
           }
         },
         "computers-app.md": {

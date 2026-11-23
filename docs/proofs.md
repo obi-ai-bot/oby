@@ -8,7 +8,10 @@ for the handful a test picks. They live in two places:
   after their contract scenarios. `egress.rs`'s two prove the browser door's address rule (BROWSER-18):
   `browser_18_the_browser_door_refuses_the_hosts_own_network` for every IPv4 and IPv6 address, and
   `browser_18_the_browser_door_refuses_the_hosts_listeners_on_any_address` for any port and three
-  listener ports too.
+  listener ports too. `gateway.rs`'s two prove the one segment matcher both gateway lists are read
+  with, `segments_fit` (COMPUTERS-29): `computers_29_a_star_is_one_path_segment` and
+  `computers_29_a_literal_segment_matches_only_itself`, for every pattern of up to three segments
+  and path of up to four.
 - **In `core/crates/obid/src/proofs/`**, one file per security decider. Each names the files it
   proves on its `//! Proves:` lines, so a change to any of them requires it.
 
@@ -48,7 +51,7 @@ clear to a member whose card has no seal key, as before.
 
 Not proved yet, highest risk first: the security paths' match (`merge::caught_by`, MERGING-15)
 and the secret scan's verdict (`scan::verdict`), the permission rules' shell reading
-(`permissions.rs`), the gateway's allowlist (`gateway::allows`), the signature checks themselves (`approval.rs`),
+(`permissions.rs`), the gateway's allowlist (`gateway::allows`: its segment matcher is proved, not its lists or its splitting of a path), the signature checks themselves (`approval.rs`),
 the vault, job and conversation state, and the limits. Each is a proof of its own. The first two
 were written and taken out again: their strings (each path's lowercase copy, each finding's name
 compared with `memcmp`) ran CBMC out of memory on GitHub's 16 GB runner and on the Mac, before
