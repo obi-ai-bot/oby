@@ -255,9 +255,11 @@ mod tests {
 
     #[test]
     fn canvas_json_in_the_host_reads_back_as_it_was() {
-        let canvas = json!({"title": "a </script> <!-- b --> <\\/c>", "notes": {"n": {"text": "x < y"}}});
+        let canvas =
+            json!({"title": "a </script> <!-- b --> <\\/c>", "notes": {"n": {"text": "x < y"}}});
         let host = canvas_html(&canvas);
-        let start = host.find("id=\"oby-canvas\">").expect("the block") + "id=\"oby-canvas\">".len();
+        let start =
+            host.find("id=\"oby-canvas\">").expect("the block") + "id=\"oby-canvas\">".len();
         let end = start + host[start..].find("</script>").expect("its end");
         let read: Value = serde_json::from_str(&host[start..end]).expect("JSON.parse reads it");
         assert_eq!(read, canvas);
@@ -399,7 +401,10 @@ mod tests {
             (HTML, HOST_POLICY, false)
         );
         let text = String::from_utf8(host.bytes).unwrap();
-        assert!(text.contains("View design \\u003c/script>\\u003c!--"), "{text}");
+        assert!(
+            text.contains("View design \\u003c/script>\\u003c!--"),
+            "{text}"
+        );
         assert!(!text.contains("{{CANVAS_JSON}}"));
         assert!(text.contains("sandbox: 'allow-scripts'"));
         assert!(store.served(&id, "2", "__canvas.html").is_none());
