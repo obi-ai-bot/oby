@@ -1,10 +1,11 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join as path } from 'node:path';
+import { crc32, deflateSync } from 'node:zlib';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, PICTURE_MAX, PICTURE_WAIT, SCOPES, addSignin, centreSquare, fitPicture, pngSide, readPicture, setPicture, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
-  starterRule, writePolicy, type Answer, type Call, type PolicyAnswer, type Rule,
+  ACCEPTS, NotThisKey, PICTURE_MAX, PICTURE_WAIT, SCOPES, addSignin, centreSquare, fitPicture, pngSide, readPicture, setPicture, wholePng, PICTURE_SECRET, PICTURE_UNCHECKED, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  starterRule, writePolicy, type Answer, type Call, type PictureScan, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
 import { withStarterRule } from '../../../shared/policy';
 import { sphereAddress } from '../../../shared/invite';
@@ -425,6 +426,21 @@ const pngOf = (width: number, height = width, pad = 0) => {
   b.writeUInt32BE(13, 8); b.write('IHDR', 12, 'latin1'); b.writeUInt32BE(width, 16); b.writeUInt32BE(height, 20);
   return new Uint8Array(b);
 };
+// A whole PNG: grey, side × side, every chunk with its CRC; text, a tEXt chunk with it in
+function realPng(side: number, text?: string) {
+  const chunk = (type: string, body: Buffer) => {
+    const head = Buffer.alloc(8); head.writeUInt32BE(body.length, 0); head.write(type, 4, 'latin1');
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), body])), 0);
+    return Buffer.concat([head, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(side, 0); ihdr.writeUInt32BE(side, 4); ihdr[8] = 8; ihdr[9] = 0;
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr),
+    ...(text ? [chunk('tEXt', Buffer.from(`Comment\0${text}`, 'latin1'))] : []),
+    chunk('IDAT', deflateSync(Buffer.alloc(side * (side + 1)))), chunk('IEND', Buffer.alloc(0)),
+  ]));
+}
+const clean: PictureScan = async () => ({ kind: 'clean' });
 const dataOf = (png: Uint8Array) => `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
 
 describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', () => {
@@ -437,7 +453,7 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     expect(await readPicture(obid(), () => key, bare.http)).toEqual({ sphere: 'demo', at: 'https://sphere.example.com/demo', sha256: null, image: null, refused: null, why: null });
     expect(bare.asked().map((c) => c.scope)).toEqual(['directory:read']);
     // one: a data: URL of the PNG, with the Sphere's image_sha256
-    const logo = pngOf(256);
+    const logo = realPng(256);
     const sphere = fakeSphere({ image: logo });
     const first = await readPicture(obid(), () => key, sphere.http);
     const sha256 = createHash('sha256').update(logo).digest('hex');
@@ -446,8 +462,8 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     // unchanged: not fetched again; changed: fetched again
     expect(await readPicture(obid(), () => key, sphere.http, first)).toBe(first);
     expect(imageCalls(sphere)).toHaveLength(1);
-    sphere.picture.image = pngOf(512);
-    expect((await readPicture(obid(), () => key, sphere.http, first)).image).toBe(dataOf(pngOf(512)));
+    sphere.picture.image = realPng(512);
+    expect((await readPicture(obid(), () => key, sphere.http, first)).image).toBe(dataOf(realPng(512)));
     expect(imageCalls(sphere)).toHaveLength(2);
     // anything but a PNG of at most 128 KB is never handed on
     const html = fakeSphere({ image: logo, served: new Response('<script>', { status: 200, headers: { 'content-type': 'text/html' } }) });
@@ -483,24 +499,24 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
   });
 
   it('sphereapp_15: the kept picture is the same Sphere’s, and a 404 under a hash is read again', async () => {
-    const sphere = fakeSphere({ image: pngOf(256) });
+    const sphere = fakeSphere({ image: realPng(256) });
     const first = await readPicture(obid(), () => key, sphere.http);
     // another Obysphere server's answer, for the same id and picture, is never reused
     const elsewhere = { ...first, at: 'https://other.example.com/demo', image: 'data:image/png;base64,ELSEWHERE' };
-    expect((await readPicture(obid(), () => key, sphere.http, elsewhere)).image).toBe(dataOf(pngOf(256)));
+    expect((await readPicture(obid(), () => key, sphere.http, elsewhere)).image).toBe(dataOf(realPng(256)));
     // the Sphere said it has one but served 404 (removed meanwhile): kept under no hash, so read again
-    const o: Parameters<typeof fakeSphere>[0] = { image: pngOf(256), served: () => new Response('{}', { status: 404 }) };
+    const o: Parameters<typeof fakeSphere>[0] = { image: realPng(256), served: () => new Response('{}', { status: 404 }) };
     const racing = fakeSphere(o);
     const gone = await readPicture(obid(), () => key, racing.http);
     expect(gone).toMatchObject({ image: null, sha256: null, refused: null });
     o!.served = undefined;
-    expect((await readPicture(obid(), () => key, racing.http, gone)).image).toBe(dataOf(pngOf(256)));
+    expect((await readPicture(obid(), () => key, racing.http, gone)).image).toBe(dataOf(realPng(256)));
   });
 
   it('sphereapp_16_an_admin_sets_the_picture_with_the_owner_s_admin_token_and_each_refusal_says_why', async () => {
-    const logo = pngOf(256);
+    const logo = realPng(256);
     const sphere = fakeSphere();
-    const set = await setPicture(obid(), () => key, logo, sphere.http);
+    const set = await setPicture(obid(), () => key, logo, clean, sphere.http);
     expect(set).toEqual({ sphere: 'demo', at: 'https://sphere.example.com/demo', sha256: createHash('sha256').update(logo).digest('hex'), image: dataOf(logo), refused: null, why: null });
     const put = imageCalls(sphere).find((r) => r.init.method === 'PUT')!;
     expect((put.init.headers as Record<string, string>)['content-type']).toBe('image/png');
@@ -511,18 +527,18 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     expect(imageCalls(sphere).filter((r) => !r.init.method)).toEqual([]);
     // a member who isn't admin: words, nothing sent
     const member = fakeSphere({ admins: ['dmytro'] });
-    expect(await setPicture(obid(), () => key, logo, member.http)).toEqual({ sphere: null, sha256: null, image: null, refused: 'not_admin', why: 'Only the Obysphere’s admins can change its picture.' });
+    expect(await setPicture(obid(), () => key, logo, clean, member.http)).toEqual({ sphere: null, sha256: null, image: null, refused: 'not_admin', why: 'Only the Obysphere’s admins can change its picture.' });
     expect(imageCalls(member)).toEqual([]);
     // the Sphere's 403 and 400: words, and the picture it had stays
-    const refusing = fakeSphere({ image: pngOf(128), imageAnswer: 400 });
-    expect(await setPicture(obid(), () => key, logo, refusing.http)).toMatchObject({ image: null, refused: 'failed', why: 'The Obysphere didn’t take that picture. Try another image.' });
-    expect(refusing.picture.image).toEqual(pngOf(128));
+    const refusing = fakeSphere({ image: realPng(128), imageAnswer: 400 });
+    expect(await setPicture(obid(), () => key, logo, clean, refusing.http)).toMatchObject({ image: null, refused: 'failed', why: 'The Obysphere didn’t take that picture. Try another image.' });
+    expect(refusing.picture.image).toEqual(realPng(128));
     const forbidding = vi.fn(async (url: string, init: RequestInit = {}) => (url.endsWith('/image') ? new Response('{}', { status: 403 }) : sphere.http(url, init))) as unknown as typeof fetch;
-    expect(await setPicture(obid(), () => key, logo, forbidding)).toMatchObject({ refused: 'not_admin', why: 'Only the Obysphere’s admins can change its picture.' });
+    expect(await setPicture(obid(), () => key, logo, clean, forbidding)).toMatchObject({ refused: 'not_admin', why: 'Only the Obysphere’s admins can change its picture.' });
     // what isn't a square PNG of at most 128 KB never goes
     const none = fakeSphere();
     for (const bad of [pngOf(256, 200), pngOf(256, 256, PICTURE_MAX), new Uint8Array([1, 2, 3]), pngOf(2048), pngOf(64)]) {
-      expect(await setPicture(obid(), () => key, bad, none.http)).toMatchObject({ refused: 'failed', why: 'The Obysphere didn’t take that picture. Try another image.' });
+      expect(await setPicture(obid(), () => key, bad, clean, none.http)).toMatchObject({ refused: 'failed', why: 'The Obysphere didn’t take that picture. Try another image.' });
     }
     expect(none.requests).toEqual([]);
     // the owner's image: its centre square, 256 px a side, else smaller until one fits under 128 KB
@@ -533,15 +549,62 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     expect(fitPicture((side) => pngOf(side, side, PICTURE_MAX))).toBeNull();
   });
 
+  it('sphereapp_16: the picture goes only once the secret scan of its exact bytes says it’s clean', async () => {
+    const logo = realPng(256);
+    const sent = (sphere: ReturnType<typeof fakeSphere>) => imageCalls(sphere).filter((r) => r.init.method === 'PUT');
+    // a finding, a scan that couldn't run and one that threw: nothing sent, words
+    for (const [scan, why] of [
+      [async () => ({ kind: 'found', rules: ['github-pat'] }), PICTURE_SECRET],
+      [async () => ({ kind: 'couldNotRun', why: 'gitleaks isn’t installed' }), PICTURE_UNCHECKED],
+      [async () => { throw new Error('timed out'); }, PICTURE_UNCHECKED],
+    ] as [PictureScan, string][]) {
+      const sphere = fakeSphere();
+      expect(await setPicture(obid(), () => key, logo, scan, sphere.http)).toEqual({ sphere: null, sha256: null, image: null, refused: 'failed', why });
+      expect(sent(sphere)).toEqual([]);
+      expect(sphere.picture.image).toBeUndefined();
+    }
+    // clean: the bytes scanned are the bytes sent
+    const scanned: Uint8Array[] = [];
+    const sphere = fakeSphere();
+    expect(await setPicture(obid(), () => key, logo, async (png) => { scanned.push(png); return { kind: 'clean' }; }, sphere.http)).toMatchObject({ refused: null, image: dataOf(logo) });
+    expect(sent(sphere)).toHaveLength(1);
+    expect(scanned).toEqual([logo]);
+    expect(new Uint8Array(sent(sphere)[0].init.body as Uint8Array)).toEqual(logo);
+  });
+
+  it('sphereapp_16: only a whole PNG is handed on or sent, and the picture it had stays', async () => {
+    const logo = realPng(256);
+    expect(wholePng(logo)).toBe(256);
+    const crcBroken = new Uint8Array(logo); crcBroken[40] ^= 1;
+    for (const [name, bad] of [
+      ['truncated', logo.slice(0, logo.length - 10)], ['header only', pngOf(256)], ['a broken CRC', crcBroken],
+      ['junk after IEND', new Uint8Array([...logo, 1, 2, 3])], ['too little image data', realPng(256).slice(0, 33)],
+    ] as [string, Uint8Array][]) expect(wholePng(bad), name).toBeNull();
+    // image data that inflates past what its header says (a 128 px header over 256 px of data)
+    const over = Buffer.from(realPng(256)); over.writeUInt32BE(128, 16); over.writeUInt32BE(128, 20);
+    over.writeUInt32BE(crc32(over.subarray(12, 29)), 29);
+    expect(wholePng(new Uint8Array(over))).toBeNull();
+    expect(wholePng(realPng(128))).toBe(128);
+    // read: a truncated one is never handed on
+    const sphere = fakeSphere({ image: logo, served: () => new Response(new Uint8Array(logo.slice(0, logo.length - 10)), { status: 200, headers: { 'content-type': 'image/png' } }) });
+    expect(await readPicture(obid(), () => key, sphere.http)).toMatchObject({ image: null, refused: 'failed', why: 'the Obysphere’s picture isn’t one Oby can show' });
+    // set: refused before anything is scanned or sent
+    const none = fakeSphere();
+    const scan = vi.fn(clean);
+    expect(await setPicture(obid(), () => key, crcBroken, scan, none.http)).toMatchObject({ refused: 'failed', why: 'The Obysphere didn’t take that picture. Try another image.' });
+    expect(scan).not.toHaveBeenCalled();
+    expect(none.requests).toEqual([]);
+  });
+
   it('sphereapp_17_an_admin_removes_the_picture_and_a_member_can_t', async () => {
-    const sphere = fakeSphere({ image: pngOf(256) });
-    expect(await setPicture(obid(), () => key, null, sphere.http)).toEqual({ sphere: 'demo', at: 'https://sphere.example.com/demo', sha256: null, image: null, refused: null, why: null });
+    const sphere = fakeSphere({ image: realPng(256) });
+    expect(await setPicture(obid(), () => key, null, clean, sphere.http)).toEqual({ sphere: 'demo', at: 'https://sphere.example.com/demo', sha256: null, image: null, refused: null, why: null });
     expect(imageCalls(sphere).some((r) => r.init.method === 'DELETE')).toBe(true);
     expect(sphere.picture.image).toBeUndefined();
     expect(await readPicture(obid(), () => key, sphere.http)).toMatchObject({ image: null, refused: null });
-    const member = fakeSphere({ admins: ['dmytro'], image: pngOf(256) });
-    expect(await setPicture(obid(), () => key, null, member.http)).toMatchObject({ refused: 'not_admin', why: 'Only the Obysphere’s admins can change its picture.' });
-    expect(member.picture.image).toEqual(pngOf(256));
+    const member = fakeSphere({ admins: ['dmytro'], image: realPng(256) });
+    expect(await setPicture(obid(), () => key, null, clean, member.http)).toMatchObject({ refused: 'not_admin', why: 'Only the Obysphere’s admins can change its picture.' });
+    expect(member.picture.image).toEqual(realPng(256));
   });
 });
 

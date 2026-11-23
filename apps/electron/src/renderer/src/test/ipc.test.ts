@@ -27,6 +27,8 @@ const the = vi.hoisted(() => ({
   decoded: { width: 0, height: 0 },
   // the last answer main's picture read was handed to keep
   lastPicture: undefined as unknown,
+  // a picture read held until it's let go
+  holdRead: null as Promise<void> | null,
 }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
@@ -110,7 +112,12 @@ vi.mock('../../../shared/sphere', async (original) => ({
   getBackIn: async () => { the.invites++; return { kind: 'back', owner: 'wellington', admin: false }; },
   signinStatus: async () => ({ providers: [{ id: 'google', name: 'Google' }], linked: false }),
   addSignin: async () => { the.invites++; return { linked: true }; },
-  readPicture: async (_c: unknown, _k: unknown, _h: unknown, last: unknown) => { the.lastPicture = last; return { sphere: 'demo', sha256: null, image: null, refused: null, why: null }; },
+  readPicture: async (_c: unknown, _k: unknown, _h: unknown, last: unknown) => {
+    the.lastPicture = last;
+    const held = the.holdRead;
+    if (held) { await held; return { sphere: 'demo', sha256: 'a'.repeat(64), image: 'data:image/png;base64,OLD', refused: null, why: null }; }
+    return { sphere: 'demo', sha256: null, image: null, refused: null, why: null };
+  },
   setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null) => { the.invites++; return { sphere: 'demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null }; },
   centreSquare: () => ({ x: 0, y: 0, width: 1, height: 1 }), fitPicture: () => null,
   PICTURE_PIXELS: (await original<typeof import('../../../shared/sphere')>()).PICTURE_PIXELS,
@@ -601,6 +608,23 @@ describe('SPHEREAPP-16 and 17', () => {
     await call('sphere-leave', own());
     await call('sphere-picture', own());
     expect(the.lastPicture).toBeNull();
+  });
+
+  it('sphereapp_17: a picture read started before a removal never brings the old picture back', async () => {
+    while (takeInput()) { /* other tests' */ }
+    let letGo = () => {};
+    the.holdRead = new Promise((r) => { letGo = r; });
+    try {
+      const reading = call('sphere-picture', own());
+      input();
+      expect(await call('sphere-remove-picture', own())).toMatchObject({ refused: null, image: null });
+      letGo();
+      // the slow read's old picture is dropped for what main holds now
+      expect(await reading).toMatchObject({ image: null, refused: null });
+      the.holdRead = null;
+      await call('sphere-picture', own());
+      expect(the.lastPicture).toMatchObject({ image: null });
+    } finally { the.holdRead = null; letGo(); }
   });
 
   it('sphereapp_17_the_picture_is_removed_only_right_after_a_click_main_saw', async () => {

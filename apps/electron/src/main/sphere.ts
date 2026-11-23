@@ -6,6 +6,7 @@ import { keptKey, replaceKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
+import { scanBytes } from './help';
 import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
 import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPicture, readPolicy, rebindOffer, setAdmin, setPicture, signinStatus, withdrawInvitation, centreSquare, fitPicture, PICTURE_PIXELS, type AdminsAnswer, type InvitesAnswer, type PictureAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
@@ -129,8 +130,11 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   });
   void keep();
   setInterval(() => void keep(), 5 * 60_000);
-  // the Obysphere's picture as main last read it (SPHEREAPP-15), forgotten when the membership changes
+  // the Obysphere's picture as main last read it (SPHEREAPP-15), forgotten when the membership changes;
+  // changed: counts each set, removal and membership change, so a read started before one is dropped
   let picture: PictureAnswer | null = null;
+  let changed = 0;
+  const forget = () => { picture = null; changed++; };
 
   // The one join path (SPHEREAPP-3 and 4): a link opened as oby://, or pasted in the app (first
   // run's Obysphere step, Settings › Obysphere). The owner's Join in this native dialog is what
@@ -148,7 +152,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     if (response !== 0) return { kind: 'cancelled' };
     try {
       await join(obid, ownerKey, invite);
-      picture = null;
+      forget();
       void keep();
       if (!w.isDestroyed()) w.webContents.send('sphere', { sphere: invite.sphere, name: invite.name });
       return { kind: 'joined', name: invite.name };
@@ -185,7 +189,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   ipc(trusted).handle('sphere-leave', [], async (e) => {
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
     try {
-      picture = null;
+      forget();
       const { membership, untold, sphere } = await leave(obid, ownerKey);
       if (untold) void said(w, `You left ${sphere}, but it couldn’t be told.`, `${untold}. It still lists your Oby until its admin removes it.`);
       return untold ?? (membership.state === 'none' ? null : 'obid is still in it.');
@@ -252,7 +256,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       keep: (k) => { replaceKey('owner-key', k); key = k; },
     });
     if (r.kind === 'failed') return r.why;
-    picture = null;
+    forget();
     void keep();
     if (!w.isDestroyed()) w.webContents.send('sphere', { sphere: where.sphere, name: where.sphere });
     return null;
@@ -282,9 +286,17 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // isn't fetched again), handed to the page as a data: URL; set from a file picked in main's own
   // dialog, and removed, only right after a click or key main saw itself, one each, with the
   // owner's admin token. The page sends no bytes: main reads the file the owner picked.
-  const pictured = (a: PictureAnswer) => { if (a.refused === null) picture = a; return a; };
+  const pictured = (a: PictureAnswer) => { if (a.refused === null) { picture = a; changed++; } return a; };
+  // a read: dropped for what main holds now when a set, removal or membership change came meanwhile
+  const read = async (): Promise<PictureAnswer> => {
+    const at = changed;
+    const a = await readPicture(obid, ownerKey, fetch, picture);
+    if (at !== changed) return picture ?? { sphere: null, sha256: null, image: null, refused: 'failed', why: 'The Obysphere changed meanwhile.' };
+    if (a.refused === null) picture = a;
+    return a;
+  };
   const noPicture = (why: string): PictureAnswer => ({ sphere: null, sha256: null, image: null, refused: 'failed', why });
-  ipc(trusted).handle('sphere-picture', [], async () => pictured(await readPicture(obid, ownerKey, fetch, picture)), null);
+  ipc(trusted).handle('sphere-picture', [], read, null);
   ipc(trusted).handle('sphere-set-picture', [], async (e): Promise<PictureAnswer | null> => {
     if (!takeInput()) return noPicture('Changing the picture takes your own click.');
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
@@ -292,8 +304,8 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     if (canceled || !filePaths[0]) return null;
     const png = squarePng(filePaths[0]);
     if ('why' in png) return noPicture(png.why);
-    return pictured(await setPicture(obid, ownerKey, png));
+    return pictured(await setPicture(obid, ownerKey, png, (bytes) => scanBytes(bytes)));
   }, null);
   ipc(trusted).handle('sphere-remove-picture', [], async () => (
-    takeInput() ? pictured(await setPicture(obid, ownerKey, null)) : noPicture('Removing the picture takes your own click.')), null);
+    takeInput() ? pictured(await setPicture(obid, ownerKey, null, (bytes) => scanBytes(bytes))) : noPicture('Removing the picture takes your own click.')), null);
 }

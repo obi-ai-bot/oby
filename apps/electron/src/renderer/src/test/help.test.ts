@@ -106,6 +106,21 @@ describe('HELP: Reveal obid’s Log and Copy Diagnostics', () => {
     expect(the.copied).toHaveLength(1);
   });
 
+  it('sphereapp_16: scanBytes reads the printable text in bytes that leave, and fails closed', async () => {
+    const bytes = (text: string) => new Uint8Array(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 255, 10, 0x7f]), Buffer.from(text, 'latin1'), Buffer.from([0, 200, 10, 3])]));
+    expect(await help.scanBytes(bytes('IHDR IDAT IEND'), fakeGitleaks)).toEqual({ kind: 'clean' });
+    expect(await help.scanBytes(bytes(`Comment\0${token()}`), fakeGitleaks)).toEqual({ kind: 'found', rules: ['github-pat'] });
+    expect(await help.scanBytes(bytes('x'), null)).toMatchObject({ kind: 'couldNotRun' });
+    expect(await help.scanBytes(bytes('x'), async () => { throw new Error('killed'); })).toMatchObject({ kind: 'couldNotRun' });
+  });
+
+  it.skipIf(!realGitleaks)('sphereapp_16: scanBytes with the real gitleaks', async () => {
+    const run = help.runGitleaks(realGitleaks!);
+    const bytes = (text: string) => new Uint8Array(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from(text, 'latin1'), Buffer.from([0, 0, 0, 0, 0xae, 0x42, 0x60, 0x82])]));
+    expect(await help.scanBytes(bytes('IHDR IDAT IEND'), run)).toEqual({ kind: 'clean' });
+    expect(await help.scanBytes(bytes(`tEXtComment\0token=${token()}`), run)).toEqual({ kind: 'found', rules: ['github-pat'] });
+  });
+
   it.skipIf(!realGitleaks)('help_3_with_the_real_gitleaks', async () => {
     const run = help.runGitleaks(realGitleaks!);
     expect(await help.scanText('Oby: 0.2.24\nobid: fine', run)).toEqual({ kind: 'clean' });

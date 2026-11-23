@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, randomUUID, sign, type KeyObject } from 'node:crypto';
+import { crc32, inflateSync } from 'node:zlib';
 import { starterRule, withStarterRule } from './policy';
 import { INVITE_DAYS, INVITE_USES, openedInviteLink } from './invite';
 import type { Invite } from './invite';
@@ -417,6 +418,11 @@ export const PICTURE_WAIT = 10_000;
 export type PictureAnswer = { sphere: string | null; at?: string; sha256: string | null; image: string | null; refused: PolicyAnswer['refused']; why: string | null };
 const noPicture = (sphere: string | null, refused: PolicyAnswer['refused'], why: string): PictureAnswer => ({ sphere, sha256: null, image: null, refused, why });
 const atOf = (m: Record<string, unknown>) => `${String(m.url)}/${String(m.sphere)}`;
+// The secret scan main runs on a picture's exact bytes before they leave (main/help.ts, scanBytes;
+// AGENTS.md, "Non-negotiable"): a finding, or a scan that can't run, sends nothing
+export type PictureScan = (png: Uint8Array) => Promise<{ kind: 'clean' } | { kind: 'found'; rules: string[] } | { kind: 'couldNotRun'; why: string }>;
+export const PICTURE_SECRET = 'The secret scan found what looks like a secret in this picture, so it wasn’t sent.';
+export const PICTURE_UNCHECKED = 'Oby couldn’t check this picture, so it wasn’t sent.';
 const sideFits = (side: number | null) => side !== null && side >= PICTURE_SIDE.min && side <= PICTURE_SIDE.max;
 export const ONLY_ADMINS_PICTURE = 'Only the Obysphere’s admins can change its picture.';
 const PICTURE_REFUSED = 'The Obysphere didn’t take that picture. Try another image.';
@@ -427,6 +433,37 @@ export function pngSide(bytes: Uint8Array): number | null {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const [w, h] = [v.getUint32(16), v.getUint32(20)];
   return w === h && w > 0 ? w : null;
+}
+// A whole PNG's side, or null: square, every chunk whole with its CRC, IHDR first and IEND last
+// with nothing after, and its image data inflating to exactly the bytes its header says (no more:
+// a bomb stops there). What a picture is checked with before it's handed on or sent.
+const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+const ADAM7 = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]];
+export function wholePng(bytes: Uint8Array): number | null {
+  const side = pngSide(bytes);
+  if (side === null) return null;
+  const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let at = 8, header: Buffer | null = null, ended = false;
+  const data: Buffer[] = [];
+  while (!ended && at + 12 <= b.length) {
+    const length = b.readUInt32BE(at), type = b.toString('latin1', at + 4, at + 8);
+    if (at + 12 + length > b.length || crc32(b.subarray(at + 4, at + 8 + length)) !== b.readUInt32BE(at + 8 + length)) return null;
+    if ((at === 8) !== (type === 'IHDR')) return null;
+    if (type === 'IHDR') { if (length !== 13) return null; header = b.subarray(at + 8, at + 21); }
+    if (type === 'IDAT') data.push(b.subarray(at + 8, at + 8 + length));
+    if (type === 'IEND') ended = true;
+    at += 12 + length;
+  }
+  if (!header || !ended || at !== b.length || !data.length) return null;
+  const [depth, colour, compression, filter, interlace] = [header[8], header[9], header[10], header[11], header[12]];
+  const channels = CHANNELS[colour];
+  if (!channels || ![1, 2, 4, 8, 16].includes(depth) || compression !== 0 || filter !== 0 || interlace > 1) return null;
+  const expected = (interlace ? ADAM7 : [[0, 0, 1, 1]]).reduce((n, [x, y, dx, dy]) => {
+    const w = Math.ceil((side - x) / dx), h = Math.ceil((side - y) / dy);
+    return w > 0 && h > 0 ? n + h * (1 + Math.ceil((w * channels * depth) / 8)) : n;
+  }, 0);
+  try { if (inflateSync(Buffer.concat(data), { maxOutputLength: expected }).length !== expected) return null; } catch { return null; }
+  return side;
 }
 const sha256Of = (v: unknown) => (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : null);
 const dataUrl = (png: Uint8Array) => `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
@@ -469,17 +506,22 @@ export async function readPicture(call: Call, ownerKey: () => KeyObject, http: t
       if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
       if (!(r.headers.get('content-type') ?? '').startsWith('image/png')) throw new Error('the Obysphere’s picture isn’t one Oby can show');
       const png = await bounded(r, PICTURE_MAX);
-      if (!sideFits(pngSide(png))) throw new Error('the Obysphere’s picture isn’t one Oby can show');
+      if (!sideFits(wholePng(png))) throw new Error('the Obysphere’s picture isn’t one Oby can show');
       return { sphere, at, sha256, image: dataUrl(png), refused: null, why: null };
     } finally { clearTimeout(late); }
   } catch (e) { return noPicture(sphere, 'failed', e instanceof Error ? e.message : String(e)); }
 }
 
-// png: a square PNG of at most PICTURE_MAX (fitPicture's); null removes the picture
-export async function setPicture(call: Call, ownerKey: () => KeyObject, png: Uint8Array | null, http: typeof fetch = fetch): Promise<PictureAnswer> {
+// png: a whole square PNG of at most PICTURE_MAX (fitPicture's), sent only once scan says it's clean;
+// null removes the picture
+export async function setPicture(call: Call, ownerKey: () => KeyObject, png: Uint8Array | null, scan: PictureScan, http: typeof fetch = fetch): Promise<PictureAnswer> {
   let sphere: string | null = null;
   try {
-    if (png && (png.length > PICTURE_MAX || !sideFits(pngSide(png)))) return noPicture(null, 'failed', PICTURE_REFUSED);
+    if (png && (png.length > PICTURE_MAX || !sideFits(wholePng(png)))) return noPicture(null, 'failed', PICTURE_REFUSED);
+    if (png) {
+      const scanned = await scan(png).catch(() => ({ kind: 'couldNotRun' as const }));
+      if (scanned.kind !== 'clean') return noPicture(null, 'failed', scanned.kind === 'found' ? PICTURE_SECRET : PICTURE_UNCHECKED);
+    }
     const a = await asAdmin(call, ownerKey, http);
     if ('refused' in a) return noPicture(null, a.refused!.refused, a.refused!.why === ONLY_ADMINS_INVITE ? ONLY_ADMINS_PICTURE : a.refused!.why!);
     sphere = String(a.m.sphere);
