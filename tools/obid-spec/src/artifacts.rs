@@ -58,6 +58,21 @@ fn fixture(run: &Run, input: &Value) -> Result<Value> {
         anyhow::ensure!(!file.split('/').any(|p| p == ".."), "drop {file:?}");
         std::fs::remove_file(dir.join(file)).with_context(|| format!("drop {file}"))?;
     }
+    // `write`: files of its own added to it ({path, text}), such as a design's own `support.js`
+    // at a path obid builds its runtime at (ARTIFACTS-28).
+    for file in input["write"].as_array().into_iter().flatten() {
+        let path = file["path"].as_str().context("write[].path")?;
+        let text = file["text"].as_str().context("write[].text")?;
+        anyhow::ensure!(
+            !path.is_empty() && !path.starts_with('/') && !path.split('/').any(|p| p == ".."),
+            "write {path:?}"
+        );
+        let to = dir.join(path);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&to, text).with_context(|| format!("write {path}"))?;
+    }
     out["path"] = json!(into);
     Ok(out)
 }
