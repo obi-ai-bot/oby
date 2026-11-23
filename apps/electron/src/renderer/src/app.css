@@ -2379,6 +2379,9 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .join-link-line .set-button { flex: none; height: 36px; min-width: 72px; justify-content: center; }
 .join-link-under { display: block; margin-top: 6px; white-space: normal; overflow-wrap: anywhere; }
 .join-link-under strong { color: var(--ink); font-weight: 500; }
+/* an account already (SPHEREAPP-12): Sign in with <provider> on its own, one short line under it */
+.join-link-back { margin-top: 12px; }
+.join-link-back .wl-sub { display: block; margin-top: 6px; white-space: normal; }
 /* the owner id a join acts for: Change, a quiet word after it; changing it, a small field and Save */
 .join-link-change { padding: 0 2px; color: var(--muted); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .join-link-change:hover { color: var(--ink); }

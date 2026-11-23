@@ -116,7 +116,7 @@ export function useJoinLink() {
     else if (r.kind === 'not_a_link') setSaid({ problem: NOT_A_LINK });
     else setSaid({});
   };
-  // Sign in to get back in: main's own dialog, the browser, the rebind; null once back in
+  // Sign in to restore an account: main's own dialog, the browser, the rebind; null once back in
   const signIn = async () => {
     if (!offer || busy || !window.app?.sphereRebind) return;
     setBusy(true);
@@ -147,11 +147,12 @@ export function JoinLink({ link, onb = false }: { link: ReturnType<typeof useJoi
           : back ? <span className="wl-sub join-link-under" role="status">You’re back in {back}.</span>
             : named && who.owner ? <OwnerLine who={who} invite={named} />
               : null}
-      {/* lost the Mac you joined from: the Obysphere at this address lets you back in with a sign-in (SPHEREAPP-12) */}
+      {/* an account already: the Obysphere at this address restores it with a sign-in (SPHEREAPP-12) */}
       {offer && !joined && !back && (
-        <span className="wl-sub join-link-under join-link-back">
-          Lost the Mac you joined from? <button type="button" className="join-link-change" disabled={busy} onClick={() => void signIn()}>Sign in with {offer.provider.name}</button> to get back in.
-        </span>
+        <div className="join-link-back">
+          <button type="button" className="set-button" disabled={busy} onClick={() => void signIn()}>Sign in with {offer.provider.name}</button>
+          <span className="wl-sub">Already have an account? Sign in to restore your Obyspheres and your data.</span>
+        </div>
       )}
     </div>
   );

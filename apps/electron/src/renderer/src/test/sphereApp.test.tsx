@@ -403,7 +403,7 @@ describe('SPHEREAPP-11: Make admin, Remove admin, and the sole-admin notice', ()
   });
 });
 
-describe('SPHEREAPP-12: Sign in to get back in, beside the invite link', () => {
+describe('SPHEREAPP-12: Sign in to restore an account, beside the invite link', () => {
   const sphereRebindOffer = vi.fn();
   const sphereRebind = vi.fn();
   async function step(offered: boolean) {
@@ -423,7 +423,10 @@ describe('SPHEREAPP-12: Sign in to get back in, beside the invite link', () => {
     await settle();
     expect(button('Join')!.disabled).toBe(true);
     expect(host.querySelector('[role="alert"]')).toBeNull();
-    expect(host.querySelector('.join-link-back')!.textContent).toBe('Lost the Mac you joined from? Sign in with Google to get back in.');
+    // the button on its own, one short line under it, and no "get back in" for a new person to puzzle over
+    expect(host.querySelector('.join-link-back button')!.textContent).toBe('Sign in with Google');
+    expect(host.querySelector('.join-link-back .wl-sub')!.textContent).toBe('Already have an account? Sign in to restore your Obyspheres and your data.');
+    expect(host.querySelector('.join-link-back')!.textContent).not.toMatch(/get back in|Lost the Mac/);
     sphereRebind.mockResolvedValueOnce(null);
     await act(async () => button('Sign in with Google')!.click());
     await settle();
