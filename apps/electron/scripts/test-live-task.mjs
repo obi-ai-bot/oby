@@ -305,6 +305,7 @@ async function main() {
   await until('its row says it asks to edit a file', () => kid('The edit').filter({ hasText: 'asks to edit a file' }).count(), 15_000);
   await until('its conversation says so', () => page.locator('.convo-row .connector-about', { hasText: 'Claude Code asks to edit a file' }).count(), 15_000);
   await shot('11-edit');
+  await sleep(600);
   await drawer.locator('.tc-option', { hasText: /^Deny$/ }).first().click();
   await until('answered', async () => !(await s.call('GET', `/v1/jobs/${editing.id}`)).permission, 30_000);
   ok('LIVETASK-21, -24 an edit is asked as an edit, in a plain question');

@@ -257,7 +257,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   useLayoutEffect(() => {
     const panel = skillList.current;
     if (!panel) return setSkillTip(null);
-    panel.style.maxHeight = `${Math.max(120, Math.min(392, panel.getBoundingClientRect().bottom - 12))}px`;
+    panel.style.maxHeight = `${Math.max(120, Math.min(376, panel.getBoundingClientRect().bottom - 12))}px`;
     panel.querySelector('.is-lit')?.scrollIntoView({ block: 'nearest' });
     placeSkillTip();
   }, [skillsListed, skillLit, skillRows.length]);
@@ -274,8 +274,20 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       if (atListOpen) setAtClosed(true);
       else setSlashClosed(true);
     };
+    // Esc wherever the focus is: the box's own keys hear it only while the box has the focus, and a
+    // click elsewhere (the side panel, the window's edge) takes it away while the list stays. It's
+    // the list's alone: nothing under it (a conversation going back) hears it too
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (atListOpen) setAtClosed(true);
+      else setSlashClosed(true);
+      box.current?.focus();
+    };
     addEventListener('pointerdown', onDown, true);
-    return () => removeEventListener('pointerdown', onDown, true);
+    addEventListener('keydown', onKey, true);
+    return () => { removeEventListener('pointerdown', onDown, true); removeEventListener('keydown', onKey, true); };
   }, [listOpen, atListOpen]);
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
   const pickMatch = (m: (typeof matches)[number]) => pickOby(m.kind === 'oby' ? m.name : fileWords(m.file, workFolders));

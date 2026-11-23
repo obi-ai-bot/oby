@@ -79,7 +79,7 @@ describe('COMPOSER-25: the slash menu, as Claude’s own', () => {
     expect(panel()!.classList).toContain('skill-panel');
     const height = parseFloat(panel()!.style.maxHeight);
     expect(height).toBeGreaterThan(0);
-    expect(height).toBeLessThanOrEqual(392);
+    expect(height).toBeLessThanOrEqual(376);
     // the first row is the list's first, lit, and its names alone
     expect(lit()).toBe(0);
     expect(rows()[0].textContent).toBe('skill-00');
@@ -118,6 +118,20 @@ describe('COMPOSER-25: the slash menu, as Claude’s own', () => {
     expect(panel()).toBeNull();
     expect(tip()).toBeNull();
     expect(input.textContent).toBe('/skill-1');
+    expect(document.activeElement).toBe(input);
+  });
+
+  // the drive of 2026-11-23: with the focus out of the box (a click on the side panel), Esc reached
+  // nothing that closed the list
+  it('composer_25_esc_closes_it_with_the_focus_elsewhere_and_gives_the_box_its_focus_back', async () => {
+    const { input, outside } = await box();
+    await opened(input);
+    const button = outside.appendChild(document.createElement('button'));
+    await act(async () => { button.focus(); });
+    expect(document.activeElement).toBe(button);
+    await act(async () => { button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+    expect(panel()).toBeNull();
+    expect(input.textContent).toBe('/');
     expect(document.activeElement).toBe(input);
   });
 

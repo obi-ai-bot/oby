@@ -188,7 +188,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   overflow-y: auto;
   scrollbar-width: thin;
 }
-.ask-card .tc-code { max-height: 56px; overflow-y: auto; scrollbar-width: none; }
+/* a command of up to four whole lines, a longer one scrolling with its bar shown, never cut through a line
+   with no way to the rest (the drive of 2026-11-23) */
+.ask-card .tc-code { max-height: calc(18px * 4 + 20px); overflow-y: auto; scrollbar-width: thin; }
 /* where it is in the stack ("2/5"), always there, between the arrows that go
    round it; then the way to its page, at the head's end */
 .ask-nav { flex: none; margin: -2px 0; display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
@@ -2566,7 +2568,7 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* `/`'s skills (COMPOSER-25), as Claude's own slash menu: a compact popover over the box's left edge,
    a third of its width, its names alone, as tall as fits above the box (at most about 13 rows; the
    max-height is set as it opens) and scrolling inside, the last row cut to show there's more */
-.skill-panel { right: auto; width: min(340px, 100%); max-height: 392px; overflow-y: auto; scrollbar-width: none; border-radius: 16px; }
+.skill-panel { right: auto; width: min(340px, 100%); max-height: 376px; overflow-y: auto; scrollbar-width: none; border-radius: 16px; }
 .mention-panel button.mention-skill { flex: none; height: 30px; }
 .mention-panel .mention-skill .add-item-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* the lit row's description, in a small tip beside the popover, at that row */
