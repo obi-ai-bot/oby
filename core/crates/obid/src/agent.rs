@@ -501,6 +501,9 @@ pub const OBY_SERVER: &str = "oby";
 /// How long obid waits for a Claude Code to say which tools its MCP servers gave it before a turn
 /// (CONVERSATION-AGENT-53): a waiting one answers at once, a new one once it has started.
 const SERVERS_WAIT: Duration = Duration::from_secs(20);
+/// How long a look lasts once Oby's server is seen still connecting: past Claude Code's own 30 s
+/// for a `tools/list`, so a slow first listing has settled, its tools or none, before the turn.
+const PENDING_WAIT: Duration = Duration::from_secs(35);
 /// How long a connection to Oby's server again may take: Claude Code's own 30 s to connect, and
 /// the listing after it.
 const RECONNECT_WAIT: Duration = Duration::from_secs(40);
@@ -522,31 +525,48 @@ pub enum ObysTools {
 /// and `mcp_reconnect`; its hooks' lines that come meanwhile are dropped, as a waiting one's are
 /// (CONVERSATION-AGENT-25), and any other line is kept for the turn and ends the look.
 pub async fn obys_tools(conn: &mut Conn) -> ObysTools {
-    obys_tools_within(conn, SERVERS_WAIT, RECONNECT_WAIT).await
+    let waits = Waits {
+        servers: SERVERS_WAIT,
+        pending: PENDING_WAIT,
+        again: RECONNECT_WAIT,
+    };
+    obys_tools_within(conn, &waits).await
 }
 
-/// [`obys_tools`], `servers` the most each look at the servers takes (one still connecting looked at
-/// again until it has settled) and `again` the most the connection again takes.
-async fn obys_tools_within(conn: &mut Conn, servers: Duration, again: Duration) -> ObysTools {
-    if settled(conn, servers).await != Some(0) {
+/// How long each part of [`obys_tools`] may take.
+struct Waits {
+    /// A look at the servers, from its start.
+    servers: Duration,
+    /// A look at the servers once Oby's is seen still connecting, from the look's start.
+    pending: Duration,
+    /// The connection again.
+    again: Duration,
+}
+
+/// [`obys_tools`] within `waits`.
+async fn obys_tools_within(conn: &mut Conn, waits: &Waits) -> ObysTools {
+    if settled(conn, waits).await != Some(0) {
         return ObysTools::Left;
     }
     let reconnect = json!({"subtype": "mcp_reconnect", "serverName": OBY_SERVER});
-    if control(conn, reconnect, again).await.is_none() {
+    if control(conn, reconnect, waits.again).await.is_none() {
         return ObysTools::Again(0);
     }
-    ObysTools::Again(settled(conn, servers).await.unwrap_or(0))
+    ObysTools::Again(settled(conn, waits).await.unwrap_or(0))
 }
 
 /// How often Claude Code is asked again about Oby's server while it's still connecting.
 const PENDING_LOOK: Duration = Duration::from_millis(250);
 
 /// How many tools Oby's server gave the Claude Code on `conn` once it's no longer connecting
-/// (`pending`: its `tools/list` may still fail), asked again every [`PENDING_LOOK`] within `wait`;
-/// none when it has no Oby server, didn't answer, was still connecting when `wait` ran out, or named
-/// no tools at all (a newer Claude Code's status without them: not known to have lost them).
-async fn settled(conn: &mut Conn, wait: Duration) -> Option<usize> {
-    let deadline = tokio::time::Instant::now() + wait;
+/// (`pending`: its `tools/list` may still fail), asked again every [`PENDING_LOOK`]: within
+/// `waits.servers` of the look's start, and once it's seen connecting, `waits.pending`. None when it
+/// has no Oby server, didn't answer, was still connecting when that ran out, or named no tools at
+/// all (a newer Claude Code's status without them: not known to have lost them). A stop, the turn's
+/// own limit or the agent's exit ends it at once ([`Conn::next`]).
+async fn settled(conn: &mut Conn, waits: &Waits) -> Option<usize> {
+    let started = tokio::time::Instant::now();
+    let mut deadline = started + waits.servers;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let status = control(conn, json!({"subtype": "mcp_status"}), left).await?;
@@ -566,6 +586,7 @@ async fn settled(conn: &mut Conn, wait: Duration) -> Option<usize> {
             }
             return tools;
         }
+        deadline = deadline.max(started + waits.pending);
         if tokio::time::Instant::now() + PENDING_LOOK >= deadline {
             return None;
         }
@@ -1282,6 +1303,16 @@ answer() { printf '{"type":"control_response","response":{"subtype":"success","r
         (conn, root, signal)
     }
 
+    /// Each part's wait, in milliseconds: a look at the servers, and the connection again; one
+    /// still connecting is looked at for a look's wait and a half more (as 35 s is to 20 s).
+    fn waits(servers: u64, again: u64) -> Waits {
+        Waits {
+            servers: Duration::from_millis(servers),
+            pending: Duration::from_millis(servers * 7 / 4),
+            again: Duration::from_millis(again),
+        }
+    }
+
     const NO_TOOLS: &str = r#"'{"mcpServers":[{"name":"oby","status":"connected","tools":[]}]}'"#;
     const ITS_TOOLS: &str =
         r#"'{"mcpServers":[{"name":"oby","status":"connected","tools":[{"name":"oby_jobs"}]}]}'"#;
@@ -1300,12 +1331,40 @@ answer() { printf '{"type":"control_response","response":{"subtype":"success","r
              read l"
         );
         let (mut conn, root, _signal) = scripted("agent-53-pending", &script).await;
-        let found =
-            obys_tools_within(&mut conn, Duration::from_secs(10), Duration::from_secs(10)).await;
+        let found = obys_tools_within(&mut conn, &waits(10_000, 10_000)).await;
         assert_eq!(found, ObysTools::Again(1));
         let asked = std::fs::read_to_string(root.join("asked")).unwrap_or_default();
         assert!(asked.contains(r#""subtype":"mcp_reconnect""#), "{asked}");
         assert!(asked.contains(r#""serverName":"oby""#), "{asked}");
+        conn.finish_within(Duration::ZERO).await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CONVERSATION-AGENT-53: Oby's server still connecting past a look's own wait (as a first
+    /// listing near Claude Code's 30 s is past 20 s) is looked at until it has settled; settled with
+    /// no tools (that listing failed), it connects again before the turn.
+    #[tokio::test]
+    async fn conversation_agent_53_a_server_pending_past_the_looks_wait_is_waited_for() {
+        let pending = r#"'{"mcpServers":[{"name":"oby","status":"pending"}]}'"#;
+        // Looked at every 250 ms: still connecting for six looks, about 1.5 s, past the 1 s wait.
+        let script = format!(
+            "n=0; while [ $n -lt 6 ]; do read l; answer \"$(id \"$l\")\" {pending}; n=$((n+1)); done\n\
+             read l; answer \"$(id \"$l\")\" {NO_TOOLS}\n\
+             read l; printf '%s\\n' \"$l\" >> asked; answer \"$(id \"$l\")\" null\n\
+             read l; answer \"$(id \"$l\")\" {ITS_TOOLS}\n\
+             read l"
+        );
+        let (mut conn, root, _signal) = scripted("agent-53-pending-long", &script).await;
+        // A look's own wait of 1 s, and room to spare once it's seen connecting.
+        let waits = Waits {
+            servers: Duration::from_secs(1),
+            pending: Duration::from_secs(20),
+            again: Duration::from_secs(10),
+        };
+        let found = obys_tools_within(&mut conn, &waits).await;
+        assert_eq!(found, ObysTools::Again(1));
+        let asked = std::fs::read_to_string(root.join("asked")).unwrap_or_default();
+        assert!(asked.contains(r#""subtype":"mcp_reconnect""#), "{asked}");
         conn.finish_within(Duration::ZERO).await;
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1320,8 +1379,7 @@ answer() { printf '{"type":"control_response","response":{"subtype":"success","r
              while read l; do printf '%s\\n' \"$l\" >> asked; answer \"$(id \"$l\")\" {NO_TOOLS}; done"
         );
         let (mut conn, root, _signal) = scripted("agent-53-unnamed", &script).await;
-        let found =
-            obys_tools_within(&mut conn, Duration::from_secs(10), Duration::from_secs(10)).await;
+        let found = obys_tools_within(&mut conn, &waits(10_000, 10_000)).await;
         assert_eq!(found, ObysTools::Left);
         assert!(
             !root.join("asked").exists(),
@@ -1342,14 +1400,12 @@ answer() { printf '{"type":"control_response","response":{"subtype":"success","r
              while read l; do printf '%s\\n' \"$l\" >> asked; answer \"$(id \"$l\")\" {NO_TOOLS}; done"
         );
         let (mut conn, root, _signal) = scripted("agent-53-late", &script).await;
-        let short = Duration::from_millis(300);
         assert_eq!(
-            obys_tools_within(&mut conn, short, short).await,
+            obys_tools_within(&mut conn, &waits(300, 300)).await,
             ObysTools::Left,
             "no answer in time: the turn goes as it is"
         );
-        let found =
-            obys_tools_within(&mut conn, Duration::from_secs(10), Duration::from_secs(10)).await;
+        let found = obys_tools_within(&mut conn, &waits(10_000, 10_000)).await;
         assert_eq!(found, ObysTools::Left);
         assert!(
             !root.join("asked").exists(),
