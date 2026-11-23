@@ -646,6 +646,14 @@ impl Artifacts {
                 return Some(served);
             }
         }
+        self.kept(id, version, path)
+    }
+
+    /// What version `version` of `id` keeps at `path`, served as [`Self::served`] serves it but
+    /// never what obid builds beside a design: a design's own `support.js` or `__canvas.html`
+    /// reads as its zip had it, byte for byte (ARTIFACTS-28), for the app's Code tab and its Save.
+    fn kept(&self, id: &str, version: &str, path: &str) -> Option<view::Served> {
+        let design = self.get(id)?.kind == Kind::Design;
         let (file, bytes) = self.file(id, version, path)?;
         Some(view::Served {
             content_type: type_of(&file),
@@ -1057,16 +1065,27 @@ pub async fn get(
     Ok(axum::Json(artifact).into_response())
 }
 
+#[derive(Deserialize)]
+pub struct Which {
+    /// `?kept=1`: the file the version keeps at that path, never what obid builds beside a
+    /// design there (ARTIFACTS-28). Any other value, or none, reads as before.
+    kept: Option<String>,
+}
+
 /// `GET /v1/artifacts/{id}/{version}/{*path}`: one of its files, with [`POLICY`]; a design's
-/// with the board policy, and what draws it beside them (crate::artifacts::view).
+/// with the board policy, and what draws it beside them (crate::artifacts::view), ahead of a
+/// kept file of the same name but with `?kept=1`.
 pub async fn file(
     State(shared): State<Arc<Shared>>,
     UrlPath((id, version, path)): UrlPath<(String, String, String)>,
+    Query(which): Query<Which>,
 ) -> Result<Response, ApiError> {
-    let served = shared
-        .artifacts
-        .served(&id, &version, &path)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no such file."))?;
+    let served = if which.kept.as_deref() == Some("1") {
+        shared.artifacts.kept(&id, &version, &path)
+    } else {
+        shared.artifacts.served(&id, &version, &path)
+    }
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no such file."))?;
     let mut response = (StatusCode::OK, served.bytes).into_response();
     let headers = response.headers_mut();
     headers.insert(

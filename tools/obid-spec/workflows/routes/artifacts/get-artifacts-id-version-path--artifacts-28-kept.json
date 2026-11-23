@@ -1,0 +1,269 @@
+{
+  "schemaVersion": "2",
+  "name": "GET /v1/artifacts/{id}/{version}/{*path}?kept=1: a design's own support.js reads as kept while the pane draws on Oby's runtime",
+  "version": "1.0.0",
+  "description": "ARTIFACTS-28. The lab's own Claude Design project, with its own support.js and __canvas.html added at the paths obid builds its runtime and canvas host at, publishes from a conversation's room. The plain path still serves Oby's runtime and canvas host (what draws the design in the pane, ARTIFACTS-13 and 14); with ?kept=1 it serves the design's own files, as the app's Code tab reads them (ARTIFACTSAPP-31). Another value of kept reads as the plain path, and a path the version doesn't keep has no kept read.",
+  "trigger": {
+    "http": {
+      "method": "GET",
+      "path": "/v1/artifacts/{id}/{version}/{*path}"
+    }
+  },
+  "steps": [
+    {
+      "id": "o",
+      "use": "runtime.rust:obid-start",
+      "inputs": {
+        "name": "o",
+        "owner": "alex",
+        "agent": "fake-harness-jobs"
+      }
+    },
+    {
+      "id": "said",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "HELLO",
+          "new": true
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": "Hello there."
+          }
+        }
+      }
+    },
+    {
+      "id": "fx",
+      "use": "runtime.rust:artifacts-fixture",
+      "inputs": {
+        "obid": "${state.o}",
+        "conversation": "${state.said.body.conversation}",
+        "into": "design",
+        "name": "claude-design",
+        "write": [
+          {
+            "path": "support.js",
+            "text": "// the design's own support.js, as Claude Design zipped it\n"
+          },
+          {
+            "path": "__canvas.html",
+            "text": "<p>the design's own canvas page</p>\n"
+          }
+        ]
+      }
+    },
+    {
+      "id": "pub",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "POST",
+        "path": "/v1/plans",
+        "body": {
+          "said": "OBY oby_artifact {\"title\": \"Lab design\", \"path\": \"design\"}",
+          "conversation": "${state.said.body.conversation}"
+        },
+        "expect": {
+          "status": 200,
+          "body": {
+            "text": {
+              "$contains": "Published artifact"
+            },
+            "artifacts": [
+              {
+                "version": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "28-it-keeps-its-own-support-js",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}",
+        "expect": {
+          "status": 200,
+          "paths": {
+            "kind": "design",
+            "versions.0.files": {
+              "$contains": "support.js"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-the-pane-draws-on-obys-runtime",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/support.js",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "react.production.min.js"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-code-reads-the-kept-support-js",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/support.js?kept=1",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "the design's own support.js, as Claude Design zipped it"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-the-kept-read-is-not-the-runtime",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/support.js?kept=1",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "react.production.min.js"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-the-pane-draws-on-the-canvas-host",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/__canvas.html",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$not": {
+              "$contains": "the design's own canvas page"
+            }
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-code-reads-the-kept-canvas-page",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/__canvas.html?kept=1",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "the design's own canvas page"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-another-kept-value-reads-as-before",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/support.js?kept=0",
+        "expect": {
+          "status": 200,
+          "text": {
+            "$contains": "react.production.min.js"
+          }
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-what-it-does-not-keep-has-no-kept-read",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/__dc/boards.js?kept=1",
+        "expect": {
+          "status": 404
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    },
+    {
+      "id": "28-the-runtime-part-is-still-served",
+      "use": "runtime.rust:call",
+      "inputs": {
+        "obid": "${state.o}",
+        "method": "GET",
+        "path": "/v1/artifacts/${state.pub.body.artifacts.0.id}/1/__dc/boards.js",
+        "expect": {
+          "status": 200
+        }
+      },
+      "ui": {
+        "proves": [
+          "ARTIFACTS-28"
+        ]
+      }
+    }
+  ]
+}

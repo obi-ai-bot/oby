@@ -292,6 +292,72 @@ fn artifacts_9_an_imports_export_is_the_import() {
     assert_eq!((file.status, file.body.as_slice()), (200, &b"plain"[..]));
 }
 
+/// ARTIFACTS-28: a Claude Design zip that keeps its own `support.js` and `__canvas.html` still
+/// draws on Oby's runtime and canvas host at those paths, and reads them as kept, byte for byte,
+/// with `?kept=1` (what the app's Code tab and its Save base read), under the board policy. A
+/// path the version doesn't keep has nothing kept to read, and `?kept` with another value reads
+/// as before.
+#[test]
+fn artifacts_28_a_designs_own_support_js_reads_as_kept() {
+    let (_folder, obid) = a_running_obid("artifacts-28");
+    let own_support = b"// the design's own support.js, as Claude Design zipped it\n";
+    let own_canvas = b"<p>the design's own canvas page</p>\n";
+    let mut entries = entries_of(&project_zip());
+    entries.push(("project/support.js".into(), own_support.to_vec()));
+    entries.push(("project/__canvas.html".into(), own_canvas.to_vec()));
+    let entries: Vec<(&str, &[u8])> = entries
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let imported = import(&obid, "application/zip", &zip_of(&entries));
+    assert_eq!(
+        imported.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&imported.body)
+    );
+    let id = imported.json()["id"].as_str().unwrap().to_owned();
+    let get = |path: &str| {
+        send(
+            &obid,
+            "GET",
+            &format!("/v1/artifacts/{id}/1/{path}"),
+            &[],
+            b"",
+        )
+    };
+    for (path, own) in [
+        ("support.js", &own_support[..]),
+        ("__canvas.html", &own_canvas[..]),
+    ] {
+        // The pane draws on what obid builds there.
+        let drawn = get(path);
+        assert_eq!(drawn.status, 200, "{path}");
+        assert!(drawn.body != own, "{path}: the pane still draws on Oby's");
+        // Code reads what the design keeps.
+        let kept = get(&format!("{path}?kept=1"));
+        assert_eq!(kept.status, 200, "{path}");
+        assert_eq!(
+            String::from_utf8_lossy(&kept.body),
+            String::from_utf8_lossy(own),
+            "{path}"
+        );
+        assert!(
+            kept.header("content-security-policy").is_some_and(|p| p
+                .contains("frame-ancestors 'self'")
+                && p.contains("sandbox allow-scripts")),
+            "{path}: the board policy"
+        );
+        assert_eq!(kept.header("access-control-allow-origin"), None, "{path}");
+        // `?kept` other than 1 reads as before.
+        assert_eq!(get(&format!("{path}?kept=0")).body, drawn.body, "{path}");
+    }
+    // A board reads the same either way; what it doesn't keep has no kept bytes.
+    assert_eq!(get("Card.dc.html?kept=1").body, get("Card.dc.html").body);
+    assert_eq!(get("__dc/boards.js").status, 200);
+    assert_eq!(get("__dc/boards.js?kept=1").status, 404);
+}
+
 /// ARTIFACTS-10: the standalone HTML of a design holds every file of the version and reaches
 /// nothing outside itself; a page's is the page with its own files inlined.
 #[test]

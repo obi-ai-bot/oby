@@ -297,11 +297,13 @@ export const api = {
   importArtifact: (bytes: Uint8Array) => call<Artifact>('POST', '/v1/artifacts/import', bytes),
   // the owner's edit: a new version, signed by main on Save's own click (WORDS-23, ARTIFACTS-16)
   saveArtifact: (a: string, base: number, files: Record<string, string>) => call<{ id: string; version: number }>('POST', `/v1/artifacts/${id(a)}/versions`, { base, files }),
-  // one file of a version, as text (the Code tab; docs/contracts/artifacts-app.md, ARTIFACTSAPP-5)
+  // one file of a version, as text (the Code tab; docs/contracts/artifacts-app.md, ARTIFACTSAPP-5):
+  // as the version keeps it (?kept=1), never what obid builds beside a design at that path to draw
+  // it, so Code and its Save base are the design's own support.js (ARTIFACTSAPP-31, ARTIFACTS-28)
   artifactText: async (a: string, version: number, path: string) => {
     const bridge = window.app?.obid;
     if (!bridge) throw new ApiError(0, 'Oby’s engine is reached from the Mac app only.');
-    const { status, text } = await bridge.call('GET', `/v1/artifacts/${id(a)}/${version}/${path.split('/').map(id).join('/')}`, undefined);
+    const { status, text } = await bridge.call('GET', `/v1/artifacts/${id(a)}/${version}/${path.split('/').map(id).join('/')}?kept=1`, undefined);
     if (status < 200 || status >= 300) throw new ApiError(status, status === 404 ? 'That file isn’t there.' : `Oby answered ${status}.`);
     return text;
   },
