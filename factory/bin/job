@@ -242,6 +242,67 @@ def reviewers(job):
     return list(job["agents"]["reviewers"])
 
 
+EXACT = {"pstack", "codex"}  # the reviews that name the head they judged: pstack's, by the builder, and Codex's
+
+
+def codex_record(job):
+    """What factory/bin/review-codex saves in job.json for the review-codex.md it wrote from Codex's answer: its round,
+    the commit it names and its sha256."""
+    path = round_dir(job) / "review-codex.md"
+    return {"round": job["round"], "commit": header(path).get("COMMIT"),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def review_verdict(job, r):
+    """review-<r>.md's verdict in this round: PASS or CHANGES, `pending` with no file, `invalid` with no verdict on
+    its first line, `stale` when it doesn't count for the head the round's gate passed: it names another commit, or
+    is pstack's or Codex's and names none, or the round has no gated head, or it is Codex's and isn't the file
+    factory/bin/review-codex recorded."""
+    path = round_dir(job) / f"review-{r}.md"
+    line = first_line(path)
+    if line is None:
+        return "pending"
+    m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line)
+    if not m:
+        return "invalid"
+    commit = header(path).get("COMMIT")
+    checks = round_dir(job) / "checks.md"
+    gated = header(checks).get("COMMIT") if checks.exists() else None
+    if (commit or r in EXACT) and not (gated and commit == gated):
+        return "stale"
+    if r == "codex" and job.get("codex") != codex_record(job):
+        return "stale"
+    return m.group(1)
+
+
+def two_reviews(job):
+    """Whether the job needs two approving reviews of its exact head by different tools before it merges (AGENTS.md,
+    "Carrying and merging"; MERGING-13 to 16): RISK high or none read, the security surface, or a change to a security
+    path in the commit the round's gate passed (checks.md's COMMIT, as the reviews judge it, not the worktree's HEAD),
+    the list counting as touched when it can't be read or parsed and the change when there is no gated commit. Every
+    factory task comes from queue/tasks on the base, so none is untrusted."""
+    if (job.get("intake") or {}).get("risk") not in {"low", "medium"} or "security" in surfaces(job):
+        return True
+    checks = round_dir(job) / "checks.md"
+    gated = header(checks).get("COMMIT") if checks.exists() else None
+    if not gated:
+        return True
+    # Both sides of a rename, and paths as they are: git would quote a non-ASCII one.
+    res = git(job, "-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", f"origin/{BASE}...{gated}",
+              check=False)
+    try:
+        return res.returncode != 0 or bool(touches_security([f for f in res.stdout.split("\0") if f]))
+    except (OSError, ValueError):
+        return True
+
+
+def start_review(job):
+    """The round's reviews, pending: the routed ones, and Codex's too when the job needs two reviews."""
+    if two_reviews(job):
+        job["agents"]["reviewers"].setdefault("codex", "codex")
+    job["reviews"] = {r: "pending" for r in reviewers(job)}
+
+
 # ---- The queue: task files -------------------------------------------------
 
 
@@ -448,11 +509,7 @@ def sync(job):
         job["gate"] = gate
         job["proofs"] = header(rd / "proofs.md").get("PROOFS") if (rd / "proofs.md").exists() else None
         if job["agents"] and job["stage"] in {"review", "approve", "merging", "merged", "needs-human"}:
-            job["reviews"] = {}
-            for r in reviewers(job):
-                line = first_line(rd / f"review-{r}.md")
-                m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
-                job["reviews"][r] = m.group(1) if m else ("pending" if line is None else "invalid")
+            job["reviews"] = {r: review_verdict(job, r) for r in reviewers(job)}
     job["cost_usd"] = cost_usd(job)
     return job
 
@@ -520,6 +577,55 @@ def reclose_task(job):
         git(job, "push", "origin", job["branch"])
 
 
+# What a SECURITY_PATHS array may hold between its brackets: plain string literals, commas, blanks and line comments.
+ARRAY_TOKEN = re.compile(r'(?P<skip>\s+|//[^\n]*)|"(?P<literal>[^"\\\n]+)"|(?P<comma>,)|(?P<other>.)', re.S)
+
+
+def string_array(body):
+    """The literals of a Rust `[&str; N]` array's body, read whole: anything but non-empty plain string literals
+    separated by commas (an escape, a macro, a constant, a block comment, a missing comma) raises ValueError, so no
+    part of the list can be left out unseen."""
+    items, want_literal = [], True
+    for token in ARRAY_TOKEN.finditer(body):
+        kind = token.lastgroup
+        if kind == "skip":
+            continue
+        if kind == "other" or (kind == "literal") != want_literal:
+            raise ValueError(f"merge::SECURITY_PATHS holds something factory/bin/job can't read: "
+                             f"{body[token.start():token.start() + 40]!r}")
+        if kind == "literal":
+            items.append(token.group("literal"))
+        want_literal = kind == "comma"
+    return items
+
+
+def security_paths():
+    """obid's own list (merge::SECURITY_PATHS), read from the code, plus the factory's protected files. Raises OSError
+    when merge.rs can't be read, ValueError unless merge.rs declares SECURITY_PATHS once, as a `[&str; N]` array of
+    exactly N plain string literals and nothing else, and config.json's protected_paths is a list of strings: a list
+    read in part never passes for the whole."""
+    text = (REPO / "core/crates/obid/src/merge.rs").read_text()
+    m = re.search(r"^pub const SECURITY_PATHS: \[&str; (\d+)\] = \[(.*?)\];$", text, re.M | re.S)
+    own = string_array(m.group(2)) if m and len(re.findall(r"\bSECURITY_PATHS\s*:", text)) == 1 else []
+    if not own or len(own) != int(m.group(1)):
+        raise ValueError("merge::SECURITY_PATHS isn't in core/crates/obid/src/merge.rs as factory/bin/job reads it")
+    protected = CONFIG.get("protected_paths", [])
+    if not isinstance(protected, list) or not all(isinstance(p, str) and p for p in protected):
+        raise ValueError("config.json's protected_paths isn't a list of paths")
+    return [p.lower() for p in own + protected + ["scripts/oby-check"]]
+
+
+def touches_security(files):
+    marks = security_paths()
+    hit = []
+    for f in files:
+        low = f.lower()
+        name = low.rsplit("/", 1)[-1]
+        if any(low.startswith(m) or ("/" + m) in ("/" + low) or name == m for m in marks):
+            hit.append(f)
+    return hit
+
+
 def secret_scan(diff):
     """factory/bin/test-run's scan of what leaves: `gitleaks stdin` with the main checkout's .gitleaks.toml.
     A finding, or a scanner that can't run, refuses."""
@@ -537,6 +643,9 @@ def check_reviews_done(job):
     rd = round_dir(job)
     missing = [r for r in reviewers(job) if not (rd / f"review-{r}.md").exists()]
     require(not missing, f"round {job['round']} is missing reviews from: {', '.join(missing)}")
+    stale = [r for r, v in job["reviews"].items() if v == "stale"]
+    require(not stale, f"review-{stale[0]}.md doesn't count for the head round {job['round']}'s gate passed: "
+                       "run it again on that head" if stale else "")
     bad = [r for r, v in job["reviews"].items() if v not in {"PASS", "CHANGES"}]
     require(not bad, f"first line isn't a verdict in review-{bad[0]}.md" if bad else "")
 
@@ -636,7 +745,7 @@ def advance(job, stage, by_owner=False, pr=None):
                     f"{job['id']} has the proofs or model surface: `job advance {job['id']} prove`, "
                     f"then factory/bin/prove {job['id']}")
             if stage == "review":
-                job["reviews"] = {r: "pending" for r in reviewers(job)}
+                start_review(job)
         else:
             require(h.get("GATE") == "FAIL", "the gate passed")
             last = job["round"] >= job["round_limit"]
@@ -659,7 +768,7 @@ def advance(job, stage, by_owner=False, pr=None):
         if stage == "review":
             passed = {"PASS", "ADVISORY-FAIL"} | ({"SKIPPED"} if not proves(job) else set())
             require(verdict in passed, f"proofs.md says PROOFS: {verdict}, not {' or '.join(sorted(passed))}")
-            job["reviews"] = {r: "pending" for r in reviewers(job)}
+            start_review(job)
         else:
             require(verdict in {"FAIL", "TIMEOUT"}, f"proofs.md says PROOFS: {verdict}, not FAIL or TIMEOUT")
             last = job["round"] >= job["round_limit"]

@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Codex's review of a job's gated head: the second tool of the two approving reviews (factory/pstack.md).
+
+Usage: review-codex <job-id> [--timeout <seconds>]
+
+The orchestrator runs it in the `review` stage when job.json's `agents.reviewers` holds `codex`. It refuses (exit 2,
+no file) a job not in `review`, a worktree with uncommitted changes, a HEAD other than the COMMIT round-N/checks.md
+passed, a git command that fails, or a branch that changes a binary file.
+
+Codex is pointed at a copy in a folder of review-codex's own, never the worktree or the job folder: `src/`, the
+gated commit's text files as git stores them (`git ls-tree` and `git cat-file`, which no .gitattributes changes: no
+.git, nothing untracked or ignored, no file with a NUL byte, no symlink, none of the paths Codex reads as its own
+settings: `.codex*` and `.agents/`), and `job/`, the job's spec.md, intake.md and issue.md with the branch's
+change.diff and log.txt from origin/<base>. A file the branch changes that isn't in `src/`, but a withheld one, sends
+nothing (exit 2). Beside them go `prompt.md`, the exact text Codex gets on stdin (the job's header line and the
+main checkout's factory/codex-review.md, which tells Codex only the copy is in scope), and `codex-home/`, the HOME_DOCS
+in CODEX_HOME, which Codex sends the model by itself. gitleaks scans that whole folder first, with the main
+checkout's config and nothing of the head's (no .gitleaksignore, .gitleaks.toml or `gitleaks:allow` of its own takes
+effect): a finding, or a scanner that can't run, sends nothing (exit 2). Codex's CODEX_HOME is then a folder of
+review-codex's own (0700), removed whatever happens, holding only those scanned HOME_DOCS bytes and a copy of the
+login's auth.json (0600) whose refresh token is emptied, so the owner's login never rotates; with no login, or an
+access token ending within 5 minutes, nothing is sent (exit 2). Then it runs `codex exec --sandbox read-only
+--ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules -c <each of SETTINGS> --disable <each of
+DISABLED> -C <the copy's src/> -o <a file in another folder of its own> -`, stdin read back from the scanned prompt.md:
+none of the owner's config.toml, rules or MCP servers, no web search, no skill list, none of Codex's own apps, plugins,
+browser, computer use, hooks, skill installs or memories, and an environment of PATH, HOME, the private CODEX_HOME and
+LANG only.
+
+What reaches Codex, then: the scanned copy and prompt; the arguments, constants and the two folders' paths; the four
+variables, a search path, two folder paths and a locale; its private CODEX_HOME, the scanned HOME_DOCS and the login
+copy, which authenticates and isn't sent as text; and what Codex itself adds, its own built-in instructions and a
+context of the working folder, shell, date and time zone.
+
+A known limit, for the owner to accept or not: Codex's read-only sandbox can still read any file this Mac's user can,
+and no Codex setting limits its reads, the same reach every Claude Code agent of the factory has. Only the copy is
+scanned; that Codex reads nothing else rests on its prompt, not on a boundary.
+
+Under the job's lock it checks again that the job is in the same stage and round, the worktree's HEAD is still the
+gated commit and clean, and the copy is unchanged since the scan; else it records nothing (exit 2). Then it writes
+round-N/review-codex.md from Codex's answer, Codex's first line (VERDICT: PASS or VERDICT: CHANGES), COMMIT, TOOL, a
+blank line, then the rest as Codex gave it, and records the file in job.json: factory/bin/job counts Codex's review only
+when the file is the one recorded. An answer whose first line isn't a verdict, or a codex that can't run, fails or runs
+past --timeout (3600 seconds by default), writes nothing (exit 2). It exits 0 on PASS, 1 on CHANGES.
+"""
+
+import base64
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+TIMEOUT = 3600.0
+ENV = ("PATH", "HOME", "CODEX_HOME", "LANG")  # all codex is given of this process's environment
+# Codex's own features that reach past its sandbox or bring in text from outside the copy: its ChatGPT apps (the
+# codex_apps MCP server: GitHub, Gmail, Slack, Vercel and more), plugins, the browser, computer use, hooks, image
+# generation, subagents, skill installs and memories.
+DISABLED = ("apps", "plugins", "remote_plugin", "browser_use", "browser_use_external", "computer_use", "hooks",
+            "image_generation", "multi_agent", "skill_mcp_dependency_install", "memories")
+DOCS = ("spec.md", "intake.md", "issue.md")  # the job's own documents Codex gets
+# Codex's settings past its own defaults: no MCP server, no web search, and no list of the skills in CODEX_HOME and
+# ~/.agents/skills in its instructions (`codex debug prompt-input` shows that list otherwise).
+SETTINGS = ("mcp_servers={}", 'web_search="disabled"', "skills.include_instructions=false")
+# What Codex sends the model from CODEX_HOME by itself on every run, whatever the prompt says: its global instructions.
+HOME_DOCS = ("AGENTS.override.md", "AGENTS.md")
+EXPIRY = 300  # seconds a copied access token must have left: the copy can't refresh it
+
+
+def load(name):
+    path = str(Path(__file__).resolve().with_name(name))
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), path)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+job_module = load("job")
+
+
+def die(msg):
+    print(f"review-codex: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def digest(root):
+    """One hash of every file under root, by path and content."""
+    h = hashlib.sha256()
+    for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
+        h.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def copy_tree(worktree, head, src):
+    """The gated commit's text files under src, as git stores them, and their paths: every regular file with no NUL
+    byte, read with `git ls-tree` and `git cat-file`, which no .gitattributes changes (git archive leaves out an
+    export-ignore file and rewrites an export-subst one; git grep -I skips a file marked binary; checkout-index runs
+    eol, ident and filter conversions)."""
+    listed = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", head], cwd=worktree, capture_output=True)
+    if listed.returncode != 0:
+        die(f"`git ls-tree` failed for {head}: {listed.stderr.decode(errors='replace').strip()[:300]}")
+    blobs = []
+    for entry in filter(None, listed.stdout.split(b"\0")):
+        meta, _, name = entry.partition(b"\t")
+        mode, kind, sha = meta.decode().split()
+        if kind == "blob" and mode in ("100644", "100755"):
+            blobs.append((os.fsdecode(name), sha))
+    read = subprocess.run(["git", "cat-file", "--batch"], input="".join(f"{sha}\n" for _, sha in blobs).encode(),
+                          cwd=worktree, capture_output=True)
+    if read.returncode != 0:
+        die(f"`git cat-file` failed for {head}: {read.stderr.decode(errors='replace').strip()[:300]}")
+    copied, out, at = set(), read.stdout, 0
+    for name, sha in blobs:
+        end = out.index(b"\n", at)
+        got, kind, size = out[at:end].decode().split()
+        if (got, kind) != (sha, "blob"):
+            die(f"`git cat-file` answered {got} {kind} for {name} ({sha})")
+        data, at = out[end + 1:end + 1 + int(size)], end + 2 + int(size)
+        parts = Path(name).parts
+        if b"\0" in data or name.startswith("/") or ".." in parts or withheld(name):
+            continue
+        path = Path(src, *parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        copied.add(name)
+    return copied
+
+
+def withheld(name):
+    """Whether a head's path is one Codex reads by name as its own settings: any file or folder whose name starts with
+    .codex (project config, rules, skills, instructions), and .agents/ (skills, plugins). It stays out of src/, so no
+    branch configures its reviewer; its change is still in change.diff, scanned."""
+    return any(part.startswith(".codex") or part == ".agents" for part in Path(name).parts)
+
+
+def private_home(home, docs):
+    """Fills `home`, a folder of review-codex's own (0700), as the only CODEX_HOME Codex gets: the scanned `docs`
+    ({HOME_DOCS name: bytes}) and a copy of the login's auth.json (0600), nothing else. The copy's refresh token is
+    emptied, so nothing Codex does there rotates the owner's login; with no login, or an access token ending within
+    EXPIRY seconds, nothing is sent."""
+    own = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        auth = json.loads((own / "auth.json").read_text())
+    except (OSError, ValueError) as e:
+        die(f"couldn't read Codex's login ({own / 'auth.json'}), so nothing was sent to Codex: {e}")
+    tokens = auth.get("tokens") if isinstance(auth, dict) else None
+    if isinstance(tokens, dict) and tokens.get("access_token"):
+        try:
+            claims = tokens["access_token"].split(".")[1]
+            ends = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))["exp"]
+        except (IndexError, ValueError, KeyError, TypeError):
+            die("Codex's access token has no expiry review-codex can read, so nothing was sent to Codex")
+        if ends - time.time() < EXPIRY:
+            die("Codex's access token ends within 5 minutes and the copy can't refresh it: run `codex` once to "
+                "refresh the login, then run review-codex again")
+        tokens["refresh_token"] = ""
+    elif not (isinstance(auth, dict) and auth.get("OPENAI_API_KEY")):
+        die(f"{own / 'auth.json'} holds no Codex login, so nothing was sent to Codex")
+    home.chmod(0o700)
+    fd = os.open(home / "auth.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(auth, f)
+    for name, data in docs.items():
+        (home / name).write_bytes(data)
+
+
+def home_docs():
+    """The CODEX_HOME files Codex hands the model by itself (HOME_DOCS), by name; a file it can't read sends
+    nothing."""
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        return {name: (home / name).read_bytes() for name in HOME_DOCS if (home / name).exists()}
+    except OSError as e:
+        die(f"couldn't read Codex's own instructions in {home}, so nothing was sent to Codex: {e}")
+
+
+def scan(folder):
+    """gitleaks over every file in folder, with the main checkout's .gitleaks.toml and nothing of the head's: run from
+    an empty folder of its own with an empty ignore file (gitleaks reads a .gitleaksignore from its working folder,
+    the -i path and the scanned folder's root, which review-codex writes, never the head), its config named so no
+    .gitleaks.toml in the folder applies, and every `gitleaks:allow` comment ignored. A finding, or a scanner that
+    can't run, sends nothing."""
+    if (Path(folder) / ".gitleaksignore").exists():
+        die("the copy's root holds a .gitleaksignore, so nothing was sent to Codex")
+    try:
+        with tempfile.TemporaryDirectory() as empty:
+            (Path(empty) / "ignore").write_text("")
+            found = subprocess.run(["gitleaks", "dir", str(folder), "--config", str(job_module.REPO / ".gitleaks.toml"),
+                                    "--gitleaks-ignore-path", str(Path(empty) / "ignore"), "--ignore-gitleaks-allow",
+                                    "--no-banner", "--redact"], cwd=empty, capture_output=True, text=True,
+                                   env={k: v for k, v in os.environ.items() if not k.startswith("GITLEAKS_")})
+    except OSError as e:
+        die(f"the secret scan couldn't run, so nothing was sent to Codex: {e}")
+    if found.returncode != 0:
+        die(f"the secret scan found a secret in what Codex would read, or couldn't run (gitleaks exit "
+            f"{found.returncode}), so nothing was sent to Codex: {(found.stdout + found.stderr).strip()[-500:]}")
+
+
+def main(argv):
+    if not argv or argv[0].startswith("-") or len(argv) not in (1, 3) or (len(argv) == 3 and argv[1] != "--timeout"):
+        die(__doc__.strip())
+    try:
+        timeout = float(argv[2]) if len(argv) == 3 else TIMEOUT
+    except ValueError:
+        die(f"--timeout {argv[2]!r} isn't a number of seconds")
+    job = job_module.resolve(argv[0])
+    if job["stage"] != "review":
+        die(f"{job['id']} is in {job['stage']}, not review")
+    rd = job_module.round_dir(job)
+    checks = rd / "checks.md"
+    gated = job_module.header(checks).get("COMMIT") if checks.exists() else None
+    worktree = job["worktree"]
+
+    def git(*args):
+        res = subprocess.run(["git", *args], cwd=worktree, capture_output=True, text=True)
+        if res.returncode != 0:
+            die(f"`git {' '.join(args[:2])}` failed (exit {res.returncode}): {(res.stderr or res.stdout).strip()[:300]}")
+        return res.stdout
+
+    head = git("rev-parse", "HEAD").strip()
+    if git("status", "--porcelain").strip():
+        die(f"{worktree} has uncommitted changes")
+    if not gated or head != gated:
+        die(f"the worktree's HEAD {head or '(none)'} isn't the commit round-{job['round']}/checks.md passed "
+            f"({gated or 'none'})")
+    base = f"origin/{job_module.BASE}...HEAD"
+    binary = [line.split("\t", 2)[2] for line in git("diff", "--numstat", base).splitlines()
+              if line.startswith("-\t-\t")]
+    if binary:
+        die(f"the branch changes binary files, which the secret scan can't read, so nothing was sent to Codex: "
+            f"{', '.join(binary[:5])}")
+    with tempfile.TemporaryDirectory() as copy, tempfile.TemporaryDirectory() as out:
+        src, docs = Path(copy) / "src", Path(copy) / "job"
+        docs.mkdir()
+        copied = copy_tree(worktree, head, src)
+        changed = git("-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", "--diff-filter=d", base)
+        missing = [f for f in changed.split("\0") if f and f not in copied and not withheld(f)]
+        if missing:
+            die(f"the branch changes files Codex's copy can't hold as text (binary, a symlink or a submodule), so "
+                f"nothing was sent to Codex: {', '.join(missing[:5])}")
+        for name in DOCS:
+            if (job_module.job_dir(job["id"]) / name).exists():
+                shutil.copyfile(job_module.job_dir(job["id"]) / name, docs / name)
+        (docs / "change.diff").write_text(git("diff", "--full-index", "--no-ext-diff", "--no-textconv", base))
+        (docs / "log.txt").write_text(git("log", "--oneline", f"origin/{job_module.BASE}..HEAD"))
+        # The exact prompt, and what Codex adds from CODEX_HOME by itself, go through the scan with the copy.
+        header = (f"Job: {job['id']}. Task: {job['issue']}. Base: origin/{job_module.BASE}. Head: {head}. "
+                  f"Source: {src}. Documents: {docs}.\n\n")
+        try:
+            (Path(copy) / "prompt.md").write_text(header + (job_module.FACTORY / "codex-review.md").read_text())
+        except OSError as e:
+            die(f"couldn't build Codex's prompt, so nothing was sent to Codex: {e}")
+        home = home_docs()
+        for name, data in home.items():
+            (Path(copy) / "codex-home").mkdir(exist_ok=True)
+            (Path(copy) / "codex-home" / name).write_bytes(data)
+        scan(copy)
+        scanned = digest(copy)
+        prompt = (Path(copy) / "prompt.md").read_text()
+        # Codex's CODEX_HOME is a folder of review-codex's own, removed with `out`: the instructions it reads are the
+        # bytes just scanned, whatever happens to the owner's own files from here on.
+        codex_home = Path(out) / "codex-home"
+        codex_home.mkdir()
+        private_home(codex_home, {name: (Path(copy) / "codex-home" / name).read_bytes() for name in home})
+        env = {**{k: os.environ[k] for k in ENV if k in os.environ}, "CODEX_HOME": str(codex_home)}
+        answer = Path(out) / "answer.md"
+        try:
+            res = subprocess.run(["codex", "exec", "--sandbox", "read-only", "--ephemeral", "--color", "never",
+                                  "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
+                                  *(a for setting in SETTINGS for a in ("-c", setting)),
+                                  *(a for name in DISABLED for a in ("--disable", name)),
+                                  "-C", str(src), "-o", str(answer), "-"], input=prompt, capture_output=True,
+                                 text=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            die(f"codex didn't finish in {timeout:g}s")
+        except OSError as e:
+            die(f"couldn't run codex: {e}")
+        if res.returncode != 0:
+            die(f"codex exited {res.returncode}: {(res.stderr or res.stdout).strip()[-500:]}")
+        text = answer.read_text().strip() if answer.exists() else ""
+        first, _, rest = text.partition("\n")
+        m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first.strip())
+        if not m:
+            die(f"codex's answer doesn't start with a verdict: {first.strip()[:80]!r}")
+        version = subprocess.run(["codex", "--version"], capture_output=True, text=True, env=env).stdout.strip() or "codex"
+        with job_module.load_for_update(job["id"]) as locked:
+            if (locked["stage"], locked["round"]) != (job["stage"], job["round"]):
+                die(f"{job['id']} moved to {locked['stage']} round {locked['round']} while Codex read it")
+            now = git("rev-parse", "HEAD").strip()
+            if now != gated or git("status", "--porcelain").strip() or digest(copy) != scanned:
+                die(f"the worktree (HEAD {now}) or Codex's copy of {gated} changed while Codex read it: "
+                    "nothing recorded")
+            (rd / "review-codex.md").write_text(f"VERDICT: {m.group(1)}\nCOMMIT: {head}\nTOOL: {version}\n\n"
+                                                f"{rest.strip()}\n")
+            locked["codex"] = job_module.codex_record(locked)
+            job_module.save(job_module.sync(locked))
+    print(f"REVIEW-CODEX: {m.group(1)} ({job['id']} round {job['round']})")
+    sys.exit(0 if m.group(1) == "PASS" else 1)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

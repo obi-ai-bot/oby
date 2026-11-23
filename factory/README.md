@@ -4,6 +4,8 @@
 intake → spec → build → gate → prove → review → approve, where only a job whose intake names the `proofs` (Kani)
 or `model` (Quint) surface must pass through `prove`, and every other job may still go from gate straight to review.
 How to run it and what each piece does: `.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
+The builder works by pstack's method, its own review and verification included, and the factory shows each round
+and keeps the owner's decision points: `pstack.md`.
 
 ```
 config.json     concurrency, rounds, the active sprint, routing, protected paths, prices
@@ -30,7 +32,25 @@ bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proof
 bin/mutants     runs cargo-mutants on the core/crates/ Rust a job's gated commit changes, through bin/test-run on a gate
                 VM builder slot, within a time budget → round-N/mutants.md, the missed mutants for reviewer-code and the
                 approver; advisory only, it never moves a job (docs/contracts/factory.md, MUTANTS)
-bin/route       risk + surfaces → the job's reviewers and models
+bin/route       the job's reviews: pstack's, which the builder writes, and with --lenses the lens reviewers and models
+                risk + surfaces give; bin/job adds Codex's when the round starts, for a job that needs two
+bin/review-codex  Codex's review of a job's gated head: it copies the head's text files as git stores them
+                (ls-tree and cat-file, no .gitattributes applied, no .git, its .codex* and .agents/ withheld), the
+                job's spec, intake, issue, diff and log, the exact prompt and the AGENTS.md Codex reads from
+                CODEX_HOME by itself into a folder of its own, refuses a head whose changed files aren't all in it,
+                scans it all with gitleaks (the main checkout's config, nothing of the head's: no .gitleaksignore,
+                .gitleaks.toml or gitleaks:allow), and points Codex at it in its read-only sandbox, the prompt read
+                back from the scanned copy, on a private CODEX_HOME (0700, removed after) holding only the scanned
+                AGENTS.md and a login copy whose refresh token is emptied, with none of the owner's Codex config,
+                rules or MCP servers, no web search or skill list, none of Codex's own apps, plugins, browser,
+                computer use, hooks, skill installs or memories, and an environment of PATH, HOME, CODEX_HOME and
+                LANG; with codex-review.md →
+                round-N/review-codex.md, which it records in job.json under the job's lock once the worktree and the
+                copy are unchanged (only the recorded file counts); exit 0 PASS, 1 CHANGES, 2 couldn't judge. Known
+                limit, the owner's to accept: the read-only sandbox can still read any file on this Mac (no Codex
+                setting limits reads, the same reach as every Claude Code agent here); only the copy is scanned, and
+                codex-review.md tells Codex only the copy is in scope
+pstack.md       how the factory works by pstack; pstack/ holds the pinned pstack files the agents read
 bin/test-run    a builder's or approver's own test, clippy or build run at nice 15, half the cores; only runs that can
                 build Rust or Xcode code take turns on its own lock, other runs start at once; it refuses a run whose
                 CARGO_TARGET_DIR is the shared Cargo folder: they build in <worktree>/core/target; with

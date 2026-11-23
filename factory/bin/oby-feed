@@ -187,23 +187,13 @@ def save(item):
     (FEED / f"{item['key']}.json").write_text(json.dumps(item, indent=1))
 
 
-def security_paths():
-    """obid's own list (merge::SECURITY_PATHS), read from the code, plus the factory's protected files."""
-    text = (REPO / "core/crates/obid/src/merge.rs").read_text()
-    m = re.search(r"SECURITY_PATHS: \[&str; \d+\] = \[(.*?)\];", text, re.S)
-    own = re.findall(r'"([^"]+)"', m.group(1)) if m else []
-    return [p.lower() for p in own + job.CONFIG.get("protected_paths", []) + ["scripts/oby-check"]]
-
-
 def touches_security(files):
-    marks = security_paths()
-    hit = []
-    for f in files:
-        low = f.lower()
-        name = low.rsplit("/", 1)[-1]
-        if any(low.startswith(m) or ("/" + m) in ("/" + low) or name == m for m in marks):
-            hit.append(f)
-    return hit
+    """factory/bin/job's rule for the security paths; every file counts when merge::SECURITY_PATHS can't be read or
+    parsed, so the head waits for the owner."""
+    try:
+        return job.touches_security(files)
+    except (OSError, ValueError):
+        return list(files)
 
 
 # What deserves the security lens beyond touches_security(), whose heads never reach a lens: obid's merge, API,
@@ -687,6 +677,16 @@ def pr_number(url):
 
 HELD = "approved twice, but "
 SECURITY = "it touches a security path"
+UNLISTED = "gh doesn't list every path it changes"
+
+
+def pr_files(pr):
+    """The paths gh lists for a pull request, and whether they are every path it changes: gh lists at most 100 files
+    (changedFiles counts them all) and a renamed file by its new path only, so a longer list or a rename is read as
+    touching a security path."""
+    listed = pr.get("files") or []
+    whole = len(listed) == pr.get("changedFiles") and all(f.get("changeType") != "RENAMED" for f in listed)
+    return [f["path"] for f in listed], whole
 
 
 def may_arm(j, pr, refused, key):
@@ -703,8 +703,8 @@ def may_arm(j, pr, refused, key):
     tools = {a.get("agent") for a in mine if a.get("verdict") == "approved"}
     if len(tools) < 2:
         return "pending", None
-    files = [f["path"] for f in pr.get("files", [])]
-    hit = touches_security(files)
+    files, whole = pr_files(pr)
+    hit = touches_security(files) if whole else [UNLISTED]
     if hit:
         return "wait", f"{HELD}{SECURITY} ({hit[0]}): merge it yourself"
     for check in (lambda: check_models(files, head), lambda: check_kani(key, files, head)):
@@ -1625,7 +1625,7 @@ def follow(item, jobs, account, min_free_gb=0, dry_run=False):
                  else j.get("publishError") or "it ended with nothing published")[:200]
         return attempt_ended(item, j, facts, today, jobs, account, min_free_gb, dry_run)
     if item["state"] == "reviewing":
-        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,headRefName,state,files")
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,headRefName,state,files,changedFiles")
         if not pr:
             return False
         if pr["state"] == "MERGED":
@@ -1642,12 +1642,12 @@ def follow(item, jobs, account, min_free_gb=0, dry_run=False):
             gate_unreached(item, head, said)
             return True
         if verdict == "arm" or said.startswith(HELD + SECURITY):
-            files = [f["path"] for f in pr.get("files", [])]
+            files = pr_files(pr)[0]
             return gated(item, head, pr["headRefName"], verdict, said, lambda: ask_lenses(item, head, said, files, account))
         not_armed(item, head, said)
         return True
     if item["state"] in ("lenses", "approving"):
-        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,headRefName,state,files")
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,headRefName,state,files,changedFiles")
         if not pr:
             return False
         if pr["state"] == "MERGED":
@@ -1684,7 +1684,7 @@ def follow(item, jobs, account, min_free_gb=0, dry_run=False):
         item.update(state="waiting", refused=item.get("head"), note=f"GitHub's queue didn't merge {item.get('head')}: {why}"[:240])
         return True
     if item["state"] == "waiting":
-        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,headRefName,state,files")
+        pr = gh_json("pr", "view", str(item["pr"]), "--repo", GH_REPO, "--json", "headRefOid,headRefName,state,files,changedFiles")
         if not pr:
             return False
         if pr["state"] == "MERGED":
@@ -1710,7 +1710,7 @@ def follow(item, jobs, account, min_free_gb=0, dry_run=False):
             save(item)
         verdict, said = may_arm(j, pr, refused_for(item, head), key)
         if verdict == "arm" or verdict == "wait" and said.startswith(HELD + SECURITY):
-            files = [f["path"] for f in pr.get("files", [])]
+            files = pr_files(pr)[0]
             return gated(item, head, pr["headRefName"], verdict, said, lambda: ask_lenses(item, head, said, files, account))
         if verdict == "retry":
             gate_unreached(item, head, said)
