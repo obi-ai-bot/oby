@@ -3,6 +3,7 @@ import { api, type Project } from './obid';
 import { MOCK_PROJECTS } from './mock';
 import { onObid } from './lean';
 import { onSynced, takesProjects, useLive } from './live';
+import { useComputers } from './computers/store';
 
 // The projects (docs/contracts/projects.md, PROJECTS-16 to 32): the side panel's groups, and the chip
 // that picks one in Home's box and moves a conversation in its title bar. obid's list (GET
@@ -52,6 +53,7 @@ if (onObid) onSynced(() => void loadProjects());
 // Whether projects show: on the mock, or on an obid with projects-v1 (the first time it says so,
 // its list is read, if nothing read it yet)
 export function useProjectsOn() {
+  useComputers();
   const on = !onObid || takesProjects(useLive());
   useEffect(() => { if (on && onObid && !read) void loadProjects(); }, [on]);
   return on;
