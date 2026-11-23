@@ -1,14 +1,14 @@
 import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron';
 import { createServer } from 'node:http';
-import { statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { keptKey, replaceKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
-import { scanBytes } from './help';
+import { scanPicture } from './pictureText';
 import { boolean, flag, safeInteger, string, type Decoder } from '../shared/decode';
-import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPicture, readPolicy, rebindOffer, setAdmin, setPicture, signinStatus, withdrawInvitation, centreSquare, fitPicture, PICTURE_PIXELS, type AdminsAnswer, type InvitesAnswer, type PictureAnswer, type PolicyAnswer } from '../shared/sphere';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPicture, readPolicy, rebindOffer, setAdmin, setPicture, signinStatus, withdrawInvitation, centreSquare, fitPicture, imageSize, PICTURE_PIXELS, PICTURE_SIDE_MAX, type AdminsAnswer, type InvitesAnswer, type PictureAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
@@ -51,6 +51,15 @@ const openOf = (a: InvitesAnswer, id: string) => a.invitations.find((i) => i.id 
 function pruned(a: InvitesAnswer): InvitesAnswer {
   if (!a.refused && !a.unlisted) for (const id of [...madeLinks.keys()]) if (!openOf(a, id)) madeLinks.delete(id);
   return a;
+}
+
+// the live Obysphere's address and id now (`<url>/<sphere>`, as a picture answer's `at`), or null
+async function sphereNow() {
+  const a = await obid('GET', '/v1/obid/sphere', undefined, undefined, true).catch(() => null);
+  try {
+    const m = a?.status === 200 ? JSON.parse(a.text) as { state?: unknown; url?: unknown; sphere?: unknown } : null;
+    return m?.state === 'joined' ? `${String(m.url)}/${String(m.sphere)}` : null;
+  } catch { return null; }
 }
 
 // obid's owner id now: who a join would act for, or null when obid can't say
@@ -111,16 +120,31 @@ export function signinListener(): Promise<{ returnTo: string; back: Promise<{ st
 }
 
 // The owner's image file as the Sphere takes its picture (SPHEREAPP-16): read by main itself, at most
-// 20 MB, a PNG or JPEG of at most PICTURE_PIXELS; its centre square, 256 px a side, as a PNG under
-// 128 KB (fitPicture). Else why not, in words.
+// 20 MB, a PNG or JPEG whose header says at most 8,192 px a side, read before anything decodes it
+// (imageSize), then decoded from those same bytes and held to it again; its centre square, 256 px
+// a side, as a PNG under 128 KB (fitPicture). Else why not, in words.
+const PICTURE_FILE_MAX = 20 * 1024 * 1024;
 export function squarePng(file: string): Uint8Array | { why: string } {
   const unreadable = { why: 'Oby can’t read that image. Pick a PNG or JPEG.' };
   const tooLarge = { why: 'That image is too large. Pick one under 8,192 pixels a side.' };
-  try { if (statSync(file).size > 20 * 1024 * 1024) return tooLarge; } catch { return unreadable; }
-  const image = nativeImage.createFromPath(file);
+  let bytes: Buffer;
+  try {
+    const fd = openSync(file, constants.O_RDONLY);
+    try {
+      const size = fstatSync(fd).size;
+      if (size > PICTURE_FILE_MAX) return tooLarge;
+      bytes = Buffer.alloc(size);
+      for (let got = 0, n = 1; got < size; got += n) if (!(n = readSync(fd, bytes, got, size - got, got))) return unreadable;
+    } finally { closeSync(fd); }
+  } catch { return unreadable; }
+  const said = imageSize(bytes);
+  if (!said) return unreadable;
+  const fits = (s: { width: number; height: number }) => s.width <= PICTURE_SIDE_MAX && s.height <= PICTURE_SIDE_MAX && s.width * s.height <= PICTURE_PIXELS;
+  if (!fits(said)) return tooLarge;
+  const image = nativeImage.createFromBuffer(bytes);
   if (image.isEmpty()) return unreadable;
   const { width, height } = image.getSize();
-  if (width * height > PICTURE_PIXELS) return tooLarge;
+  if (!fits({ width, height })) return tooLarge;
   const square = image.crop(centreSquare(width, height));
   return fitPicture((side) => new Uint8Array(square.resize({ width: side, height: side, quality: 'best' }).toPNG())) ?? unreadable;
 }
@@ -143,11 +167,14 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   setInterval(() => void keep(), 5 * 60_000);
   // the Obysphere's picture as main last read it (SPHEREAPP-15), forgotten when the membership changes;
   // changed: counts each set, removal and membership change, so a read started before one is dropped
+  // membership: counts membership changes alone, so a set or removal that finishes after one is
+  // dropped (SPHEREAPP-19)
   let picture: PictureAnswer | null = null;
   let changed = 0;
+  let membership = 0;
   let reading: Promise<PictureAnswer> | null = null;
   // a read still out is let go too, so the next one starts at once and never waits on it
-  const forget = () => { picture = null; changed++; reading = null; };
+  const forget = () => { picture = null; changed++; membership++; reading = null; };
 
   // The one join path (SPHEREAPP-3 and 4): a link opened as oby://, or pasted in the app (first
   // run's Obysphere step, Settings › Obysphere). The owner's Join in this native dialog is what
@@ -333,15 +360,31 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   };
   const noPicture = (why: string): PictureAnswer => ({ sphere: null, sha256: null, image: null, refused: 'failed', why });
   ipc(trusted).handle('sphere-picture', [], read, null);
+  // A set or removal is bound to the membership its click chose (SPHEREAPP-19): that Obysphere's
+  // address and id, read on the click, and main's count of membership changes then. setPicture checks
+  // both again right before it sends, after the scan, and sends nothing when either changed (Leave, a
+  // join, getting back in); an answer that comes after a change is the old Obysphere's, so main keeps
+  // none of it and the page gets none (null, as Cancel)
+  const mutated = async (gen: number, at: string | null, png: Uint8Array | null): Promise<PictureAnswer | null> => {
+    const a = await setPicture(obid, ownerKey, png, scan, fetch, { at, live: () => gen === membership });
+    return gen === membership ? pictured(a) : null;
+  };
+  // the picture's exact bytes and the text Vision reads in it, through the secret scan (SPHEREAPP-18)
+  const scan = (png: Uint8Array) => scanPicture(png);
   ipc(trusted).handle('sphere-set-picture', [], async (e): Promise<PictureAnswer | null> => {
     if (!takeInput()) return noPicture('Changing the picture takes your own click.');
+    const gen = membership;
+    const at = await sphereNow();
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
     const { canceled, filePaths } = await dialog.showOpenDialog(w, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }] });
-    if (canceled || !filePaths[0]) return null;
+    if (canceled || !filePaths[0] || gen !== membership) return null;
     const png = squarePng(filePaths[0]);
     if ('why' in png) return noPicture(png.why);
-    return pictured(await setPicture(obid, ownerKey, png, (bytes) => scanBytes(bytes)));
+    return mutated(gen, at, png);
   }, null);
-  ipc(trusted).handle('sphere-remove-picture', [], async () => (
-    takeInput() ? pictured(await setPicture(obid, ownerKey, null, (bytes) => scanBytes(bytes))) : noPicture('Removing the picture takes your own click.')), null);
+  ipc(trusted).handle('sphere-remove-picture', [], async () => {
+    if (!takeInput()) return noPicture('Removing the picture takes your own click.');
+    const gen = membership;
+    return mutated(gen, await sphereNow(), null);
+  }, null);
 }

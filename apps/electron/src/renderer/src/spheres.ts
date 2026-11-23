@@ -4,7 +4,7 @@ import { OBYS } from './mock';
 import { everything, onObid } from './lean';
 import { forgetRoom, lookAtRoom } from './room';
 import { forgetThreads } from './peers';
-import type { Rule } from '../../shared/sphere';
+import type { PictureAnswer, Rule } from '../../shared/sphere';
 import type { SphereMember } from '../../shared/obid-wire';
 import { askableOf, setAskable } from './askable';
 
@@ -76,6 +76,14 @@ export function addSphere(s: Omit<Sphere, 'id' | 'admin' | 'members'>) {
 // else): gone from yours either way
 export const updateSphere = (id: string, patch: Partial<Pick<Sphere, 'name' | 'slug' | 'image'>>) =>
   set(spheres.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+// A picture main set or removed (SPHEREAPP-19): shown on the live Obysphere only when the answer is
+// of that one, its address and id as it is now; another's (one left or joined meanwhile) shows on
+// none. Whether it showed.
+export function showPicture(a: PictureAnswer): boolean {
+  const live = spheres.find((s) => s.live && a.at === `${s.url}/${s.slug}`);
+  if (live) updateSphere(live.id, { image: a.image ?? undefined });
+  return !!live;
+}
 export const deleteSphere = (id: string) => {
   // the live one: obid leaves it (main/sphere.ts), then what obid says shows
   if (spheres.find((s) => s.id === id)?.live) void window.app?.sphereLeave?.().finally(loadLive);

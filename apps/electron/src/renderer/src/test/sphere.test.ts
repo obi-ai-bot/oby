@@ -10,7 +10,7 @@ vi.mock('node:zlib', async (original) => {
 });
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, PICTURE_MAX, PICTURE_WAIT, SCOPES, addSignin, centreSquare, fitPicture, pngSide, readPicture, setPicture, wholePng, PICTURE_SECRET, PICTURE_UNCHECKED, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  ACCEPTS, NotThisKey, PICTURE_MAX, PICTURE_WAIT, SCOPES, addSignin, centreSquare, fitPicture, imageSize, pngSide, readPicture, setPicture, wholePng, PICTURE_MOVED, PICTURE_SECRET, PICTURE_UNCHECKED, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
   starterRule, writePolicy, type Answer, type Call, type PictureScan, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
 import { withStarterRule } from '../../../shared/policy';
@@ -602,6 +602,30 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     expect(new Uint8Array(sent(sphere)[0].init.body as Uint8Array)).toEqual(logo);
   });
 
+  it('sphereapp_19: a set or removal sends nothing when the membership its click chose changed before it went', async () => {
+    const logo = realPng(256);
+    const sent = (sphere: ReturnType<typeof fakeSphere>) => imageCalls(sphere).filter((r) => r.init.method === 'PUT' || r.init.method === 'DELETE');
+    const AT = 'https://sphere.example.com/demo';
+    // the membership changes during the scan: no PUT
+    let live = true;
+    const during: PictureScan = async () => { live = false; return { kind: 'clean' }; };
+    const sphere = fakeSphere({ image: realPng(128) });
+    expect(await setPicture(obid(), () => key, logo, during, sphere.http, { at: AT, live: () => live })).toMatchObject({ refused: 'failed', why: PICTURE_MOVED, image: null });
+    expect(sent(sphere)).toEqual([]);
+    // nor a DELETE once it changed
+    expect(await setPicture(obid(), () => key, null, during, sphere.http, { at: AT, live: () => false })).toMatchObject({ refused: 'failed', why: PICTURE_MOVED });
+    expect(sent(sphere)).toEqual([]);
+    // obid now in another Obysphere than the click chose (another server, the same id), or none then
+    for (const at of ['https://other.example.com/demo', null]) {
+      expect(await setPicture(obid(), () => key, logo, async () => ({ kind: 'clean' }), sphere.http, { at, live: () => true })).toMatchObject({ why: PICTURE_MOVED });
+      expect(sent(sphere)).toEqual([]);
+    }
+    expect(sphere.picture.image).toEqual(realPng(128));
+    // the one it chose, still: sent
+    expect(await setPicture(obid(), () => key, logo, async () => ({ kind: 'clean' }), sphere.http, { at: AT, live: () => true })).toMatchObject({ refused: null, at: AT });
+    expect(sent(sphere)).toHaveLength(1);
+  });
+
   it('sphereapp_16: only a whole PNG is handed on or sent, and the picture it had stays', async () => {
     const logo = realPng(256);
     expect(wholePng(logo)).toBe(256);
@@ -646,6 +670,30 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     expect(wholePng(realPng(256))).toBe(256);
     expect(inflate).toHaveBeenCalledTimes(1);
     expect(inflate.mock.calls[0][1]).toEqual({ maxOutputLength: 256 * 257 });
+  });
+
+  it('sphereapp_16: an owner’s image’s size is read from its header alone, a PNG’s IHDR or a JPEG’s frame header', () => {
+    expect(imageSize(realPng(256))).toEqual({ width: 256, height: 256 });
+    const huge = Buffer.from(realPng(128)); huge.writeUInt32BE(100_000, 16); huge.writeUInt32BE(30, 20);
+    expect(imageSize(huge)).toEqual({ width: 100_000, height: 30 });
+    // a first chunk that isn't IHDR, a side of 0, cut short
+    const notFirst = Buffer.from(realPng(128)); notFirst.write('tEXt', 12, 'latin1');
+    expect(imageSize(notFirst)).toBeNull();
+    const zero = Buffer.from(realPng(128)); zero.writeUInt32BE(0, 16);
+    expect(imageSize(zero)).toBeNull();
+    expect(imageSize(realPng(128).subarray(0, 23))).toBeNull();
+    // a JPEG: past an APP1 segment, fill bytes and a restart marker, a progressive frame (SOF2) says 9,000 × 7,000
+    const sof = (marker: number, w: number, h: number) => [0xff, marker, 0x00, 0x11, 0x08, h >> 8, h & 0xff, w >> 8, w & 0xff, 0x03, ...Array(9).fill(0)];
+    const jpeg = (...parts: number[][]) => new Uint8Array([0xff, 0xd8, ...parts.flat(), 0xff, 0xd9]);
+    const app1 = [0xff, 0xe1, 0x00, 0x08, ...'Exif\0\0'.split('').map((c) => c.charCodeAt(0))];
+    expect(imageSize(jpeg(app1, [0xff, 0xff], [0xff, 0xd0], sof(0xc2, 9000, 7000)))).toEqual({ width: 9000, height: 7000 });
+    expect(imageSize(jpeg(sof(0xc0, 640, 480)))).toEqual({ width: 640, height: 480 });
+    // a Huffman table (C4) isn't a frame; a scan before any frame, a height of 0 (DNL), a segment
+    // longer than the file, or no JPEG start: none
+    expect(imageSize(jpeg([0xff, 0xc4, 0x00, 0x02], [0xff, 0xda, 0x00, 0x02]))).toBeNull();
+    expect(imageSize(jpeg(sof(0xc0, 640, 0)))).toBeNull();
+    expect(imageSize(jpeg([0xff, 0xe0, 0xff, 0xff]))).toBeNull();
+    expect(imageSize(new Uint8Array([0x00, 0xd8, ...sof(0xc0, 640, 480)]))).toBeNull();
   });
 
   it('sphereapp_17_an_admin_removes_the_picture_and_a_member_can_t', async () => {

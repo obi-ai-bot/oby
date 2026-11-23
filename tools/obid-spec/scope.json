@@ -1946,6 +1946,8 @@
             "SPHEREAPP-15": "Electron main and Obysphere UI: the live Obysphere's picture, read from the Sphere (sphere.test.ts, sphereApp.test.tsx).",
             "SPHEREAPP-16": "Electron main and Obysphere UI: an admin sets the picture from main's own dialog (sphere.test.ts, sphereApp.test.tsx, ipc.test.ts).",
             "SPHEREAPP-17": "Electron main and Obysphere UI: an admin removes the picture; a member sees it read-only (sphere.test.ts, sphereApp.test.tsx, ipc.test.ts).",
+            "SPHEREAPP-18": "Electron main: the text Vision reads in an outgoing picture goes through the secret scan with its bytes (pictureText.test.ts, ipc.test.ts).",
+            "SPHEREAPP-19": "Electron main and Obysphere UI: a set or removal across a membership change is dropped (ipc.test.ts, sphereApp.test.tsx).",
             "SPHEREAPP-20": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",
             "SPHEREAPP-21": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx, ipc.test.ts, sphere.test.ts).",
             "SPHEREAPP-22": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",

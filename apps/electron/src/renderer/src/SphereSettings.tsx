@@ -16,7 +16,7 @@ import type { PictureAnswer, Policy, PolicyAnswer } from '../../shared/sphere';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
-import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, revokedLine, ruleWords, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
+import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, revokedLine, ruleWords, showPicture, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 import { JoinLink, useJoinLink } from './JoinLink';
 import InviteTeammates from './InviteTeammates';
 import { SoleAdmin, isSoleAdmin, useSphereAdmins } from './SphereAdmins';
@@ -101,8 +101,8 @@ function Settings({ sphere }: { sphere: Sphere }) {
   const livePicture = (change?: () => Promise<PictureAnswer | null>) => void change?.().then((a) => {
     if (!a) return;
     if (a.refused) return setPictureProblem(a.why);
+    if (!showPicture(a)) return;
     setPictureProblem(null);
-    updateSphere(sphere.id, { image: a.image ?? undefined });
     setSaved('avatar');
   }, () => setPictureProblem('Oby couldn’t reach your Obysphere.'));
   const pick = () => (sphere.live ? livePicture(window.app?.sphereSetPicture) : file.current?.click());

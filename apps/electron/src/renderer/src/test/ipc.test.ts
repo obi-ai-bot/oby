@@ -25,6 +25,14 @@ const the = vi.hoisted(() => ({
   // the file main's open dialog picks (none: Cancel), and the size its image decodes to
   pick: null as string | null,
   decoded: { width: 0, height: 0 },
+  // how many times an owner's image was decoded
+  decodes: 0,
+  // a set or removal held until it's let go (SPHEREAPP-19); the scan main handed the last one (SPHEREAPP-18)
+  holdSet: null as Promise<void> | null,
+  scan: null as ((png: Uint8Array) => Promise<unknown>) | null,
+  // what obid answers for its membership, when set (else `[]`); the membership the last set or removal was bound to
+  membership: null as Record<string, unknown> | null,
+  bound: null as { at: string | null; live: () => boolean } | null,
   // the last answer main's picture read was handed to keep
   lastPicture: undefined as unknown,
   // a picture read held until it's let go
@@ -72,7 +80,7 @@ vi.mock('electron', async () => {
     focus() {}
   }
   the.app = Object.assign(new EventEmitter(), {
-    isPackaged: false, commandLine: { hasSwitch: () => false, appendSwitch() {} }, getPath: () => the.userData, getVersion: () => '1.0.0',
+    isPackaged: false, commandLine: { hasSwitch: () => false, appendSwitch() {} }, getPath: () => the.userData, getAppPath: () => the.userData, getVersion: () => '1.0.0',
     enableSandbox() {}, whenReady: () => Promise.resolve(), setAsDefaultProtocolClient() {}, quit() {},
   });
   const capture = (kind: 'on' | 'handle') => (name: string, f: Handler) => { the.handlers.set(name, { kind, f }); };
@@ -90,10 +98,14 @@ vi.mock('electron', async () => {
     clipboard: { readText: () => '' },
     // the artifact preview's view and its partition (artifactPreview.ts): made only when an artifact first shows
     WebContentsView: class {}, session: { fromPartition: () => ({}) },
-    nativeImage: { createFromPath: () => {
-      const image = { isEmpty: () => false, getSize: () => the.decoded, crop: () => image, resize: () => image, toPNG: () => Buffer.alloc(40) };
-      return image;
-    } },
+    nativeImage: (() => {
+      const decode = () => {
+        the.decodes++;
+        const image = { isEmpty: () => false, getSize: () => the.decoded, crop: () => image, resize: () => image, toPNG: () => Buffer.alloc(40) };
+        return image;
+      };
+      return { createFromBuffer: decode, createFromPath: decode };
+    })(),
     shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
@@ -108,7 +120,10 @@ vi.mock('electron-updater', () => ({
 // obid's calls, counted; the event stream never answers
 vi.mock('../../../main/obid', async (original) => ({
   ...await original<typeof import('../../../main/obid')>(),
-  obid: async (...a: unknown[]) => { the.calls.push(a); return { status: 200, text: '[]' }; },
+  obid: async (...a: unknown[]) => {
+    the.calls.push(a);
+    return { status: 200, text: a[0] === 'GET' && a[1] === '/v1/obid/sphere' && the.membership ? JSON.stringify(the.membership) : '[]' };
+  },
   send: () => new Promise(() => {}),
   takesKeys: async () => false,
   chooseProfile: () => false, openedComputer: () => null, onComputer: () => {}, heardComputers: () => {},
@@ -151,9 +166,17 @@ vi.mock('../../../shared/sphere', async (original) => ({
     if (held) return { sphere: 'demo', sha256: 'b'.repeat(64), image: 'data:image/png;base64,NEW', refused: null, why: null };
     return { sphere: 'demo', sha256: null, image: null, refused: null, why: null };
   },
-  setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null) => { the.invites++; return { sphere: 'demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null }; },
+  setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null, scan: (png: Uint8Array) => Promise<unknown>, _h: unknown, bound: typeof the.bound) => {
+    the.invites++;
+    the.scan = scan;
+    the.bound = bound;
+    if (the.holdSet) await the.holdSet;
+    return { sphere: 'demo', at: 'https://sphere.example.com/demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null };
+  },
   centreSquare: () => ({ x: 0, y: 0, width: 1, height: 1 }), fitPicture: () => null,
   PICTURE_PIXELS: (await original<typeof import('../../../shared/sphere')>()).PICTURE_PIXELS,
+  PICTURE_SIDE_MAX: (await original<typeof import('../../../shared/sphere')>()).PICTURE_SIDE_MAX,
+  imageSize: (await original<typeof import('../../../shared/sphere')>()).imageSize,
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -700,18 +723,52 @@ describe('SPHEREAPP-16 and 17', () => {
     expect(the.invites).toBe(before.invites);
   });
 
-  it('sphereapp_16: an owner’s image that decodes past 8192 × 8192 pixels is refused before it’s resized or sent', async () => {
-    while (takeInput()) { /* other tests' */ }
+  // a PNG's first 33 bytes: its signature and an IHDR saying width × height, and nothing of an image
+  const pngHeader = (width: number, height: number) => {
+    const b = Buffer.alloc(33);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b);
+    b.writeUInt32BE(13, 8); b.write('IHDR', 12, 'latin1'); b.writeUInt32BE(width, 16); b.writeUInt32BE(height, 20);
+    b[24] = 8; b[25] = 6;
+    return b;
+  };
+  // a JPEG's start and a frame header (SOF0) saying width × height, after an APP0 segment
+  const jpegHeader = (width: number, height: number) => Buffer.from([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x03,
+    ...Array(9).fill(0), 0xff, 0xd9,
+  ]);
+  const picked = async (bytes: Buffer, name = 'picked.png') => {
     const dir = mkdtempSync(join(tmpdir(), 'oby-picture-'));
-    the.pick = join(dir, 'huge.png');
-    writeFileSync(the.pick, 'x');
-    the.decoded = { width: 9000, height: 9000 };
-    const before = the.invites;
+    the.pick = join(dir, name);
+    writeFileSync(the.pick, bytes);
+    const before = { invites: the.invites, decodes: the.decodes };
     try {
       input();
-      expect(await call('sphere-set-picture', own())).toMatchObject({ refused: 'failed', why: 'That image is too large. Pick one under 8,192 pixels a side.' });
-      expect(the.invites).toBe(before);
-    } finally { the.pick = null; the.decoded = { width: 0, height: 0 }; }
+      const a = await call('sphere-set-picture', own());
+      return { a, sent: the.invites - before.invites, decoded: the.decodes - before.decodes };
+    } finally { the.pick = null; }
+  };
+  const TOO_LARGE = { refused: 'failed', why: 'That image is too large. Pick one under 8,192 pixels a side.' };
+  const UNREADABLE = { refused: 'failed', why: 'Oby can’t read that image. Pick a PNG or JPEG.' };
+
+  it('sphereapp_16: an image whose header says it’s past 8192 × 8192 pixels is refused before anything decodes it', async () => {
+    while (takeInput()) { /* other tests' */ }
+    for (const huge of [pngHeader(100_000, 100_000), pngHeader(8193, 16), pngHeader(16, 8193), jpegHeader(65_000, 65_000), jpegHeader(9000, 100)]) {
+      expect(await picked(huge)).toEqual({ a: expect.objectContaining(TOO_LARGE), sent: 0, decoded: 0 });
+    }
+    // a header that can't be read, or isn't a PNG's or a JPEG's: refused, nothing decoded
+    for (const unreadable of [Buffer.from('x'), pngHeader(0, 0), pngHeader(64, 64).subarray(0, 20), Buffer.from('GIF89a\x40\x00\x40\x00'), jpegHeader(64, 64).subarray(0, 12)]) {
+      expect(await picked(unreadable)).toEqual({ a: expect.objectContaining(UNREADABLE), sent: 0, decoded: 0 });
+    }
+  });
+
+  it('sphereapp_16: an owner’s image that decodes past 8192 × 8192 pixels is refused before it’s resized or sent', async () => {
+    while (takeInput()) { /* other tests' */ }
+    // its header says 8192 a side, its decode more: held to it after decoding too
+    the.decoded = { width: 9000, height: 9000 };
+    try {
+      expect(await picked(pngHeader(8192, 8192))).toEqual({ a: expect.objectContaining(TOO_LARGE), sent: 0, decoded: 1 });
+      expect(await picked(jpegHeader(8192, 8192), 'picked.jpg')).toEqual({ a: expect.objectContaining(TOO_LARGE), sent: 0, decoded: 1 });
+    } finally { the.decoded = { width: 0, height: 0 }; }
   });
 
   it('sphereapp_15: the picture main kept is forgotten when the membership changes', async () => {
@@ -770,6 +827,66 @@ describe('SPHEREAPP-16 and 17', () => {
       const settled = await Promise.race([next, new Promise((ok) => setImmediate(() => ok('still waiting')))]);
       expect(settled).toMatchObject({ refused: null, image: 'data:image/png;base64,NEW' });
     } finally { the.holdRead = null; the.held = false; letGo(); }
+  });
+
+  it('sphereapp_19_a_set_or_removal_that_finishes_after_a_membership_change_never_puts_its_picture_back', async () => {
+    while (takeInput()) { /* other tests' */ }
+    let letGo = () => {};
+    the.holdSet = new Promise((r) => { letGo = r; });
+    try {
+      // a removal of the old Obysphere's picture is out; the owner leaves (or joins another) meanwhile
+      input();
+      const removing = call('sphere-remove-picture', own());
+      await call('sphere-leave', own());
+      letGo();
+      // its answer reaches neither the page nor what main keeps
+      expect(await removing).toBeNull();
+      the.holdSet = null;
+      await call('sphere-picture', own());
+      expect(the.lastPicture).toBeNull();
+      // one that finishes before any change is kept, as it was
+      input();
+      expect(await call('sphere-remove-picture', own())).toMatchObject({ refused: null, image: null, at: 'https://sphere.example.com/demo' });
+      await call('sphere-picture', own());
+      expect(the.lastPicture).toMatchObject({ refused: null, at: 'https://sphere.example.com/demo' });
+    } finally { the.holdSet = null; letGo(); }
+  });
+
+  it('sphereapp_19: a set or removal is bound to the Obysphere its click chose, and stops being when the membership changes', async () => {
+    while (takeInput()) { /* other tests' */ }
+    let letGo = () => {};
+    the.holdSet = new Promise((r) => { letGo = r; });
+    the.membership = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington' };
+    try {
+      input();
+      const removing = call('sphere-remove-picture', own());
+      await new Promise((r) => setImmediate(r));
+      // bound to the address and id obid said on the click, and still the one
+      expect(the.bound!.at).toBe('https://sphere.example.com/demo');
+      expect(the.bound!.live()).toBe(true);
+      // the owner leaves while it's out (its scan, say): setPicture's check before sending now fails
+      await call('sphere-leave', own());
+      expect(the.bound!.live()).toBe(false);
+      letGo();
+      expect(await removing).toBeNull();
+      // out of any Obysphere on the click: bound to none
+      the.membership = null;
+      the.holdSet = null;
+      input();
+      await call('sphere-remove-picture', own());
+      expect(the.bound).toMatchObject({ at: null });
+    } finally { the.holdSet = null; the.membership = null; letGo(); }
+  });
+
+  it('sphereapp_18: the picture main sends is scanned with the text read in it, and with no reader nothing goes', async () => {
+    while (takeInput()) { /* other tests' */ }
+    the.scan = null;
+    input();
+    await call('sphere-remove-picture', own());
+    // the scan main hands setPicture: here no oby-picture-text is staged (unpackaged, the app's
+    // build/helpers has none), so it can't run, whatever the bytes are
+    expect(the.scan).toBeTruthy();
+    expect(await the.scan!(new Uint8Array([1, 2, 3]))).toEqual({ kind: 'couldNotRun', why: 'the picture’s text reader isn’t there' });
   });
 
   it('sphereapp_17_the_picture_is_removed_only_right_after_a_click_main_saw', async () => {

@@ -583,6 +583,32 @@ describe('SPHEREAPP-15 to 17: the live Obysphere’s picture', () => {
     expect(avatar()!.getAttribute('src')).toBe(LOGO);
   });
 
+  it('sphereapp_19_a_set_or_removal_main_answers_for_another_obysphere_never_shows_on_this_one', async () => {
+    await settings(['wellington'], null);
+    // a set main answers for another server's Obysphere with the same id (one left meanwhile): nothing shows
+    sphereSetPicture.mockResolvedValueOnce(picture(LOGO, 'https://other.example.com/demo'));
+    await act(async () => (host.querySelector('[aria-label="Change avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(sphereSetPicture).toHaveBeenCalledTimes(1);
+    expect(avatar()).toBeNull();
+    expect(host.querySelector('.set-saved')).toBeNull();
+    // nor an answer of no Obysphere's
+    sphereSetPicture.mockResolvedValueOnce({ ...picture(LOGO), at: undefined });
+    await act(async () => (host.querySelector('[aria-label="Change avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(avatar()).toBeNull();
+    // this one's shows
+    sphereSetPicture.mockResolvedValueOnce(picture(LOGO));
+    await act(async () => (host.querySelector('[aria-label="Change avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+    // a removal answered for another one leaves this one's picture as it is
+    sphereRemovePicture.mockResolvedValueOnce(picture(null, 'https://other.example.com/demo'));
+    await act(async () => (host.querySelector('[aria-label="Remove avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+  });
+
   it('sphereapp_17_the_badge_removes_it_and_a_member_who_isn_t_admin_sees_it_read_only', async () => {
     await settings(['wellington'], LOGO);
     sphereRemovePicture.mockResolvedValueOnce(picture(null));
