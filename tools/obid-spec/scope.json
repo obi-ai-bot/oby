@@ -501,7 +501,8 @@
             "TASKCONV-36",
             "TASKCONV-37",
             "TASKCONV-41",
-            "TASKCONV-42"
+            "TASKCONV-42",
+            "TASKCONV-43"
           ],
           "elsewhere": {
             "TASKCONV-19": "not built: retired with `oby_shell`.",

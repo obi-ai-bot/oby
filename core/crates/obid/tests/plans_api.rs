@@ -1307,7 +1307,7 @@ fn words_from_a_task_page_join_its_conversation() {
     assert_eq!(oby["who"], "oby");
     assert_eq!(
         oby["text"],
-        "This one’s finished, so I started a follow-up. Claude Code has it in fixture-app on Stub."
+        "This one’s finished, so I started a follow-up. Claude Code has it in fixture-app, in Sandbox mode, on the account Stub."
     );
     assert_eq!(oby["jobs"], json!([next]));
     // Try again picks its own session up: no new job, so no files.
@@ -2986,6 +2986,60 @@ fn taskconv_42_a_card_is_said_to_wait_in_waiting_for_you() {
     );
     assert!(!text.to_lowercase().contains("inbox"), "{answer}");
     assert_eq!(items_of(&obid, "confirm").len(), 1);
+}
+
+/// TASKCONV-43: Oby's line that a follow-up started names its mode and labels its account as the
+/// start line does (TASKCONV-41), told on the task's page or in its conversation: an account named
+/// "Default" is never read as the mode.
+#[test]
+fn taskconv_43_a_follow_ups_line_names_the_mode_and_the_account() {
+    let folder = Folder::new("taskconv-43");
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness-jobs");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["agents"]["claude"]["accounts"][0]["name"] = json!("Default");
+    signed_in(&config);
+    let obid = start(&folder.0, &config, Some(harness.parent().unwrap()));
+    let answer = said_anew(
+        &obid,
+        r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"investigate","title":"Docs line","task":"Look around","mode":"ask"}"#,
+    );
+    let first = answer["jobs"][0]["id"].as_str().unwrap().to_owned();
+    let conversation = answer["conversation"].as_str().unwrap().to_owned();
+    let done = |id: &str| {
+        within(120, "the job is done", || {
+            (get_job(&obid, id)["status"] == "done").then_some(())
+        })
+    };
+    done(&first);
+    // Told on its page: Sangam's line, with the follow-up's mode and account.
+    let followed = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{first}/messages"),
+        Some(&json!({"text": "add one more line", "conversation": true})),
+    );
+    assert_eq!(followed.status, 201, "{}", followed.text);
+    assert_eq!(followed.body["mode"], "ask");
+    let next = followed.body["id"].as_str().unwrap().to_owned();
+    let turns = conversation_turns(&obid, &conversation);
+    assert_eq!(
+        turns.last().unwrap()["text"],
+        "This one’s finished, so I started a follow-up. Claude Code has it in fixture-app, in Ask mode, on the account Default."
+    );
+    done(&next);
+    // Told in its conversation: Oby's own line names them too.
+    let answer = said(
+        &obid,
+        &format!(r#"OBY oby_tell_job {{"id":"{next}","words":"and one more"}}"#),
+    );
+    let text = answer["text"].as_str().unwrap();
+    assert!(
+        text.contains(
+            "so I started a follow-up: Follow-up: Docs line. Claude Code has it in fixture-app, in Ask mode, on the account Default."
+        ),
+        "{text}"
+    );
 }
 
 /// TASKCONV-3: words to a finished task from its page start a follow-up in the same conversation,

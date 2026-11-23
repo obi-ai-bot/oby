@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
 import { ARCHIVE, GITHUB_WORK, JOBS } from './mock';
-import { agentOf, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './view';
+import { agentOf, hasAttachments, hasIt, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './view';
 import { modeLabel } from './modes';
 import { streamWords, wait } from './stream';
 import { chatFirst, everything, onObid } from './lean';
@@ -159,9 +159,8 @@ export function relay(id: string, text: string): { line: string; start?: () => s
   if (!k) return;
   const agent = agentOf(k.job.agent).name;
   if (k.status === 'done') {
-    const repo = k.job.repo.includes('/') ? ` in ${k.job.repo.split('/')[1]}` : '';
     return {
-      line: `This one’s finished, so I started a follow-up. ${agent} has it${repo} on ${k.job.account}.`,
+      line: `This one’s finished, so I started a follow-up. ${hasIt(k.job)}.`,
       start: () => { const next = addTask(text, k); return next ? [next] : undefined; },
     };
   }
