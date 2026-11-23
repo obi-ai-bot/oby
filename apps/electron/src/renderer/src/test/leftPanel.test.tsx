@@ -127,6 +127,8 @@ describe('what waits on the owner', () => {
       expect(lit(s.side(), 'Talk c-new')).toBe(false);
       expect(icon(s.side())).toBe(true);
       expect(s.stack()).toContain(words);
+      // its card carries the job's id (the human drive finds the task's own card by it)
+      expect(s.stack()).toMatch(/<article class="ask-card[^"]*"[^>]*data-task-ask="j"/);
     });
   }
 

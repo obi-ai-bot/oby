@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { api, type Project } from './obid';
-import { JOBS, MOCK_PROJECTS } from './mock';
+import { MOCK_PROJECTS } from './mock';
 import { onObid } from './lean';
 import { takesProjects, useLive } from './live';
 
@@ -65,12 +65,6 @@ export async function deleteProject(gone: Project) {
   if (onObid) await api.deleteProject(gone.id);
   set(list.filter((p) => p.id !== gone.id));
   void loadProjects();
-}
-
-// The repositories a project can take from GitHub: obid's (GET /v1/repos), or the mock's tasks'
-export async function reposToAdd(): Promise<string[]> {
-  if (!onObid) return [...new Set(JOBS.map((j) => j.repo).filter((r) => r.includes('/')))];
-  return (await api.repos()).repos.map((r) => r.repo);
 }
 
 // "1 repo", "3 repos"; none: nothing
