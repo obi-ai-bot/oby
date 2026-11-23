@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useBrowser } from './store';
 import { Pointer } from './Panel';
-import type { Tab } from './view';
+import { OWN_PARTITION, OWN_THREAD, type Tab } from './view';
 
 // The agents' pages, each a real <webview> in the window (docs/plans/browser-t3.md, W2), as T3 Code
 // hosts them (apps/web/src/browser/ElectronBrowserHost.tsx, BrowserSurfaceSlot.tsx): every agent
@@ -27,7 +27,7 @@ function useRect(key: string): Rect | null {
 /** where a tab's page goes, in the panel or across the window: its webview is drawn on it */
 export function Slot({ tab }: { tab: Tab }) {
   const el = useRef<HTMLDivElement>(null);
-  const key = tab.job ? tabKey(tab.job, tab.id) : '';
+  const key = tab.job ? tabKey(tab.job, tab.id) : tab.partition === OWN_PARTITION ? tabKey(OWN_THREAD, tab.id) : '';
   useLayoutEffect(() => {
     const node = el.current;
     if (!node || !key) return;
@@ -136,12 +136,49 @@ function Hosted({ job, tab }: { job: string; tab: Tab }) {
   );
 }
 
-/** Every agent tab's webview, mounted once at the app's root (main.tsx), in a fixed order. */
+/**
+ * An owner's own tab's page (BROWSERAPP-45): a real <webview> in the owner's partition, at the address
+ * they first opened; main keeps it as theirs (`browser-own`), never relays it to obid and draws no
+ * agent's pointer on it. Later addresses go through main (`browser-own-go`), never a re-render.
+ */
+function Owned({ tab }: { tab: Tab }) {
+  const key = tabKey(OWN_THREAD, tab.id);
+  const rect = useRect(key);
+  const ref = useRef<WebviewEl | null>(null);
+  const [src] = useState(() => tab.src ?? 'about:blank');
+  const browser = window.app?.browser;
+  useLayoutEffect(() => {
+    const w = ref.current;
+    if (!w || !browser?.own) return;
+    let done = false;
+    const attached = () => {
+      if (done) return;
+      let id: number;
+      try { id = w.getWebContentsId(); } catch { return; /* not attached yet: did-attach comes */ }
+      done = true;
+      void browser.own!(tab.id, id).then((why) => { if (why) console.warn(`The browser: ${why}`); });
+    };
+    attached();
+    w.addEventListener('did-attach', attached);
+    w.addEventListener('dom-ready', attached);
+    return () => { w.removeEventListener('did-attach', attached); w.removeEventListener('dom-ready', attached); };
+  }, [tab.id, browser]);
+  const place = rect ?? { left: -20_000, top: 0, width: 640, height: 720 };
+  return (
+    <div className="br-hosted" data-browser="webview" data-tab={tab.id} style={{ position: 'fixed', left: place.left, top: place.top, width: place.width, height: place.height }}>
+      <webview ref={(w) => { ref.current = w as WebviewEl | null; }} src={src} partition={OWN_PARTITION} style={{ width: '100%', height: '100%', display: 'flex' }} />
+    </div>
+  );
+}
+
+/** Every agent tab's webview, then each owner's own tab's, mounted once at the app's root (main.tsx), in a fixed order. */
 export function BrowserWebviews() {
   const { mode, s } = useBrowser();
   if (mode !== 'obid' || !window.app?.browser?.register) return null;
   const tabs = s.tabs
     .filter((t): t is Tab & { job: string; partition: string } => t.owner.kind === 'agent' && !!t.job && !!t.partition)
     .sort((a, b) => (tabKey(a.job, a.id) < tabKey(b.job, b.id) ? -1 : 1));
-  return <>{tabs.map((t) => <Hosted key={tabKey(t.job, t.id)} job={t.job} tab={t} />)}</>;
+  // the owner's own, in the order they were opened, once each has an address (a blank one has no page yet)
+  const own = s.tabs.filter((t) => t.owner.kind === 'you' && t.partition === OWN_PARTITION && !!t.src);
+  return <>{tabs.map((t) => <Hosted key={tabKey(t.job, t.id)} job={t.job} tab={t} />)}{own.map((t) => <Owned key={tabKey(OWN_THREAD, t.id)} tab={t} />)}</>;
 }

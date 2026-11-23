@@ -2,14 +2,14 @@
 // bar's row, the address, who has the tab, the page, and its downloads. It reads the store; its
 // buttons call the store's api, the same calls on the demo data and on obid. Moved from the lab
 // (tools/obid-spec/lab-ui/browser/src/browser.tsx) as it is.
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   ArrowLeft, ArrowRight, Bug, ClockAlert, Ellipsis, WifiOff, FileDown, Globe, Hand, KeyRound, Lock, Maximize2, Minimize2, Plus, RotateCw, Search, Server, ShieldAlert, X,
 } from 'lucide-react';
 import { Logo, Sheen, Status, agentName } from './pieces';
 import { useBrowser } from './store';
 import { Slot } from './Webviews';
-import { STOPPED, type NavOp, type Tab } from './view';
+import { OWN_PARTITION, STOPPED, type NavOp, type Tab } from './view';
 import { shown } from './live';
 
 export const YouMark = ({ label }: { label?: string }) => <span className="you-mark" aria-label={label} aria-hidden={label ? undefined : true}>Y</span>;
@@ -48,12 +48,15 @@ export function Tabs({ full, newTab = true, fullWidth = true, close = true, newT
             {t.owner.kind === 'agent' ? <Logo agent={t.owner.agent} size={14} alt={`${agentName(t.owner.agent)}’s`} /> : <YouMark label="Yours" />}
             <span className="br-tab-name">{t.title}</span>
             {dot && <Status dot={dot} />}
-            {on && t.closable !== false && <span className="br-tab-x"><X size={12} strokeWidth={2} /></span>}
+            {on && t.closable !== false && (t.partition === OWN_PARTITION
+              // an owner's own tab closes, its page with it (BROWSERAPP-48)
+              ? <span className="br-tab-x" role="button" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void api.close(t.id); }}><X size={12} strokeWidth={2} /></span>
+              : <span className="br-tab-x"><X size={12} strokeWidth={2} /></span>)}
           </button>
         );
       })}
       <div className="br-tabs-end">
-        {newTab && <button className="icon-button is-28" aria-label={newTabLabel}><Plus size={15} strokeWidth={1.6} /></button>}
+        {newTab && <button className="icon-button is-28" aria-label={newTabLabel} onClick={() => void api.newTab()}><Plus size={15} strokeWidth={1.6} /></button>}
         {fullWidth && (full
           ? <button className="icon-button is-28 is-on" aria-label="Back beside the conversation" aria-pressed="true" onClick={() => setUi({ full: false })}><Minimize2 size={14} strokeWidth={1.6} /></button>
           : <button className="icon-button is-28" aria-label="Full width" onClick={() => setUi({ full: true })}><Maximize2 size={14} strokeWidth={1.6} /></button>)}
@@ -67,6 +70,45 @@ export function Tabs({ full, newTab = true, fullWidth = true, close = true, newT
 export function Path({ url }: { url: string }) {
   const i = url.indexOf('/');
   return <span className="br-path"><b>{i < 0 ? url : url.slice(0, i)}</b>{i < 0 ? '' : url.slice(i)}</span>;
+}
+
+/**
+ * The address the owner types in (BROWSERAPP-45, 46), with no tab or on a tab of their own: Enter
+ * opens what they typed, made an address as T3 Code's bar makes it (address.ts), in that tab or a new
+ * one of theirs; Escape leaves it. Not editing, it shows the page's address (or **Type an address**);
+ * a blank tab's (New tab) is ready to type in. What isn't a web page marks the field, saying why.
+ */
+function AddressField({ tab, icon }: { tab?: Tab; icon: ReactNode }) {
+  const { api } = useBrowser();
+  const [draft, setDraft] = useState<string | null>(null);
+  const [why, setWhy] = useState<string | null>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const blank = !!tab && !tab.href;
+  useEffect(() => { setDraft(null); setWhy(null); if (blank) field.current?.focus(); }, [tab?.id, blank]);
+  const go = async () => {
+    const no = await api.open(draft ?? '', tab?.id);
+    setWhy(no);
+    if (!no) field.current?.blur();
+  };
+  return (
+    <label className={`br-address is-field${why ? ' is-warn' : ''}`} title={why ?? undefined}>
+      {icon}
+      <span className="br-field">
+        {draft === null && (tab?.url ? <Path url={tab.url} /> : <span className="br-path">Type an address</span>)}
+        <input
+          ref={field} className="br-input" aria-label="Address" aria-invalid={why ? true : undefined} spellCheck={false} autoComplete="off"
+          placeholder={draft === null ? undefined : 'Type an address'} value={draft ?? ''}
+          onFocus={(e) => { const el = e.currentTarget; setDraft(tab?.href ?? ''); requestAnimationFrame(() => el.select()); }}
+          onBlur={() => setDraft(null)}
+          onChange={(e) => { setDraft(e.currentTarget.value); setWhy(null); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); void go(); }
+            else if (e.key === 'Escape') { setWhy(null); e.currentTarget.blur(); }
+          }}
+        />
+      </span>
+    </label>
+  );
 }
 
 /**
@@ -93,7 +135,7 @@ export function Nav({ tab, set = 'full', back = true, warn, children }: { tab?: 
       {set === 'loading' && <button className="icon-button is-28" aria-label="Stop loading" onClick={nav('stop')}><X size={14} strokeWidth={1.6} /></button>}
       {(set === 'full' || set === 'three' || off) && <button className="icon-button is-28" aria-label="Forward" disabled={off || tab?.canGoForward !== true} onClick={nav('forward')}><ArrowRight size={16} strokeWidth={1.6} /></button>}
       {set !== 'loading' && <button className="icon-button is-28" aria-label="Reload" disabled={off} onClick={nav('reload')}><RotateCw size={15} strokeWidth={1.6} /></button>}
-      {tab ? <div className={`br-address${warn ? ' is-warn' : ''}`}>{address}</div> : <label className="br-address">{address}</label>}
+      {!tab || tab.partition === OWN_PARTITION ? <AddressField tab={tab} icon={icon} /> : <div className={`br-address${warn ? ' is-warn' : ''}`}>{address}</div>}
       {set === 'full' && <button className="icon-button is-28" aria-label="Page options"><Ellipsis size={16} strokeWidth={1.6} /></button>}
       {children}
     </div>

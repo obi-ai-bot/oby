@@ -3,8 +3,17 @@ import { basename, join } from 'node:path';
 import { app, session, webContents, type BrowserWindow, type Session, type WebContents } from 'electron';
 import { BOX_PROXY, partitionOk, type BoxCommand, type Guest, type RelayHost, type TabKey } from './browserRelay';
 export { PARTITION, partitionOk } from './browserRelay';
-import { pageOk } from './pageRule';
+import { appPage, pageOk } from './pageRule';
 export { pageOk } from './pageRule';
+
+// The owner's own tabs' partition (BROWSERAPP-45 to 48): theirs alone, never one obid names for an
+// agent (`partitionOk` refuses it), never a box's. Its webviews are kept by the page's tab id under
+// OWN_THREAD, in place of a job: never keyed to obid's tabs, never relayed, no debugger attached.
+import { OWN_PARTITION, OWN_THREAD } from '../shared/browser-own';
+export { OWN_PARTITION, OWN_THREAD } from '../shared/browser-own';
+/** an address the owner's own tab may open: a page of the web, never the app's own (BROWSERAPP-28's rule) */
+export const ownPageOk = (url: unknown): url is string => pageOk(url) && url !== 'about:blank' && !appPage(url);
+export const NOT_A_WEB_PAGE = 'Oby opens only web pages.';
 
 // Each agent tab's `<webview>` in the window, as T3 Code hosts them (apps/desktop/src/window/
 // DesktopWindow.ts, preview/Manager.ts; docs/plans/browser-t3.md): hardened when it attaches, in
@@ -43,7 +52,9 @@ export type NavState = { threadId: string; tabId: string; url: string; canGoBack
 // The webview's preferences, whatever the page asked for: sandboxed, no Node anywhere, no preload,
 // its partition checked (T3: DesktopWindow.ts:620-645)
 export function harden(prefs: Record<string, unknown>, params: { partition?: string; src?: string }): boolean {
-  if (!partitionOk(params.partition) || !pageOk(params.src)) return false;
+  const owners = params.partition === OWN_PARTITION;
+  if (!(owners || partitionOk(params.partition)) || !pageOk(params.src)) return false;
+  if (owners && !ownPageOk(params.src)) return false;
   delete prefs.preload;
   delete prefs.preloadURL;
   Object.assign(prefs, { sandbox: true, nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, webSecurity: true, allowRunningInsecureContent: false, disableHtmlFullscreenWindowResize: true });
@@ -305,10 +316,20 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
   // the address each webview's last main-frame load failed at, or its page crashed at, until a load
   // starts again: did-stop-loading after did-fail-load proves no page (T3: Manager.ts:1226-1231)
   const failedLoad = new Map<number, string>();
+  // the owner's own tabs' webviews, by webContents id: the page's tab id for each (BROWSERAPP-45)
+  const owned = new Map<number, string>();
+  const keyOf = (id: number): TabKey | undefined => keyed.get(id) ?? (owned.has(id) ? { threadId: OWN_THREAD, tabId: owned.get(id)! } : undefined);
+  // this window's webview for a tab: obid's by its job and tab, the owner's own under OWN_THREAD
+  const pageOf = (k: TabKey): WebContents | undefined => {
+    const ids = k.threadId === OWN_THREAD
+      ? [...owned].filter(([, tabId]) => tabId === k.tabId).map(([id]) => id)
+      : [...keyed].filter(([, t]) => t.threadId === k.threadId && t.tabId === k.tabId).map(([id]) => id);
+    return ids.map((id) => webContents.fromId(id)).filter((w): w is WebContents => !!w && !w.isDestroyed() && w.hostWebContents === win.webContents).at(-1);
+  };
   // a keyed tab's page state, from its own webContents (T3: Manager.ts:1185-1192, 1214-1257): its
   // address too, as obid's tab keeps the address of obid's own last command
   const told = (wc: WebContents) => {
-    const k = keyed.get(wc.id);
+    const k = keyOf(wc.id);
     if (!k || wc.isDestroyed()) return;
     report({ threadId: k.threadId, tabId: k.tabId, url: wc.getURL(), canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame(), failed: failedLoad.get(wc.id) ?? null });
   };
@@ -355,6 +376,7 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     wc.once('destroyed', () => {
       const k = keyed.get(wc.id);
       keyed.delete(wc.id);
+      owned.delete(wc.id);
       folders.delete(wc.id);
       failedLoad.delete(wc.id);
       if (k) { host.detach(k); host.forget(k); }
@@ -406,6 +428,7 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       if (!partition || !partitionOk(partition) || wc.session !== session.fromPartition(partition)) return 'Not the partition obid named for this tab.';
       const was = keyed.get(wc.id);
       if (was && (was.threadId !== k.threadId || was.tabId !== k.tabId)) return 'This page is already another tab’s.';
+      if (owned.has(wc.id)) return 'This page is the owner’s own tab.';
       keyed.set(wc.id, k);
       told(wc);
       attach(wc, k);
@@ -413,17 +436,36 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     },
     shown: (k: TabKey, shown: boolean) => host.shown(k, shown),
     /**
+     * The page mounted a webview for an owner's own tab (BROWSERAPP-45): kept as theirs when it's this
+     * window's and in the owner's partition, never keyed to obid's tab, never relayed, no debugger.
+     * null once kept, else why not.
+     */
+    own(tabId: string, webContentsId: number): string | null {
+      const wc = webContents.fromId(webContentsId);
+      if (!tabId || !wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== win.webContents) return 'Not one of this window’s pages.';
+      if (keyed.has(wc.id) || wc.session !== session.fromPartition(OWN_PARTITION)) return 'Not the owner’s own tab.';
+      const was = owned.get(wc.id);
+      if (was !== undefined && was !== tabId) return 'This page is already another tab’s.';
+      owned.set(wc.id, tabId);
+      told(wc);
+      return null;
+    },
+    /** the owner's own tab to the address they typed (BROWSERAPP-46): a web page only, by its own webContents; null once it goes, else why not */
+    go(tabId: string, url: string): string | null {
+      if (!ownPageOk(url)) return NOT_A_WEB_PAGE;
+      const wc = pageOf({ threadId: OWN_THREAD, tabId });
+      if (!wc) return 'This tab has no page in this window.';
+      // a load that fails is told as any is (did-fail-load): the page's own state
+      wc.loadURL(url).catch(() => undefined);
+      return null;
+    },
+    /**
      * The owner's Back, Forward, Reload or Stop loading, on that tab's own webContents in this window
      * (T3: Manager.ts:2213-2232): never through the debugger, the relay or obid, as Electron's
      * debugger would reload the embedder (T3: GuestInput.ts:182-191). null once done, else why not.
      */
     async nav(k: TabKey, op: NavOp): Promise<string | null> {
-      let wc: WebContents | undefined;
-      for (const [id, t] of keyed) {
-        if (t.threadId !== k.threadId || t.tabId !== k.tabId) continue;
-        const w = webContents.fromId(id);
-        if (w && !w.isDestroyed() && w.hostWebContents === win.webContents) wc = w;
-      }
+      const wc = pageOf(k);
       if (!wc) return 'This tab has no page in this window.';
       try {
         if (op !== 'stop') await leaveBusyPage(wc);

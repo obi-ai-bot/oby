@@ -119,6 +119,12 @@ export function browsing(trusted: Trusted, page: Page) {
   // unsigned and with no obid call (browserGuest.ts, BROWSERAPP-30 to 35); null once done, else why not
   channels.handle('browser-nav', [string, string, oneOf('back', 'forward', 'reload', 'stop')], (_e, threadId, tabId, op) =>
     webviews ? webviews.nav({ threadId, tabId }, op) : 'The window isn’t up yet.', 'Not this app’s page.');
+  // an owner's own tab's webview: main keeps it as theirs, never relayed (browserGuest.ts, BROWSERAPP-45); null once kept
+  channels.handle('browser-own', [string, safeInteger], (_e, tabId, webContentsId) =>
+    webviews ? webviews.own(tabId, webContentsId) : 'The window isn’t up yet.', 'Not this app’s page.');
+  // the owner's own tab to the address they typed, a web page only, unsigned and with no obid call (BROWSERAPP-46)
+  channels.handle('browser-own-go', [string, string], (_e, tabId, url) =>
+    webviews ? webviews.go(tabId, url) : 'The window isn’t up yet.', 'Not this app’s page.');
   // a password or code into the page's field, on the owner's press of Fill in (device.ts, BROWSERAPP-12)
   channels.handle('browser-fill', [string, string, string, string, flag], (_e, tab, field, value, ask, clicked) =>
     fillSecret(tab, field, value, ask || undefined, clicked), 'Not this app’s page.');

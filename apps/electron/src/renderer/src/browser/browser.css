@@ -81,6 +81,12 @@
 .br-address .br-where b { font-weight: 500; }
 .br-address.is-warn { border-color: rgba(255, 69, 58, 0.5); }
 .br-address.is-warn > svg:first-child { color: var(--over); }
+/* the owner's own address (BROWSERAPP-45, 46): the field over the address it shows, typed in when focused */
+.br-address .br-field { position: relative; flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; }
+.br-address .br-input { position: absolute; inset: 0; width: 100%; margin: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; }
+.br-address .br-input::placeholder { color: var(--muted); }
+.br-address.is-field { cursor: text; }
+.br-address.is-field:focus-within:not(.is-warn) { border-color: var(--bar-on); }
 .br-loading { position: absolute; left: 0; bottom: -1px; height: 2px; width: 42%; border-radius: 1px; background: var(--bar-on); }
 /* who has the tab: T3 Code's control bar, in Oby's words */
 .br-control { position: relative; flex: none; min-height: 40px; padding: 4px 8px 4px 14px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--divider); border-bottom: 1px solid var(--divider); color: var(--text); font-size: var(--text-md); }
@@ -95,6 +101,19 @@
 .br-view.is-held { box-shadow: inset 0 0 0 2px var(--unread); }
 .br-view.is-dark-page { background: #0f1115; }
 .br-view.is-blank { background: var(--bg); }
+/* the agents' local servers, with no page (BROWSERAPP-47): T3 Code's discovery list */
+.br-servers { max-width: 560px; margin: 0 auto; padding: 32px 20px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.br-servers-head { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-md); font-weight: 500; }
+.br-servers-list { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.br-server { width: 100%; padding: 12px; display: flex; align-items: center; gap: 12px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.br-server + .br-server { border-top: 1px solid var(--divider); }
+.br-server:hover { background: var(--fill-1); }
+.br-server:focus-visible { outline: 2px solid var(--bar-on); outline-offset: -2px; }
+.br-server-icon { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: var(--fill-2); color: var(--muted); }
+.br-server-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.br-server-title { overflow: hidden; color: var(--ink); font-size: var(--text-md); font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
+.br-server-about { overflow: hidden; color: var(--muted); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.br-servers-foot { margin: 0; padding: 0 4px; color: var(--muted); font-size: 12px; }
 /* the agent's pointer: T3 Code's (lucide mouse-pointer-2), with what it's doing beside it */
 .agent-pointer { position: absolute; z-index: 20; pointer-events: none; }
 .agent-pointer > svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); }

@@ -94,6 +94,10 @@ declare global {
         // the owner's Back, Forward, Reload or Stop loading on a tab's own page, by main (BROWSERAPP-30 to 35): null once done
         nav(threadId: string, tabId: string, op: 'back' | 'forward' | 'reload' | 'stop'): Promise<string | null>;
         navState(fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => void): () => void;
+        // an owner's own tab's <webview>, kept by main as the owner's, never relayed (BROWSERAPP-45): null once kept
+        own?(tabId: string, webContentsId: number): Promise<string | null>;
+        // the owner's own tab to an address they typed, by main, a web page only (BROWSERAPP-46): null once it goes
+        go?(tabId: string, url: string): Promise<string | null>;
         // Show in Finder for a download in Downloads, by its name (BROWSERAPP-16)
         reveal(name: string): Promise<boolean>;
       };

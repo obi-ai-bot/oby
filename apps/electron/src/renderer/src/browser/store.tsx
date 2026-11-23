@@ -8,9 +8,10 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { BROWSER_DEFAULT_SETTINGS } from '../../../shared/obid-wire';
 import { everything, onObid } from '../lean';
-import type { BrowserApi, BrowserState, Tab } from './view';
+import { OWN_PARTITION, OWN_THREAD, type BrowserApi, type BrowserState, type Tab } from './view';
 import { demoBoard } from './demo';
-import { connectLive, type Live } from './live';
+import { connectLive, shown, type Live, type PageState } from './live';
+import { NotAnAddress, resolveAddress } from './address';
 import { focusPage } from './Webviews';
 import { closeChanges, useChangesOpen } from '../ChangesPanel';
 
@@ -59,8 +60,28 @@ const EMPTY: BrowserState = { tabs: [], active: null, asks: [], downloads: [], s
 // outside a BrowserProvider (a screen drawn on its own, in a test): no browser offered
 const OFF: Browser = {
   offered: false, mode: 'obid', s: EMPTY, ui: { ...UI0, open: false }, setUi: () => undefined, peek: null, active: undefined,
-  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE, nav: NONE },
+  api: { take: NONE, giveBack: NONE, secret: NONE, answer: NONE, saveCopy: NONE, reveal: NONE, setSettings: NONE, select: NONE, stopMac: NONE, answerMac: NONE, nav: NONE, open: async () => null, newTab: NONE, close: NONE },
 };
+
+/**
+ * An owner's own tab (BROWSERAPP-45 to 48), the window's alone: what it first opened (none while
+ * blank, before its webview mounts) and main's last word on its page (`browser-nav-state`, keyed by
+ * OWN_THREAD). Never sent to obid.
+ */
+type Own = { id: string; src: string | null; page: PageState | null };
+let owns = 0;
+const ownId = () => `own-${Date.now().toString(36)}-${++owns}`;
+/** an owner's own tab as the panel draws it: a Y, its page's host for a title, its address as main says it */
+function ownTab(o: Own): Tab {
+  const at = o.page?.url || o.src || '';
+  const failed = o.page && !o.page.loading ? o.page.failed : null;
+  return {
+    id: o.id, owner: { kind: 'you' }, partition: OWN_PARTITION, src: o.src ?? undefined, href: at || undefined,
+    title: at ? shown(at).split('/')[0] : 'New tab', url: at ? shown(at) : '', secure: at.startsWith('https:'),
+    state: failed ? 'failed' : 'ready', failedAt: failed ?? undefined, holder: null,
+    canGoBack: o.page?.canGoBack ?? false, canGoForward: o.page?.canGoForward ?? false, pageLoading: o.page?.loading ?? false,
+  };
+}
 const Ctx = createContext<Browser>(OFF);
 export const useBrowser = () => useContext(Ctx);
 
@@ -74,6 +95,10 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
   const [ui, setUiState] = useState<Ui>({ ...UI0, ...(demo ? demo.ui : { open: false }) });
   const setUi = (u: Partial<Ui>) => setUiState((o) => ({ ...o, ...u }));
   const [offered, setOffered] = useState(false);
+  // the owner's own tabs, after obid's in the row
+  const [own, setOwn] = useState<Own[]>([]);
+  const ownNow = useRef(own);
+  ownNow.current = own;
   const conn = useRef<Live | null>(null);
   // the latest state, for calls made from the api below (made once per mode)
   const latest = useRef(s);
@@ -91,7 +116,9 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
     const c = connectLive({
       offered: setOffered,
       // the tab shown stays the one you chose while it's there
-      state: (next) => setS((o) => ({ ...next, active: o.active && next.tabs.some((t) => t.id === o.active) ? o.active : next.active })),
+      state: (next) => setS((o) => ({ ...next, active: o.active && (next.tabs.some((t) => t.id === o.active) || ownNow.current.some((t) => t.id === o.active)) ? o.active : next.active })),
+      // main's word on an owner's own tab's page: its address, behind, ahead, loading, failed
+      own: (p) => setOwn((o) => o.map((t) => (t.id === p.tabId ? { ...t, page: p } : t))),
       problem: (why) => { if (why) console.warn(`The browser: ${why}`); },
     }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask), navState: (fn) => browser.navState(fn) });
     conn.current = c;
@@ -124,10 +151,33 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
         select: async (t) => setS((o) => ({ ...o, active: t })),
         // Back, Forward, Reload, Stop loading: main moves the tab's own page, unsigned (BROWSERAPP-30 to 35)
         nav: async (t, op) => {
-          const job = latest.current.tabs.find((x) => x.id === t)?.job;
-          if (!job) return;
+          const job = ownNow.current.some((x) => x.id === t) ? OWN_THREAD : latest.current.tabs.find((x) => x.id === t)?.job;
+          if (job === undefined) return;
           const why = await window.app?.browser?.nav(job, t, op);
           if (why) console.warn(`The browser: ${why}`);
+        },
+        // the address bar's words in the owner's own tab, made an address as T3 Code's are: a blank
+        // tab's webview mounts at it, a tab with a page goes there through main (BROWSERAPP-45, 46)
+        open: async (words, t) => {
+          let url: string;
+          try { url = resolveAddress(words); } catch (e) { return e instanceof NotAnAddress ? e.message : String(e); }
+          const tab = t === undefined ? undefined : ownNow.current.find((x) => x.id === t);
+          if (tab?.src) return (await window.app?.browser?.go?.(tab.id, url)) ?? null;
+          const id = tab?.id ?? ownId();
+          setOwn((o) => (tab ? o.map((x) => (x.id === id ? { ...x, src: url } : x)) : [...o, { id, src: url, page: null }]));
+          setS((o) => ({ ...o, active: id }));
+          return null;
+        },
+        newTab: async () => {
+          const id = ownId();
+          setOwn((o) => [...o, { id, src: null, page: null }]);
+          setS((o) => ({ ...o, active: id }));
+        },
+        // its webview goes with it; the tab shown next is the one before it, else obid's first
+        close: async (t) => {
+          const left = ownNow.current.filter((x) => x.id !== t);
+          setOwn(left);
+          setS((o) => (o.active === t ? { ...o, active: left.at(-1)?.id ?? o.tabs[0]?.id ?? null } : o));
         },
       };
     }
@@ -148,12 +198,15 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       setSettings: async (x) => setS((o) => ({ ...o, settings: { ...o.settings, ...x } })),
       select: async (id) => setS((o) => ({ ...o, active: id })),
       nav: NONE,
+      // the owner's own tabs are pages of the window's, on obid only
+      open: async () => null, newTab: NONE, close: NONE,
     };
   }, [onLive]);
 
+  const shownState = own.length ? { ...s, tabs: [...s.tabs, ...own.map(ownTab)] } : s;
   const browser: Browser = {
-    offered: !!demo || (onLive && offered), mode: onLive ? 'obid' : 'demo', s, ui, setUi, api, peek: demo?.peek ?? null,
-    active: s.tabs.find((t) => t.id === s.active),
+    offered: !!demo || (onLive && offered), mode: onLive ? 'obid' : 'demo', s: shownState, ui, setUi, api, peek: demo?.peek ?? null,
+    active: shownState.tabs.find((t) => t.id === s.active),
   };
   return <Ctx.Provider value={browser}>{children}</Ctx.Provider>;
 }
