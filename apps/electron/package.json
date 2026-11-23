@@ -19,6 +19,7 @@
     "test:sphere-join": "jiti scripts/test-sphere-join.mjs",
     "test:core": "node scripts/test-core.mjs",
     "test:artifacts": "node scripts/test-artifacts.mjs",
+    "test:artifacts-design": "node scripts/test-artifacts-design.mjs",
     "test:chat-first": "node scripts/test-chat-first.mjs",
     "test:live-task": "node scripts/test-live-task.mjs",
     "drive": "node scripts/human-drive.mjs",

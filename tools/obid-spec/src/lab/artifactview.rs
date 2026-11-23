@@ -6,7 +6,7 @@
 //!
 //! 1. **The core** (pure, no IO, no clock): what a version serves to a view ([`serve`]): its files
 //!    under obid's artifact CSP, and for a `design` Oby's own runtime of the `.dc.html` format
-//!    (`lab-ui/artifacts/runtime/dc-runtime.js`, written from the format alone, on React 18.3.1
+//!    (`core/assets/oby-dc/dc-runtime.js`, obid's own since the port plan's P4, written from the format alone, on React 18.3.1
 //!    vendored, no Babel, no CDN) as `support.js`, every board's template and logic beside it
 //!    (`__dc/`), and the canvas host (`__canvas.html`), built for the version and never stored;
 //!    which requests and navigations a view may make ([`navigation`]: the version's own files only,
@@ -19,6 +19,12 @@
 //!    version), the artifact tabs' routes beside it, chrome-headless-shell driven over the
 //!    DevTools protocol (the lab's pinned one), with the app's navigation rule applied to every
 //!    request, and `oby_artifact_check` on an agent's folder.
+//!
+//! Pointed at obid (`lab.artifactview.up` with `obid`, a scratch obid's obid-start output), the
+//! view server serves no version of its own: each `<id>-v<n>.localhost:<port>/<path>` is obid's
+//! `GET /v1/artifacts/<id>/<n>/<path>` with its token, its status, type and policy passed through
+//! as they are, as the app's `oby-artifact://<id>-v<n>/` protocol will (the port plan's P4 and P7).
+//! Then what draws is obid's: its runtime, its policy, its canvas host.
 //!
 //! Each rule can be switched off, one at a time, only to watch its workflow go red:
 //! `OBID_SPEC_LAB_ARTIFACTVIEW_BREAK=runtime,csp,…` ([`Rules::broken`]). obid keeps [`Rules::ALL`].
@@ -104,11 +110,10 @@ const CLAUDE_POLICY: &str = "default-src 'self' data: blob:; script-src 'self' '
 /// which still loads nothing but the version's files and fetches nothing.
 pub const HOST_POLICY: &str = "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; frame-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
-const REACT: &str = include_str!("../../lab-ui/artifacts/runtime/vendor/react.production.min.js");
-const REACT_DOM: &str =
-    include_str!("../../lab-ui/artifacts/runtime/vendor/react-dom.production.min.js");
-const RUNTIME: &str = include_str!("../../lab-ui/artifacts/runtime/dc-runtime.js");
-const CANVAS: &str = include_str!("../../lab-ui/artifacts/runtime/canvas.html");
+const REACT: &str = include_str!("../../../../core/assets/oby-dc/react.production.min.js");
+const REACT_DOM: &str = include_str!("../../../../core/assets/oby-dc/react-dom.production.min.js");
+const RUNTIME: &str = include_str!("../../../../core/assets/oby-dc/dc-runtime.js");
+const CANVAS: &str = include_str!("../../../../core/assets/oby-dc/canvas.html");
 
 /// A board's parts, as its file has them: the template inside `<x-dc>` (its `<helmet>`s taken
 /// out), the helmets' insides, its logic (`<script type="text/x-dc" data-dc-script>`), and the
@@ -232,10 +237,9 @@ pub fn support_js(rules: &Rules) -> String {
 /// `__canvas.html`: the canvas host with this version's `canvas.json` in it, as data a script
 /// reads (`</` can't end the block early).
 pub fn canvas_html(canvas: &Value) -> String {
-    let data = canvas
-        .to_string()
-        .replace("</", "<\\/")
-        .replace("<!--", "<\\!--");
+    // every `<` written `\u003c` (only ever inside a JSON string): nothing ends or opens in the
+    // block, and JSON.parse reads it back as it was
+    let data = canvas.to_string().replace('<', "\\u003c");
     CANVAS.replace("{{CANVAS_JSON}}", &data)
 }
 
@@ -468,7 +472,7 @@ impl ArtifactTabs {
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
 pub const NODES: &[(&str, &str)] = &[
-    ("lab.artifactview.up", "Starts the view server on 127.0.0.1 (a free port) over the artifacts' store (`artifacts`: a lab.artifacts.up step's output): each version is the origin <id>-v<n>.localhost:<port>, and the artifact tabs' routes answer on 127.0.0.1:<port>. {port, token, api}. One per workflow."),
+    ("lab.artifactview.up", "Starts the view server on 127.0.0.1 (a free port) over the artifacts' store (`artifacts`: a lab.artifacts.up step's output): each version is the origin <id>-v<n>.localhost:<port>, and the artifact tabs' routes answer on 127.0.0.1:<port>. With `obid` (a scratch obid's obid-start output) instead, every file of a version's origin is obid's own GET /v1/artifacts/<id>/<n>/<path>, its status, type and policy as obid sends them, as the app's oby-artifact:// protocol passes them. {port, token, api}. One per workflow."),
     ("lab.artifactview.device", "Registers a new device key of the owner's with the view server: {id, key, publicKey}."),
     ("lab.artifactview.url", "The address a version's file has in the view (`id`, `version`, `path`; `check` for a check's folder): {url, origin}."),
     ("lab.artifactview.render", "Opens a view's file in chrome-headless-shell at `width`×`height` (the page `name`, default main), the app's navigation rule on every request, waits until it is drawn (`ready`: a script; by default the runtime's or the canvas host's), and saves a picture: {ready, errors, console, size, fits (against `within`), picture, url}. Skipped without chrome-headless-shell."),
@@ -529,6 +533,8 @@ struct View {
     tabs: ArtifactTabs,
     /// Each version served so far, and each check's folder, by its host's label.
     mounts: HashMap<String, Arc<Mount>>,
+    /// A scratch obid (its obid-start output) that serves every version instead (OBIDSPEC-16).
+    obid: Option<Value>,
 }
 
 impl View {
@@ -854,6 +860,93 @@ fn handle(view: &Mutex<View>, req: &Request, port: u16) -> Answer {
     }
 }
 
+/// A version's file as obid serves it (`GET /v1/artifacts/<id>/<n>/<path>` with its token): its
+/// status, and its type, policy and the headers a view reads, passed through as they are.
+async fn from_obid(obid: &Value, label: &str, path: &str) -> Answer {
+    let not_found = || refused(Refused::new(404, "not_found", "There's no such file."));
+    let Some((id, n)) = label.rsplit_once("-v") else {
+        return not_found();
+    };
+    let (Some(base), Some(token)) = (obid["base"].as_str(), obid["token"].as_str()) else {
+        return not_found();
+    };
+    let Ok(address) = crate::http::loopback(base) else {
+        return not_found();
+    };
+    let target = format!("/v1/artifacts/{id}/{n}/{}", path.trim_start_matches('/'));
+    let fetched = async {
+        let mut conn = tokio::net::TcpStream::connect(&address).await?;
+        let head = format!(
+            "GET {target} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        );
+        conn.write_all(head.as_bytes()).await?;
+        let mut raw = Vec::new();
+        tokio::time::timeout(Duration::from_secs(60), conn.read_to_end(&mut raw)).await??;
+        anyhow::Ok(raw)
+    }
+    .await;
+    let Ok(raw) = fetched else {
+        return not_found();
+    };
+    let Some(split) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return not_found();
+    };
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let mut lines = head.split("\r\n");
+    let status = lines
+        .next()
+        .and_then(|l| l.split(' ').nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(502);
+    let all: Vec<(String, String)> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    let mut body = raw[split + 4..].to_vec();
+    if all
+        .iter()
+        .any(|(k, v)| k == "transfer-encoding" && v.contains("chunked"))
+    {
+        let mut out = Vec::new();
+        let mut rest = body.as_slice();
+        while let Some(line) = rest.windows(2).position(|w| w == b"\r\n") {
+            let size = std::str::from_utf8(&rest[..line])
+                .ok()
+                .and_then(|t| usize::from_str_radix(t.trim(), 16).ok())
+                .unwrap_or(0);
+            if size == 0 || rest.len() < line + 2 + size {
+                break;
+            }
+            out.extend_from_slice(&rest[line + 2..line + 2 + size]);
+            rest = &rest[(line + 4 + size).min(rest.len())..];
+        }
+        body = out;
+    }
+    let passed = [
+        "content-type",
+        "content-security-policy",
+        "x-content-type-options",
+        "referrer-policy",
+        "access-control-allow-origin",
+    ];
+    Answer {
+        status,
+        headers: all
+            .into_iter()
+            .filter(|(k, _)| passed.contains(&k.as_str()))
+            .collect(),
+        body,
+    }
+}
+
+/// The host's label (`<id>-v<n>`) of a view's request, when it names one.
+fn label_in(req: &Request, port: u16) -> Option<String> {
+    req.headers
+        .get("host")?
+        .strip_suffix(&format!(".localhost:{port}"))
+        .map(str::to_string)
+}
+
 async fn serve_loop(listener: tokio::net::TcpListener, view: Arc<Mutex<View>>, port: u16) {
     loop {
         let Ok((mut conn, _)) = listener.accept().await else {
@@ -864,6 +957,16 @@ async fn serve_loop(listener: tokio::net::TcpListener, view: Arc<Mutex<View>>, p
             let Ok(req) = read_request(&mut conn).await else {
                 return;
             };
+            let obid = view.lock().unwrap().obid.clone();
+            if let (Some(obid), Some(label)) = (obid, label_in(&req, port)) {
+                let answer = if req.method == "GET" {
+                    from_obid(&obid, &label, &req.path).await
+                } else {
+                    refused(Refused::new(404, "not_found", "A view only reads."))
+                };
+                write_answer(&mut conn, answer).await;
+                return;
+            }
             let Ok(answer) = tokio::task::spawn_blocking(move || handle(&view, &req, port)).await
             else {
                 return;
@@ -873,7 +976,7 @@ async fn serve_loop(listener: tokio::net::TcpListener, view: Arc<Mutex<View>>, p
     }
 }
 
-async fn start(store_dir: PathBuf, tabs_file: PathBuf) -> Result<Value> {
+async fn start(store_dir: PathBuf, tabs_file: PathBuf, obid: Option<Value>) -> Result<Value> {
     let rules = rules_here();
     let tabs = if rules.persist {
         std::fs::read(&tabs_file)
@@ -892,6 +995,7 @@ async fn start(store_dir: PathBuf, tabs_file: PathBuf) -> Result<Value> {
         words: store::Words::default(),
         tabs,
         mounts: HashMap::new(),
+        obid,
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -900,10 +1004,21 @@ async fn start(store_dir: PathBuf, tabs_file: PathBuf) -> Result<Value> {
     Ok(json!({"port": port, "token": token, "api": {"port": port, "token": token}}))
 }
 
-async fn up(input: &Value) -> Result<Value> {
+async fn up(run: &Run, input: &Value) -> Result<Value> {
     if let Ok((v, port)) = view() {
         let token = v.lock().unwrap().token.clone();
         return Ok(json!({"port": port, "token": token, "api": {"port": port, "token": token}}));
+    }
+    // Pointed at a scratch obid: it serves every version; its tabs aren't this server's.
+    if input.get("obid").is_some_and(Value::is_object) {
+        let dir = run.scratch.join("artifactview-obid");
+        crate::obid::private_dir(&dir)?;
+        return start(
+            dir.join("store"),
+            dir.join("artifact-tabs.json"),
+            Some(input["obid"].clone()),
+        )
+        .await;
     }
     let home = PathBuf::from(
         input["artifacts"]["home"]
@@ -912,7 +1027,12 @@ async fn up(input: &Value) -> Result<Value> {
     );
     let browser = home.join("browser");
     crate::obid::private_dir(&browser)?;
-    start(home.join("artifacts"), browser.join("artifact-tabs.json")).await
+    start(
+        home.join("artifacts"),
+        browser.join("artifact-tabs.json"),
+        None,
+    )
+    .await
 }
 
 async fn stop_server() -> bool {
@@ -928,13 +1048,13 @@ async fn stop_server() -> bool {
 }
 
 async fn restart() -> Result<Value> {
-    let (store_dir, tabs_file) = {
+    let (store_dir, tabs_file, obid) = {
         let (v, _) = view()?;
         let v = v.lock().unwrap();
-        (v.store.clone(), v.tabs_file.clone())
+        (v.store.clone(), v.tabs_file.clone(), v.obid.clone())
     };
     stop_server().await;
-    start(store_dir, tabs_file).await
+    start(store_dir, tabs_file, obid).await
 }
 
 // ── Chrome over the DevTools protocol ───────────────────────────────────────────────────────
@@ -1711,7 +1831,7 @@ pub async fn run_node(run: &Run, name: &str, input: &Value) -> Result<Value> {
 
 async fn run_once(run: &Run, name: &str, input: &Value) -> Result<Value> {
     match name {
-        "lab.artifactview.up" => up(input).await,
+        "lab.artifactview.up" => up(run, input).await,
         "lab.artifactview.device" => {
             let (v, _) = view()?;
             let key = crate::keys::DeviceKey::generate();
