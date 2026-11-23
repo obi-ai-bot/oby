@@ -8,6 +8,7 @@ import {
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
+import { partitionOk } from '../../../shared/browser-own';
 import { OWN_THREAD, STOPPED, type AgentId, type BrowserState, type Download, type Tab } from './view';
 
 export type Live = {
@@ -103,7 +104,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         owner: t.owner.kind === 'agent' ? { kind: 'agent', agent: agentOf(t.owner.agent) } : { kind: 'you' },
         job: t.owner.kind === 'agent' ? t.owner.job : undefined,
         src: t.url,
-        partition: t.partition,
+        // only an agent's partition shapes: never the owner's own, whatever obid names (BROWSERAPP-24)
+        partition: t.owner.kind === 'agent' && partitionOk(t.partition) ? t.partition : undefined,
         title: t.title || shown(t.url),
         url: shown(at),
         secure: at.startsWith('https:'),

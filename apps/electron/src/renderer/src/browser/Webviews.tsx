@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useBrowser } from './store';
 import { Pointer } from './Panel';
-import { OWN_PARTITION, OWN_THREAD, type Tab } from './view';
+import { OWN_THREAD, isOwn, partitionOk, type Tab } from './view';
 
 // The agents' pages, each a real <webview> in the window (docs/plans/browser-t3.md, W2), as T3 Code
 // hosts them (apps/web/src/browser/ElectronBrowserHost.tsx, BrowserSurfaceSlot.tsx): every agent
@@ -27,7 +27,7 @@ function useRect(key: string): Rect | null {
 /** where a tab's page goes, in the panel or across the window: its webview is drawn on it */
 export function Slot({ tab }: { tab: Tab }) {
   const el = useRef<HTMLDivElement>(null);
-  const key = tab.job ? tabKey(tab.job, tab.id) : tab.partition === OWN_PARTITION ? tabKey(OWN_THREAD, tab.id) : '';
+  const key = tab.job ? tabKey(tab.job, tab.id) : isOwn(tab) ? tabKey(OWN_THREAD, tab.id) : '';
   useLayoutEffect(() => {
     const node = el.current;
     if (!node || !key) return;
@@ -137,16 +137,28 @@ function Hosted({ job, tab }: { job: string; tab: Tab }) {
 }
 
 /**
- * An owner's own tab's page (BROWSERAPP-45): a real <webview> in the owner's partition, at the address
- * they first opened; main keeps it as theirs (`browser-own`), never relays it to obid and draws no
- * agent's pointer on it. Later addresses go through main (`browser-own-go`), never a re-render.
+ * An owner's own tab's page (BROWSERAPP-45, 47): a real <webview> in the tab's own partition (the
+ * owner's, or a server tab's throwaway one), at the address they first opened. Main is told first
+ * that this page mounts it (`browser-own-mount`, one use), and lets a webview attach in an owner's
+ * partition only so; then it keeps it as theirs (`browser-own`), never relays it to obid and draws
+ * no agent's pointer on it. Later addresses go through main (`browser-own-go`), never a re-render.
  */
 function Owned({ tab }: { tab: Tab }) {
   const key = tabKey(OWN_THREAD, tab.id);
   const rect = useRect(key);
   const ref = useRef<WebviewEl | null>(null);
-  const [src] = useState(() => tab.src ?? 'about:blank');
+  const [first] = useState(() => ({ src: tab.src ?? 'about:blank', partition: tab.partition! }));
+  const [allowed, setAllowed] = useState(false);
   const browser = window.app?.browser;
+  useEffect(() => {
+    let live = true;
+    void browser?.ownMount?.(tab.id, first.partition, first.src).then((why) => {
+      if (!live) return;
+      if (why) console.warn(`The browser: ${why}`);
+      else setAllowed(true);
+    });
+    return () => { live = false; };
+  }, [tab.id, browser, first]);
   useLayoutEffect(() => {
     const w = ref.current;
     if (!w || !browser?.own) return;
@@ -162,11 +174,11 @@ function Owned({ tab }: { tab: Tab }) {
     w.addEventListener('did-attach', attached);
     w.addEventListener('dom-ready', attached);
     return () => { w.removeEventListener('did-attach', attached); w.removeEventListener('dom-ready', attached); };
-  }, [tab.id, browser]);
+  }, [tab.id, browser, allowed]);
   const place = rect ?? { left: -20_000, top: 0, width: 640, height: 720 };
   return (
     <div className="br-hosted" data-browser="webview" data-tab={tab.id} style={{ position: 'fixed', left: place.left, top: place.top, width: place.width, height: place.height }}>
-      <webview ref={(w) => { ref.current = w as WebviewEl | null; }} src={src} partition={OWN_PARTITION} style={{ width: '100%', height: '100%', display: 'flex' }} />
+      {allowed && <webview ref={(w) => { ref.current = w as WebviewEl | null; }} src={first.src} partition={first.partition} style={{ width: '100%', height: '100%', display: 'flex' }} />}
     </div>
   );
 }
@@ -176,9 +188,10 @@ export function BrowserWebviews() {
   const { mode, s } = useBrowser();
   if (mode !== 'obid' || !window.app?.browser?.register) return null;
   const tabs = s.tabs
-    .filter((t): t is Tab & { job: string; partition: string } => t.owner.kind === 'agent' && !!t.job && !!t.partition)
+    // an agent's tab only in a partition of the agents' shapes, never an owner's, whatever obid named (BROWSERAPP-24)
+    .filter((t): t is Tab & { job: string; partition: string } => t.owner.kind === 'agent' && !!t.job && partitionOk(t.partition))
     .sort((a, b) => (tabKey(a.job, a.id) < tabKey(b.job, b.id) ? -1 : 1));
   // the owner's own, in the order they were opened, once each has an address (a blank one has no page yet)
-  const own = s.tabs.filter((t) => t.owner.kind === 'you' && t.partition === OWN_PARTITION && !!t.src);
+  const own = s.tabs.filter((t) => isOwn(t) && !!t.src);
   return <>{tabs.map((t) => <Hosted key={tabKey(t.job, t.id)} job={t.job} tab={t} />)}{own.map((t) => <Owned key={tabKey(OWN_THREAD, t.id)} tab={t} />)}</>;
 }

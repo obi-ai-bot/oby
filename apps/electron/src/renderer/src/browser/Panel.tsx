@@ -9,7 +9,7 @@ import {
 import { Logo, Sheen, Status, agentName } from './pieces';
 import { useBrowser } from './store';
 import { Slot } from './Webviews';
-import { OWN_PARTITION, STOPPED, type NavOp, type Tab } from './view';
+import { STOPPED, isOwn, type NavOp, type Tab } from './view';
 import { shown } from './live';
 
 export const YouMark = ({ label }: { label?: string }) => <span className="you-mark" aria-label={label} aria-hidden={label ? undefined : true}>Y</span>;
@@ -48,7 +48,7 @@ export function Tabs({ full, newTab = true, fullWidth = true, close = true, newT
             {t.owner.kind === 'agent' ? <Logo agent={t.owner.agent} size={14} alt={`${agentName(t.owner.agent)}’s`} /> : <YouMark label="Yours" />}
             <span className="br-tab-name">{t.title}</span>
             {dot && <Status dot={dot} />}
-            {on && t.closable !== false && (t.partition === OWN_PARTITION
+            {on && t.closable !== false && (isOwn(t)
               // an owner's own tab closes, its page with it (BROWSERAPP-48)
               ? <span className="br-tab-x" role="button" aria-label="Close tab" onClick={(e) => { e.stopPropagation(); void api.close(t.id); }}><X size={12} strokeWidth={2} /></span>
               : <span className="br-tab-x"><X size={12} strokeWidth={2} /></span>)}
@@ -137,7 +137,7 @@ export function Nav({ tab, set = 'full', back = true, warn, children }: { tab?: 
       {set === 'loading' && <button className="icon-button is-28" aria-label="Stop loading" onClick={nav('stop')}><X size={14} strokeWidth={1.6} /></button>}
       {(set === 'full' || set === 'three' || off) && <button className="icon-button is-28" aria-label="Forward" disabled={off || tab?.canGoForward !== true} onClick={nav('forward')}><ArrowRight size={16} strokeWidth={1.6} /></button>}
       {set !== 'loading' && <button className="icon-button is-28" aria-label="Reload" disabled={off} onClick={nav('reload')}><RotateCw size={15} strokeWidth={1.6} /></button>}
-      {!tab || tab.partition === OWN_PARTITION ? <AddressField tab={tab} icon={icon} /> : <div className={`br-address${warn ? ' is-warn' : ''}`}>{address}</div>}
+      {!tab || isOwn(tab) ? <AddressField tab={tab} icon={icon} /> : <div className={`br-address${warn ? ' is-warn' : ''}`}>{address}</div>}
       {set === 'full' && <button className="icon-button is-28" aria-label="Page options"><Ellipsis size={16} strokeWidth={1.6} /></button>}
       {children}
     </div>

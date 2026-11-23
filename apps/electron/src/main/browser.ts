@@ -119,6 +119,9 @@ export function browsing(trusted: Trusted, page: Page) {
   // unsigned and with no obid call (browserGuest.ts, BROWSERAPP-30 to 35); null once done, else why not
   channels.handle('browser-nav', [string, string, oneOf('back', 'forward', 'reload', 'stop')], (_e, threadId, tabId, op) =>
     webviews ? webviews.nav({ threadId, tabId }, op) : 'The window isn’t up yet.', 'Not this app’s page.');
+  // an owner's own tab about to mount its webview: one may attach in that owner's partition at that address (browserGuest.ts, BROWSERAPP-45)
+  channels.handle('browser-own-mount', [string, string, string], (_e, tabId, partition, src) =>
+    webviews ? webviews.ownMount(tabId, partition, src) : 'The window isn’t up yet.', 'Not this app’s page.');
   // an owner's own tab's webview: main keeps it as theirs, never relayed (browserGuest.ts, BROWSERAPP-45); null once kept
   channels.handle('browser-own', [string, safeInteger], (_e, tabId, webContentsId) =>
     webviews ? webviews.own(tabId, webContentsId) : 'The window isn’t up yet.', 'Not this app’s page.');

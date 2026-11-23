@@ -95,6 +95,9 @@ declare global {
         nav(threadId: string, tabId: string, op: 'back' | 'forward' | 'reload' | 'stop'): Promise<string | null>;
         navState(fn: (s: { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }) => void): () => void;
         // an owner's own tab's <webview>, kept by main as the owner's, never relayed (BROWSERAPP-45): null once kept
+        // an owner's own tab about to mount its <webview>, in that partition at that address: main lets
+        // one webview attach so (BROWSERAPP-45, 47): null once it will
+        ownMount?(tabId: string, partition: string, src: string): Promise<string | null>;
         own?(tabId: string, webContentsId: number): Promise<string | null>;
         // the owner's own tab to an address they typed, by main, a web page only (BROWSERAPP-46): null once it goes
         go?(tabId: string, url: string): Promise<string | null>;

@@ -4,7 +4,8 @@
 // apps/web/src/components/preview/PreviewEmptyState.tsx:51-93, PreviewLocalServerCard.tsx,
 // components/ui/discovery-list.tsx). Only obid's own data: each job's `servers`, the ports its
 // agent's processes listen on at localhost (docs/contracts/task-servers.md, TASKSERVERS-1). One click
-// opens it in a tab of the owner's own. With none, board 17's words. The list's words are proposals
+// opens it in a tab of the owner's own, in a throwaway partition of that tab's (store.tsx `open`), never
+// the owner's own cookies. With none, board 17's words. The list's words are proposals
 // for Sangam, who has no screen for it yet.
 import { Globe, RadioTower, X } from 'lucide-react';
 import type { Job } from '../../../shared/obid-wire';
@@ -49,7 +50,7 @@ export function StartPage({ tab }: { tab?: string }) {
             <h2 className="br-servers-head"><RadioTower size={15} strokeWidth={1.6} aria-hidden />Local servers</h2>
             <div className="br-servers-list">
               {servers.map((v) => (
-                <button key={v.port} type="button" className="br-server" onClick={() => void api.open(serverAddress(v.port), tab)}>
+                <button key={v.port} type="button" className="br-server" onClick={() => void api.open(serverAddress(v.port), tab, true)}>
                   <span className="br-server-icon" aria-hidden><Globe size={15} strokeWidth={1.6} /></span>
                   <span className="br-server-text">
                     <span className="br-server-title">localhost:{v.port}</span>

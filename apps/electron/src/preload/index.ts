@@ -274,6 +274,9 @@ contextBridge.exposeInMainWorld('app', {
       ipcRenderer.on('browser-nav-state', listener);
       return () => { ipcRenderer.off('browser-nav-state', listener); };
     },
+    // an owner's own tab about to mount its <webview>, in that partition at that address: main lets one
+    // webview attach in an owner's partition only so, never one obid named (BROWSERAPP-24, 45); null once it will
+    ownMount: (tabId: string, partition: string, src: string) => ipcRenderer.invoke('browser-own-mount', tabId, partition, src) as Promise<string | null>,
     // a <webview> the page mounted for an owner's own tab, by its webContents id: main checks it's this
     // window's and in the owner's partition, and keeps it as theirs, never relayed (BROWSERAPP-45); null once kept
     own: (tabId: string, webContentsId: number) => ipcRenderer.invoke('browser-own', tabId, webContentsId) as Promise<string | null>,

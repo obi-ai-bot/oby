@@ -8,7 +8,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { BROWSER_DEFAULT_SETTINGS } from '../../../shared/obid-wire';
 import { everything, onObid } from '../lean';
-import { OWN_PARTITION, OWN_THREAD, type BrowserApi, type BrowserState, type Tab } from './view';
+import { OWN_PARTITION, OWN_THREAD, scratchPartition, type BrowserApi, type BrowserState, type Tab } from './view';
 import { demoBoard } from './demo';
 import { connectLive, shown, type Live, type PageState } from './live';
 import { NotAnAddress, resolveAddress } from './address';
@@ -68,7 +68,7 @@ const OFF: Browser = {
  * blank, before its webview mounts) and main's last word on its page (`browser-nav-state`, keyed by
  * OWN_THREAD). Never sent to obid.
  */
-type Own = { id: string; src: string | null; page: PageState | null };
+type Own = { id: string; src: string | null; partition: string; page: PageState | null };
 let owns = 0;
 const ownId = () => `own-${Date.now().toString(36)}-${++owns}`;
 /** an owner's own tab as the panel draws it: a Y, its page's host for a title, its address as main says it */
@@ -76,7 +76,7 @@ function ownTab(o: Own): Tab {
   const at = o.page?.url || o.src || '';
   const failed = o.page && !o.page.loading ? o.page.failed : null;
   return {
-    id: o.id, owner: { kind: 'you' }, partition: OWN_PARTITION, src: o.src ?? undefined, href: at || undefined,
+    id: o.id, owner: { kind: 'you' }, partition: o.partition, src: o.src ?? undefined, href: at || undefined,
     title: at ? shown(at).split('/')[0] : 'New tab', url: at ? shown(at) : '', secure: at.startsWith('https:'),
     state: failed ? 'failed' : 'ready', failedAt: failed ?? undefined, holder: null,
     canGoBack: o.page?.canGoBack ?? false, canGoForward: o.page?.canGoForward ?? false, pageLoading: o.page?.loading ?? false,
@@ -158,26 +158,30 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
         },
         // the address bar's words in the owner's own tab, made an address as T3 Code's are: a blank
         // tab's webview mounts at it, a tab with a page goes there through main (BROWSERAPP-45, 46)
-        open: async (words, t) => {
+        open: async (words, t, server) => {
           let url: string;
           try { url = resolveAddress(words); } catch (e) { return e instanceof NotAnAddress ? e.message : String(e); }
           const tab = t === undefined ? undefined : ownNow.current.find((x) => x.id === t);
           if (tab?.src) return (await window.app?.browser?.go?.(tab.id, url)) ?? null;
           const id = tab?.id ?? ownId();
-          setOwn((o) => (tab ? o.map((x) => (x.id === id ? { ...x, src: url } : x)) : [...o, { id, src: url, page: null }]));
+          // a server from the list opens in a throwaway partition of its tab's own, never the owner's (BROWSERAPP-47)
+          const partition = server ? scratchPartition(id) : OWN_PARTITION;
+          setOwn((o) => (tab ? o.map((x) => (x.id === id ? { ...x, src: url, partition } : x)) : [...o, { id, src: url, partition, page: null }]));
           setS((o) => ({ ...o, active: id }));
           return null;
         },
         newTab: async () => {
           const id = ownId();
-          setOwn((o) => [...o, { id, src: null, page: null }]);
+          setOwn((o) => [...o, { id, src: null, partition: OWN_PARTITION, page: null }]);
           setS((o) => ({ ...o, active: id }));
         },
-        // its webview goes with it; the tab shown next is the one before it, else obid's first
+        // its webview goes with it; the tab shown next is the one before it in the row, else the one after (BROWSERAPP-48)
         close: async (t) => {
-          const left = ownNow.current.filter((x) => x.id !== t);
-          setOwn(left);
-          setS((o) => (o.active === t ? { ...o, active: left.at(-1)?.id ?? o.tabs[0]?.id ?? null } : o));
+          const row = [...latest.current.tabs.map((x) => x.id), ...ownNow.current.map((x) => x.id)];
+          const at = row.indexOf(t);
+          const next = at < 0 ? null : row[at - 1] ?? row[at + 1] ?? null;
+          setOwn(ownNow.current.filter((x) => x.id !== t));
+          setS((o) => (o.active === t ? { ...o, active: next } : o));
         },
       };
     }

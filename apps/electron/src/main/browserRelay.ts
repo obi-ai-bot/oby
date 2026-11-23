@@ -12,13 +12,9 @@ import { appPage, pageOk } from './pageRule';
 
 export type TabKey = { threadId: string; tabId: string };
 
-/**
- * The partitions a page may live in, as obid names them: one per agent for the owner's own work
- * (sign-ins kept), and one per job for another Oby's or an untrusted job (not persistent). Never the
- * default session or the window's own.
- */
-export const PARTITION = /^(persist:oby-agent-(claude|codex|cursor)|oby-box-[A-Za-z0-9_-]{1,128})$/;
-export const partitionOk = (p: unknown): p is string => typeof p === 'string' && PARTITION.test(p);
+// The partitions obid names for its agents' tabs (shared with the page, which mounts only those)
+import { partitionOk } from '../shared/browser-own';
+export { PARTITION, partitionOk } from '../shared/browser-own';
 
 /**
  * The partition obid named for each agent tab, read from its `tab` events on /v1/browser/events: the
@@ -143,13 +139,18 @@ export const MAX_MESSAGE = 64 * 1024 * 1024;
 /** how long main waits before sending a relay again after obid didn't take it */
 export const AGAIN_MS = 1_000;
 /**
- * How long a command for a tab not attached waits for it (BROWSERAPP-49): obid's first commands can
- * come before the webview attached, or in the gap while Chromium's dropped debugger is attached
- * again (browserGuest.ts, 250 ms); they run, in order, once it is, else they're answered "isn't attached".
+ * How long a command for a tab whose webview hasn't attached yet in this window waits for its first
+ * attach (BROWSERAPP-49); they run one at a time, in order, once it attaches, else they're answered
+ * "isn't attached". A tab that was attached and detached answers at once: obid has already failed
+ * what it had sent it, and running it after would do an act twice if the agent tried again.
  */
 export const ATTACH_WAIT_MS = 10_000;
-/** the most commands kept for one tab while it isn't attached; the oldest are answered first */
+/** the most commands kept for one tab while it waits; the oldest are answered first */
 export const WAITING_MAX = 256;
+/** the most bytes of commands kept for one tab while it waits; the oldest are answered first */
+export const WAITING_BYTES = 4 * 1024 * 1024;
+/** the most tabs whose commands wait at once; a command for one more is answered at once */
+export const WAITING_TABS = 64;
 /** the most events kept while obid doesn't answer; the oldest go first */
 export const KEPT = 10_000;
 
@@ -163,7 +164,7 @@ export function insideDownloads(home: string, path: unknown): path is string {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
-type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; queue: Promise<unknown>; broken: boolean };
+type Tab = { k: TabKey; guest: Guest; attached: boolean; shown: boolean | null; failed: RelayEvent | null; mouse: Promise<unknown>; queue: Promise<unknown>; broken: boolean; drain?: Promise<void> | null };
 
 /** a page's address with none of these values in it: no query or fragment, and no path if that holds one */
 function bare(url: string, values: string[]): string {
@@ -187,7 +188,9 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
   // the fields main filled in each tab's document (CDP objects), until its main frame leaves
   const fields = new Map<string, string[]>();
   // obid's commands for each tab not attached yet, in order, and the timer that gives up on them
-  const waiting = new Map<string, { commands: Extract<RelayCommand, { type: 'cdp' }>[]; timer: ReturnType<typeof setTimeout> }>();
+  const waiting = new Map<string, { commands: Extract<RelayCommand, { type: 'cdp' }>[]; bytes: number; timer: ReturnType<typeof setTimeout> }>();
+  // the tabs attached at some point in this window: one detached now answers at once
+  const everAttached = new Set<string>();
   const guarded = (k: TabKey) => noScript.has(key(k)) || filling.has(key(k));
   let outbox: RelayEvent[] = [];
   let sending = false;
@@ -236,13 +239,20 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     waiting.delete(k);
     w.commands.forEach(unattached);
   };
-  // a command for a tab not attached waits for it, ATTACH_WAIT_MS at most (BROWSERAPP-49)
+  // a command for a tab not attached yet waits for its first attach, ATTACH_WAIT_MS at most, within
+  // WAITING_MAX commands and WAITING_BYTES for the tab and WAITING_TABS tabs (BROWSERAPP-49)
   const hold = (c: Extract<RelayCommand, { type: 'cdp' }>) => {
     const k = key(c);
-    const w = waiting.get(k) ?? { commands: [], timer: setTimeout(() => giveUp(k), ATTACH_WAIT_MS) };
+    if (c.message.length > WAITING_BYTES || (!waiting.has(k) && waiting.size >= WAITING_TABS)) { unattached(c); return; }
+    const w = waiting.get(k) ?? { commands: [], bytes: 0, timer: setTimeout(() => giveUp(k), ATTACH_WAIT_MS) };
     waiting.set(k, w);
     w.commands.push(c);
-    if (w.commands.length > WAITING_MAX) unattached(w.commands.shift()!);
+    w.bytes += c.message.length;
+    while (w.commands.length > WAITING_MAX || w.bytes > WAITING_BYTES) {
+      const old = w.commands.shift()!;
+      w.bytes -= old.message.length;
+      unattached(old);
+    }
   };
   const refuse = (t: Tab, id: number, message: string) => reply(t, { id, error: { code: -32601, message } });
 
@@ -292,6 +302,19 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
     }
   }
 
+  // one command on an attached tab: while guarded, the tab's commands run one at a time, so no act of
+  // the agent's runs between a read and main's check of what it read; a page dialog's answer never
+  // waits behind a read it holds up. Settles once it has run.
+  function dispatch(t: Tab, c: Extract<RelayCommand, { type: 'cdp' }>): Promise<void> {
+    if (!t.attached) { unattached(c); return Promise.resolve(); }
+    let method: unknown;
+    try { method = JSON.parse(c.message).method; } catch { /* run refuses it */ }
+    const go = () => run(t, c.message, c.agentCode === true);
+    const one = guarded(t.k) && method !== 'Page.handleJavaScriptDialog' ? t.queue.then(go) : go();
+    t.queue = Promise.all([t.queue, one]).then(() => undefined, () => undefined);
+    return one.then(() => undefined, () => undefined);
+  }
+
   const self = {
     /** a webview whose debugger is attached and whose first page settled: obid may drive it */
     attach(k: TabKey, guest: Guest) {
@@ -304,9 +327,17 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       if (t.failed) emit(t.failed);
       t.failed = null;
       if (turns.has(k.threadId)) void guest.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
-      // what obid sent before it attached runs now, in the order it came
+      everAttached.add(key(k));
+      // what obid sent before it attached runs now, one at a time in the order it came; what comes
+      // meanwhile runs after it
       const w = waiting.get(key(k));
-      if (w) { clearTimeout(w.timer); waiting.delete(key(k)); for (const c of w.commands) self.command(c); }
+      if (w) {
+        clearTimeout(w.timer);
+        waiting.delete(key(k));
+        const drain = w.commands.reduce<Promise<void>>((p, c) => p.then(() => dispatch(t, c)), Promise.resolve());
+        t.drain = drain;
+        void drain.finally(() => { if (t.drain === drain) t.drain = null; });
+      }
     },
     /** the webview went: closed, crashed, swapped, or DevTools took its debugger */
     detach(k: TabKey) {
@@ -369,19 +400,22 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       // release drops only obid's use of the tab: its debugger stays, and the next command uses it
       // again; a box's last tab clears its storage (browser.ts)
       if (c.type === 'release') { if (t) t.mouse = Promise.resolve(); options.released?.({ threadId: c.threadId, tabId: c.tabId }); return; }
-      // a tab whose relay ended on a message too big is answered at once; one not attached yet waits
-      if (t?.broken && !t.attached) { unattached(c); return; }
-      if (!t?.attached) { hold(c); return; }
-      // while guarded, the tab's commands run one at a time, so no act of the agent's runs between a
-      // read and main's check of what it read; a page dialog's answer never waits behind a read it holds up
-      let method: unknown;
-      try { method = JSON.parse(c.message).method; } catch { /* run refuses it */ }
-      const go = () => run(t, c.message, c.agentCode === true);
-      const one = guarded(t.k) && method !== 'Page.handleJavaScriptDialog' ? t.queue.then(go) : go();
-      t.queue = Promise.all([t.queue, one]).then(() => undefined, () => undefined);
+      // a tab not attached yet waits for its first attach; one that was (detached, or its relay ended
+      // on a message too big) is answered at once
+      if (!t?.attached) { if (everAttached.has(key(c))) unattached(c); else hold(c); return; }
+      // behind what waited for its first attach, still running
+      if (t.drain) {
+        const after = t.drain.then(() => dispatch(t, c));
+        t.drain = after;
+        void after.finally(() => { if (t.drain === after) t.drain = null; });
+        return;
+      }
+      void dispatch(t, c);
     },
     /** obid's relay stream (re)connected: every live tab is announced again (T3's announceAll); no command runs again */
     reconnected() {
+      // a restarted obid names its tabs anew: nothing the last one sent waits for them
+      for (const k of [...waiting.keys()]) giveUp(k);
       for (const t of tabs.values()) {
         if (!t.attached) continue;
         emit({ ...t.k, type: 'attached' });
@@ -389,7 +423,7 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       }
     },
     /** the webview is gone for good: nothing of it is kept */
-    forget(k: TabKey) { giveUp(key(k)); early.delete(key(k)); filledIn.delete(key(k)); noScript.delete(key(k)); filling.delete(key(k)); fields.delete(key(k)); },
+    forget(k: TabKey) { giveUp(key(k)); everAttached.delete(key(k)); early.delete(key(k)); filledIn.delete(key(k)); noScript.delete(key(k)); filling.delete(key(k)); fields.delete(key(k)); },
     /** for tests and the window's close: what's attached */
     attached: () => [...tabs.values()].filter((t) => t.attached).map((t) => t.k),
     /** the events not yet taken by obid */

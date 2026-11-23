@@ -9,7 +9,7 @@ import { Control, FileRow, Nav, Panel, Pointer, Tabs, View, YouPointer } from '.
 import { Globe17, Logo, agentName } from './pieces';
 import { useBrowser } from './store';
 import { StartPage } from './Servers';
-import { OWN_PARTITION } from './view';
+import { isOwn } from './view';
 import { demoPage } from './demo';
 import { shown } from './live';
 import { useLive } from '../live';
@@ -61,7 +61,7 @@ export function BrowserPane({ width }: { width: number }) {
     );
   }
   // New tab: a blank tab of the owner's own, its address ready, the agents' servers under it
-  if (active.partition === OWN_PARTITION && !active.src) {
+  if (isOwn(active) && !active.src) {
     return (
       <Panel width={width} full={ui.full} label="Browser, new tab" resize={false}>
         <Tabs full={ui.full} />

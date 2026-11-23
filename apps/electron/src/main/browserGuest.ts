@@ -9,8 +9,10 @@ export { pageOk } from './pageRule';
 // The owner's own tabs' partition (BROWSERAPP-45 to 48): theirs alone, never one obid names for an
 // agent (`partitionOk` refuses it), never a box's. Its webviews are kept by the page's tab id under
 // OWN_THREAD, in place of a job: never keyed to obid's tabs, never relayed, no debugger attached.
-import { OWN_PARTITION, OWN_THREAD } from '../shared/browser-own';
-export { OWN_PARTITION, OWN_THREAD } from '../shared/browser-own';
+import { OWN_PARTITION, OWN_TAB, OWN_THREAD, ownPartitionOk, scratchPartition } from '../shared/browser-own';
+export { OWN_PARTITION, OWN_THREAD, scratchPartition } from '../shared/browser-own';
+/** how long the page's word that it mounts an owner's tab holds, unused (BROWSERAPP-45) */
+export const MOUNT_MS = 10_000;
 /** an address the owner's own tab may open: a page of the web, never the app's own (BROWSERAPP-28's rule) */
 export const ownPageOk = (url: unknown): url is string => pageOk(url) && url !== 'about:blank' && !appPage(url);
 export const NOT_A_WEB_PAGE = 'Oby opens only web pages.';
@@ -52,7 +54,7 @@ export type NavState = { threadId: string; tabId: string; url: string; canGoBack
 // The webview's preferences, whatever the page asked for: sandboxed, no Node anywhere, no preload,
 // its partition checked (T3: DesktopWindow.ts:620-645)
 export function harden(prefs: Record<string, unknown>, params: { partition?: string; src?: string }): boolean {
-  const owners = params.partition === OWN_PARTITION;
+  const owners = ownPartitionOk(params.partition);
   if (!(owners || partitionOk(params.partition)) || !pageOk(params.src)) return false;
   if (owners && !ownPageOk(params.src)) return false;
   delete prefs.preload;
@@ -232,6 +234,16 @@ export function boxing(drop: (k: TabKey) => string | null) {
 }
 
 /** a box's last tab went: its storage, cache and logins cleared (T3: BrowserSession.ts:689-740), then its door forgotten */
+/** a server tab's throwaway partition, its page gone: its storage, cache and logins cleared (BROWSERAPP-47) */
+export async function clearScratch(partition: string) {
+  const s = session.fromPartition(partition);
+  await Promise.all([
+    s.clearStorageData({ storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] }),
+    s.clearCache(),
+    s.clearAuthCache(),
+  ]);
+}
+
 export async function clearBox(partition: string) {
   if (!isBox(partition)) return;
   const s = session.fromPartition(partition);
@@ -318,6 +330,24 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
   const failedLoad = new Map<number, string>();
   // the owner's own tabs' webviews, by webContents id: the page's tab id for each (BROWSERAPP-45)
   const owned = new Map<number, string>();
+  // the owner's own tabs the page said it mounts, unused yet (one webview each, MOUNT_MS at most), and
+  // the partition each mounted in; the owner's partitions' sessions, for their pages' stricter rule
+  const mounting = new Map<string, { partition: string; src: string; until: number }>();
+  const mountedIn = new Map<string, string>();
+  const ownerSessions = new WeakSet<Session>();
+  // a webview may attach in an owner's partition only as one the page said it mounts, at that address
+  const mounts = (partition: string, src: string): boolean => {
+    const now = Date.now();
+    for (const [tabId, m] of mounting) {
+      if (m.until < now) { mounting.delete(tabId); continue; }
+      if (m.partition !== partition || m.src !== src) continue;
+      mounting.delete(tabId);
+      mountedIn.set(tabId, partition);
+      ownerSessions.add(session.fromPartition(partition));
+      return true;
+    }
+    return false;
+  };
   const keyOf = (id: number): TabKey | undefined => keyed.get(id) ?? (owned.has(id) ? { threadId: OWN_THREAD, tabId: owned.get(id)! } : undefined);
   // this window's webview for a tab: obid's by its job and tab, the owner's own under OWN_THREAD
   const pageOf = (k: TabKey): WebContents | undefined => {
@@ -335,6 +365,8 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
   };
   win.webContents.on('will-attach-webview', (e, prefs, params) => {
     if (!harden(prefs as Record<string, unknown>, params)) { e.preventDefault(); return; }
+    // an owner's partition only for an owner's own tab the page said it mounts: never one obid named (BROWSERAPP-24)
+    if (ownPartitionOk(params.partition) && !mounts(params.partition, params.src!)) { e.preventDefault(); return; }
     prepare(session.fromPartition(params.partition!), params.partition!);
     // a box page's frames each run its session's preload (the clipboard guard), not only its top
     // one: still sandboxed, so no Node in any of them
@@ -356,9 +388,12 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       // (the same callback as app's, whose typings say what Electron does: none goes on without one)
       wc.on('select-client-certificate', (ev, _url, _list, callback) => { ev.preventDefault(); (callback as () => void)(); });
     }
-    // a page of the web stays on the web: no window of its own, no file:, javascript: or data:
-    wc.setWindowOpenHandler(({ url }) => { if (pageOk(url)) void wc.loadURL(url); return { action: 'deny' }; });
-    wc.on('will-navigate', (ev, url) => { if (!pageOk(url)) ev.preventDefault(); });
+    // a page of the web stays on the web: no window of its own, no file:, javascript: or data:; an
+    // owner's tab's never reaches the app's own page either, by a link, a new window or a redirect (BROWSERAPP-46)
+    const ok = ownerSessions.has(wc.session) ? ownPageOk : pageOk;
+    wc.setWindowOpenHandler(({ url }) => { if (ok(url)) void wc.loadURL(url); return { action: 'deny' }; });
+    wc.on('will-navigate', (ev, url) => { if (!ok(url)) ev.preventDefault(); });
+    if (ok === ownPageOk) wc.on('will-redirect', (ev, url) => { if (!ownPageOk(url)) ev.preventDefault(); });
     wc.on('did-fail-load', (_ev, code, description, url, isMainFrame) => {
       if (!isMainFrame || code === -3) return;
       failedLoad.set(wc.id, url);
@@ -376,6 +411,11 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     wc.once('destroyed', () => {
       const k = keyed.get(wc.id);
       keyed.delete(wc.id);
+      // a server tab's throwaway partition goes with its page: nothing of it is kept (BROWSERAPP-47)
+      const mine = owned.get(wc.id);
+      const was = mine === undefined ? undefined : mountedIn.get(mine);
+      if (mine !== undefined) mountedIn.delete(mine);
+      if (was && was !== OWN_PARTITION) void clearScratch(was).catch(() => undefined);
       owned.delete(wc.id);
       folders.delete(wc.id);
       failedLoad.delete(wc.id);
@@ -443,11 +483,24 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     own(tabId: string, webContentsId: number): string | null {
       const wc = webContents.fromId(webContentsId);
       if (!tabId || !wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== win.webContents) return 'Not one of this window’s pages.';
-      if (keyed.has(wc.id) || wc.session !== session.fromPartition(OWN_PARTITION)) return 'Not the owner’s own tab.';
+      const partition = mountedIn.get(tabId);
+      if (keyed.has(wc.id) || !partition || wc.session !== session.fromPartition(partition)) return 'Not the owner’s own tab.';
       const was = owned.get(wc.id);
       if (was !== undefined && was !== tabId) return 'This page is already another tab’s.';
       owned.set(wc.id, tabId);
       told(wc);
+      return null;
+    },
+    /**
+     * The page is about to mount an owner's own tab's webview (BROWSERAPP-45, 47): one webview may
+     * then attach in that partition at that address, within MOUNT_MS. Only the owner's partition, or
+     * that tab's own throwaway one, and only a web page. null once it may, else why not.
+     */
+    ownMount(tabId: string, partition: string, src: string): string | null {
+      if (!OWN_TAB.test(tabId)) return 'Not one of the owner’s tabs.';
+      if (partition !== OWN_PARTITION && partition !== scratchPartition(tabId)) return 'Not the owner’s own tab.';
+      if (!ownPageOk(src)) return NOT_A_WEB_PAGE;
+      mounting.set(tabId, { partition, src, until: Date.now() + MOUNT_MS });
       return null;
     },
     /** the owner's own tab to the address they typed (BROWSERAPP-46): a web page only, by its own webContents; null once it goes, else why not */
