@@ -82,7 +82,8 @@ function lockSession(s: Session, relay: Relay, hostPage: string) {
 function locked(): Promise<Relay> {
   shared ??= startRelay({
     shown: (id, version) => designs.has(`${id}/${version}`),
-    read: (id, version, path) => send('GET', `/v1/artifacts/${id}/${version}${path}`, undefined),
+    // `path` starts with its slash (designPath)
+    read: (id, version, path) => send('GET', `/v1/artifacts/${id}/${version}/${path.slice(1)}`, undefined),
   }).then((relay) => {
     lockSession(session.fromPartition(PARTITION), relay, pathToFileURL(rendererDir).href + '/');
     return relay;
