@@ -32,7 +32,7 @@ const convo = { id: 'c1', title: 'Skills', pinned: false, created: at, lastActiv
 // as many skills as the owner's plugins give: far more than fit over the box
 const SKILLS = Array.from({ length: 40 }, (_, i) => ({ name: `skill-${String(i).padStart(2, '0')}`, description: `What skill ${i} does`, userInvocable: true, source: 'user' }));
 
-async function box() {
+async function box(more: { home?: boolean; hidden?: boolean } = {}) {
   const call = vi.fn(async (method: string, path: string) => {
     if (method === 'GET' && path.startsWith('/v1/skills')) return { status: 200, text: JSON.stringify({ tool: 'claude', account: 'p', skills: SKILLS }) };
     if (method === 'GET' && path.startsWith('/v1/conversation?id=')) return { status: 200, text: '[]' };
@@ -50,10 +50,13 @@ async function box() {
   const host = document.body.appendChild(document.createElement('div'));
   const outside = document.body.appendChild(document.createElement('p'));
   root = createRoot(host);
-  await act(async () => root!.render(<Composer label="Reply to Oby" talk={talk} conversation="c1" draft="conversation:c1" />));
+  const render = (hidden = false) => act(async () => root!.render(more.home
+    ? <Composer home hidden={hidden} talk label="Message Oby" draft="home" />
+    : <Composer label="Reply to Oby" talk={talk} conversation="c1" draft="conversation:c1" />));
+  await render();
   const input = host.querySelector<HTMLElement>('.composer-input')!;
   await act(async () => { input.focus(); });
-  return { input, outside };
+  return { input, outside, render };
 }
 // what's typed, as the real box holds it, the cursor at its end
 const type = (input: HTMLElement, text: string) => act(async () => {
@@ -132,17 +135,42 @@ describe('COMPOSER-25: the slash menu, as Claude’s own', () => {
     await act(async () => { button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
     expect(panel()).toBeNull();
     expect(input.textContent).toBe('/');
-    expect(document.activeElement).toBe(input);
+    // (the editor takes the focus in its own update, a moment later)
+    await vi.waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  // round 2 of #2887: Home keeps its box while a page covers it; a list open there must leave the
+  // page's Esc (back, Settings' close) to the page
+  it('composer_25_a_hidden_box_holds_no_list_and_leaves_esc_to_the_page', async () => {
+    const { input, render } = await box({ home: true });
+    await opened(input);
+    // a page opens over Home with no click in it (⌘, , a menu item, an alert)
+    await render(true);
+    expect(panel()).toBeNull();
+    const page = vi.fn();
+    addEventListener('keydown', page);
+    try {
+      await act(async () => { dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+      expect(page).toHaveBeenCalledTimes(1);
+      expect(document.documentElement.classList).not.toContain('is-popover-open');
+    } finally { removeEventListener('keydown', page); }
+    // back on Home the list stays closed until a / is typed again
+    await render(false);
+    expect(panel()).toBeNull();
   });
 
   it('composer_25_a_click_outside_closes_it_picking_nothing', async () => {
     const { input, outside } = await box();
+    const clicked = vi.fn();
+    outside.addEventListener('pointerdown', clicked);
     await opened(input);
     // a click on a row is the list's own: it stays until the row picks
     await act(async () => { rows()[3].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); });
     expect(panel()).not.toBeNull();
     await act(async () => { outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); });
     expect(panel()).toBeNull();
+    // and the click is still the outside's own
+    expect(clicked).toHaveBeenCalledTimes(1);
     expect(input.textContent).toBe('/');
     expect(document.querySelector('.composer-skill')).toBeNull();
     // elsewhere in the box too

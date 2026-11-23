@@ -188,7 +188,7 @@ function lineOf(e: TranscriptEntry, now: number): Entry | undefined {
   switch (e.kind) {
     case 'start': return { n, kind: 'start', text: e.summary, at: clock(e.at) };
     // still being written while obid streams its words past the last whole line (LIVETASK-32)
-    case 'said': return { n, kind: 'said', text: readable((e.text ?? e.summary) + (e.tail ?? '')), at: clock(e.at), live: e.tail !== undefined || undefined };
+    case 'said': return { n, kind: 'said', text: readable((e.text ?? e.summary) + (e.tail ?? ''), e.tail !== undefined), at: clock(e.at), live: e.tail !== undefined || undefined };
     case 'thought': return { n, kind: 'thought', text: e.text ?? '', seconds: e.seconds ?? 0, running: e.state === 'running' || undefined };
     case 'you': return { n, kind: 'you', text: e.text ?? e.summary, at: clock(e.at) };
     case 'plan': return { n, kind: 'plan', todos: e.todos ?? [] };
@@ -207,8 +207,15 @@ function lineOf(e: TranscriptEntry, now: number): Entry | undefined {
   }
 }
 // The goal line is between the agent and obid (docs/contracts/tasks.md, TASKS-19, obid's `job::readable`):
-// what a person reads never shows `GOAL MET`, and reads `GOAL NOT MET: <what's left>` as `Not done yet: <what's left>`
-export function readable(text: string): string {
+// what a person reads never shows `GOAL MET`, and reads `GOAL NOT MET: <what's left>` as `Not done yet: <what's left>`.
+// streaming: the words are still coming, so a last line that could still become one of those
+// ("GOAL", "GOAL NOT M") waits until it can be told apart, rather than flash before it's rewritten
+const MARKS = ['GOAL MET', 'GOAL NOT MET'];
+export function readable(text: string, streaming = false): string {
+  if (streaming) {
+    const at = text.lastIndexOf('\n') + 1, last = text.slice(at).trimStart();
+    if (last && MARKS.some((m) => m.startsWith(last) && m !== last)) text = text.slice(0, at).trimEnd();
+  }
   if (!text.includes('GOAL MET') && !text.includes('GOAL NOT MET')) return text;
   return text.split('\n').filter((l) => l.trim() !== 'GOAL MET').map((l) => {
     const t = l.trim();

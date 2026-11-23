@@ -207,6 +207,19 @@ describe('a task at work', () => {
     expect(said('It ends with a GOAL MET line.')).toBe('It ends with a GOAL MET line.');
   });
 
+  // round 2 of #2887: while the words stream, a last line that may still become the goal line waits
+  it('TASKS-19: streaming, a goal line being written never flashes', () => {
+    const streamed = (text: string, tail: string) => (sessionOf([wire(1, { kind: 'said', summary: text, text, tail, state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text;
+    for (const tail of ['G', 'GOAL', 'GOAL ', 'GOAL N', 'GOAL NOT', 'GOAL NOT ME', 'GOAL ME']) expect(streamed('Added it.\n\n', tail)).toBe('Added it.');
+    expect(streamed('Added it.\n\n', 'GOAL MET')).toBe('Added it.');
+    expect(streamed('Half.\n', 'GOAL NOT MET: the te')).toBe('Half.\nNot done yet: the te');
+    // a line that can't be one any more shows as it comes
+    expect(streamed('Added it.\n', 'Good')).toBe('Added it.\nGood');
+    expect(streamed('Added it.\n', 'GOALS')).toBe('Added it.\nGOALS');
+    // whole words, not streaming, are never held
+    expect((sessionOf([wire(2, { kind: 'said', summary: 'GOAL', text: 'GOAL', state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text).toBe('GOAL');
+  });
+
   it('LIVETASK-5: what it did shows in the conversation under its card, outside it, with the box talking to Oby', async () => {
     const html = await conversation();
     const card = cardOf(html, 'Fix the login test');

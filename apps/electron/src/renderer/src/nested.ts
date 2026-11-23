@@ -1,4 +1,4 @@
-import { agentOf, asksTo, ENDED } from './view';
+import { agentOf, asksWords, ENDED } from './view';
 import type { Task } from './tasks';
 
 // A conversation's tasks as the side panel nests them under its row (Sangam's screens 03 and 04,
@@ -24,7 +24,7 @@ export const kidsOf = (tasks: Task[], chat: string, of: (taskId: string) => stri
 export function asksFor(t: Task): string {
   const ask = t.job.ask;
   if (!ask) return 'needs you';
-  if (ask.kind === 'permission') { const to = asksTo(ask.tool, ask.detail); return to ? `asks to ${to}` : 'asks for permission'; }
+  if (ask.kind === 'permission') return asksWords(ask.tool, ask.detail);
   if (ask.kind === 'question') return 'has a question';
   if (ask.kind === 'merge') return 'is ready to merge';
   if (ask.kind === 'failed') return 'stopped and needs you';

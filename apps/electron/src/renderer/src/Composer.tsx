@@ -228,12 +228,12 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const askable = useAskable();
   // a name typed out in full is done: the list goes, and Enter sends
   const fullName = at !== null && askable.some((o) => o.name.toLowerCase() === at.toLowerCase());
-  const listing = !(wordsOnly || at === null || atClosed || view || fullName);
+  const listing = !(wordsOnly || hidden || at === null || atClosed || view || fullName);
   // after the Obys, the files of the conversation's folders (COMPOSER-14)
   const atFiles = useMentionFiles(listing && conversation ? conversation : undefined, listing ? at : null);
   const matches: ({ kind: 'oby' } & Askable | { kind: 'file'; file: ConversationFile })[] = listing
     ? [...askableFor(at!, askable).map((o) => ({ kind: 'oby' as const, ...o })), ...atFiles.map((file) => ({ kind: 'file' as const, file }))] : [];
-  const slashShown = slash !== null && !slashClosed && !view;
+  const slashShown = slash !== null && !slashClosed && !view && !hidden;
   // the skills `/` lists: asked as it opens (null till obid answers), those matching what's typed after it
   const skillsAnswer = useSkills(skillsOn ? skillsWhere : undefined, slashShown && !matches.length);
   const skillRows = skillsAnswer ? skillsMatching(skillsAnswer.skills, slash ?? '') : [];
@@ -413,7 +413,9 @@ export default function Composer({ placeholder, prompts = false, note, label, on
     return () => { gone = true; };
   }, [attached, repoPick, homeProject, homeFolders, tagsOf, draft]);
   // Home's box stepping aside (a page opened over it) puts its panel away
-  useEffect(() => { if (hidden) setView(null); }, [hidden]);
+  // and its lists, `/`'s and @'s: a box no one sees holds none open, nor their keys and clicks on the
+  // window (Esc in the page over it is that page's)
+  useEffect(() => { if (hidden) { setView(null); setSlashClosed(true); setAtClosed(true); } }, [hidden]);
   // a click outside the box and its panel closes the panel (anywhere in the window)
   useClicksEverywhere(!!view);
   useEffect(() => {

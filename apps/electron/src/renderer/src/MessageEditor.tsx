@@ -103,7 +103,8 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
     // (Cmd+Z doesn't take a draft back out)
     setText: (text) => editor.update(() => $putText(text), { tag: 'history-merge' }),
     quote: (text) => editor.update(() => $quoteAtCaret(text)),
-    focus: () => editor.focus(),
+    // the box first, at once (Lexical's own focus waits for its next update), then its cursor
+    focus: () => { editor.getRootElement()?.focus({ preventScroll: true }); editor.focus(); },
     // no cursor left behind to put back, so the editor doesn't take focus again
     blur: () => { editor.update(() => $setSelection(null)); editor.blur(); },
     mention: (name) => editor.update(() => {

@@ -178,7 +178,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* a GitHub offer's card starts its work when clicked anywhere but its buttons (GITHUBWORK-10) */
 .ask-card.is-startable, .waiting-row.is-startable { cursor: pointer; }
 /* Home keeps it short: what happened in 3 lines at most, the command or plan in
-   2 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
+   4 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
    scrolling inside the card (TASKS-17) */
 .ask-card .tc-ask-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .ask-card .tc-ask.is-full .tc-ask-text {

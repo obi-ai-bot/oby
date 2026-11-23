@@ -244,7 +244,6 @@ export type PeerMessage = { who: string; text: string; ago: number; task?: strin
 // unread: something in it you haven't opened yet (a blue dot on it, and on its Obys)
 export type PeerConvo = { id: string; title: string; with: string[]; messages: PeerMessage[]; unread?: boolean };
 
-// how long ago: now, minutes under an hour, hours under a day, then days
 // What a permission asks to do, by its tool as obid names it (Codex's commands and file changes too:
 // Bash, Edit), in the words after its agent's name (docs/contracts/live-task.md, LIVETASK-19, 21):
 // "asks to run a command", "asks to edit a file"; none for a tool with no plain words
@@ -256,5 +255,8 @@ export function asksTo(tool: string | undefined, detail = ''): string | undefine
   if (tool === 'WebSearch') return 'search the web';
   return undefined;
 }
+// those words after its agent's name, in the side panel and Waiting for you alike
+export const asksWords = (tool: string | undefined, detail?: string) => { const to = asksTo(tool, detail); return to ? `asks to ${to}` : 'asks for permission'; };
 
+// how long ago: now, minutes under an hour, hours under a day, then days
 export const ago = (min: number) => (min < 1 ? 'now' : min < 60 ? `${Math.round(min)}m` : min < 24 * 60 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 1440)}d`);

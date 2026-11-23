@@ -79,6 +79,20 @@ describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
     s.inbox = [];
   });
 
+  // round 2 of #2887: the plan is the owner's to approve; a title of obid's that is a question stays one
+  it('LIVETASK-24: a plan is asked of the owner, and no headline asks twice', () => {
+    const plan = { id: 'j1', agent: 'claude', mode: 'plan', permission: { id: 'p1', tool: 'ExitPlanMode', title: 'Approve the plan?', detail: '1. Read\n2. Fix', rule: null, always: null } } as unknown as Job;
+    const ask = live.itemAsk(item('permission', { text: 'Approve the plan?' }), undefined, null, plan);
+    expect(ask.headline).toBe('Go with this plan?');
+    expect(ask.headline).not.toMatch(/Let |\?\?/);
+    const asks = { id: 'j1', agent: 'codex', permission: { id: 'p2', tool: 'Foo', title: 'Use the vault for this?', detail: '', rule: null, always: null } } as unknown as Job;
+    expect(live.itemAsk(item('permission', { text: 'Use the vault for this?' }), undefined, null, asks).headline).toBe('Use the vault for this?');
+    for (const [tool, title, headline] of [['WebSearch', 'Search the web', 'Let Codex search the web?'], ['mcp__x__y', 'Use mcp__x__y', 'Let Codex use mcp__x__y?'], ['Write', 'Write notes.md', 'Let Codex write notes.md?']]) {
+      const j = { id: 'j1', agent: 'codex', permission: { id: 'p3', tool, title, detail: '', rule: null, always: null } } as unknown as Job;
+      expect(live.itemAsk(item('permission', { text: title }), undefined, null, j).headline).toBe(headline);
+    }
+  });
+
   // obid's permission item: its title the task's, its text the permission's own title (docs/api/inbox.md)
   it('LIVETASK-24: a permission\'s headline is what it asks, in obid\'s words, never its task\'s title (#2788)', () => {
     const write = item('permission', { title: 'Create docs/hello.md word', text: 'Edit hello.md', options: ['Allow', 'Always allow', 'Deny'] });

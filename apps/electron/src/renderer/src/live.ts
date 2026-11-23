@@ -345,9 +345,14 @@ const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', 
 // and its command or files under them (docs/contracts/live-task.md, LIVETASK-24)
 const permissionAsk = (j: Pick<Job, 'agent' | 'mode'> & { permission: NonNullable<Job['permission']> }) => {
   const p = j.permission, who = agentOf(j.agent).name;
-  const what = p.tool === 'Bash' ? 'run a command' : p.title ? p.title[0].toLowerCase() + p.title.slice(1) : asksTo(p.tool, p.detail) ?? 'go on';
   const mode = j.mode ? MODES.find((m) => m.id === j.mode) ?? (j.mode === SANDBOX.id ? SANDBOX : undefined) : undefined;
-  return { headline: `Let ${who} ${what}?`, text: p.why ?? (mode ? `${mode.label} mode: ${mode.help}.` : ''), tool: p.tool };
+  const why = { text: p.why ?? (mode ? `${mode.label} mode: ${mode.help}.` : ''), tool: p.tool };
+  // the agent's plan is the owner's to approve, never something the agent is let do: Sangam's plan
+  // card (mock.ts), and any title of obid's that is a question already is asked as obid wrote it
+  if (p.tool === 'ExitPlanMode') return { ...why, headline: 'Go with this plan?' };
+  if (p.title?.trim().endsWith('?')) return { ...why, headline: p.title.trim() };
+  const what = p.tool === 'Bash' ? 'run a command' : p.title ? p.title[0].toLowerCase() + p.title.slice(1) : asksTo(p.tool, p.detail) ?? 'go on';
+  return { ...why, headline: `Let ${who} ${what}?` };
 };
 export const itemAsk = (item: InboxItem, detail?: string, question?: AgentQuestion | null, job?: Job): Ask => {
   // a kind this build doesn't know: obid's words, its kind as its label, and nothing to answer (WIRE-2)
