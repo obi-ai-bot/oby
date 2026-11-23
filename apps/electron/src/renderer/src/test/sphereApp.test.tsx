@@ -501,14 +501,15 @@ describe('SPHEREAPP-15 to 17: the live Obysphere’s picture', () => {
   const policyOf = (admins: string[]) => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin: admins.includes('wellington'), refused: null, why: null, admins, me: 'wellington' });
   const sphereSetPicture = vi.fn();
   const sphereRemovePicture = vi.fn();
-  async function settings(admins: string[], image: string | null) {
+  // stalls: main's picture read never answers
+  async function settings(admins: string[], image: string | null | 'stalls') {
     answers['GET /v1/obid/sphere'] = JOINED;
     answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
     sphereSetPicture.mockReset(); sphereRemovePicture.mockReset();
     Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
       onSphere: () => () => {}, spherePolicy: vi.fn(async () => policyOf(admins)),
       sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
-      spherePicture: vi.fn(async () => picture(image)), sphereSetPicture, sphereRemovePicture,
+      spherePicture: vi.fn(() => (image === 'stalls' ? new Promise(() => {}) : Promise.resolve(picture(image)))), sphereSetPicture, sphereRemovePicture,
     });
     await import('../spheres');
     await settle();
@@ -525,6 +526,13 @@ describe('SPHEREAPP-15 to 17: the live Obysphere’s picture', () => {
     root = createRoot(host);
     vi.resetModules();
     await settings(['wellington'], null);
+    expect(avatar()).toBeNull();
+    expect(host.querySelector('.set-avatar .sphere-tile-letter')!.textContent).toBe('D');
+  });
+
+  it('sphereapp_15: a picture main is still reading never holds up the Obysphere and its members', async () => {
+    await settings(['wellington'], 'stalls');
+    expect([...host.querySelectorAll('.set-member .set-label')].map((l) => l.textContent)).toContain('dana');
     expect(avatar()).toBeNull();
     expect(host.querySelector('.set-avatar .sphere-tile-letter')!.textContent).toBe('D');
   });

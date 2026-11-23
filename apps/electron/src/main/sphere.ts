@@ -7,7 +7,7 @@ import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
 import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
-import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPicture, readPolicy, rebindOffer, setAdmin, setPicture, signinStatus, withdrawInvitation, centreSquare, fitPicture, type AdminsAnswer, type InvitesAnswer, type PictureAnswer, type PolicyAnswer } from '../shared/sphere';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPicture, readPolicy, rebindOffer, setAdmin, setPicture, signinStatus, withdrawInvitation, centreSquare, fitPicture, PICTURE_PIXELS, type AdminsAnswer, type InvitesAnswer, type PictureAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
@@ -99,15 +99,18 @@ export function signinListener(): Promise<{ returnTo: string; back: Promise<{ st
 }
 
 // The owner's image file as the Sphere takes its picture (SPHEREAPP-16): read by main itself, at most
-// 20 MB, a PNG or JPEG; its centre square, 256 px a side, as a PNG under 128 KB (fitPicture). Null
-// for a file that isn't one.
-export function squarePng(file: string): Uint8Array | null {
-  try { if (statSync(file).size > 20 * 1024 * 1024) return null; } catch { return null; }
+// 20 MB, a PNG or JPEG of at most PICTURE_PIXELS; its centre square, 256 px a side, as a PNG under
+// 128 KB (fitPicture). Else why not, in words.
+export function squarePng(file: string): Uint8Array | { why: string } {
+  const unreadable = { why: 'Oby can’t read that image. Pick a PNG or JPEG.' };
+  const tooLarge = { why: 'That image is too large. Pick one under 8,192 pixels a side.' };
+  try { if (statSync(file).size > 20 * 1024 * 1024) return tooLarge; } catch { return unreadable; }
   const image = nativeImage.createFromPath(file);
-  if (image.isEmpty()) return null;
+  if (image.isEmpty()) return unreadable;
   const { width, height } = image.getSize();
+  if (width * height > PICTURE_PIXELS) return tooLarge;
   const square = image.crop(centreSquare(width, height));
-  return fitPicture((side) => new Uint8Array(square.resize({ width: side, height: side, quality: 'best' }).toPNG()));
+  return fitPicture((side) => new Uint8Array(square.resize({ width: side, height: side, quality: 'best' }).toPNG())) ?? unreadable;
 }
 
 export function sphering(trusted: Trusted, show: () => BrowserWindow) {
@@ -126,6 +129,8 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   });
   void keep();
   setInterval(() => void keep(), 5 * 60_000);
+  // the Obysphere's picture as main last read it (SPHEREAPP-15), forgotten when the membership changes
+  let picture: PictureAnswer | null = null;
 
   // The one join path (SPHEREAPP-3 and 4): a link opened as oby://, or pasted in the app (first
   // run's Obysphere step, Settings › Obysphere). The owner's Join in this native dialog is what
@@ -143,6 +148,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     if (response !== 0) return { kind: 'cancelled' };
     try {
       await join(obid, ownerKey, invite);
+      picture = null;
       void keep();
       if (!w.isDestroyed()) w.webContents.send('sphere', { sphere: invite.sphere, name: invite.name });
       return { kind: 'joined', name: invite.name };
@@ -179,6 +185,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   ipc(trusted).handle('sphere-leave', [], async (e) => {
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
     try {
+      picture = null;
       const { membership, untold, sphere } = await leave(obid, ownerKey);
       if (untold) void said(w, `You left ${sphere}, but it couldn’t be told.`, `${untold}. It still lists your Oby until its admin removes it.`);
       return untold ?? (membership.state === 'none' ? null : 'obid is still in it.');
@@ -245,6 +252,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       keep: (k) => { replaceKey('owner-key', k); key = k; },
     });
     if (r.kind === 'failed') return r.why;
+    picture = null;
     void keep();
     if (!w.isDestroyed()) w.webContents.send('sphere', { sphere: where.sphere, name: where.sphere });
     return null;
@@ -274,7 +282,6 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // isn't fetched again), handed to the page as a data: URL; set from a file picked in main's own
   // dialog, and removed, only right after a click or key main saw itself, one each, with the
   // owner's admin token. The page sends no bytes: main reads the file the owner picked.
-  let picture: PictureAnswer | null = null;
   const pictured = (a: PictureAnswer) => { if (a.refused === null) picture = a; return a; };
   const noPicture = (why: string): PictureAnswer => ({ sphere: null, sha256: null, image: null, refused: 'failed', why });
   ipc(trusted).handle('sphere-picture', [], async () => pictured(await readPicture(obid, ownerKey, fetch, picture)), null);
@@ -284,7 +291,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     const { canceled, filePaths } = await dialog.showOpenDialog(w, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }] });
     if (canceled || !filePaths[0]) return null;
     const png = squarePng(filePaths[0]);
-    if (!png) return noPicture('Oby can’t read that image. Pick a PNG or JPEG.');
+    if ('why' in png) return noPicture(png.why);
     return pictured(await setPicture(obid, ownerKey, png));
   }, null);
   ipc(trusted).handle('sphere-remove-picture', [], async () => (

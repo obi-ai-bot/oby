@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -22,6 +22,11 @@ const the = vi.hoisted(() => ({
   policies: 0,
   joins: 0,
   invites: 0,
+  // the file main's open dialog picks (none: Cancel), and the size its image decodes to
+  pick: null as string | null,
+  decoded: { width: 0, height: 0 },
+  // the last answer main's picture read was handed to keep
+  lastPicture: undefined as unknown,
 }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
@@ -57,7 +62,7 @@ vi.mock('electron', async () => {
   return {
     app: the.app, BrowserWindow, Notification: class { static isSupported = () => true; },
     dialog: {
-      showOpenDialog: async () => { the.dialogs++; return { canceled: true, filePaths: [] }; },
+      showOpenDialog: async () => { the.dialogs++; return the.pick ? { canceled: false, filePaths: [the.pick] } : { canceled: true, filePaths: [] }; },
       showMessageBox: async () => { the.dialogs++; return { response: 1 }; },
     },
     ipcMain: { on: capture('on'), handle: capture('handle') },
@@ -68,6 +73,10 @@ vi.mock('electron', async () => {
     clipboard: { readText: () => '' },
     // the artifact preview's view and its partition (artifactPreview.ts): made only when an artifact first shows
     WebContentsView: class {}, session: { fromPartition: () => ({}) },
+    nativeImage: { createFromPath: () => {
+      const image = { isEmpty: () => false, getSize: () => the.decoded, crop: () => image, resize: () => image, toPNG: () => Buffer.alloc(40) };
+      return image;
+    } },
     shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
@@ -101,9 +110,10 @@ vi.mock('../../../shared/sphere', async (original) => ({
   getBackIn: async () => { the.invites++; return { kind: 'back', owner: 'wellington', admin: false }; },
   signinStatus: async () => ({ providers: [{ id: 'google', name: 'Google' }], linked: false }),
   addSignin: async () => { the.invites++; return { linked: true }; },
-  readPicture: async () => ({ sphere: 'demo', sha256: null, image: null, refused: null, why: null }),
+  readPicture: async (_c: unknown, _k: unknown, _h: unknown, last: unknown) => { the.lastPicture = last; return { sphere: 'demo', sha256: null, image: null, refused: null, why: null }; },
   setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null) => { the.invites++; return { sphere: 'demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null }; },
   centreSquare: () => ({ x: 0, y: 0, width: 1, height: 1 }), fitPicture: () => null,
+  PICTURE_PIXELS: (await original<typeof import('../../../shared/sphere')>()).PICTURE_PIXELS,
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -568,6 +578,29 @@ describe('SPHEREAPP-16 and 17', () => {
     expect(await call('sphere-set-picture', own())).toBeNull();
     expect(the.dialogs).toBe(before.dialogs + 1);
     expect(the.invites).toBe(before.invites);
+  });
+
+  it('sphereapp_16: an owner’s image that decodes past 8192 × 8192 pixels is refused before it’s resized or sent', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const dir = mkdtempSync(join(tmpdir(), 'oby-picture-'));
+    the.pick = join(dir, 'huge.png');
+    writeFileSync(the.pick, 'x');
+    the.decoded = { width: 9000, height: 9000 };
+    const before = the.invites;
+    try {
+      input();
+      expect(await call('sphere-set-picture', own())).toMatchObject({ refused: 'failed', why: 'That image is too large. Pick one under 8,192 pixels a side.' });
+      expect(the.invites).toBe(before);
+    } finally { the.pick = null; the.decoded = { width: 0, height: 0 }; }
+  });
+
+  it('sphereapp_15: the picture main kept is forgotten when the membership changes', async () => {
+    await call('sphere-picture', own());
+    expect(await call('sphere-picture', own())).toBeTruthy();
+    expect(the.lastPicture).toMatchObject({ sphere: 'demo' });
+    await call('sphere-leave', own());
+    await call('sphere-picture', own());
+    expect(the.lastPicture).toBeNull();
   });
 
   it('sphereapp_17_the_picture_is_removed_only_right_after_a_click_main_saw', async () => {
