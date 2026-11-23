@@ -11,5 +11,6 @@ export const FINISH_WORDS: Record<FinishAction, string> = {
   initializeGit: 'Initialize Git',
 };
 
-// Where a new conversation works, as T3's labels say it (`BranchToolbar.logic.ts`)
-export const WORKSPACE_WORDS = { folder: 'This folder', worktree: 'A new worktree' } as const;
+// Where a new conversation works: one checkbox, Worktree, as Claude Code offers one (the owner's choice,
+// 2026-11-23); unchecked, this folder
+export const WORKTREE_WORDS = 'Worktree';

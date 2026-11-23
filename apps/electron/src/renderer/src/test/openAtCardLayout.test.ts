@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser, Page } from 'playwright-core';
 import { CHROME_HOOK_MS, chrome, openMock, type Mock } from './layout/mock';
 
-// A nested row opens its conversation at the task's card, lit (docs/contracts/live-task.md, LIVETASK-22,
-// LIVETASK-28), and the card stays in view above the drawer over the box, however tall the drawer grows:
+// A task row's menu (View details) opens its conversation at the task's card, lit (docs/contracts/live-task.md,
+// LIVETASK-28; a nested row opens the task's own thread instead, LIVETASK-22), and the card stays in view above the drawer over the box, however tall the drawer grows:
 // a question with described options makes it a third of the window (#2786). The drawer takes its own
 // row under the thread, so as it grows the thread's room shrinks from the bottom; a card at the thread's
 // end went out under it, Oby's message above it cut at the drawer's edge. Measured in a real Chrome, in
@@ -25,7 +25,7 @@ const drawn = (page: Page) => page.evaluate(() => {
 });
 
 describe('opening a conversation at a task, laid out', () => {
-  it('LIVETASK-28: a nested row opens its conversation with the task\'s card in view, lit, above a drawer that grows tall', async (t) => {
+  it('LIVETASK-28: a task row\'s menu opens its conversation with the task\'s card in view, lit, above a drawer that grows tall', async (t) => {
     if (typeof browser === 'string') {
       if (ci) throw new Error(browser);
       console.warn(`skipped: ${browser}`);
@@ -36,7 +36,8 @@ describe('opening a conversation at a task, laid out', () => {
       mock = await openMock(browser, { width: 994, height: 670 });
       const { page } = mock;
       // the task that asks to run a command: its card is at its conversation's end
-      await page.locator('.convo-kid', { hasText: 'Virtualize the side panel' }).click();
+      await page.locator('.convo-kid', { hasText: 'Virtualize the side panel' }).click({ button: 'right' });
+      await page.getByRole('menuitem', { name: 'View details' }).click();
       await page.locator('.msg-task-work.is-lit > .msg-task').waitFor();
       await page.waitForTimeout(400);
       const opened = await drawn(page);

@@ -283,7 +283,8 @@
             "CONVERSATION-AGENT-49",
             "CONVERSATION-AGENT-50",
             "CONVERSATION-AGENT-51",
-            "CONVERSATION-AGENT-52"
+            "CONVERSATION-AGENT-52",
+            "CONVERSATION-AGENT-53"
           ],
           "elsewhere": {
             "CONVERSATION-AGENT-10": "not built: retired (supervisor deleted).",
@@ -498,7 +499,10 @@
             "TASKCONV-34",
             "TASKCONV-35",
             "TASKCONV-36",
-            "TASKCONV-37"
+            "TASKCONV-37",
+            "TASKCONV-41",
+            "TASKCONV-42",
+            "TASKCONV-43"
           ],
           "elsewhere": {
             "TASKCONV-19": "not built: retired with `oby_shell`.",
@@ -1878,7 +1882,8 @@
             "SHORTCUTS-8": "Electron keys.",
             "SHORTCUTS-9": "Electron keys.",
             "SHORTCUTS-10": "Electron main's menu bar (release build without developer items).",
-            "SHORTCUTS-11": "Electron side panel search (Settings and actions)."
+            "SHORTCUTS-11": "Electron side panel search (Settings and actions).",
+            "SHORTCUTS-12": "Electron keyboard shortcut (shortcuts_12 in shortcuts.test.tsx)."
           }
         },
         "help.md": {
@@ -2194,7 +2199,12 @@
             "BROWSERAPP-41": "the Electron app's ring and pointer on a held tab, Give back's keyboard, and the live page seen through the panel (browser/store.tsx, browser/live.ts, browser/Webviews.tsx, browser/browser.css), as T3 Code keeps its overlays over its webview: browserHold.test.tsx; in the real app workflows/app/browser-104-live-webview.json; no obid API of its own",
             "BROWSERAPP-42": "the Electron main's hold around Fill in (main/device.ts fillSecret: take unless this device holds the tab, give back only the hold it took, each signed): device.test.ts; no obid API of its own",
             "BROWSERAPP-43": "the Electron main's typing into the tab's own webview (main/browserGuest.ts typeInto, FILL_PREP reload, focusField, FIELD_LENGTH; a password only into a password input, a code ask's kind read from obid; owner's agents' partitions only): browserFill.test.ts; no obid API of its own",
-            "BROWSERAPP-44": "the Electron main's guard after a fill (main/browserRelay.ts NO_SCRIPT, NOT_PASSED, filled, no screenshot while guarded, no read once a filled field shows, a guarded tab's commands one at a time, a filled tab's failed load bare; obid's agentCode, BROWSER-33): browserRelay.test.ts; no obid API of its own"
+            "BROWSERAPP-44": "the Electron main's guard after a fill (main/browserRelay.ts NO_SCRIPT, NOT_PASSED, filled, no screenshot while guarded, no read once a filled field shows, a guarded tab's commands one at a time, a filled tab's failed load bare; obid's agentCode, BROWSER-33): browserRelay.test.ts; no obid API of its own",
+            "BROWSERAPP-45": "the Electron app's owner's own tab (browser/address.ts as T3 Code's address bar, browser/store.tsx, browser/Webviews.tsx Owned, main/browserGuest.ts own and harden, the persist:oby-owner partition, never relayed): browserOwn.test.tsx; the real window on a scratch obid; no obid API of its own",
+            "BROWSERAPP-46": "the Electron main's web-pages-only rule and moves on the owner's own tab (main/browserGuest.ts ownPageOk, go, nav under OWN_THREAD, browser-own-go): browserOwn.test.tsx; no obid API of its own",
+            "BROWSERAPP-47": "the Electron app's list of the agents' local servers with no page (browser/Servers.tsx from the jobs' servers, TASKSERVERS-1 being obid's): browserOwn.test.tsx; the real window on a scratch obid with a stand-in job serving; no obid API of its own",
+            "BROWSERAPP-48": "the Electron app's New tab and the owner's tab's close (browser/Panel.tsx, browser/store.tsx newTab, close): browserOwn.test.tsx; no obid API of its own",
+            "BROWSERAPP-49": "the Electron main's relay holding obid's commands for a tab until its webview attaches (main/browserRelay.ts ATTACH_WAIT_MS, WAITING_MAX, hold, giveUp): browserRelay.test.ts; no obid API of its own"
           }
         },
         "computers-app.md": {
@@ -2284,6 +2294,9 @@
             "ARTIFACTS-10",
             "ARTIFACTS-11",
             "ARTIFACTS-12",
+            "ARTIFACTS-13",
+            "ARTIFACTS-14",
+            "ARTIFACTS-15",
             "ARTIFACTS-16",
             "ARTIFACTS-17",
             "ARTIFACTS-18",

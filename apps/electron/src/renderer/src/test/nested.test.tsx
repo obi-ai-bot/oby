@@ -69,8 +69,8 @@ async function on({ jobs = [], inbox = [], conversations = [] }: { jobs?: unknow
   const opened = vi.fn();
   return {
     opened,
-    side: (more: { activeTalk?: string } = {}) => renderToStaticMarkup(
-      <Sidebar open atHome={false} activeTalk={more.activeTalk} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none}
+    side: (more: { activeTalk?: string; active?: string } = {}) => renderToStaticMarkup(
+      <Sidebar open atHome={false} activeTalk={more.activeTalk} active={more.active} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none}
         onOpenTask={none} onOpenAgent={opened} onOpenChat={none} onOpenOby={none} onOpenMember={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} />,
     ).replaceAll('<!-- -->', ''),
   };
@@ -165,13 +165,33 @@ describe('a conversation\'s tasks, nested under it', () => {
     expect(nestOf(ended.side({ activeTalk: 'c1' }), 'Two fixes for today')).not.toContain('agents working');
   });
 
-  it('LIVETASK-22: a nested row is a mark of its progress; a click opens its conversation at its card, the conversation\'s row lit', async () => {
+  it('LIVETASK-22: a nested row is a session of its own; a click opens its own thread, and its row is lit while that shows', async () => {
     const { side, opened } = await on(TWO);
     const html = side({ activeTalk: 'c1' });
     expect(nestOf(html, 'Two fixes for today')).toMatch(/<button class="convo-kid" title="Fix iOS signing on Deskree Team"/);
+    // it carries its task's id (the human drive finds the task's own row by it, never by its title)
+    expect(nestOf(html, 'Two fixes for today')).toMatch(/<button class="convo-kid" title="Fix iOS signing on Deskree Team"[^>]*data-task-row="j2"/);
     expect(html).not.toContain('convo-kid is-active');
     clicks['Fix iOS signing on Deskree Team']();
     expect(opened).toHaveBeenCalledWith('j2');
+    // its own thread on top (the conversation under it): its row lit, so its conversation's rows show
+    const own = nestOf(side({ active: 'j2' }), 'Two fixes for today');
+    expect(own).toMatch(/<button class="convo-kid is-active" aria-current="true" title="Fix iOS signing on Deskree Team"/);
+    try {
+      // folded by the owner earlier, opening its task's own thread (its card) shows its rows once, the lit one among them
+      kept['oby.kidsShown'] = JSON.stringify({ c1: false });
+      const folded = await on(TWO);
+      expect(nestOf(folded.side(), 'Two fixes for today')).not.toContain('convo-kids');
+      const { revealKids } = await import('../nested');
+      revealKids('c1');
+      expect(nestOf(folded.side({ active: 'j2' }), 'Two fixes for today')).toContain('convo-kid is-active');
+      // the twist still folds them while the row is lit (LIVETASK-20), and that is kept
+      clicks['Hide Two fixes for today’s agents']();
+      expect(JSON.parse(kept['oby.kidsShown'])).toEqual({ c1: false });
+      expect(nestOf(folded.side({ active: 'j2' }), 'Two fixes for today')).not.toContain('convo-kids');
+    } finally {
+      delete kept['oby.kidsShown'];
+    }
   });
 });
 
@@ -187,7 +207,12 @@ describe('nested.ts', () => {
     expect(kidLine(task('running'))).toBe('Reading a.ts');
     expect(kidLine(task('running', { status: 'queued' }))).toBe('Queued');
     expect(kidLine(task('needs', { ask: { kind: 'question', headline: 'Which?', text: '', options: [] } }))).toBe('has a question');
-    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Run it?', text: '', options: [], detail: 'npm test' } }))).toBe('asks to run a command');
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Run it?', text: '', options: [], detail: 'npm test', tool: 'Bash' } }))).toBe('asks to run a command');
+    // an edit's detail is its files, never a command (the drive of 2026-11-23: "Codex asks to run a command" for an edit)
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Let Codex edit a.md?', text: '', options: [], detail: 'docs/a.md', tool: 'Edit' } }))).toBe('asks to edit a file');
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Let Codex edit 2 files?', text: '', options: [], detail: 'a.md, b.md', tool: 'Write' } }))).toBe('asks to edit files');
+    expect(kidsLine([task('needs', { ask: { kind: 'permission', headline: 'Let Codex fetch x.dev?', text: '', options: [], detail: 'https://x.dev', tool: 'WebFetch' } })])).toBe('Codex asks to fetch a web page');
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Let Codex use Foo?', text: '', options: [], detail: 'x', tool: 'Foo' } }))).toBe('asks for permission');
     expect(kidLine(task('done', { nothingDone: true }))).toBe('Nothing done');
     expect([kidState(task('done', { status: 'failed' })), kidState(task('done', { status: 'stopped' })), kidState(task('done'))]).toEqual(['failed', 'failed', 'done']);
     expect(kidsLine([task('running'), task('running')])).toBe('2 agents working');

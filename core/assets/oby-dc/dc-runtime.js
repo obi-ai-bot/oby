@@ -3,11 +3,11 @@
  *
  * Written from the format's description alone (holes, sc-for, sc-if, dc-import, x-import, helmet,
  * links between boards, `class Component extends DCLogic`, renderVals), never from another
- * runtime's code. It runs on React 18.3.1 (vendor/, MIT), with no Babel and nothing from a CDN:
+ * runtime's code. It runs on React 18.3.1 (react*.production.min.js beside it, MIT), with no Babel and nothing from a CDN:
  * every file it needs is served beside the board, so obid's artifact CSP (`script-src 'self'`,
  * `connect-src 'none'`) holds.
  *
- * What the server gives it, beside the board (src/lab/artifactview.rs):
+ * What obid gives it, beside the board (core/crates/obid/src/artifacts/view.rs):
  *   support.js          this file, after React and ReactDOM;
  *   __dc/boards.js      every board of the version: its template, its helmet, its logic's file;
  *   __dc/logic/<b>.js   each board's logic, `class Component extends DCLogic`, as a script of its

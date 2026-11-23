@@ -85,6 +85,14 @@ describe('BROWSERAPP-7: offered on obid only once obid answers GET /v1/browser',
     expect(host.querySelector('[data-browser="globe"]')?.getAttribute('aria-label')).toBe('Hide the browser');
     expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Clicking Sign in');
   });
+  it('browserapp_4: on the demo data at board 2, each tab clicked has its own strip: Sign up says what Codex does there', () => {
+    draw(2);
+    const tab = (name: string) => [...host.querySelectorAll('[role="tab"]')].find((t) => t.getAttribute('aria-label')?.includes(name) || t.textContent?.includes(name)) as HTMLElement;
+    act(() => tab('Sign up · Acme').click());
+    expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Typing in Email');
+    act(() => tab('Sign in · Acme').click());
+    expect(host.querySelector('aside.br .br-control-text')?.textContent).toBe('Codex is using this tab · Clicking Sign in');
+  });
 });
 
 describe('BROWSERAPP-11 to 13: the agent\'s asks over the message box', () => {

@@ -36,7 +36,7 @@ import ProfileMenu, { EditProfileModal, NewProfileModal } from './ProfileMenu';
 import { useProjects, useProjectsOn } from './projects';
 import ProjectSheet from './ProjectSheet';
 import AgentsList, { convoAbout } from './AgentsList';
-import { kidLine, kidTitle, kidsLine, kidsOf } from './nested';
+import { keepKids, keptKids, kidLine, kidTitle, kidsLine, kidsOf, onRevealKids } from './nested';
 
 import { AGENTS_SHOWN } from './panelFlags';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
@@ -83,7 +83,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   atHome: boolean;  // on Home's own page, nothing open over it
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
-  onOpenAgent?: (id: string) => void;  // a nested task: the conversation that started it, at its card (LIVETASK-28)
+  onOpenAgent?: (id: string) => void;  // a nested task: its own thread, over the conversation that started it (LIVETASK-22)
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
@@ -326,6 +326,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     return next;
   });
   const [newProject, setNewProject] = useState(false);
+  // the project just made: scrolled into view once its group shows (it may be below the fold)
+  const [made, setMade] = useState<string | null>(null);
+  useEffect(() => {
+    const group = made && list.current?.querySelector(`[data-project="${CSS.escape(made)}"]`);
+    if (group) { group.scrollIntoView({ block: 'nearest' }); setMade(null); }
+  });
+  // scrolled down: rows going under the title fade out rather than show cut in half
+  const [scrolled, setScrolled] = useState(false);
   // a project heading's menu (its ⋮, or a right-click: PROJECTS-26), and the sheet it opens on that
   // project, to change it or at the ask before deleting it
   const [projectMenu, setProjectMenu] = useState<{ id: string; at: DOMRect; atPointer?: boolean } | null>(null);
@@ -334,14 +342,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // A conversation's tasks, nested under its row (LIVETASK-19 to 21): shown for the open conversation,
   // the one holding the open task and one whose task needs you, unless the owner folded it; what the
   // owner chose is kept (oby.kidsShown: conversation id to shown or not)
-  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(() => {
-    try { const kept: unknown = JSON.parse(localStorage.getItem('oby.kidsShown') ?? '{}'); return kept && typeof kept === 'object' && !Array.isArray(kept) ? Object.fromEntries(Object.entries(kept).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean> : {}; } catch { return {}; }
-  });
+  const [kidsShown, setKidsShown] = useState<Record<string, boolean>>(keptKids);
   const showKids = (id: string, shown: boolean) => {
     const next = { ...kidsShown, [id]: shown };
     setKidsShown(next);
-    try { localStorage.setItem('oby.kidsShown', JSON.stringify(next)); } catch { /* not remembered, that's all */ }
+    keepKids(next);
   };
+  // a task's own thread opened: its conversation's rows show once, even folded (revealKids, LIVETASK-22)
+  useEffect(() => onRevealKids((chat) => setKidsShown((k) => { const { [chat]: _, ...rest } = k; return rest; })), []);
   const chatIdOf = (taskId: string) => chatOfTask(taskId)?.id;
   // the chats are searched, never the agents (Agents has no search)
   const searchable = SEARCHABLE.includes(section) && !(section === 'oby' && side === 'agents');
@@ -416,7 +424,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
     const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
     const nested = kids.length + arts.length > 0;
-    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
+    // one of its tasks' own thread showing: its row lit, so its rows show unless the owner folded them
+    // (opening that thread unfolds them once: revealKids)
+    const lit = kids.some((k) => k.id === active);
+    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
     return (
     <div key={c.id} className={`convo-nest${nested ? ' has-kids' : ''}`}>
     {nested && (
@@ -474,16 +485,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <EllipsisVertical size={14} strokeWidth={1.6} />
       </button>
     </div>
-    {/* its tasks, each a mark of its progress: its agent, its title, what it's on, its state (screen 03); a click opens this conversation at its card */}
+    {/* its tasks, each a session of its own: its agent, its title, what it's on, its state (screen 03); a click opens its own thread, its row lit */}
     {shown && (
       <div className="convo-kids" role="group" aria-label={`${c.title}’s tasks`}>
         {kids.map((k) => (
           <button
             key={k.id}
-            className="convo-kid"
+            className={`convo-kid${active === k.id ? ' is-active' : ''}`}
+            aria-current={active === k.id || undefined}
             title={kidTitle(k)}
             onClick={() => { markSeen(k.id); onOpenAgent?.(k.id); }}
             onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}
+            data-task-row={k.id}
           >
             <BrandMark brand={k.brand} size={14} />
             <span className="convo-kid-text"><b>{k.title}</b> · {kidLine(k)}</span>
@@ -664,7 +677,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         </div>
         {/* everything under the title scrolls together; the title stays */}
         <div className="sidebar-scroll">
-        <div ref={list} className="sidebar-list" onScroll={onScroll}>
+        <div ref={list} className={`sidebar-list${scrolled ? ' is-scrolled' : ''}`} onScroll={(e) => { onScroll(); setScrolled(e.currentTarget.scrollTop > 0); }}>
         {/* slides open under the title (a one-row grid going 0fr → 1fr) */}
         <div className={`sidebar-search-wrap${searching ? ' is-open' : ''}`}>
           <div>
@@ -738,7 +751,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               // while searching, a group with a match opens
               const shut = !q && projectsFolded.has(g.id);
               return (
-                <section key={g.id || 'none'} className={`sidebar-group project-group${shut ? ' is-folded' : ''}`}>
+                <section key={g.id || 'none'} className={`sidebar-group project-group${shut ? ' is-folded' : ''}`} data-project={g.id || undefined}>
                   {/* a project's heading has its own ⋮ beside it, so the heading stays a <button> */}
                   <div
                     className={`project-group-row${projectMenu?.id === g.id ? ' is-menu-open' : ''}`}
@@ -1008,7 +1021,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
       {profileMenu && !!profiles.list?.length && (
         <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} onEdit={setEditProfile} />
       )}
-      {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={() => setNewProject(false)} />}
+      {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={(p) => { setNewProject(false); setMade(p.id); }} />}
       {projectMenu && (
         <Menu at={projectMenu.at} align={projectMenu.atPointer ? 'left' : 'right'} onClose={() => setProjectMenu(null)} height={94} width={180}>
           <button role="menuitem" onClick={() => { setProjectSheet({ id: projectMenu.id, deleting: false }); setProjectMenu(null); }}>Edit project…</button>

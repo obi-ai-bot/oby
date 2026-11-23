@@ -268,7 +268,7 @@ impl Briefing {
         }
         lines.extend([
             String::new(),
-            "## Inbox: what only the user can answer, longest-waiting first".into(),
+            "## Waiting for you: what only the user can answer, longest-waiting first".into(),
             String::new(),
         ]);
         if self.inbox.is_empty() {
@@ -464,7 +464,10 @@ impl Briefing {
         }
         Some(format!(
             "# What the agents wrote, quoted\n\n{}\n\n{}\n",
-            fence_rule(&self.nonce, "coding agents, the inbox and failed jobs"),
+            fence_rule(
+                &self.nonce,
+                "coding agents, Waiting for you and failed jobs"
+            ),
             sections.join("\n\n")
         ))
     }
@@ -895,7 +898,7 @@ mod tests {
             at("## Accounts and their usage"),
             at("## Failures this week"),
             at("## Jobs"),
-            at("## Inbox"),
+            at("## Waiting for you"),
             at("## The conversation so far"),
             at("Times above are UTC"),
         ];

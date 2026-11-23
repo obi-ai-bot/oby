@@ -228,7 +228,7 @@ mod tests {
             let refused = jobs.message("c", "Looks good, go.", source).unwrap();
             assert_eq!(
                 refused.unwrap_err().0,
-                "It waits for the owner to approve its plan or send it back, in their inbox.",
+                "It waits for the owner to approve its plan or send it back, in Waiting for you.",
                 "{source:?}"
             );
             still("words not the owner's");

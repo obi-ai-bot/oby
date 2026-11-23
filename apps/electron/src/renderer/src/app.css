@@ -178,7 +178,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 /* a GitHub offer's card starts its work when clicked anywhere but its buttons (GITHUBWORK-10) */
 .ask-card.is-startable, .waiting-row.is-startable { cursor: pointer; }
 /* Home keeps it short: what happened in 3 lines at most, the command or plan in
-   2 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
+   4 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
    scrolling inside the card (TASKS-17) */
 .ask-card .tc-ask-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .ask-card .tc-ask.is-full .tc-ask-text {
@@ -188,7 +188,9 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   overflow-y: auto;
   scrollbar-width: thin;
 }
-.ask-card .tc-code { max-height: 56px; overflow-y: auto; scrollbar-width: none; }
+/* a command of up to four whole lines, a longer one scrolling with its bar shown, never cut through a line
+   with no way to the rest (the drive of 2026-11-23) */
+.ask-card .tc-code { max-height: calc(18px * 4 + 20px); overflow-y: auto; scrollbar-width: thin; }
 /* where it is in the stack ("2/5"), always there, between the arrows that go
    round it; then the way to its page, at the head's end */
 .ask-nav { flex: none; margin: -2px 0; display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
@@ -974,21 +976,16 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .composer-grid > .composer-tags { grid-area: tags; }
 .composer-grid > .composer-button { grid-area: plus; }
 .composer-grid > .composer-usage { grid-area: usage; }
-/* the end: voice while the box is empty; once there's something to send, voice
-   fades and shrinks away and send takes its place, a plain icon like voice and
-   +, fading in as it grows from 40%; emptied, back again (these outrank
-   .composer-button's own transition, further down) */
-.composer-grid > .composer-voice, .composer-grid > .composer-send { grid-area: end; }
-/* no talking (v1): send in the gauge's place, the gauge at the end */
+/* the end: send, a plain icon like +, dim and still till there's something to send, then lit (the
+   window has no voice button; these outrank .composer-button's own transition, further down) */
+.composer-grid > .composer-send { grid-area: end; }
+/* v1: send in the gauge's place, the gauge at the end */
 .composer-grid.is-send-first > .composer-send { grid-area: usage; }
 .composer-grid.is-send-first > .composer-usage { grid-area: end; }
-.composer-grid > .composer-voice { transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
-.composer-grid > .composer-voice.is-away { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in); }
-.composer-grid > .composer-send { opacity: 0; transform: scale(0.4); pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in), color var(--fade), background-color var(--fade); }
-/* no talking (v1): send stays at the end, dim and still till there's something to send */
+.composer-grid > .composer-send { pointer-events: none; transition: opacity 100ms var(--ease-in), transform 100ms var(--ease-in), color var(--fade), background-color var(--fade); }
 .composer-grid > .composer-send.is-always { opacity: 0.3; transform: scale(1); }
 .composer-grid > .composer-send.is-ready { opacity: 1; transform: scale(1); pointer-events: auto; color: var(--ink); transition: opacity 180ms var(--warm) 60ms, transform 320ms var(--spring) 60ms, color var(--fade), background-color var(--fade); }
-@media (prefers-reduced-motion: reduce) { .composer-send, .composer-voice { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { .composer-send { transition: none !important; } }
 /* The text (MessageEditor): one line tall to start, growing with what's typed up
    to 5 lines, then scrolling (the box around it scrolls, the cursor with it); the
    placeholder over it on one line, cut short at the box's edge rather than wrapping */
@@ -1585,6 +1582,8 @@ button.connector { width: 100%; text-align: left; }
 /* an empty list: nothing to scroll, so its words place themselves in the column (.sidebar-content) */
 .sidebar-scroll:has(.sidebar-empty.is-middle) { position: static; }
 .sidebar-list { height: 100%; overflow-y: auto; scrollbar-width: none; padding: 0 16px 8px; }
+/* rows scrolled up under the title: its top edge fades out, as the box's tags do, rather than cut a row flat */
+.sidebar-list.is-scrolled { mask-image: linear-gradient(transparent, #000 16px); }
 /* folded groups 4px apart; an open one adds 12px under its rows (below), 16px in all */
 .sidebar-group + .sidebar-group { margin-top: 4px; }
 /* the group's label row: click to fold. A chevron right after the label points
@@ -1683,10 +1682,9 @@ button.connector { width: 100%; text-align: left; }
 .finish-action:hover:not(:disabled) { background: var(--hover); }
 .finish-action:disabled { opacity: 0.5; cursor: default; }
 .finish-said { color: var(--item); }
-/* where a new conversation works: This folder or A new worktree (WORKSPACE-3) */
-.composer-workspace { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--hover); }
-.composer-workspace button { padding: 2px 8px; border: 0; border-radius: 999px; background: none; color: var(--item); font: inherit; font-size: var(--text-sm); cursor: pointer; }
-.composer-workspace button[aria-checked="true"] { background: var(--surface); color: inherit; }
+/* where a new conversation works: the Worktree checkbox beside the mode chip (WORKSPACE-3) */
+.composer-worktree { padding-right: 8px; }
+.composer-worktree[aria-checked="true"], .composer-worktree[aria-checked="true"] > svg:first-child { color: var(--ink); }
 .cant-run-text, .refusal-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cant-run-action { flex: none; padding: 3px 9px; border-radius: 8px; color: var(--ink); background: rgba(255, 255, 255, 0.08); font-size: var(--text-sm); }
 .cant-run-action:hover { background: rgba(255, 255, 255, 0.14); }
@@ -2567,9 +2565,16 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* @'s files (COMPOSER-14), after the Obys: the name, its path under it */
 .mention-panel .mention-file .add-item-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .slash-panel .add-empty { margin: 10px 12px; line-height: 18px; }
-/* `/`'s skills (COMPOSER-25): the name, its description under it on one line, as Run on another Mac's rows */
-.mention-panel button.mention-skill { height: 46px; }
-.mention-panel .mention-skill .add-item-text, .mention-panel .mention-skill .add-item-about { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* `/`'s skills (COMPOSER-25), as Claude's own slash menu: a compact popover over the box's left edge,
+   a third of its width, its names alone, as tall as fits above the box (at most about 13 rows; the
+   max-height is set as it opens) and scrolling inside, the last row cut to show there's more */
+.skill-panel { right: auto; width: min(340px, 100%); max-height: 376px; overflow-y: auto; scrollbar-width: none; border-radius: 16px; }
+.mention-panel button.mention-skill { flex: none; height: 30px; }
+.mention-panel .mention-skill .add-item-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* the lit row's description, in a small tip beside the popover, at that row */
+.skill-tip { position: absolute; z-index: 21; max-width: 260px; padding: 5px 9px; transform: translateY(-50%); background: var(--surface); border: 1px solid var(--surface-edge); border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4); color: var(--text); font-size: var(--text-sm); line-height: 17px; pointer-events: none; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+/* after a lone /, "Type to filter": past the slash typed, as a placeholder is */
+.composer-hint .composer-hint-typed { visibility: hidden; }
 /* Stop pressed (COMPOSER-12): "Stopping…", its square dimmed and turning until the turn ends */
 .composer-grid > .composer-send.is-stopping { opacity: 0.5; cursor: default; }
 .composer-send.is-stopping svg { animation: stopping 1.2s linear infinite; }

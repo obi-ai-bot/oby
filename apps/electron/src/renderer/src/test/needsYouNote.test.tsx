@@ -22,10 +22,10 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function shown(chats: Chat[], open: string | null, onOpen = vi.fn()) {
+async function shown(chats: Chat[], open: string | null, onOpen = vi.fn(), onHome = false) {
   page.chats = chats;
   const NeedsYouNote = (await import('../NeedsYouNote')).default;
-  await act(async () => root.render(<NeedsYouNote open={open} onOpen={onOpen} />));
+  await act(async () => root.render(<NeedsYouNote open={open} onHome={onHome} onOpen={onOpen} />));
   return onOpen;
 }
 const note = () => host.querySelector('.needs-note');
@@ -48,6 +48,19 @@ describe('ALERTS-21: another conversation needs you, in the window', () => {
     expect(note()).toBeNull();
     // the open one newly needing you: you're looking at it
     await shown([chat('a', 'A', true), chat('b', 'B', true)], 'b');
+    expect(note()).toBeNull();
+  });
+
+  // the drive of 2026-11-23: on Home the note sat on Oby's face over the very card Home's stack shows
+  it('alerts_21_on_home_its_stack_says_it_and_no_note_covers_it', async () => {
+    await shown([chat('a', 'A'), chat('b', 'B')], null, vi.fn(), true);
+    await shown([chat('a', 'A'), chat('b', 'B', true)], null, vi.fn(), true);
+    expect(note()).toBeNull();
+    // a page over Home (Settings, say): the note says it
+    await shown([chat('a', 'A'), chat('b', 'B', true), chat('c', 'C', true)], null, vi.fn(), false);
+    expect(note()?.textContent).toContain('C');
+    // back on Home, the note goes: the stack shows it
+    await shown([chat('a', 'A'), chat('b', 'B', true), chat('c', 'C', true)], null, vi.fn(), true);
     expect(note()).toBeNull();
   });
 

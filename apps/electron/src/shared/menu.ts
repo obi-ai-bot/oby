@@ -53,12 +53,13 @@ export function appMenu({ dev, help }: { dev: boolean; help: HelpActions }): Men
         { label: 'Speech', submenu: [{ role: 'startSpeaking' }, { role: 'stopSpeaking' }] },
       ],
     },
-    // Electron's View menu (its viewMenu role), the side panel's toggle first and its developer
+    // Electron's View menu (its viewMenu role), the side panel's toggle and the browser first and its developer
     // items only in a run from source
     {
       label: 'View',
       submenu: [
         shortcut('sidebar.toggle'),
+        shortcut('browser.show'),
         { type: 'separator' },
         ...(dev ? [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }, { type: 'separator' }] as MenuItemConstructorOptions[] : []),
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },

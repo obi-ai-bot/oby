@@ -142,7 +142,7 @@ function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onOpenT
   // a GitHub offer: its lean card, the pager on its line only when there are several (GITHUBWORK-20 to 27)
   const github = !entry.task && entry.url && entry.ask?.kind === 'start' ? { ...entry, url: entry.url, ask: entry.ask } : undefined;
   return (
-    <article ref={ref} className={`ask-card ${className}${github ? ' is-github' : ''}${start ? ' is-startable' : ''}`} aria-label={entry.title} onClick={onCard}>
+    <article ref={ref} className={`ask-card ${className}${github ? ' is-github' : ''}${start ? ' is-startable' : ''}`} aria-label={entry.title} onClick={onCard} data-task-ask={entry.task ? entry.id : undefined}>
       {github ? <GitHubAsk entry={github} nav={many ? nav : undefined} onAnswer={onAnswer} onOpenTalk={onOpenTalk} /> : <>
         <header className="tc-head">
           {entry.brand && <BrandMark brand={entry.brand} size={16} mono />}
