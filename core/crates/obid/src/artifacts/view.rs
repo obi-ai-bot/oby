@@ -410,6 +410,36 @@ mod tests {
         assert!(store.served(&id, "2", "__canvas.html").is_none());
     }
 
+    /// ARTIFACTS-28: a design that keeps files at the paths obid builds its runtime at still draws
+    /// on them (`served`), and reads them as kept, byte for byte, under the board policy (`kept`,
+    /// the route's `?kept=1`): Code shows the zip's own `support.js`, never Oby's runtime.
+    #[tokio::test]
+    async fn artifacts_28_a_designs_own_support_js_reads_as_kept() {
+        let t = Temp::new("view-28");
+        let own = [
+            ("support.js", "// the design's own support.js\n"),
+            ("ds/view/support.js", "// its folder's own\n"),
+            ("__canvas.html", "<p>its own canvas page</p>\n"),
+        ];
+        for (path, text) in own {
+            t.write(&format!("design/{path}"), text);
+        }
+        let (store, id) = published(&t).await;
+        for (path, text) in own {
+            let drawn = store.served(&id, "1", path).unwrap();
+            assert!(
+                drawn.bytes != text.as_bytes(),
+                "{path}: the pane still draws"
+            );
+            let kept = store.kept(&id, "1", path).unwrap();
+            assert_eq!(String::from_utf8_lossy(&kept.bytes), text, "{path}");
+            assert_eq!((kept.policy, kept.cors), (BOARD_POLICY, false), "{path}");
+        }
+        // What it doesn't keep, it has no kept bytes for: the runtime is never one of its files.
+        assert!(store.kept(&id, "1", "__dc/boards.js").is_none());
+        assert!(store.kept(&id, "1", "Card.dc.html").is_some());
+    }
+
     /// ARTIFACTS-15: the board policy is obid's artifact policy but for its framing: no fetch,
     /// nothing from outside, no eval, sandboxed with scripts only (no window, no popup).
     #[test]

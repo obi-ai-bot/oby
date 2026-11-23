@@ -56,8 +56,13 @@ async function app(capabilities = ['artifact-turn-v1'], kept: Record<string, Art
       kept[saved[1]] = { ...a, versions: [...a.versions, { ...version(next), job: undefined }] };
       return { status: 201, text: JSON.stringify({ id: saved[1], version: next }) };
     }
-    const file = /^\/v1\/artifacts\/([^/]+)\/(\d+)\/(.+)$/.exec(path);
-    if (file) return { status: 200, text: file[3] === 'index.html' ? `<h1>Hello v${file[2]}</h1>` : `h1 { color: teal } /* v${file[2]} */` };
+    const file = /^\/v1\/artifacts\/([^/]+)\/(\d+)\/([^?]+)(\?kept=1)?$/.exec(path);
+    if (file) {
+      // as obid serves a design: what draws it ahead of a kept file of the same name, but with ?kept=1 (ARTIFACTS-28)
+      if (kept[file[1]]?.kind === 'design' && !file[4] && /(^|\/)support\.js$|^__canvas\.html$|^__dc\//.test(file[3])) return { status: 200, text: '/* Oby’s runtime */' };
+      if (file[3].endsWith('support.js')) return { status: 200, text: `// the design’s own support.js v${file[2]}` };
+      return { status: 200, text: file[3] === 'index.html' ? `<h1>Hello v${file[2]}</h1>` : `h1 { color: teal } /* v${file[2]} */` };
+    }
     const one = /^\/v1\/artifacts\/([^/?]+)$/.exec(path);
     if (one) return kept[one[1]] ? { status: 200, text: JSON.stringify(kept[one[1]]) } : { status: 404, text: '{"error":"There\'s no such artifact."}' };
     if (path === '/v1/artifacts') return { status: 200, text: JSON.stringify(Object.values(kept)) };
@@ -119,6 +124,28 @@ describe('ARTIFACTSAPP-5', () => {
     // back to Preview, its view comes back
     await act(async () => tab('Preview').click());
     expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ id: ID, version: 1 }));
+  });
+});
+
+describe('ARTIFACTSAPP-31', () => {
+  // a Claude Design zip that keeps its own support.js: Code reads it as kept, never Oby's runtime
+  // obid serves at that path to draw the design, and typing those bytes back unedits it
+  it('artifactsapp_31_code_shows_a_designs_own_support_js_not_obys_runtime', async () => {
+    const design: Artifact = { ...page(1), kind: 'design', versions: [{ ...version(1), files: ['canvas.json', 'Main.dc.html', 'support.js'] }] };
+    const { store, host, preview, calls } = await app(undefined, { [ID]: design });
+    await act(async () => store.openArtifact(design));
+    // the pane still draws it (main's relay reads the plain route, ARTIFACTSAPP-30)
+    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ id: ID, version: 1 }));
+    await act(async () => tabNamed(host, 'Code').click());
+    await waitFor(() => expect(tabNamed(host, 'support.js')).toBeTruthy());
+    await act(async () => tabNamed(host, 'support.js').click());
+    await waitFor(() => expect(host.querySelector('[data-artifact-code="support.js"] .cm-content')?.textContent).toBe('// the design’s own support.js v1'));
+    expect(calls.filter((c) => c.path.startsWith(`/v1/artifacts/${ID}/1/`)).map((c) => c.path)).toContain(`/v1/artifacts/${ID}/1/support.js?kept=1`);
+    // Save's base is the kept file: an edit and its undoing leave nothing to save
+    await type(host, 'support.js', '// changed');
+    expect(button(host, 'Save as v2')).toBeTruthy();
+    await type(host, 'support.js', '// the design’s own support.js v1');
+    expect(button(host, 'Save as v2')).toBeUndefined();
   });
 });
 

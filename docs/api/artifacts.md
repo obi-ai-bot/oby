@@ -35,7 +35,7 @@ Referrer-Policy: no-referrer
 
 **A design's runtime** ([the contract](../contracts/artifacts.md), ARTIFACTS-13 to 15). For a `design` version, the file route also serves what draws it, built when asked and never stored:
 
-- `support.js`, and `<folder>/support.js` (what a board names as `./support.js`; ahead of any file of that name the version keeps): React 18.3.1, ReactDOM 18.3.1 (MIT, `core/assets/oby-dc/LICENSE-react`) and Oby's runtime of the `.dc.html` format (`core/assets/oby-dc/dc-runtime.js`);
+- `support.js`, and `<folder>/support.js` (what a board names as `./support.js`; ahead of any file of that name the version keeps, but with `?kept=1`, below): React 18.3.1, ReactDOM 18.3.1 (MIT, `core/assets/oby-dc/LICENSE-react`) and Oby's runtime of the `.dc.html` format (`core/assets/oby-dc/dc-runtime.js`);
 - `__dc/boards.js`: `window.__OBY_DC.boards`, every board's `{template, helmet, logic, defaults}` (`defaults`: its `data-props`' `default`s, `$`-named ones left out);
 - `__dc/logic/<board>.js`: that board's logic (`<script type="text/x-dc" data-dc-script>`) as a script of its own; `404` for a board with none;
 - `__canvas.html`: the canvas host, its `canvas.json` inside it as data (`</` and `<!--` escaped), each board of a page in a frame of its own with `sandbox="allow-scripts"`.
@@ -47,6 +47,8 @@ Content-Security-Policy: default-src 'self' data: blob:; script-src 'self' 'unsa
 ```
 
 The runtime's paths are root-relative (`/__dc/boards.js`, a board's `/_blob/<id>`), so a design draws only where its version is an origin of its own: the app's `oby-artifact://<id>-v<n>/`. Through this route, which puts `/v1/artifacts/{id}/{version}/` in front, a design shows as its files.
+
+**`?kept=1`** (ARTIFACTS-28): the file the version keeps at that path, byte for byte, never what obid builds beside a design there. A Claude Design zip may keep its own `support.js` or `__canvas.html`: the plain path serves Oby's runtime or canvas host, which is what draws the design, and `?kept=1` serves the zip's own file, under the board policy and with no `Access-Control-Allow-Origin`. A path the version doesn't keep (`__dc/boards.js`, `__dc/logic/…`) is `404` with it. For any other file, and any kind but a design, it serves what the plain path serves. Any other value of `kept`, or none, reads as the plain path. The app's Code tab, and so its Save base, reads with it; the pane, through main's relay, reads the plain path.
 
 A page's scripts run, but:
 
