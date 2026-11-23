@@ -554,9 +554,10 @@ def reclose_task(job):
     text, as a regular file even where the branch's done/ copy is a symlink, whose target is never written.
     A branch whose tasks/ file differs from the base's is left for check_task_closed.
     It pushes only a branch origin already has at HEAD, and only once the secret scan passed what leaves, the commit's
-    diff read as text whatever .gitattributes, an external diff, a textconv or a colour setting say (outgoing.py): a
-    scan that finds a secret or can't run, or a git that can't write that copy, refuses the advance. Otherwise the
-    commit stays here and the gate refuses the unpushed branch, for the builder to push as it pushes everything else."""
+    diff read as text whatever .gitattributes, an external diff, a textconv, a colour setting or a replace ref say
+    (outgoing.py): a scan that finds a secret or can't run, or a git that can't write that copy, refuses the
+    advance. Otherwise the commit stays here and the gate refuses the unpushed branch, for the builder to push as it
+    pushes everything else."""
     key = job["issue"]
     done, todo = f"factory/queue/done/{key}.md", f"factory/queue/tasks/{key}.md"
     if not (in_head(job, done) and in_head(job, todo)):

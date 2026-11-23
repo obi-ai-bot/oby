@@ -94,9 +94,9 @@ nothing ignored is in it; the worktree's own index is untouched), and on ssh's
 standard input a line with the size of `git diff --binary --full-index <base>
 <tree>`, then that diff, after `gitleaks stdin` with the main checkout's
 .gitleaks.toml passed the same change read as text, from outgoing.py beside it,
-whatever .gitattributes, an external diff, a textconv or a colour setting say.
-A finding, a
-scanner that can't run, or a git that can't write that copy keeps the run here.
+whatever .gitattributes, an external diff, a textconv, a colour setting or a
+replace ref say. A finding, a scanner that can't run, or a git that can't write
+that copy keeps the run here.
 Standard input then stays open until the run ends. Nothing else goes: no
 environment variable, CARGO_TARGET_DIR, token, login or file. The call is `ssh
 <the gate's ssh options> -l <builder_user> <ssh_host> oby-remote-gate --run
