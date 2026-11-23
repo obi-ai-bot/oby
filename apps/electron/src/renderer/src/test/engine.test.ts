@@ -7,6 +7,14 @@ const TAKEN = 'Something other than your Oby engine answers';
 const mac = vi.hoisted(() => ({
   jobs: {} as Record<string, string>, pids: [] as string[], answers: false, loginItem: 'not-registered',
   calls: [] as string[][], registered: [] as boolean[], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true,
+  // macOS's registration is an older copy's (another team's signature): launchd refuses obid from it
+  // (exit 78) until it's unregistered and booted out, then registered again (ENGINE-25 to 28);
+  // waitsForLogin: a fresh registration starts nothing until the next login (macOS 26)
+  stale: false, waitsForLogin: false,
+  // a booted-out job launchd still shows for this many prints; bootstraps refused; session obids that exit
+  leaving: {} as Record<string, number>, lingersFor: 0, bootstrapRefusals: 0, sessionDies: 0,
+  // whether launchd still held this app's agent at each registration
+  heldAtRegister: [] as boolean[],
   // the app's own folder and version, and its app.exit calls (runMarker.ts)
   userData: '/nonexistent', version: '1.0.0', exits: [] as number[],
 }));
@@ -18,8 +26,12 @@ vi.mock('electron', () => ({
     getLoginItemSettings: () => ({ status: mac.loginItem }),
     setLoginItemSettings: ({ openAtLogin }: { openAtLogin: boolean }) => {
       mac.registered.push(openAtLogin);
+      if (openAtLogin) mac.heldAtRegister.push(!!mac.jobs['com.deskree.oby.electron.obid']);
       mac.loginItem = openAtLogin ? 'enabled' : 'not-registered';
       if (!openAtLogin) return;
+      // launchd still holds the older copy's job, or nothing starts before the next login
+      if (mac.stale) { mac.jobs['com.deskree.oby.electron.obid'] = REFUSED; return; }
+      if (mac.waitsForLogin) { mac.jobs['com.deskree.oby.electron.obid'] = 'state = spawn scheduled\nlast exit code = 78: EX_CONFIG'; return; }
       // launchd starts it: it fails to bind while anything else holds the port
       mac.jobs['com.deskree.oby.electron.obid'] = 'state = running\npid = 200';
       if (mac.pids.length) return;
@@ -43,8 +55,26 @@ vi.mock('node:child_process', () => ({
       if (!mac.jobs[SWIFT] && mac.lingers && --mac.lingers === 0) { mac.pids = []; mac.answers = false; }
       return pids.length ? done(null, { stdout: pids.join('\n') }) : done(new Error('exit 1'));
     }
+    // an obid started long before its executable was replaced
+    if (file.endsWith('/ps')) return done(null, { stdout: args.includes('lstart=') ? 'Mon Jan  1 00:00:00 2024' : '' });
+    if (file.endsWith('launchctl') && args[0] === 'bootstrap') {
+      const SESSION = 'com.deskree.oby.electron.obid.session';
+      if (mac.jobs[SESSION]) return done(new Error('Bootstrap failed: 37: Operation already in progress'));
+      if (mac.bootstrapRefusals > 0) { mac.bootstrapRefusals--; return done(new Error('Bootstrap failed: 5: Input/output error')); }
+      if (mac.sessionDies > 0) { mac.sessionDies--; mac.jobs[SESSION] = 'state = not running\nlast exit code = 1'; return done(null, { stdout: '' }); }
+      Object.assign(mac, { pids: ['500'], answers: true });
+      mac.jobs[SESSION] = 'state = running\npid = 500';
+      return done(null, { stdout: '' });
+    }
+    if (file.endsWith('launchctl') && args[0] === 'kickstart') {
+      // the old obid goes; launchd starts the new one only if the registration allows it
+      Object.assign(mac, { pids: [], answers: false });
+      if (mac.stale) mac.jobs['com.deskree.oby.electron.obid'] = REFUSED;
+      return done(null, { stdout: '' });
+    }
     if (file.endsWith('launchctl')) {
       const label = args[1].split('/').pop()!;
+      if (args[0] === 'print' && mac.leaving[label] !== undefined && mac.leaving[label]-- <= 0) { delete mac.jobs[label]; delete mac.leaving[label]; }
       // a print that never comes back: only execFile's timeout ends it
       if (args[0] === 'print' && mac.printHangs) return rest.length > 1 && (rest[0] as { timeout?: number }).timeout ? done(new Error('timed out')) : undefined;
       if (args[0] === 'print') return mac.jobs[label] ? done(null, { stdout: mac.jobs[label] }) : done(new Error('no such job'));
@@ -53,6 +83,12 @@ vi.mock('node:child_process', () => ({
       if (args[0] === 'bootout' && label === SWIFT) {
         if (mac.refuse) return done(new Error('refused'));
         delete mac.jobs[label];
+      }
+      if (args[0] === 'bootout' && label !== SWIFT && mac.jobs[label]) {
+        // unregistered first, then booted out: launchd lets go of the older copy's registration
+        if (label === OWN && mac.registered.at(-1) === false) mac.stale = false;
+        mac.leaving[label] = mac.lingersFor;
+        if (mac.jobs[label].includes('pid = ')) Object.assign(mac, { pids: [], answers: false });
       }
     }
     return done(null, { stdout: '' });
@@ -78,11 +114,13 @@ async function adopted() {
 }
 
 const running = 'state = running\npid = 100';
+// what launchctl printed on the owner's Mac on 2026-11-23, 0.2.23's registration under 0.2.26
+const REFUSED = 'state = spawn scheduled\nlast exit code = 78: EX_CONFIG\njob state = spawn failed\nproperties = partial import | runatload | resolve program | needs LWCR update | has LWCR';
 const stopped = 'state = not running\nlast exit code = 0';
 
 beforeEach(() => {
   rmSync(HOME, { recursive: true, force: true });
-  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true, userData: '/nonexistent', version: '1.0.0', exits: [] });
+  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true, userData: '/nonexistent', version: '1.0.0', exits: [], stale: false, waitsForLogin: false, leaving: {}, lingersFor: 0, bootstrapRefusals: 0, sessionDies: 0, heldAtRegister: [] });
   Object.defineProperty(process, 'platform', { value: 'darwin' });
   vi.stubGlobal('fetch', async () => {
     // as undici says it
@@ -188,6 +226,97 @@ describe('the engine at launch', () => {
     expect(did('bootout')).toEqual([SWIFT]);
     expect(did('disable')).toEqual([SWIFT]);
     expect(mac.registered).toEqual([]);
+  });
+});
+
+// A copy of Oby put over an older one signed by another team (0.2.26 over 0.2.23, 2026-11-23): macOS
+// keeps the older copy's registration, and launchd refuses the new obid from it (exit 78)
+describe('the engine after a reinstall', () => {
+  let folder = '';
+  // the app's folder for the session job's plist, its Helpers/obid newer than the obid running, and
+  // obid's token; then startObid on fake time, and a call as the page makes one
+  async function reinstalled() {
+    folder = mkdtempSync(`${process.env.TMPDIR ?? '/tmp'}/oby-reinstall-`);
+    mkdirSync(`${folder}/Resources`);
+    mkdirSync(`${folder}/Helpers`);
+    writeFileSync(`${folder}/Helpers/obid`, '');
+    Object.defineProperty(process, 'resourcesPath', { value: `${folder}/Resources`, configurable: true });
+    mac.userData = folder;
+    const runner = `${HOME}/Library/Application Support/Oby/Runner`;
+    mkdirSync(runner, { recursive: true });
+    writeFileSync(`${runner}/api-token`, 'token', { mode: 0o600 });
+    vi.useFakeTimers();
+    vi.resetModules();
+    const { startObid, obid } = await import('../../../main/obid');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const done = startObid();
+    await vi.advanceTimersByTimeAsync(600_000);
+    await done;
+    const said = errors.mock.calls.map((c) => String(c[0]));
+    errors.mockRestore();
+    return { text: (await obid('GET', '/v1/status')).text, said };
+  }
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(folder, { recursive: true, force: true });
+  });
+  // the verbs main ran for a label, in order
+  const verbs = (label: string) => mac.calls.filter((c) => c[0].endsWith('launchctl') && c[c.length - 1].split('/').pop() === label).map((c) => c[1]);
+  const bootstraps = () => mac.calls.filter((c) => c[1] === 'bootstrap').length;
+
+  it('engine_25_the_older_copys_obid_restarted_and_refused_gives_way_to_a_fresh_registration_and_the_session_job', async () => {
+    // the older copy's obid still answers when the new copy opens; its restart is refused
+    Object.assign(mac, { stale: true, waitsForLogin: true, loginItem: 'enabled', jobs: { [OWN]: 'state = running\npid = 200' }, pids: ['200'], answers: true });
+    const { text } = await reinstalled();
+    expect(verbs(OWN)).toContain('kickstart');
+    // taken out whole, then registered again
+    expect(mac.registered).toEqual([false, true]);
+    expect(mac.stale).toBe(false);
+    // and the window works now, on this session's obid
+    expect(mac.jobs[SESSION]).toContain('state = running');
+    expect(text).toBe('{}');
+  });
+
+  it.each(['enabled', 'not-registered'])('engine_26_a_registration_launchd_refuses_is_unregistered_booted_out_waited_for_and_registered_again_once_when_macos_says_%s', async (loginItem) => {
+    // what the owner's Mac showed after the failed launch; launchd lets go of it a little after bootout
+    Object.assign(mac, { stale: true, waitsForLogin: true, loginItem, jobs: { [OWN]: REFUSED }, lingersFor: 3 });
+    const { text } = await reinstalled();
+    expect(mac.registered).toEqual([false, true]);
+    expect(did('bootout').filter((l) => l === OWN)).toHaveLength(1);
+    // registered again only once launchd no longer had the old one
+    expect(mac.heldAtRegister).toEqual([false]);
+    expect(mac.stale).toBe(false);
+    expect(mac.jobs[SESSION]).toContain('state = running');
+    expect(text).toBe('{}');
+  });
+
+  it('engine_27_a_session_job_launchd_still_holds_is_waited_for_before_its_bootstrap', async () => {
+    // an earlier launch's session job, stopped, that launchd shows for a while after its bootout
+    Object.assign(mac, { waitsForLogin: true, jobs: { [SESSION]: 'state = not running\nlast exit code = 0' }, lingersFor: 3 });
+    const { text } = await reinstalled();
+    expect(bootstraps()).toBe(1);
+    expect(text).toBe('{}');
+  });
+
+  it('engine_27_a_refused_bootstrap_and_an_obid_that_exits_are_tried_again_and_logged', async () => {
+    Object.assign(mac, { waitsForLogin: true, bootstrapRefusals: 1, sessionDies: 1 });
+    const { text, said } = await reinstalled();
+    // refused, then started and gone, then running
+    expect(bootstraps()).toBe(3);
+    expect(verbs(SESSION).filter((v) => v === 'bootout')).toHaveLength(3);
+    expect(said.join('\n')).toContain('Bootstrap failed: 5');
+    expect(said.join('\n')).toContain('didn’t keep running');
+    expect(text).toBe('{}');
+  });
+
+  it('engine_28_when_nothing_works_the_window_says_what_was_tried_and_what_to_do', async () => {
+    Object.assign(mac, { stale: true, waitsForLogin: true, loginItem: 'enabled', jobs: { [OWN]: REFUSED }, sessionDies: 99 });
+    const { text } = await reinstalled();
+    // bounded: three tries of this session's job
+    expect(bootstraps()).toBe(3);
+    expect(text).toContain('Oby’s engine didn’t start');
+    expect(text).toContain('Oby tried: its registration was refused by launchd (78: EX_CONFIG); Oby registered its engine again; it started for this session and didn’t keep running');
+    expect(text).toContain('In System Settings › General › Login Items, turn Oby off and on again, then quit Oby and open it again.');
   });
 });
 
