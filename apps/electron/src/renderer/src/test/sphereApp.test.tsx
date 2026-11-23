@@ -497,17 +497,19 @@ describe('SPHEREAPP-13: Add sign-in in Settings › Obysphere', () => {
 describe('SPHEREAPP-15 to 17: the live Obysphere’s picture', () => {
   const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
   const LOGO = 'data:image/png;base64,iVBORw0KGgo=';
-  const picture = (image: string | null, sphere = 'demo') => ({ sphere, sha256: null, image, refused: null, why: null });
+  const picture = (image: string | null, at = 'https://sphere.example.com/demo') => ({ sphere: 'demo', at, sha256: null, image, refused: null, why: null });
   const policyOf = (admins: string[]) => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin: admins.includes('wellington'), refused: null, why: null, admins, me: 'wellington' });
   const sphereSetPicture = vi.fn();
   const sphereRemovePicture = vi.fn();
   // stalls: main's picture read never answers
+  // joined: obid fires it as after a join (main's 'sphere' message), and the app reads the Obysphere again
+  let joined: (j: { sphere: string; name: string }) => void = () => {};
   async function settings(admins: string[], image: string | null | 'stalls') {
     answers['GET /v1/obid/sphere'] = JOINED;
     answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
     sphereSetPicture.mockReset(); sphereRemovePicture.mockReset();
     Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
-      onSphere: () => () => {}, spherePolicy: vi.fn(async () => policyOf(admins)),
+      onSphere: (fn: typeof joined) => { joined = fn; return () => {}; }, spherePolicy: vi.fn(async () => policyOf(admins)),
       sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
       spherePicture: vi.fn(() => (image === 'stalls' ? new Promise(() => {}) : Promise.resolve(picture(image)))), sphereSetPicture, sphereRemovePicture,
     });
@@ -535,6 +537,27 @@ describe('SPHEREAPP-15 to 17: the live Obysphere’s picture', () => {
     expect([...host.querySelectorAll('.set-member .set-label')].map((l) => l.textContent)).toContain('dana');
     expect(avatar()).toBeNull();
     expect(host.querySelector('.set-avatar .sphere-tile-letter')!.textContent).toBe('D');
+  });
+
+  it('sphereapp_15: another server’s Obysphere with the same id keeps none of its picture', async () => {
+    await settings(['wellington'], LOGO);
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+    const app = (window as unknown as { app: { spherePicture: ReturnType<typeof vi.fn> } }).app;
+    // joined demo on another server: main's read fails, and the old server's picture doesn't stay
+    answers['GET /v1/obid/sphere'] = { ...JOINED, url: 'https://other.example.com' };
+    app.spherePicture.mockImplementation(async () => ({ sphere: 'demo', sha256: null, image: null, refused: 'failed', why: 'the Obysphere answered 503' }));
+    await act(async () => joined({ sphere: 'demo', name: 'demo' }));
+    await settle();
+    expect(avatar()).toBeNull();
+    // a read that answers for the first server is never put on the second's
+    app.spherePicture.mockImplementation(async () => picture(LOGO, 'https://sphere.example.com/demo'));
+    await act(async () => joined({ sphere: 'demo', name: 'demo' }));
+    await settle();
+    expect(avatar()).toBeNull();
+    app.spherePicture.mockImplementation(async () => picture(LOGO, 'https://other.example.com/demo'));
+    await act(async () => joined({ sphere: 'demo', name: 'demo' }));
+    await settle();
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
   });
 
   it('sphereapp_16_an_admin_changes_the_picture_through_main_and_a_refusal_says_why', async () => {

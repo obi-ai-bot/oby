@@ -1,7 +1,13 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join as path } from 'node:path';
-import { crc32, deflateSync } from 'node:zlib';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
+
+// zlib as it is, its inflate watched: a picture's side is checked before anything is inflated
+vi.mock('node:zlib', async (original) => {
+  const zlib = await original<typeof import('node:zlib')>();
+  return { ...zlib, inflateSync: vi.fn(zlib.inflateSync) };
+});
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACCEPTS, NotThisKey, PICTURE_MAX, PICTURE_WAIT, SCOPES, addSignin, centreSquare, fitPicture, pngSide, readPicture, setPicture, wholePng, PICTURE_SECRET, PICTURE_UNCHECKED, addStarterRule, getBackIn, signinStatus, inviteLink, rebindOffer, setAdmin, listInvitations, makeInvitation, withdrawInvitation, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
@@ -594,6 +600,28 @@ describe('the live Obysphere’s picture (sphere-app.md, SPHEREAPP-15 to 17)', (
     expect(await setPicture(obid(), () => key, crcBroken, scan, none.http)).toMatchObject({ refused: 'failed', why: 'The Obysphere didn’t take that picture. Try another image.' });
     expect(scan).not.toHaveBeenCalled();
     expect(none.requests).toEqual([]);
+  });
+
+  it('sphereapp_15: a side the Sphere doesn’t keep is refused before anything is inflated', async () => {
+    const inflate = vi.mocked(inflateSync);
+    // a whole PNG whose header says 40,000 px, its small IDAT inflating to 40,000 × 40,001 bytes
+    const huge = Buffer.from(realPng(128)); huge.writeUInt32BE(40_000, 16); huge.writeUInt32BE(40_000, 20);
+    huge.writeUInt32BE(crc32(huge.subarray(12, 29)), 29);
+    for (const bad of [new Uint8Array(huge), realPng(64)]) {
+      inflate.mockClear();
+      expect(wholePng(bad)).toBeNull();
+      expect(inflate).not.toHaveBeenCalled();
+    }
+    // read: refused, and nothing inflated
+    inflate.mockClear();
+    const sphere = fakeSphere({ image: realPng(256), served: () => new Response(new Uint8Array(huge), { status: 200, headers: { 'content-type': 'image/png' } }) });
+    expect(await readPicture(obid(), () => key, sphere.http)).toMatchObject({ image: null, refused: 'failed' });
+    expect(inflate).not.toHaveBeenCalled();
+    // one in range is inflated once, to no more than its header's size
+    inflate.mockClear();
+    expect(wholePng(realPng(256))).toBe(256);
+    expect(inflate).toHaveBeenCalledTimes(1);
+    expect(inflate.mock.calls[0][1]).toEqual({ maxOutputLength: 256 * 257 });
   });
 
   it('sphereapp_17_an_admin_removes_the_picture_and_a_member_can_t', async () => {

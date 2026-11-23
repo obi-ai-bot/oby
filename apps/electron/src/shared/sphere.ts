@@ -439,9 +439,12 @@ export function pngSide(bytes: Uint8Array): number | null {
 // a bomb stops there). What a picture is checked with before it's handed on or sent.
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 const ADAM7 = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]];
+// the most a picture's image data may inflate to: 1,024 px a side at 16 bits of 4 channels
+const INFLATE_MAX = PICTURE_SIDE.max * (1 + PICTURE_SIDE.max * 8);
 export function wholePng(bytes: Uint8Array): number | null {
   const side = pngSide(bytes);
-  if (side === null) return null;
+  // a side the Sphere doesn't keep is refused before anything is inflated
+  if (side === null || side < PICTURE_SIDE.min || side > PICTURE_SIDE.max) return null;
   const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let at = 8, header: Buffer | null = null, ended = false;
   const data: Buffer[] = [];
@@ -462,6 +465,7 @@ export function wholePng(bytes: Uint8Array): number | null {
     const w = Math.ceil((side - x) / dx), h = Math.ceil((side - y) / dy);
     return w > 0 && h > 0 ? n + h * (1 + Math.ceil((w * channels * depth) / 8)) : n;
   }, 0);
+  if (expected > INFLATE_MAX) return null;
   try { if (inflateSync(Buffer.concat(data), { maxOutputLength: expected }).length !== expected) return null; } catch { return null; }
   return side;
 }

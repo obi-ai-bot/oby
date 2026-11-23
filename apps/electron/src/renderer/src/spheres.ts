@@ -128,11 +128,13 @@ async function loadLive() {
   setAskable(live && !live.revoked ? askableOf(members) : []);
   // the membership shows now, with the picture shown so far; main's read of the picture (SPHEREAPP-15)
   // follows and never holds it up. The one shown stays when main couldn't read it.
-  const shown = spheres.find((s) => s.live && s.slug === live?.slug)?.image;
+  // the same Obysphere is its address and its id: another server's with the same id keeps nothing
+  const same = (s: Sphere) => !!live && !!s.live && s.url === live.url && s.slug === live.slug;
+  const shown = spheres.find(same)?.image;
   set([...spheres.filter((s) => !s.live), ...(live ? [shown ? { ...live, image: shown } : live] : [])]);
   if (live && !live.revoked) void window.app!.spherePicture?.().then((read) => {
-    if (read?.refused !== null || read.sphere !== live.slug) return;
-    set(spheres.map((s) => (s.id === live.id ? { ...s, image: read.image ?? undefined } : s)));
+    if (read?.refused !== null || read.at !== `${live.url}/${live.slug}`) return;
+    set(spheres.map((s) => (same(s) ? { ...s, image: read.image ?? undefined } : s)));
   }, () => {});
   // whether it has a room, and what came since: with this minute's look at the directory, below
   if (live && !live.revoked) { if (ROOM_SHOWS) void lookAtRoom(live.slug); } else { forgetRoom(); forgetThreads(); }
