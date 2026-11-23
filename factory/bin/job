@@ -553,11 +553,11 @@ def reclose_task(job):
     """Merging the base brought the task's file back next to its closed copy: close it again, with the base's
     text, as a regular file even where the branch's done/ copy is a symlink, whose target is never written.
     A branch whose tasks/ file differs from the base's is left for check_task_closed.
-    It pushes only a branch origin already has at HEAD, and no tag, and only once the secret scan passed what leaves,
-    the commit's diff read as text whatever .gitattributes, an external diff, a textconv, a colour setting or a
-    replace ref say (outgoing.py): a scan that finds a secret or can't run, or a git that can't write that copy,
-    refuses the advance. Otherwise the commit stays here and the gate refuses the unpushed branch, for the builder to
-    push as it pushes everything else."""
+    It pushes only a branch origin already has at HEAD, only the one commit on origin's tip, no tag, and only once
+    the secret scan, run from the main checkout, passed what leaves, the commit's diff read as text whatever
+    .gitattributes, an external diff, a textconv, a colour setting or a replace ref say (outgoing.py): a scan that
+    finds a secret or can't run, or a git that can't write that copy, refuses the advance. Otherwise the commit
+    stays here and the gate refuses the unpushed branch, for the builder to push as it pushes everything else."""
     key = job["issue"]
     done, todo = f"factory/queue/done/{key}.md", f"factory/queue/tasks/{key}.md"
     if not (in_head(job, done) and in_head(job, todo)):
@@ -566,7 +566,7 @@ def reclose_task(job):
     if base.returncode != 0 or git(job, "show", f"HEAD:{todo}").stdout != base.stdout:
         return
     git(job, "fetch", "origin", job["branch"], check=False)
-    remote = git(job, "rev-parse", f"origin/{job['branch']}", check=False).stdout.strip()
+    remote = git(job, "rev-parse", f"refs/remotes/origin/{job['branch']}", check=False).stdout.strip()
     pushed = remote == git(job, "rev-parse", "HEAD").stdout.strip()
     git(job, "rm", "-q", todo)
     # The base's blob goes into the index as a regular file, and checkout writes it after unlinking the path:
@@ -576,13 +576,17 @@ def reclose_task(job):
     git(job, "checkout", "--", done)
     git(job, "commit", "-q", "-m", f"chore(factory): close {key} again after merging {BASE}")
     if pushed:
+        # What leaves is this one commit on origin's tip, and nothing else: the change the scan reads.
+        head = git(job, "rev-parse", "HEAD").stdout.strip()
+        require(git(job, "rev-parse", "HEAD^@").stdout.split() == [remote],
+                "the re-close commit has a parent besides origin's branch (a merge left open?), so nothing was pushed")
         outgoing = load_outgoing()
         try:
-            text = outgoing.as_text(job["worktree"], remote, "HEAD")
+            text = outgoing.as_text(job["worktree"], remote, head)
         except outgoing.Failed as e:
             raise Refused(f"`git diff` failed, so nothing was pushed: {e}")
         secret_scan(text)
-        git(job, "push", "--no-follow-tags", "origin", job["branch"])
+        git(job, "push", "--no-follow-tags", "origin", f"{head}:refs/heads/{job['branch']}")
 
 
 def load_outgoing():
@@ -647,8 +651,9 @@ def secret_scan(diff):
     """factory/bin/test-run's scan of what leaves: `gitleaks stdin` with the main checkout's .gitleaks.toml, given
     the change as bytes, read as text (outgoing.py). A finding, or a scanner that can't run, refuses."""
     try:
+        # From the main checkout, whose .gitleaksignore applies, never a branch's in the folder job runs in.
         found = subprocess.run(["gitleaks", "stdin", "--config", str(REPO / ".gitleaks.toml"), "--no-banner",
-                                "--redact"], input=diff, capture_output=True)
+                                "--redact"], input=diff, capture_output=True, cwd=REPO)
     except OSError as e:
         raise Refused(f"the secret scan couldn't run, so nothing was pushed: {e}")
     require(found.returncode == 0, "the secret scan found a secret in the changes, or couldn't run "

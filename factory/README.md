@@ -172,13 +172,14 @@ that job's lock: a command that changes a job (`create`, `advance`, `merge`, `an
 `agents`, `sync`, and `queue` for a queued or merged job) holds it while it reads, decides and saves, and lets it
 go when it ends, a refusal included; a save outside the lock is refused. When merging `dev` into a job's branch brings
 `queue/tasks/<KEY>.md` back next to its `queue/done/<KEY>.md`, `job advance <job> gate` closes the task again in a
-commit of its own, with `dev`'s text of the task. It pushes that, and no tag, only when origin already had the
-branch at its head, and only once gitleaks, as `bin/test-run` runs it, passed the commit's diff read as text
-(`--no-replace-objects diff --text --no-ext-diff --no-textconv --no-color`, whatever `.gitattributes`, an external
-diff, a textconv, a colour setting or a replace ref say): a finding, a scanner that can't run, or a git that can't
-write that diff refuses the advance and pushes nothing. An unpushed branch keeps the commit and is refused as
-unpushed, for the builder to push. A branch with no `done/` copy, or one whose `tasks/` file differs from `dev`'s,
-is refused as before.
+commit of its own, with `dev`'s text of the task. It pushes that one commit on origin's tip, and nothing else (no
+tag, no other parent), only when origin already had the branch at its head, and only once gitleaks, as
+`bin/test-run` runs it, run from the main checkout, passed the commit's diff read as text (`--no-replace-objects
+diff --text --no-ext-diff --no-textconv --no-color`, whatever `.gitattributes`, an external diff, a textconv, a
+colour setting or a replace ref say): a finding, a scanner that can't run, or a git that can't write that diff
+refuses the advance and pushes nothing. An unpushed branch keeps the commit and is refused as unpushed, for the
+builder to push. A branch with no `done/` copy, or one whose `tasks/` file differs from `dev`'s, is refused as
+before.
 
 Oby's factory (`bin/oby-feed`, building on the factory's own obid) starts each task as the Claude Code factory
 does: an intake job first, then a spec job, then the build, told to build against that spec (FEEDSPEC in
