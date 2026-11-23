@@ -33,6 +33,7 @@ Usage:
 
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -552,9 +553,10 @@ def reclose_task(job):
     """Merging the base brought the task's file back next to its closed copy: close it again, with the base's
     text, as a regular file even where the branch's done/ copy is a symlink, whose target is never written.
     A branch whose tasks/ file differs from the base's is left for check_task_closed.
-    It pushes only a branch origin already has at HEAD, and only once the secret scan passed what leaves: a scan
-    that finds a secret or can't run refuses the advance. Otherwise the commit stays here and the gate refuses
-    the unpushed branch, for the builder to push as it pushes everything else."""
+    It pushes only a branch origin already has at HEAD, and only once the secret scan passed what leaves, the commit's
+    diff read as text whatever .gitattributes, an external diff or a textconv say (outgoing.py): a scan that finds a
+    secret or can't run, or a git that can't write that copy, refuses the advance. Otherwise the commit stays here
+    and the gate refuses the unpushed branch, for the builder to push as it pushes everything else."""
     key = job["issue"]
     done, todo = f"factory/queue/done/{key}.md", f"factory/queue/tasks/{key}.md"
     if not (in_head(job, done) and in_head(job, todo)):
@@ -573,8 +575,22 @@ def reclose_task(job):
     git(job, "checkout", "--", done)
     git(job, "commit", "-q", "-m", f"chore(factory): close {key} again after merging {BASE}")
     if pushed:
-        secret_scan(git(job, "diff", "--binary", "--full-index", remote, "HEAD").stdout)
+        outgoing = load_outgoing()
+        try:
+            text = outgoing.as_text(job["worktree"], remote, "HEAD")
+        except outgoing.Failed as e:
+            raise Refused(f"`git diff` failed, so nothing was pushed: {e}")
+        secret_scan(text)
         git(job, "push", "origin", job["branch"])
+
+
+def load_outgoing():
+    """factory/bin/outgoing.py beside this copy, loaded only when a push is scanned: a copy of job without it runs
+    every other command."""
+    spec = importlib.util.spec_from_file_location("outgoing", BIN / "outgoing.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # What a SECURITY_PATHS array may hold between its brackets: plain string literals, commas, blanks and line comments.
@@ -627,16 +643,16 @@ def touches_security(files):
 
 
 def secret_scan(diff):
-    """factory/bin/test-run's scan of what leaves: `gitleaks stdin` with the main checkout's .gitleaks.toml.
-    A finding, or a scanner that can't run, refuses."""
+    """factory/bin/test-run's scan of what leaves: `gitleaks stdin` with the main checkout's .gitleaks.toml, given
+    the change as bytes, read as text (outgoing.py). A finding, or a scanner that can't run, refuses."""
     try:
         found = subprocess.run(["gitleaks", "stdin", "--config", str(REPO / ".gitleaks.toml"), "--no-banner",
-                                "--redact"], input=diff, capture_output=True, text=True)
+                                "--redact"], input=diff, capture_output=True)
     except OSError as e:
         raise Refused(f"the secret scan couldn't run, so nothing was pushed: {e}")
     require(found.returncode == 0, "the secret scan found a secret in the changes, or couldn't run "
                                    f"(gitleaks exit {found.returncode}), so nothing was pushed: "
-                                   + (found.stdout + found.stderr).strip())
+                                   + (found.stdout + found.stderr).decode(errors="replace").strip())
 
 
 def check_reviews_done(job):
