@@ -1,9 +1,9 @@
 # A task lives in its conversation: the card is progress, the details are messages
 
 - **Date:** 2026-11-17
-- **Status:** In force, but in part
+- **Status:** In force
 - **Replaced:** A task's own thread over its conversation (LIVETASK-22 as of 2026-11-16, `TaskThread.tsx` around `AgentThread.tsx`), opened from its card, its nested row, Waiting for you and its alert; the task's page from the card's menu (LIVETASK-18, CHATFIRST-6, "View details"); an alert's click opening the task's page
-- **Changed by:** [2026-11-22-a-task-opens-its-own-thread.md](2026-11-22-a-task-opens-its-own-thread.md): its card and its nested row open its own thread again
+- **Changed by:** [2026-11-23-a-task-opens-its-own-thread.md](2026-11-23-a-task-opens-its-own-thread.md): its card and its nested row open its own thread again
 - **Contracts and scenarios:** [live-task.md](../contracts/live-task.md) (LIVETASK-1, -2, -5, -7, -9, -12, -15 to -18, -22, -26 to -31), [home.md](../contracts/home.md) (WAITING-2), [alerts.md](../contracts/alerts.md) (ALERTS-18, ALERTS-20), [chat-first.md](../contracts/chat-first.md) (CHATFIRST-6, CHATFIRST-34)
 
 ## The owner's words

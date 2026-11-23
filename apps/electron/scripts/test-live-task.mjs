@@ -164,11 +164,13 @@ async function main() {
   await until('its own thread, its box telling its agent', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
   await until('its row lit', () => page.locator('.convo-kid.is-active', { hasText: 'The list' }).count(), 10_000);
   assert.equal(await own.locator('.lt-log-more', { hasText: /^Show \d+ more$/ }).count(), 0, 'all it did, nothing folded');
+  await sleep(400);  // its way in over
   await shot('3-row-opens-own-thread');
   ok('LIVETASK-22 a nested row opens the task’s own thread, its row lit, all it did shown');
   await back();
   await card('The list').locator('.msg-task-title').click();
   await until('its own thread again', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
+  await sleep(400);  // its way in over
   await shot('3b-card-opens-own-thread');
   ok('LIVETASK-22 a click on its card in the conversation opens its own thread');
   await back();

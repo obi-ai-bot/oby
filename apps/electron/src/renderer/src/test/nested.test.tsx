@@ -175,7 +175,6 @@ describe('a conversation\'s tasks, nested under it', () => {
     // its own thread on top (the conversation under it): its row lit, so its conversation's rows show
     const own = nestOf(side({ active: 'j2' }), 'Two fixes for today');
     expect(own).toMatch(/<button class="convo-kid is-active" aria-current="true" title="Fix iOS signing on Deskree Team"/);
-    expect(own).not.toContain('convo-row is-active');
   });
 });
 

@@ -86,6 +86,21 @@ describe('a task in its conversation', () => {
     expect(opened).toHaveBeenCalledWith('j1');
   });
 
+  it('LIVETASK-22: from the keyboard, the card\'s title is a button that opens its own thread, once', async () => {
+    const { default: ChatView } = await import('../ChatView');
+    const opened = vi.fn();
+    await act(async () => root.render(<ChatView kind="oby" id="c1" leaving={false} onOpenTask={opened} onBack={() => {}} onGone={() => {}} />));
+    const open = button('Open Fix the login test')!;
+    expect(open.tagName).toBe('BUTTON');
+    expect(open.closest('[data-task="j1"]')).not.toBeNull();
+    open.focus();
+    expect(document.activeElement).toBe(open);
+    // Enter or Space on a focused button is its click
+    await click(open);
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(opened).toHaveBeenCalledWith('j1');
+  });
+
   it('LIVETASK-22: a task\'s own thread shows all it did, not only its last lines', async () => {
     const { SESSIONS } = await import('../session');
     const kept = SESSIONS.j1;

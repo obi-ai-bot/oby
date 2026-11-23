@@ -533,7 +533,7 @@ const Face = ({ live = false, talk, color }: { live?: boolean; talk?: number; co
 // only (LIVETASK-29): its agent, its title, how it stands, who has it and where ("Running · Claude Code ·
 // oby"), its stages as a bar, and its status mark at the right (as on its nested row in the side panel).
 // What it did shows under it, never in it (TaskLog). A click on it (onOpen; its ⋯ and links are their
-// own) opens the task's own thread (LIVETASK-22). Its ⋯, or a right-click, opens its menu (onMenu): tell
+// own) opens the task's own thread (LIVETASK-22); from the keyboard, its title is that button. Its ⋯, or a right-click, opens its menu (onMenu): tell
 // its agent something, Stop. Waiting on the owner, it stays its head: "Needs you", the stage it waits on
 // orange; the decision waits over the message box (DecisionBar, LIVETASK-9, LIVETASK-25). A status this
 // build doesn't know says no word and shows StatusDot's neutral mark (docs/contracts/wire.md, WIRE-3).
@@ -546,7 +546,7 @@ export function ThreadTask({ task, onMenu, onOpen }: { task: Task; onMenu?: (at:
       onClick={onOpen && ((e) => { if (!(e.target as Element).closest('button, a')) onOpen(); })}
       onContextMenu={onMenu && ((e) => { e.preventDefault(); onMenu(new DOMRect(e.clientX, e.clientY, 0, 0)); })}
     >
-      <TaskHead task={task} />
+      <TaskHead task={task} onOpen={onOpen} />
       {onMenu && (
         <button type="button" className="icon-button msg-task-more" aria-label={`More for ${task.title}`} aria-haspopup="menu" onClick={(e) => onMenu(e.currentTarget.getBoundingClientRect())}>
           <Ellipsis size={16} strokeWidth={1.8} />
@@ -570,18 +570,25 @@ export function TaskEntry({ task, lit = false, said, whole, onOpen, onMenu }: { 
   );
 }
 
-// A task's head, as its card shows it (screen 03)
-export function TaskHead({ task }: { task: Task }) {
+// A task's head, as its card shows it (screen 03); onOpen: its title is a button that opens it
+export function TaskHead({ task, onOpen }: { task: Task; onOpen?: () => void }) {
   const j = task.job;
   const repo = j.repo.includes('/') ? j.repo.split('/')[1] : j.repo || null;
   const word = task.unknown ? null : task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : j.nothingDone ? 'Nothing done' : ENDED[j.status] ?? 'Done';
   return <>
     <BrandMark brand={agentOf(j.agent).brand} size={16} />
     <span className="msg-task-text">
-      <span className="msg-task-title">
-        {task.who && <span className="tc-who">{task.who}</span>}
-        {task.title}
-      </span>
+      {onOpen ? (
+        <button type="button" className="msg-task-title" aria-label={`Open ${task.title}`} onClick={onOpen}>
+          {task.who && <span className="tc-who">{task.who}</span>}
+          {task.title}
+        </button>
+      ) : (
+        <span className="msg-task-title">
+          {task.who && <span className="tc-who">{task.who}</span>}
+          {task.title}
+        </span>
+      )}
       <span className="msg-task-meta">
         {word}{word && ' · '}{agentOf(j.agent).name}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
       </span>

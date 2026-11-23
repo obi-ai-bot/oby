@@ -14,13 +14,15 @@ const seen = vi.hoisted(() => ({
   stack: [] as ((id: string) => void)[],
   open: null as null | ((place: { job?: string; conversation?: string }) => void),
   chat: {} as Record<string, (id: string) => void>,
+  back: {} as Record<string, () => void>,
 }));
 vi.mock('../ChatView', async () => {
   const { useEffect } = await import('react');
   // gone once it leaves, as the real one says after its way out
-  const ChatView = ({ id, kind, leaving, flash, onGone, onOpenTask }: { id: string; kind: string; leaving: boolean; flash?: { task: string }; onGone: () => void; onOpenTask?: (id: string) => void }) => {
+  const ChatView = ({ id, kind, leaving, flash, onGone, onBack, onOpenTask }: { id: string; kind: string; leaving: boolean; flash?: { task: string }; onGone: () => void; onBack: () => void; onOpenTask?: (id: string) => void }) => {
     useEffect(() => { if (leaving) onGone(); }, [leaving, onGone]);
     if (onOpenTask) seen.chat[id] = onOpenTask;
+    seen.back[id] = onBack;
     return leaving ? null : <div data-chat={id} data-kind={kind} data-at={flash?.task} />;
   };
   return { default: ChatView, clock: () => '' };
@@ -41,6 +43,7 @@ beforeAll(() => {
 afterAll(() => { vi.unstubAllGlobals(); });
 
 // a conversation (c-route) whose answer started r1; r2 came in from GitHub, in no conversation
+const made: Record<string, Task> = {};
 async function mount() {
   const { replaceTasks } = await import('../tasks');
   const { addChat } = await import('../chats');
@@ -49,7 +52,8 @@ async function mount() {
     id, type: 'issues', title, brand: AGENTS.claude.brand, status: 'needs',
     job: { id, type: 'issues', title, request: title, agent: 'claude', account: 'Personal', model: 'Opus', repo: 'acme/oby-scratch', branch: `oby/${id}`, base: 'main', status: 'running', step: 'Working', stages: [], created: 3 },
   } as Task);
-  replaceTasks([task('r1', 'Add divide'), task('r2', 'From GitHub')]);
+  made.r2 = task('r2', 'From GitHub');
+  replaceTasks([task('r1', 'Add divide'), made.r2]);
   addChat({ id: 'c-route', title: 'Route', said: [{ who: 'you', text: 'add divide', ago: 2 }, { who: 'oby', text: 'On it.', ago: 1, jobs: ['r1'] }] });
   const { default: Home } = await import('../Home');
   host = document.createElement('div');
@@ -88,6 +92,21 @@ describe('every way to a task opens its conversation at its card', () => {
     await act(async () => seen.chat['c-route']('r1'));
     await settle();
     expect(trail()).toEqual(['oby:c-route', 'task:r1']);
+    // back (the title bar's arrow, or Esc): the conversation again
+    await act(async () => seen.back.r1());
+    await settle();
+    expect(trail()).toEqual(['oby:c-route']);
+  });
+
+  it('LIVETASK-22: a task deleted while its own thread shows takes that thread with it, back to its conversation', async () => {
+    await act(async () => seen.sidebar.onOpenAgent('r1'));
+    await settle();
+    expect(trail()).toEqual(['oby:c-route', 'task:r1']);
+    // deleted (its ⋯'s Delete task, or from another device): obid's list no longer has it
+    const { replaceTasks } = await import('../tasks');
+    await act(async () => replaceTasks([made.r2]));
+    await settle();
+    expect(trail()).toEqual(['oby:c-route']);
   });
 
   it('LIVETASK-28: Waiting for you\'s Open opens the conversation at the card, over the list so back returns to it', async () => {

@@ -189,9 +189,9 @@ export default function Home() {
   };
   // a page whose subject went: the step before it, or from the first step, as back does
   const backOut = (i: number) => { if (i > 0 || !chatFirst) backTo(i - 1); else home(); };
-  // deleted from its page or a conversation: its page goes too
+  // deleted from its page, its own thread or a conversation: its page or thread goes too
   useEffect(() => {
-    const i = live.findIndex((l) => l.kind === 'task' && !tasks.some((t) => t.id === l.id));
+    const i = live.findIndex((l) => (l.kind === 'task' || l.kind === 'thread') && !tasks.some((t) => t.id === l.id));
     if (i >= 0) backOut(i);
   }, [tasks]);
   // an Obysphere deleted or left (from its settings): its settings, Knowledge, room and threads go too
