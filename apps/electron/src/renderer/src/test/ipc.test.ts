@@ -590,6 +590,9 @@ describe('SPHEREAPP-22', () => {
     // a link main never made, even on a click
     input();
     expect(await mail(['ana@example.com'], MADE_LINK.replace('sphere=demo', 'sphere=other'))).toBe('That link isn’t one Oby made. Close this and invite again.');
+    // nor main's link with a secret it didn't make
+    input();
+    expect(await mail(['ana@example.com'], MADE_LINK.replace('A'.repeat(43), 'B'.repeat(43)))).toBe('That link isn’t one Oby made. Close this and invite again.');
     expect(the.opened.length).toBe(before);
     // main makes the link on a click; the Sphere lists it open; one more click mails it
     the.listed = [];
@@ -625,8 +628,12 @@ describe('SPHEREAPP-22', () => {
     the.scan = { kind: 'found', rules: ['github-pat'] };
     input();
     expect(await mail(['ana@example.com'], MADE_LINK)).toBe('The secret scan found what looks like a secret (github-pat), so no draft was opened.');
-    // it read the whole draft: the recipients, the subject and the body, the link and its secret in it
-    expect(the.scans).toEqual([['ana@example.com', 'Join demo’s Obysphere', ...bodyOf(MADE_LINK, 5).split('\r\n')].join('\n')]);
+    // it read the whole draft, the recipients, the subject and the body, and the mailto: as encoded,
+    // with only the secret of the invitation main made left out (the owner's decision, 2026-11-23)
+    const withheld = MADE_LINK.replace('A'.repeat(43), 'the-invitations-own-secret');
+    const url = `mailto:ana@example.com?subject=${encodeURIComponent('Join demo’s Obysphere')}&body=${encodeURIComponent(bodyOf(withheld, 5))}`;
+    expect(the.scans).toEqual([['ana@example.com', 'Join demo’s Obysphere', ...bodyOf(withheld, 5).split('\r\n'), url].join('\n')]);
+    expect(the.scans[0]).not.toContain('A'.repeat(43));
     the.scan = { kind: 'couldNotRun', why: 'gitleaks isn’t installed' };
     input();
     expect(await mail(['ana@example.com'], MADE_LINK)).toBe('The secret scan couldn’t run (gitleaks isn’t installed), so no draft was opened.');
@@ -655,11 +662,11 @@ describe('SPHEREAPP-22', () => {
     expect(the.opened.length).toBe(before + 1);
   });
 
-  // gitleaks itself, where it's installed: it flags the invitation's own secret in every real draft
-  // (generic-api-key), so today no draft opens; nothing here leaves that value out of the scan (the
-  // owner's to decide). A token typed among the addresses is refused too.
+  // gitleaks itself, where it's installed: it reads the invitation's own secret as generic-api-key,
+  // so main leaves out exactly that one value, its own record's, and reads the rest (the owner's
+  // decision of 2026-11-23, "Yes, skip that one"); any other secret-looking value is still a finding
   const gitleaks = ['/opt/homebrew/bin/gitleaks', '/usr/local/bin/gitleaks', '/usr/bin/gitleaks'].find((p) => existsSync(p));
-  it.skipIf(!gitleaks)('sphereapp_22: with the real gitleaks, the invitation’s own secret is flagged and no draft opens', async () => {
+  it.skipIf(!gitleaks)('sphereapp_22: with the real gitleaks, a real draft opens, and one with another secret in it doesn’t', async () => {
     const help = await vi.importActual<typeof import('../../../main/help')>('../../../main/help');
     const { draftInvite } = await import('../../../main/sphere');
     const { inviteDraft } = await import('../../../shared/invite');
@@ -668,12 +675,20 @@ describe('SPHEREAPP-22', () => {
     const link = MADE_LINK.replace('A'.repeat(43), secret);
     const opened: string[] = [];
     const open = async (u: string) => { opened.push(u); };
+    // the draft with its secret is what gitleaks flags; with only that one value left out, nothing
     expect(await scan(inviteDraft(['ana@example.com'], link)!.scanned)).toEqual({ kind: 'found', rules: ['generic-api-key'] });
-    expect(await draftInvite(['ana@example.com'], link, 5, { scan, open })).toBe('The secret scan found what looks like a secret (generic-api-key), so no draft was opened.');
+    expect(await scan(inviteDraft(['ana@example.com'], link, 5, secret)!.scanned)).toEqual({ kind: 'clean' });
+    expect(await draftInvite(['ana@example.com'], link, 5, secret, { scan, open })).toBeNull();
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toContain(secret);
+    // another secret-looking value, in a recipient: a finding, and nothing opens
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const token = `ghp_${[...randomBytes(36)].map((b) => letters[b % letters.length]).join('')}`;
-    expect(await draftInvite([`${token}@example.com`], link, 5, { scan, open })).toMatch(/^The secret scan found what looks like a secret \(.*github-pat.*\), so no draft was opened\.$/);
-    expect(opened).toEqual([]);
+    expect(await draftInvite([`${token}@example.com`], link, 5, secret, { scan, open })).toMatch(/^The secret scan found what looks like a secret \(.*github-pat.*\), so no draft was opened\.$/);
+    // a value that isn't this invitation's secret leaves the secret in, and it's found
+    expect(await draftInvite(['ana@example.com'], link, 5, randomBytes(32).toString('base64url'), { scan, open }))
+      .toBe('The secret scan found what looks like a secret (generic-api-key), so no draft was opened.');
+    expect(opened).toHaveLength(1);
   });
 });
 

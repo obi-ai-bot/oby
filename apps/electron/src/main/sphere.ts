@@ -45,7 +45,7 @@ const NOT_A_LINK = 'It isn’t an Obysphere invite link.';
 // click): Invite member reuses one the Sphere still lists as open, and Send invitation mails only one
 // of these. Every list the Sphere answers drops those it no longer lists (withdrawn, expired, used
 // up); a refusal or a Sphere that couldn't be read drops nothing. Leaving drops them all.
-const madeLinks = new Map<string, string>();
+const madeLinks = new Map<string, { link: string; secret: string }>();
 const openOf = (a: InvitesAnswer, id: string) => a.invitations.find((i) => i.id === id && i.uses < i.maxUses);
 function pruned(a: InvitesAnswer): InvitesAnswer {
   if (!a.refused) for (const id of [...madeLinks.keys()]) if (!openOf(a, id)) madeLinks.delete(id);
@@ -55,12 +55,13 @@ const NOT_MADE = 'That link isn’t one Oby made. Close this and invite again.';
 
 // The draft, through the secret scan before it leaves for the mail app (AGENTS.md, "Non-negotiable"):
 // main's own scan, gitleaks as obid runs it with its canary (help.ts, scanText), over the whole draft:
-// the recipients, the subject and the body with the link (shared/invite.ts, inviteDraft). A finding,
-// or a scan that can't run, opens nothing. gitleaks flags the invitation's own secret in the link
-// (generic-api-key, `secret=…`), so today every draft is refused: whether that one value is left out
-// of the scan is the owner's to decide, not this code's. null once the draft opened, or why not
-export async function draftInvite(emails: string[], link: string, left: number, the: { scan?: (text: string) => Promise<Scan>; open?: (url: string) => Promise<void> } = {}): Promise<string | null> {
-  const draft = inviteDraft(emails, link, left);
+// the recipients, the subject and the body with the link, and the mailto: URL as encoded
+// (shared/invite.ts, inviteDraft), but for one value: `secret`, the secret of the invitation main
+// made itself, from its own record, never a value from the page (the owner's decision of 2026-11-23,
+// "Yes, skip that one": gitleaks reads it as generic-api-key). A finding in anything else, or a scan
+// that can't run, opens nothing. null once the draft opened, or why not
+export async function draftInvite(emails: string[], link: string, left: number, secret: string, the: { scan?: (text: string) => Promise<Scan>; open?: (url: string) => Promise<void> } = {}): Promise<string | null> {
+  const draft = inviteDraft(emails, link, left, secret);
   if (!draft?.url.startsWith('mailto:')) return NOT_MADE;
   const scan = await (the.scan ?? scanText)(draft.scanned);
   if (scan.kind === 'found') return `The secret scan found what looks like a secret (${scan.rules.join(', ')}), so no draft was opened.`;
@@ -236,15 +237,15 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       if (reuse && madeLinks.size) {
         const now = pruned(await listInvitations(obid, ownerKey));
         if (now.refused) return now;
-        for (const [id, link] of madeLinks) {
+        for (const [id, { link }] of madeLinks) {
           const i = openOf(now, id);
           if (i) return { ...now, link, left: i.maxUses - i.uses };
         }
       }
       const made = pruned(await makeInvitation(obid, ownerKey));
       if (!made.link) return made;
-      const id = parseInvite(made.link)?.id;
-      if (id) madeLinks.set(id, made.link);
+      const ours = parseInvite(made.link);
+      if (ours) madeLinks.set(ours.id, { link: made.link, secret: ours.secret });
       const rules = await readPolicy(obid, ownerKey);
       const now = rules.policy && withStarterRule(rules.policy.rules) ? await addStarterRule(obid, ownerKey, rules.policy.version) : rules;
       return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules), left: INVITE_USES };
@@ -257,15 +258,15 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // secret scan read the draft clean. Answers null once the draft opened, or why not.
   ipc(trusted).handle('sphere-invite-mail', [addresses, string], async (_e, emails, link): Promise<string | null> => {
     if (!takeInput()) return 'Sending an invitation takes your own click.';
-    const id = [...madeLinks].find(([, l]) => l === link)?.[0];
-    if (!id) return NOT_MADE;
+    const [id, ours] = [...madeLinks].find(([, m]) => m.link === link) ?? [];
+    if (!id || !ours) return NOT_MADE;
     const now = pruned(await invited(() => listInvitations(obid, ownerKey)));
     if (now.refused) return now.why ?? 'Oby couldn’t reach your Obysphere.';
     const i = openOf(now, id);
     if (!i) return 'That link is used up, withdrawn or out of date. Close this and invite again.';
     const left = i.maxUses - i.uses;
     if (emails.length > left) return tooMany(left);
-    return draftInvite(emails, link, left);
+    return draftInvite(emails, ours.link, left, ours.secret);
   }, 'Not this app’s page.');
   // Getting back in with a sign-in (SPHEREAPP-12): what the Obysphere at an address offers (no
   // click: two public reads); then, right after a click main saw and the owner's Sign in in main's
