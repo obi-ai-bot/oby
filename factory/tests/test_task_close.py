@@ -239,6 +239,19 @@ class TaskClose(unittest.TestCase):
     def test_taskclose_1_a_clean_filter_hides_no_secret_from_the_re_close_scan(self):
         self.assert_attribute_hides_no_secret("filter=keep", [("filter.keep.clean", "cat")])
 
+    def test_taskclose_1_a_colour_setting_hides_no_secret_from_the_re_close_scan(self):
+        # color.ui=always writes a colour code right after an unquoted value, where gitleaks' generic rule wants the
+        # line to end. Made here, so this file holds no key.
+        digest = hashlib.sha256(b"taskclose-colour").hexdigest()
+        key = "".join(chr(ord("a") + int(c, 16)) for c in digest[:8]) + digest[8:32]
+        self.git(self.wt, "config", "color.ui", "always")
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it(TASK + f"api_token = {key}\n")
+        self.push()
+        self.assert_scan_refused_the_push(self.env, "the secret scan found a secret")
+
     def test_taskclose_1_a_git_that_cant_write_the_scans_copy_refuses_the_push(self):
         self.write("code.txt", "the change\n")
         self.write(DONE, EARLIER)

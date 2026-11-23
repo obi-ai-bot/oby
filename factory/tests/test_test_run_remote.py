@@ -774,6 +774,19 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
     def test_remote_66_a_clean_filter_hides_no_secret_from_the_scan(self):
         self.assert_secret_under_attribute_kept_here("filter=keep", [("filter.keep.clean", "cat")])
 
+    def test_remote_66_a_colour_setting_hides_no_secret_from_the_scan(self):
+        # color.ui=always writes a colour code right after an unquoted value, where gitleaks' generic rule wants the
+        # line to end. Made here, so this file holds no key for the repository's own scan to find.
+        self.git(self.worktree, "config", "color.ui", "always")
+        pick = random.Random(66).choice
+        key = "".join(pick(string.ascii_lowercase) for _ in range(8))
+        key += "".join(pick(string.ascii_letters + string.digits) for _ in range(24))
+        self.write("core/settings.env", f"api_token = {key}\n")
+        self.assert_on_this_mac(self.run_test_run("cargo", "test", "--test", "one"),
+                                "on this Mac: the secret scan found a secret in the changes, or couldn't run "
+                                "(gitleaks exit 1)")
+        self.assertEqual(self.ssh_calls(), [])
+
     def test_remote_66_a_binary_file_still_reaches_the_vm_byte_for_byte(self):
         (self.worktree / "core" / "bytes.bin").write_bytes(bytes(range(256)))
         self.write(".gitattributes", "*.bin binary\n")
