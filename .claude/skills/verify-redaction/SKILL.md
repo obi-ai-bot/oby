@@ -44,7 +44,7 @@ Values are 8 bytes over the two letters `a` and `b` (9 bytes for A in (b)), over
 
 ## Sync
 
-SYNC: bad4e6198a595b209c3b8f1755ac018fb96f0de2
+SYNC: bdf7e5d1f65aa5c37a6c5a91bc8599df615a1e2b
 
 The commit the tests were last checked against. Move it forward only after you have read the covered code at the new commit and confirmed the tests still describe it.
 

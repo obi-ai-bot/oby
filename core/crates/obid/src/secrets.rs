@@ -1347,9 +1347,12 @@ mod tests {
         let secrets = Secrets::default();
         secrets.learn("x", "aaaaaaaa");
         secrets.learn("y", "abaaaaaa");
+        secrets.learn("z", "bbbbbbbb");
         for (text, expected) in [
             ("caaaaaaaabaaaaaac", "c[redacted: x, y]c"),
-            ("caaaaaaaaabaaaaaac", "c[redacted: x][redacted: y]c"),
+            // `x` then `y`, but `x` is there twice, its second copy (bytes 2 to 9) overlapping `y`.
+            ("caaaaaaaaabaaaaaac", "c[redacted: x, y]c"),
+            ("caaaaaaaabbbbbbbbc", "c[redacted: x][redacted: z]c"),
         ] {
             assert_eq!(secrets.redact(text), expected, "redact");
             assert_eq!(
