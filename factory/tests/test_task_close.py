@@ -2,15 +2,16 @@
 """`job advance <job> gate` closes again a task that merging dev brought back (A00-99).
 
 Run from the repository root: python3 factory/tests/test_task_close.py
-Each test builds a throwaway bare `origin` and a job worktree cloned from it, beside a copy of factory/bin/job and
-the real factory/config.json and .gitleaks.toml. The job is in `build` with a PR already, so the advance calls no
-`gh`; a push runs the real gitleaks. dev adds factory/queue/tasks/A00-16.md after the branch began, and the branch
-merges dev, as a builder does.
+Each test builds a throwaway bare `origin` and a job worktree cloned from it, beside copies of factory/bin/job and
+its modules and the real factory/config.json and .gitleaks.toml. The job is in `build` with a PR already, so the
+advance calls no `gh`; a push runs the real gitleaks. dev adds factory/queue/tasks/A00-16.md after the branch began,
+and the branch merges dev, as a builder does.
 """
 
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,14 @@ TODO = f"factory/queue/tasks/{KEY}.md"
 DONE = f"factory/queue/done/{KEY}.md"
 TASK = f"KEY: {KEY}\nTITLE: fix: something\nDEPENDS: none\n\nThe task as the orchestrator queued it.\n"
 EARLIER = f"KEY: {KEY}\nTITLE: fix: something\nDEPENDS: none\n\nThe task as the builder copied it.\n"
+# A git that fails any call holding --text, as only the secret scan's copy of the change has it, and runs the real one
+# otherwise.
+STAND_IN_GIT = """#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = --text ]; then echo "the stand-in git refuses --text" >&2; exit 1; fi
+done
+exec {git} "$@"
+"""
 
 
 class TaskClose(unittest.TestCase):
@@ -34,6 +43,8 @@ class TaskClose(unittest.TestCase):
         (self.repo / "factory" / "bin").mkdir(parents=True)
         self.job = self.repo / "factory" / "bin" / "job"
         shutil.copy2(FACTORY / "bin" / "job", self.job)
+        for module in (FACTORY / "bin").glob("*.py"):
+            shutil.copy2(module, self.job.with_name(module.name))
         shutil.copy2(FACTORY / "config.json", self.repo / "factory" / "config.json")
         shutil.copy2(FACTORY.parent / ".gitleaks.toml", self.repo / ".gitleaks.toml")
         self.wt = self.dir / "worktree"
@@ -198,6 +209,48 @@ class TaskClose(unittest.TestCase):
         (tools / "git").symlink_to(shutil.which("git"))
         (tools / "python3").symlink_to(sys.executable)
         self.assert_scan_refused_the_push({**self.env, "PATH": str(tools)}, "the secret scan couldn't run")
+
+    def assert_attribute_hides_no_secret(self, line, config=()):
+        """The secret's set-up, the branch adding this .gitattributes line over the queue's task files, with these
+        settings in the repository's git config: the scan still reads the re-closed task and refuses the push."""
+        token = "ghp_" + hashlib.sha256(b"taskclose").hexdigest()[:36]
+        for key, value in config:
+            self.git(self.wt, "config", key, value)
+        self.write(".gitattributes", f"factory/queue/*/*.md {line}\n")
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it(TASK + f"token = {token}\n")
+        self.push()
+        self.assert_scan_refused_the_push(self.env, "the secret scan found a secret")
+
+    def test_taskclose_1_a_minus_diff_line_hides_no_secret_from_the_re_close_scan(self):
+        self.assert_attribute_hides_no_secret("-diff")
+
+    def test_taskclose_1_a_binary_line_hides_no_secret_from_the_re_close_scan(self):
+        self.assert_attribute_hides_no_secret("binary")
+
+    def test_taskclose_1_a_textconv_diff_driver_hides_no_secret_from_the_re_close_scan(self):
+        self.assert_attribute_hides_no_secret("diff=hide", [("diff.hide.textconv", "true")])
+
+    def test_taskclose_1_an_external_diff_driver_hides_no_secret_from_the_re_close_scan(self):
+        self.assert_attribute_hides_no_secret("diff=ext", [("diff.ext.command", "true")])
+
+    def test_taskclose_1_a_clean_filter_hides_no_secret_from_the_re_close_scan(self):
+        self.assert_attribute_hides_no_secret("filter=keep", [("filter.keep.clean", "cat")])
+
+    def test_taskclose_1_a_git_that_cant_write_the_scans_copy_refuses_the_push(self):
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it()
+        self.push()
+        tools = self.dir / "git-bin"
+        tools.mkdir()
+        (tools / "git").write_text(STAND_IN_GIT.format(git=shlex.quote(shutil.which("git"))))
+        (tools / "git").chmod(0o755)
+        self.assert_scan_refused_the_push({**self.env, "PATH": f"{tools}{os.pathsep}{self.env['PATH']}"},
+                                          "`git diff` failed")
 
     def assert_refused_as_today(self):
         self.push()
