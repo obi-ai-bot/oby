@@ -10,6 +10,10 @@ export const DEVBOX: Computer = { id: 'devbox', name: 'devbox', os: 'linux', sta
 const STUDIO_LAN = '192.168.1.30', STUDIO_TAILNET = '100.101.3.4';
 /** the design's link: version 1, devbox, one pinned route */
 export const DEMO_LINK = 'oby-computer:eyJ2IjoxLCJuYW1lIjoiZGV2Ym94Iiwicm91dGVzIjpbeyJ1cmwiOiJodHRwczovLzE5Mi4xNjguMS4zMDo4NDQzIn1dfQ';
+/** a one link (COMPUTERS-29), devbox's, with a dummy secret: what Studio's window hands another Mac */
+export const DEMO_ONE_LINK = 'oby-computer:AkJCQkJCQkJCQkJCQkJCQkJ_OpHCXQ5EuAxuofeT0msQfzqRwl0ORLgMbqH3k9JrEATAqAEoIPs';
+/** this Mac's own one link in the demo, Studio's two addresses in it */
+const STUDIO_ONE_LINK = 'oby-computer:AkJCQkJCQkJCQkJCQkJCQkJ_OpHCXQ5EuAxuofeT0msQfzqRwl0ORLgMbqH3k9JrEATAqAEeIPsEZGUDBCD7';
 export const DEMO_FINGERPRINT = '7F3A91C25D0E44B80C6EA1F793D26B10';
 export const DEMO_CODE = '482913';
 const NOT_A_LINK = 'That isn’t a link from Oby.';
@@ -43,14 +47,16 @@ export function demoApi(start: ComputerList, pace = 700): ComputersApi {
     },
     readLink: async (link) => {
       await later(pace / 2);
+      if (link.trim() === DEMO_ONE_LINK) return { name: 'devbox', fingerprint: DEMO_FINGERPRINT, needsCode: false };
       const name = nameIn(link);
       if (!name) throw new Refusal(NOT_A_LINK);
-      return { name, fingerprint: DEMO_FINGERPRINT };
+      return { name, fingerprint: DEMO_FINGERPRINT, needsCode: true };
     },
     addWithCode: async (link, code) => {
       await later();
-      const name = nameIn(link) ?? '';
-      if (code.replace(/\D/g, '') !== DEMO_CODE) throw new Refusal(codeRefused(name));
+      const one = link.trim() === DEMO_ONE_LINK;
+      const name = one ? 'devbox' : nameIn(link) ?? '';
+      if (!one && (code ?? '').replace(/\D/g, '') !== DEMO_CODE) throw new Refusal(codeRefused(name));
       const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       if (!list.computers.some((c) => c.id === id)) set({ ...list, computers: [...list.computers, { id, name, os: name === 'devbox' ? 'linux' : 'mac', state: 'idle' }] });
       return id;
@@ -85,7 +91,7 @@ function nameIn(link: string): string | null {
 
 export function demoInvitation(now = Date.now()): Invitation {
   return {
-    name: 'Studio', code: DEMO_CODE, link: DEMO_LINK, fingerprint: DEMO_FINGERPRINT, expiresAt: now + 10 * 60_000,
+    name: 'Studio', link: STUDIO_ONE_LINK, fingerprint: DEMO_FINGERPRINT, expiresAt: now + 10 * 60_000,
     reach: [{ kind: 'lan', address: STUDIO_LAN, on: true }, { kind: 'tailnet', address: STUDIO_TAILNET, on: true }],
   };
 }
@@ -99,7 +105,7 @@ export function demoScreen(screen: string | null): { list: ComputerList; ui: Par
     case '02': return { list: only, ui: { sheet: { kind: 'add', how: 'ssh', host: 'studio' } } };
     case '03': return { list: only, ui: { sheet: { kind: 'adding', host: 'studio', steps: { ssh: 'done', pair: 'doing', routes: 'later' } } } };
     case '03b': return { list: only, ui: { sheet: { kind: 'adding', host: 'studio', steps: { ssh: 'doing', pair: 'later', routes: 'later' }, trouble: 'studio’s host key isn’t one you’ve accepted. Check it, then run `ssh studio` once in a terminal to accept it.' } } };
-    case '04': return { list: only, ui: { sheet: { kind: 'add', how: 'code', link: DEMO_LINK, code: '482 913' } } };
+    case '04': return { list: only, ui: { sheet: { kind: 'add', how: 'code', link: DEMO_ONE_LINK } } };
     case '05': return { list: only, ui: { sheet: { kind: 'code' } } };
     case '06': return { list: onStudio({}), ui: { menu: true } };
     case '07': return { list: onStudio({ state: 'reconnecting', from: 'lan', route: { kind: 'ssh' } }), ui: {} };

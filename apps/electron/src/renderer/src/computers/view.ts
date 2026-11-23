@@ -32,18 +32,19 @@ export type ComputerList = { current: 'this' | string; computers: Computer[] };
 export type AddStep = 'ssh' | 'pair' | 'routes';
 export type AddProgress = { step: AddStep; state: 'doing' | 'done' };
 
-/** A link read by obid: the other computer's name and its certificate's fingerprint. */
-export type LinkRead = { name: string; fingerprint: string };
+/** A link read by obid: the other computer's name, its certificate's fingerprint, and whether it goes with a code (a link of version 1) or adds alone (a one link, COMPUTERS-29). */
+export type LinkRead = { name: string; fingerprint: string; needsCode: boolean };
 
-/** This computer's code, for another Mac to add it (screen 05). */
+/** This computer's link, for another Mac to add it (screen 05, one link by the owner's word of 2026-11-23). */
 export type Invitation = {
   name: string;
-  code: string;
+  /** the six digits of a link of version 1; a one link has none */
+  code?: string;
   link: string;
   fingerprint: string;
   /** the addresses another computer can reach this one at, each with its switch */
   reach: { kind: RouteKind; address: string; on: boolean }[];
-  /** when the code ends, in ms since the epoch */
+  /** when the link ends, in ms since the epoch */
   expiresAt: number;
 };
 

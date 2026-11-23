@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf, IMPORT, ASK_TO_FIX, FIX_WORDS } from '../../../shared/words';
+import { BACKGROUND_YES, DECISIONS, PIN_VERIFY, REMOVE_COMPUTER, SHOW_LINK, TRY_AGAIN, TRY_AGAIN_LABEL, VAULT_ADD, VAULT_REMOVE, WITHIN_MS, owners, saveAs, wordsOf, IMPORT, ASK_TO_FIX, FIX_WORDS } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -366,13 +366,42 @@ describe('signed words', () => {
     expect(owners('POST', '/v1/computers', body, ['Add computer'], [])).toBeNull();
     expect(owners('POST', '/v1/computers', body, ['482 914'], [])).toBeNull();
     // only that shape: six digits, the link, nothing else; never another verb or path
-    for (const b of [{ link }, { code: '482913' }, { link, code: '48291' }, { link, code: '482 913' }, { link, code: '482913', ssh: 'devbox' }, { link: 1, code: '482913' }]) {
+    // (`{link}` alone is a one link's shape, signed by the link itself: COMPUTERSAPP-16)
+    for (const b of [{ code: '482913' }, { link, code: '48291' }, { link, code: '482 913' }, { link, code: '482913', ssh: 'devbox' }, { link: 1, code: '482913' }]) {
       expect(wordsOf('POST', '/v1/computers', b)).toBeNull();
     }
     expect(wordsOf('PUT', '/v1/computers', body)).toBeNull();
     expect(wordsOf('POST', '/v1/computers/link', { link })).toBeNull();
     // a code stands for nothing else: a message with those digits needs its own words
     expect(owners('POST', '/v1/jobs/j1/messages', { text: '482913' }, ['482 913'], [])).toBeNull();
+  });
+
+  it('COMPUTERSAPP-16: a computer added with one link signs exactly {link}, by the link the owner pasted', () => {
+    const link = 'oby-computer:AkJCQkJCQkJCQkJCQkJCQkJ_OpHCXQ5EuAxuofeT0msQfzqRwl0ORLgMbqH3k9JrEATAqAEoIPs';
+    expect(wordsOf('POST', '/v1/computers', { link })).toEqual([link]);
+    // Enter in the Link box holds the box; a click on Add computer holds its form's boxes too
+    expect(owners('POST', '/v1/computers', { link }, [` ${link} `], [])).toEqual([0]);
+    expect(owners('POST', '/v1/computers', { link }, ['Add computer', link], [])).toEqual([1]);
+    // the button alone, or another link, is no word of the owner's for it
+    expect(owners('POST', '/v1/computers', { link }, ['Add computer'], [])).toBeNull();
+    expect(owners('POST', '/v1/computers', { link }, [`${link}x`], [])).toBeNull();
+    // only that shape: never an empty link, another key, another verb
+    for (const b of [{ link: '' }, { link: ' ' }, { link, ssh: 'devbox' }, { link, name: 'x' }, { link: 1 }, {}]) {
+      expect(wordsOf('POST', '/v1/computers', b)).toBeNull();
+    }
+    expect(wordsOf('PUT', '/v1/computers', { link })).toBeNull();
+  });
+
+  it('COMPUTERSAPP-17: this Mac’s link is made with an empty body, by Show this computer’s link alone', () => {
+    expect(SHOW_LINK).toBe('Show this computer’s link');
+    expect(wordsOf('POST', '/v1/computers/invite', {})).toEqual([SHOW_LINK]);
+    expect(owners('POST', '/v1/computers/invite', {}, [SHOW_LINK], [])).toEqual([0]);
+    // no click of that button: unsigned; any body: unsigned; any other verb or path: unsigned
+    expect(owners('POST', '/v1/computers/invite', {}, ['Add computer', 'Done'], [])).toBeNull();
+    expect(wordsOf('POST', '/v1/computers/invite', { computer: true })).toBeNull();
+    expect(wordsOf('POST', '/v1/computers/invite', undefined)).toBeNull();
+    expect(wordsOf('PUT', '/v1/computers/invite', {})).toBeNull();
+    expect(wordsOf('POST', '/v1/pairing/invite', {})).toBeNull();
   });
 
   it('COMPUTERSAPP-11: a computer’s removal signs with no body, by Remove computer alone, never a bare Remove', () => {

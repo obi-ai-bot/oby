@@ -1,7 +1,9 @@
 // The picker's sheets (the approved design's screens 02 to 05 and 10; docs/contracts/computers-app.md,
-// COMPUTERSAPP-4 to 8 and 11): Add a computer, Over SSH | With a code; adding over SSH, its steps
-// ticking off, or what SSH said; this computer's code; and Remove. One small sheet at a time, as the
-// New project sheet is drawn: Esc, Cancel or a click outside closes it.
+// COMPUTERSAPP-4 to 8, 11, 16 and 17): Add a computer, Over SSH | With a link; adding over SSH, its
+// steps ticking off, or what SSH said; this computer's link; and Remove. One small sheet at a time,
+// as the New project sheet is drawn: Esc, Cancel or a click outside closes it. Pairing is one link
+// with no code by the owner's word of 2026-11-23, over the design's link and code (#2635): a link
+// of version 1 still asks for its code.
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { CircleCheck, Copy, Fingerprint, LoaderCircle, TriangleAlert, X } from 'lucide-react';
@@ -16,7 +18,7 @@ export function ComputerSheets() {
   switch (sheet.kind) {
     case 'add': return <AddComputer key={sheet.how} sheet={sheet} />;
     case 'adding': return <Adding sheet={sheet} />;
-    case 'code': return <ThisComputersCode />;
+    case 'code': return <ThisComputersLink />;
     case 'remove': return <RemoveComputer id={sheet.id} />;
   }
 }
@@ -66,13 +68,13 @@ function AddComputer({ sheet }: { sheet: Extract<Sheet, { kind: 'add' }> }) {
   }, [link, sheet.how]);
 
   const digits = code.replace(/\D/g, '');
-  const ready = sheet.how === 'ssh' ? host.trim().length > 0 : !!found && digits.length === 6 && !adding;
+  const ready = sheet.how === 'ssh' ? host.trim().length > 0 : !!found && (!found.needsCode || digits.length === 6) && !adding;
   const submit = async () => {
     if (!ready) return;
     if (sheet.how === 'ssh') return void addOverSsh(host.trim());
     setAdding(true); setCodeProblem(null);
     try {
-      await addWithCode(link.trim(), digits);
+      await addWithCode(link.trim(), found?.needsCode ? digits : undefined);
     } catch (e) {
       setCodeProblem(e instanceof Refusal ? e.say : (e as Error).message);
       setAdding(false);
@@ -88,7 +90,7 @@ function AddComputer({ sheet }: { sheet: Extract<Sheet, { kind: 'add' }> }) {
       <p className="modal-lede">{LEDE}</p>
       <div className="panel-side" role="tablist" aria-label="How to add it">
         {tab('ssh', 'Over SSH')}
-        {tab('code', 'With a code')}
+        {tab('code', 'With a link')}
       </div>
       {sheet.how === 'ssh' ? (
         <>
@@ -101,7 +103,7 @@ function AddComputer({ sheet }: { sheet: Extract<Sheet, { kind: 'add' }> }) {
           <label className="modal-label" htmlFor="pair-link">Link</label>
           <input id="pair-link" className="modal-field is-mono" autoFocus autoComplete="off" spellCheck={false} value={link} onChange={(e) => setLink(e.target.value)} />
           {linkProblem && <p className="sphere-note is-bad" role="alert">{linkProblem}</p>}
-          <p className="computer-hint">On the other computer, choose <b>Show this computer’s code</b> below. On Linux, run <code>obid invite-computer</code>.</p>
+          <p className="computer-hint">On the other computer, choose <b>Show this computer’s link</b> below. On Linux, run <code>obid invite-computer</code>.</p>
           {found && (
             <>
               <div className="computer-found">
@@ -112,12 +114,17 @@ function AddComputer({ sheet }: { sheet: Extract<Sheet, { kind: 'add' }> }) {
                   <span>Check that {found.name} shows the same fingerprint.</span>
                 </div>
               </div>
-              <label className="modal-label" htmlFor="pair-code">Code</label>
-              <input id="pair-code" className="modal-field is-code" autoComplete="one-time-code" inputMode="numeric" value={code} onChange={(e) => { setCode(e.target.value); setCodeProblem(null); }} />
+              {found.needsCode && (
+                <>
+                  <label className="modal-label" htmlFor="pair-code">Code</label>
+                  <input id="pair-code" className="modal-field is-code" autoComplete="one-time-code" inputMode="numeric" value={code} onChange={(e) => { setCode(e.target.value); setCodeProblem(null); }} />
+                </>
+              )}
               {codeProblem && <p className="sphere-note is-bad" role="alert">{codeProblem}</p>}
             </>
           )}
-          <a className="computer-switch-link" href="#" onClick={(e) => { e.preventDefault(); openSheet({ kind: 'code' }); }}>Show this computer’s code</a>
+          {/* a button, not a link: its click holds its label, which signs this Mac's link (shared/words.ts, SHOW_LINK) */}
+          <button type="button" className="computer-switch-link" onClick={() => openSheet({ kind: 'code' })}>Show this computer’s link</button>
         </>
       )}
       <div className="modal-actions">
@@ -160,25 +167,38 @@ function Adding({ sheet }: { sheet: Extract<Sheet, { kind: 'adding' }> }) {
   );
 }
 
-function ThisComputersCode() {
+// This computer's link (screen 05): one link, no code, by the owner's word of 2026-11-23. obid makes
+// it as the owner's act, signed by the click that opened this sheet; a refusal shows in obid's words.
+function ThisComputersLink() {
   const [inv, setInv] = useState<Invitation | null>(null);
-  useEffect(() => { void invite().then(setInv); }, []);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    invite().then(setInv, (e) => setProblem(e instanceof Refusal ? e.say : (e as Error).message));
+  }, []);
   const turn = (kind: Invitation['reach'][number]['kind'], on: boolean) => {
-    setInv((o) => o && { ...o, reach: o.reach.map((r) => (r.kind === kind ? { ...r, on } : r)) });
-    void setReach(kind, on);
+    const back = (to: boolean) => setInv((o) => o && { ...o, reach: o.reach.map((r) => (r.kind === kind ? { ...r, on: to } : r)) });
+    back(on); setProblem(null);
+    // a switch obid doesn't take goes back, and says why
+    setReach(kind, on).catch((e) => { back(!on); setProblem(e instanceof Refusal ? e.say : (e as Error).message); });
+  };
+  const copy = () => {
+    if (!inv) return;
+    void Promise.resolve(navigator.clipboard?.writeText(inv.link)).then(() => setCopied(true), () => setCopied(false));
   };
   return (
-    <ComputerSheet title="This Mac’s code" close onSubmit={closeSheet}>
+    <ComputerSheet title="This Mac’s link" close onSubmit={closeSheet}>
+      {problem && <p className="sphere-note is-bad" role="alert">{problem}</p>}
       {inv && (
         <>
-          <p className="modal-lede">On the Mac you’re adding {inv.name} to, paste its link and type this code.</p>
-          <p className="big-code" aria-label={`Code ${inv.code.split('').join(' ')}`}>{inv.code.slice(0, 3)} {inv.code.slice(3)}</p>
+          <p className="modal-lede">On the Mac you’re adding {inv.name} to, paste this link.</p>
+          <textarea className="modal-field is-mono computer-link" readOnly rows={3} aria-label="This Mac’s link" value={inv.link} onFocus={(e) => e.currentTarget.select()} />
           <span className="modal-label">Fingerprint</span>
           <span className="fingerprint">{fingerprintText(inv.fingerprint)}</span>
           <span className="modal-label">Other computers reach this Mac at</span>
           {inv.reach.length === 0 && <p className="computer-hint">This Mac has no address another computer can reach. Add it over SSH instead.</p>}
           {inv.reach.map((r) => (
-            <div key={r.kind} className="reach-row">
+            <div key={r.kind + r.address} className="reach-row">
               <span>{ROUTE_NAME[r.kind]}<small>{r.address}</small></span>
               <button type="button" role="switch" className="set-switch" aria-checked={r.on} aria-label={ROUTE_NAME[r.kind]} onClick={() => turn(r.kind, !r.on)} />
             </div>
@@ -187,7 +207,7 @@ function ThisComputersCode() {
         </>
       )}
       <div className="modal-actions">
-        <button type="button" className="set-button" disabled={!inv} onClick={() => { if (inv) void navigator.clipboard?.writeText(inv.link); }}><Copy size={14} strokeWidth={1.8} aria-hidden="true" />Copy link</button>
+        <button type="button" className="set-button" disabled={!inv} onClick={copy}><Copy size={14} strokeWidth={1.8} aria-hidden="true" />{copied ? 'Copied' : 'Copy link'}</button>
         <button type="submit" className="modal-primary">Done</button>
       </div>
     </ComputerSheet>

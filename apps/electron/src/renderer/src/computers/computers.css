@@ -42,7 +42,9 @@
 .computer-sheet .panel-side { margin: 0 0 20px; }
 .computer-hint { margin: 8px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
 .computer-hint code, .computer-sheet .modal-list code, .computer-tried code { font: 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); }
-.computer-switch-link { display: block; margin: 20px 0 -4px; color: var(--text); font-size: var(--text-md); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.computer-switch-link { display: block; margin: 20px 0 -4px; padding: 0; border: 0; background: none; font: inherit; cursor: pointer; color: var(--text); font-size: var(--text-md); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+/* this Mac's one link, whole and selectable, above its fingerprint */
+.computer-sheet .modal-field.computer-link { display: block; margin: 0 0 16px; width: 100%; height: auto; padding-top: 8px; padding-bottom: 8px; resize: none; word-break: break-all; line-height: 1.5; }
 .computer-sheet .modal-field.is-mono { font: 13px ui-monospace, "SF Mono", Menlo, monospace; color: var(--item); }
 .computer-sheet .modal-field.is-code { width: 140px; font-size: 17px; letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
 .computer-found + .modal-label { margin-top: 20px; }

@@ -158,8 +158,8 @@ export async function addOverSsh(host: string) {
 
 export const readLink = (link: string) => api!.readLink(link);
 
-/** With a code: added, the window switches to it. A refusal is thrown back to the sheet, which stays. */
-export async function addWithCode(link: string, code: string) {
+/** With a link (and its code, for a link of version 1): added, the window switches to it. A refusal is thrown back to the sheet, which stays. */
+export async function addWithCode(link: string, code?: string) {
   const id = await api!.addWithCode(link, code);
   closeSheet();
   await use(id);

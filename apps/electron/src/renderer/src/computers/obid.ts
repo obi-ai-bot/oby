@@ -4,17 +4,20 @@
 //   list, follow  GET /v1/computers, and the `computers` and `computer.route` events of this Mac's
 //                 own stream (main/live.ts follows it beside the computer in use's)
 //   readLink      POST /v1/computers/link {link}
-//   addWithCode   POST /v1/computers {link, code}, signed by its sheet's Add computer (shared/words.ts)
+//   addWithCode   POST /v1/computers {link, code}, signed by the code typed; a one link alone,
+//                 {link}, signed by the link pasted (shared/words.ts)
+//   invite        POST /v1/computers/invite {}, signed by Show this computer’s link: this Mac's one link
 //   use           PUT /v1/computers/current {id | "this"}: main hears its answer and moves every
 //                 call and the stream to that computer (main/obid.ts, Oby-Computer)
 //   retry         POST /v1/computers/{id}/retry
 //   rename        PATCH /v1/computers/{id} {name}
 //   remove        DELETE /v1/computers/{id}, signed by its dialog's button
-// Not on obid yet (the design's, COMPUTERS-n): adding over SSH (its steps, `computer.adding`), this
-// computer's own code for another Mac, and its reach switches. Each answers that it isn't in Oby
-// yet, in words the owner reads, and his controls stay where his screens have them.
+// Not on obid yet (the design's, COMPUTERS-n): adding over SSH (its steps, `computer.adding`), and
+// turning an address of this Mac's on or off (obid's configuration, `direct`, says which). Each
+// answers that it isn't in Oby yet, in words the owner reads, and his controls stay where his
+// screens have them.
 import type { AddProgress, Computer, ComputerList, ComputerState, Invitation, LinkRead, RouteKind, Tried } from './view';
-import { isComputersWire, type ComputerWire, type ComputersWire, type Event } from '../../../shared/obid-wire';
+import { isComputersWire, type ComputerInviteWire, type ComputerLinkWire, type ComputerWire, type ComputersWire, type Event } from '../../../shared/obid-wire';
 
 /** obid's events about the window's computers, as the page's live store passes them on (live.ts, onComputerEvent). */
 export type ComputerEvents = (f: (e: Extract<Event, { kind: 'computers' | 'computerRoute' }>) => void) => () => void;
@@ -30,10 +33,11 @@ export interface ComputersApi {
   follow(on: (list: ComputerList) => void): () => void;
   /** adds the SSH host the person typed; the steps as they happen; the new computer's id, or a Refusal */
   addOverSsh(host: string, progress: (p: AddProgress) => void): Promise<string>;
-  /** the name and fingerprint a link holds, or a Refusal: the window never parses a link itself */
+  /** the name and fingerprint a link holds, and whether it needs a code, or a Refusal: the window never parses a link itself */
   readLink(link: string): Promise<LinkRead>;
-  addWithCode(link: string, code: string): Promise<string>;
-  /** this computer's code, for another Mac to add it */
+  /** adds the computer a link names: with its code, or a one link alone (no code) */
+  addWithCode(link: string, code?: string): Promise<string>;
+  /** this computer's one link, for another Mac to add it, or obid's Refusal */
   invite(): Promise<Invitation>;
   setReach(kind: RouteKind, on: boolean): Promise<void>;
   /** the window's computer: one of the list's, or "this" */
@@ -47,7 +51,7 @@ export interface ComputersApi {
 // Words for what obid doesn't do yet (proposed, Sangam's to change)
 export const NOT_YET = {
   ssh: 'Adding a computer over SSH isn’t in Oby yet. Add it with a code instead.',
-  code: 'This computer’s code isn’t in Oby yet. Add it from the other computer over SSH, once Oby can.',
+  reach: 'Oby can’t turn an address on or off from here yet: obid’s configuration (“direct”) says which it offers.',
 } as const;
 
 // obid's route kinds, as the window names them (a loopback route is this Mac's own network)
@@ -124,16 +128,25 @@ export async function computersOn(call: Call, events: ComputerEvents): Promise<C
     follow: (on) => { ons.add(on); return () => { ons.delete(on); }; },
     addOverSsh: async () => { throw new Refusal(NOT_YET.ssh); },
     readLink: async (link) => {
-      const read = await asked<{ name: string; fingerprint: string }>(call, 'POST', '/v1/computers/link', { link });
-      return { name: read.name, fingerprint: read.fingerprint };
+      const read = await asked<ComputerLinkWire>(call, 'POST', '/v1/computers/link', { link });
+      return { name: read.name, fingerprint: read.fingerprint ?? '', needsCode: read.needsCode !== false };
     },
     addWithCode: async (link, code) => {
-      const added = rowIn(await asked<unknown>(call, 'POST', '/v1/computers', { link, code }));
+      const added = rowIn(await asked<unknown>(call, 'POST', '/v1/computers', code ? { link, code } : { link }));
       if (!added) throw new Refusal('Oby didn’t say which computer it added.');
       return added.id;
     },
-    invite: async () => { throw new Refusal(NOT_YET.code); },
-    setReach: async () => { throw new Refusal(NOT_YET.code); },
+    invite: async () => {
+      const made = await asked<ComputerInviteWire | null>(call, 'POST', '/v1/computers/invite', {});
+      if (!made || typeof made.link !== 'string') throw new Refusal('Oby didn’t say what this Mac’s link is.');
+      const ends = Date.parse(made.expiresAt);
+      return {
+        name: made.name, link: made.link, fingerprint: made.fingerprint ?? '',
+        expiresAt: Number.isFinite(ends) ? ends : Date.now() + 10 * 60_000,
+        reach: (made.reach ?? []).map((r) => ({ kind: kindOf(r.kind), address: r.address, on: r.on !== false })),
+      };
+    },
+    setReach: async () => { throw new Refusal(NOT_YET.reach); },
     use: async (to) => {
       try {
         const got = await asked<unknown>(call, 'PUT', '/v1/computers/current', { id: to });
