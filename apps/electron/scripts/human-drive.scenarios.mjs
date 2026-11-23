@@ -104,10 +104,12 @@ async function openTask(t, title) {
   await t.see('Reply to Oby…', { label: 'its conversation' });
 }
 
-// a task's nested row clicked: its conversation opens at its card (LIVETASK-22, 28), the conversation's
-// row lit. Whether the card is in view, above the decision drawer, is noted, not failed on (#2786)
+// a task's nested row's menu, View details: its conversation opens at its card (LIVETASK-28), the
+// conversation's row lit. (A click on the row itself opens the task's own thread, LIVETASK-22: ownThread.)
+// Whether the card is in view, above the decision drawer, is noted, not failed on (#2786)
 async function openAtTask(t, kid, title) {
-  await kid.click();
+  await kid.click({ button: 'right' });
+  await t.page.getByRole('menuitem', { name: 'View details', exact: true }).click();
   const card = t.page.locator('.msg-task', { has: t.page.locator('.msg-task-title', { hasText: title }) }).last();
   await card.waitFor({ state: 'attached', timeout: 10_000 });
   await t.page.locator('.convo-row.is-active').first().waitFor({ timeout: 10_000 });
@@ -119,6 +121,22 @@ async function openAtTask(t, kid, title) {
   });
   t.note(`its conversation opened; its card is ${inView ? 'in view' : 'NOT in view (LIVETASK-28, #2786)'}`);
   return card;
+}
+
+// a task's nested row clicked: its own thread opens over the conversation that started it, its box
+// telling its agent, and the row lit while it shows (LIVETASK-22)
+async function ownThread(t, kid, task) {
+  await kid.click();
+  t.step(`clicked its row, “${task.title}”`);
+  const top = t.page.locator('.chat-layer:not(.is-leaving):not(.is-covered)').last();
+  const box = top.locator(`[aria-label="Tell the agent about ${task.title}"]`);
+  const lit = t.page.locator('.convo-kid.is-active', { hasText: task.title });
+  const opened = await until(t, async () => (await top.locator(`[data-task="${task.job.id}"]`).count()) && (await box.count()) && (await lit.count()), 10_000).then(() => true, () => false);
+  await t.shot('own-thread');
+  if (!opened) {
+    throw new Error(`its row didn't open its own thread (LIVETASK-22): its box telling its agent ${(await box.count()) ? 'shows' : 'is missing'}, its row ${(await lit.count()) ? 'lit' : 'not lit'}, the conversation's row ${(await t.page.locator('.convo-row.is-active').count()) ? 'lit' : 'not lit'}`);
+  }
+  t.note('its row opened its own thread, its box telling its agent, the row lit');
 }
 
 // this run's repository and pull request only, never another of the owner's: `<repo>#<n>`
@@ -491,7 +509,7 @@ export default [
   },
   {
     id: 'nested',
-    title: 'A task nests under its conversation; its row opens the conversation at its card',
+    title: 'A task nests under its conversation; its row opens its own thread, its menu the conversation at its card',
     contract: 'live-task.md (LIVETASK-19 to 22, 28)',
     run: async (t) => {
       await home(t);
@@ -511,7 +529,9 @@ export default [
       const row = t.page.locator('.convo-row.is-active');
       if (await row.count()) t.note(`its conversation's row: ${(await row.innerText()).replace(/\n+/g, ' · ')}`);
       await t.shot('nested-row');
-      // a click opens its conversation at its card, never a page of its own (LIVETASK-22, 28)
+      // a click on its row opens its own thread over the conversation, the row lit (LIVETASK-22)
+      await ownThread(t, kid, task);
+      // its row's menu, View details: its conversation at its card (LIVETASK-28)
       const card = await openAtTask(t, kid, task.title);
       t.note(`its card: ${(await card.innerText()).replace(/\n+/g, ' · ')}`);
       await t.shot('at-its-card');
@@ -542,7 +562,7 @@ export default [
       // found again: its nested row
       const kid = t.page.locator('.convo-kid', { hasText: task.title }).first();
       t.note(`its row after Later: ${(await kid.isVisible()) ? (await kid.innerText()).replace(/\n+/g, ' ') : 'not shown'}`);
-      // its row: its conversation opened at it, where Later's decision is back (LIVETASK-24 to 28)
+      // its row's menu, View details: its conversation opened at it, where Later's decision is back (LIVETASK-24 to 28)
       await openAtTask(t, kid, task.title);
       t.note(`opened at its task the decision is ${(await bar().count()) ? 'back' : 'MISSING'}`);
       await t.shot('at-its-card');
@@ -681,18 +701,18 @@ export default [
   {
     id: 'stop-left',
     title: 'Stop a task an earlier run left running, from its card’s menu (OBY_DRIVE_STOP names it)',
-    contract: 'live-task.md (LIVETASK-22)',
+    contract: 'live-task.md (LIVETASK-28, 29)',
     run: async (t) => {
       const title = process.env.OBY_DRIVE_STOP;
       if (!title) { t.note('nothing named in OBY_DRIVE_STOP'); return; }
       await home(t);
-      // its conversation's row, unfolded, then its own row
+      // its conversation's row, unfolded, then its own row's menu
       const kid = t.page.locator('.convo-kid', { hasText: title }).first();
       for (let i = 0; i < Math.min(15, await t.page.locator('.convo-nest').count()) && !(await kid.isVisible()); i++) {
         const twist = t.page.locator('.convo-nest').nth(i).locator('.convo-twist[aria-expanded="false"]');
         if (await twist.count()) { await twist.click(); await sleep(300); }
       }
-      // its conversation at its card (LIVETASK-28), then Stop from the card's menu
+      // its row's menu: its conversation at its card (LIVETASK-28), then Stop from the card's menu
       await openAtTask(t, kid, title);
       await t.shot('at-its-card');
       await t.click(`More for ${title}`);
