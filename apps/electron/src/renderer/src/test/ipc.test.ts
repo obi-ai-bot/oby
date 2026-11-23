@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -22,6 +22,16 @@ const the = vi.hoisted(() => ({
   policies: 0,
   joins: 0,
   invites: 0,
+  // the file main's open dialog picks (none: Cancel), and the size its image decodes to
+  pick: null as string | null,
+  decoded: { width: 0, height: 0 },
+  // the last answer main's picture read was handed to keep
+  lastPicture: undefined as unknown,
+  // a picture read held until it's let go
+  holdRead: null as Promise<void> | null,
+  // how many picture reads reached the Sphere; held: the one read now held
+  reads: 0,
+  held: false,
   // the invitations the Sphere lists as open (SPHEREAPP-21); the link the next make answers, and
   // whether the Sphere's list after that make couldn't be read
   listed: [] as { id: string; uses: number; maxUses: number; expiresAt: string }[],
@@ -69,7 +79,7 @@ vi.mock('electron', async () => {
   return {
     app: the.app, BrowserWindow, Notification: class { static isSupported = () => true; },
     dialog: {
-      showOpenDialog: async () => { the.dialogs++; return { canceled: true, filePaths: [] }; },
+      showOpenDialog: async () => { the.dialogs++; return the.pick ? { canceled: false, filePaths: [the.pick] } : { canceled: true, filePaths: [] }; },
       showMessageBox: async () => { the.dialogs++; return { response: 1 }; },
     },
     ipcMain: { on: capture('on'), handle: capture('handle') },
@@ -80,6 +90,10 @@ vi.mock('electron', async () => {
     clipboard: { readText: () => '' },
     // the artifact preview's view and its partition (artifactPreview.ts): made only when an artifact first shows
     WebContentsView: class {}, session: { fromPartition: () => ({}) },
+    nativeImage: { createFromPath: () => {
+      const image = { isEmpty: () => false, getSize: () => the.decoded, crop: () => image, resize: () => image, toPNG: () => Buffer.alloc(40) };
+      return image;
+    } },
     shell: { openExternal: async (url: string) => { if (the.refuseOpen) throw new Error('refused'); the.opened.push(url); } },
   };
 });
@@ -128,6 +142,18 @@ vi.mock('../../../shared/sphere', async (original) => ({
   getBackIn: async () => { the.invites++; return { kind: 'back', owner: 'wellington', admin: false }; },
   signinStatus: async () => ({ providers: [{ id: 'google', name: 'Google' }], linked: false }),
   addSignin: async () => { the.invites++; return { linked: true }; },
+  readPicture: async (_c: unknown, _k: unknown, _h: unknown, last: unknown) => {
+    the.lastPicture = last;
+    the.reads++;
+    const held = the.holdRead;
+    // the first read while held waits and answers the older picture; any read after it, the newer at once
+    if (held && !the.held) { the.held = true; await held; return { sphere: 'demo', sha256: 'a'.repeat(64), image: 'data:image/png;base64,OLD', refused: null, why: null }; }
+    if (held) return { sphere: 'demo', sha256: 'b'.repeat(64), image: 'data:image/png;base64,NEW', refused: null, why: null };
+    return { sphere: 'demo', sha256: null, image: null, refused: null, why: null };
+  },
+  setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null) => { the.invites++; return { sphere: 'demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null }; },
+  centreSquare: () => ({ x: 0, y: 0, width: 1, height: 1 }), fitPicture: () => null,
+  PICTURE_PIXELS: (await original<typeof import('../../../shared/sphere')>()).PICTURE_PIXELS,
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -177,6 +203,9 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-rebind': { args: ['sphere.example.com/demo', 'google'], refusal: 'Not this app’s page.' },
   'sphere-signin-status': { args: [], refusal: null },
   'sphere-add-signin': { args: ['google'], refusal: 'Not this app’s page.' },
+  'sphere-picture': { args: [], refusal: null },
+  'sphere-set-picture': { args: [], refusal: null },
+  'sphere-remove-picture': { args: [], refusal: null },
   'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
   'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
@@ -650,6 +679,107 @@ describe('SPHEREAPP-11', () => {
     expect(the.invites).toBe(before + 1);
     // the page's owner and choice are read as a string and a boolean, nothing else
     expect(await call('sphere-admin', own(), 'dana', 'yes')).toBeNull();
+  });
+});
+
+describe('SPHEREAPP-16 and 17', () => {
+  it('sphereapp_16_the_picture_changes_only_right_after_a_click_main_saw_from_a_file_main_s_own_dialog_picks', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = { dialogs: the.dialogs, invites: the.invites };
+    // reading it takes no click
+    expect(await call('sphere-picture', own())).toMatchObject({ refused: null, image: null });
+    // no click: words, no dialog, nothing sent
+    expect(await call('sphere-set-picture', own())).toMatchObject({ refused: 'failed', why: 'Changing the picture takes your own click.' });
+    expect(await call('sphere-remove-picture', own())).toMatchObject({ refused: 'failed', why: 'Removing the picture takes your own click.' });
+    expect(the.dialogs).toBe(before.dialogs);
+    expect(the.invites).toBe(before.invites);
+    // a click: main's own open dialog; its Cancel sends nothing
+    input();
+    expect(await call('sphere-set-picture', own())).toBeNull();
+    expect(the.dialogs).toBe(before.dialogs + 1);
+    expect(the.invites).toBe(before.invites);
+  });
+
+  it('sphereapp_16: an owner’s image that decodes past 8192 × 8192 pixels is refused before it’s resized or sent', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const dir = mkdtempSync(join(tmpdir(), 'oby-picture-'));
+    the.pick = join(dir, 'huge.png');
+    writeFileSync(the.pick, 'x');
+    the.decoded = { width: 9000, height: 9000 };
+    const before = the.invites;
+    try {
+      input();
+      expect(await call('sphere-set-picture', own())).toMatchObject({ refused: 'failed', why: 'That image is too large. Pick one under 8,192 pixels a side.' });
+      expect(the.invites).toBe(before);
+    } finally { the.pick = null; the.decoded = { width: 0, height: 0 }; }
+  });
+
+  it('sphereapp_15: the picture main kept is forgotten when the membership changes', async () => {
+    await call('sphere-picture', own());
+    expect(await call('sphere-picture', own())).toBeTruthy();
+    expect(the.lastPicture).toMatchObject({ sphere: 'demo' });
+    await call('sphere-leave', own());
+    await call('sphere-picture', own());
+    expect(the.lastPicture).toBeNull();
+  });
+
+  it('sphereapp_17: a picture read started before a removal never brings the old picture back', async () => {
+    while (takeInput()) { /* other tests' */ }
+    let letGo = () => {};
+    the.holdRead = new Promise((r) => { letGo = r; });
+    try {
+      const reading = call('sphere-picture', own());
+      input();
+      expect(await call('sphere-remove-picture', own())).toMatchObject({ refused: null, image: null });
+      letGo();
+      // the slow read's old picture is dropped for what main holds now
+      expect(await reading).toMatchObject({ image: null, refused: null });
+      the.holdRead = null;
+      await call('sphere-picture', own());
+      expect(the.lastPicture).toMatchObject({ image: null });
+    } finally { the.holdRead = null; the.held = false; letGo(); }
+  });
+
+  it('sphereapp_15: a picture read that finishes after a newer one never puts its older picture back', async () => {
+    let letGo = () => {};
+    the.holdRead = new Promise((r) => { letGo = r; });
+    const before = the.reads;
+    try {
+      const older = call('sphere-picture', own());
+      const newer = call('sphere-picture', own());
+      letGo();
+      const [a, b] = await Promise.all([older, newer]);
+      // the next read starts from the newest answer main gave, never an older one put back after it
+      the.holdRead = null;
+      await call('sphere-picture', own());
+      expect(the.lastPicture).toEqual(b);
+      // one read reached the Sphere for the two requests, and both have its answer
+      expect(b).toEqual(a);
+      expect(the.reads).toBe(before + 2);
+    } finally { the.holdRead = null; the.held = false; letGo(); }
+  });
+
+  it('sphereapp_15: a membership change never waits on a picture read that’s stuck', async () => {
+    let letGo = () => {};
+    the.holdRead = new Promise((r) => { letGo = r; });
+    try {
+      void call('sphere-picture', own());
+      // Leave: the stuck read is let go, and the next read starts at once and answers
+      await call('sphere-leave', own());
+      const next = call('sphere-picture', own());
+      const settled = await Promise.race([next, new Promise((ok) => setImmediate(() => ok('still waiting')))]);
+      expect(settled).toMatchObject({ refused: null, image: 'data:image/png;base64,NEW' });
+    } finally { the.holdRead = null; the.held = false; letGo(); }
+  });
+
+  it('sphereapp_17_the_picture_is_removed_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    input();
+    expect(await call('sphere-remove-picture', own())).toMatchObject({ refused: null, image: null });
+    expect(the.invites).toBe(before + 1);
+    expect(await call('sphere-remove-picture', own())).toMatchObject({ why: 'Removing the picture takes your own click.' });
+    expect(the.invites).toBe(before + 1);
   });
 });
 

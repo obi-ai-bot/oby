@@ -74,6 +74,10 @@ declare global {
       // Add sign-in: whether one is linked, and linking one (preload, main/sphere.ts, SPHEREAPP-13)
       sphereSigninStatus?(): Promise<import('../../shared/sphere').SigninStatus | null>;
       sphereAddSignin?(provider: string): Promise<string | null>;
+      // its picture: read, set from a file main picks, removed (preload, main/sphere.ts, SPHEREAPP-15 to 17)
+      spherePicture?(): Promise<import('../../shared/sphere').PictureAnswer | null>;
+      sphereSetPicture?(): Promise<import('../../shared/sphere').PictureAnswer | null>;
+      sphereRemovePicture?(): Promise<import('../../shared/sphere').PictureAnswer | null>;
       // an agent using the Mac: main's pill and frame (preload, main/macPill.ts, BROWSERAPP-19)
       mac?: {
         pill(use: { agent: string; action: string } | null): Promise<boolean | null>;
