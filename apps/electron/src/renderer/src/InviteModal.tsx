@@ -4,7 +4,6 @@ import { Check, Copy, X } from 'lucide-react';
 import { useScrollThumb } from './useScrollThumb';
 import EmailField, { useEmails } from './EmailField';
 import type { InvitesAnswer } from '../../shared/sphere';
-import { INVITE_USES, tooMany } from '../../shared/invite';
 
 // Inviting people into an Obysphere by email (EmailField), then Send
 // invitation. Under it, the other way in: a link to pass on yourself, copied
@@ -12,9 +11,10 @@ import { INVITE_USES, tooMany } from '../../shared/invite';
 // addresses. Send invitation, at the foot; sent, it says so and closes.
 // Esc, the x or a click outside closes it.
 // On the live Obysphere (docs/contracts/sphere-app.md, SPHEREAPP-20 to 24), for its admins: the
-// link is the one main made on Invite member's click (`made`, SPHEREAPP-10's), copied as it is, and
-// Send invitation has main open a new email in the person's own mail app (the Obysphere sends no
-// mail); no domain toggle, since this app can't sign a joiner in for one. The mock's stays as it was.
+// link is the one main handed back on Invite member's click (`made`, SPHEREAPP-10's gating), copied
+// as it is; no Email field nor Send invitation (the Obysphere sends no mail, and a mail draft would
+// carry the link's secret past the secret scan), nor domain toggle (this app can't sign a joiner in
+// for one). Copy is how the link is shared. The mock's stays as it was.
 const code = () => Math.random().toString(36).slice(2, 8);
 const UNREACHED = 'Oby couldn’t reach your Obysphere.';
 
@@ -42,10 +42,8 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
   const live = !!made;
   const [mock] = useState(() => `${sphere.url}/join/${code()}`);
   // the live link, or why there's none (in words), or neither while main makes it
-  const [real, setReal] = useState<{ link: string | null; why: string | null; left: number }>({ link: null, why: null, left: INVITE_USES });
+  const [real, setReal] = useState<{ link: string | null; why: string | null }>({ link: null, why: null });
   const link = live ? real.link : mock;
-  const [problem, setProblem] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [onlyDomain, setOnlyDomain] = useState(true);
   const list = useEmails();
@@ -53,16 +51,13 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
   const input = useRef<HTMLInputElement>(null);
   // the app's scroll thumb, for the card (in a short window)
   const card = useScrollThumb<HTMLFormElement>();
-  // the live link lets so many people in: more addresses than that, and the rest couldn't join (SPHEREAPP-22)
-  const over = live && !!real.link && list.all.length > real.left;
-  const ready = list.all.length > 0 && list.valid && !sent && !!link && !sending && !over;
+  const ready = list.all.length > 0 && list.valid && !sent;
   useEffect(() => {
     if (!made) return;
     let gone = false;
     const take = (a: InvitesAnswer | null) => {
       if (gone) return;
-      setReal(!a ? { link: null, why: UNREACHED, left: 0 } : a.link && !a.refused ? { link: a.link, why: null, left: a.left ?? INVITE_USES }
-        : { link: null, why: a.why ?? UNREACHED, left: 0 });
+      setReal(!a ? { link: null, why: UNREACHED } : a.link && !a.refused ? { link: a.link, why: null } : { link: null, why: a.why ?? UNREACHED });
     };
     made.then(take, () => take(null));
     return () => { gone = true; };
@@ -90,16 +85,10 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
   }, [sent]);
 
   const send = () => {
-    if (!ready) return;
+    if (!ready || live) return;
     list.take(list.draft);
-    if (!live) { onSent(list.all); setSent(true); return; }
-    // main opens the draft, only right after this click or Enter, and only for the link it made
-    const asked = window.app?.sphereInviteMail?.(list.all, link!);
-    if (!asked) return setProblem('Oby couldn’t open your mail app. Copy the link and send it yourself.');
-    setSending(true);
-    setProblem(null);
-    asked.then((why) => { setSending(false); if (why) setProblem(why); else setSent(true); },
-      () => { setSending(false); setProblem('Oby couldn’t open your mail app. Copy the link and send it yourself.'); });
+    onSent(list.all);
+    setSent(true);
   };
 
   return createPortal(
@@ -109,9 +98,10 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
           <h2 id="invite-title">Invite to {sphere.name}’s Obysphere</h2>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
         </header>
-        <label className="modal-label" htmlFor="invite-emails">Email</label>
-        <EmailField list={list} id="invite-emails" inputRef={input} onEnterEmpty={send} />
-        {over && <p className="sphere-note">{tooMany(real.left)}</p>}
+        {!live && <>
+          <label className="modal-label" htmlFor="invite-emails">Email</label>
+          <EmailField list={list} id="invite-emails" inputRef={input} onEnterEmpty={send} />
+        </>}
 
         <span className="modal-label invite-link-label">Invite link</span>
         <div className="invite-link">
@@ -135,12 +125,13 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
             <button type="button" role="switch" aria-checked={onlyDomain} aria-label={`Only allow @${domain} emails to join with the link`} className="set-switch" onClick={() => setOnlyDomain(!onlyDomain)} />
           </div>
         )}
-        {problem && <p className="modal-problem set-problem" role="alert">{problem}</p>}
-        <div className="modal-actions">
-          <button type="submit" className="modal-primary" disabled={!ready && !sent}>
-            {sent ? <><Check size={14} strokeWidth={2} />{live ? 'Draft opened' : 'Sent'}</> : 'Send invitation'}
-          </button>
-        </div>
+        {!live && (
+          <div className="modal-actions">
+            <button type="submit" className="modal-primary" disabled={!ready && !sent}>
+              {sent ? <><Check size={14} strokeWidth={2} />Sent</> : 'Send invitation'}
+            </button>
+          </div>
+        )}
       </form>
       <div {...card.thumbProps} />
     </div>,

@@ -2,14 +2,13 @@ import { useState } from 'react';
 import { X } from 'lucide-react';
 import { useScrollThumb } from './useScrollThumb';
 import { composing } from './shortcuts';
-import { EMAIL } from '../../shared/invite';
 
 // Addresses typed into one field (inviting people into an Obysphere, or into a
 // new one). Each, once finished (a comma, a space or Enter after it, or a list
 // pasted in), becomes a tag in the field: blue on a blue tint as an @Oby is in
 // the message box, red if it isn't an email, with an x to take it out
 // (Backspace in the empty field takes the last).
-export { EMAIL } from '../../shared/invite';
+export const EMAIL = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 const SEPARATED = /[\s,;]+/;
 
 export function useEmails() {

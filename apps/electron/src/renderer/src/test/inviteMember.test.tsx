@@ -4,8 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // docs/contracts/sphere-app.md, SPHEREAPP-20 to 24: Invite member in the side panel's Obysphere, real
-// on the live one for its admins (Sangam's InviteModal, a link main makes on the click, Send
-// invitation as a draft in the person's own mail app), and the mock's as he made it. The real
+// on the live one for its admins (Sangam's InviteModal with the link main hands back on the click,
+// copied; no Email field nor Send invitation there), and the mock's as he made it. The real
 // Sidebar, with main's bridge stood in for (window.app).
 
 vi.mock('react-dom', async (original) => ({ ...await original<typeof import('react-dom')>(), createPortal: (node: unknown) => node }));
@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 // main's bridge: obid joined (or as `membership` says), the Sphere's word on admin, and what main
-// answers Invite member's click and Send invitation
+// answers Invite member's click
 function bridge({ admin = true, membership = JOINED as object, made = { invitations: [], link: MADE, refused: null, why: null } as unknown } = {}) {
   const call = vi.fn(async (_method: string, path: string) => {
     if (path === '/v1/obid/sphere') return { status: 200, text: JSON.stringify(membership) };
@@ -41,7 +41,6 @@ function bridge({ admin = true, membership = JOINED as object, made = { invitati
     obid: { call }, onSphere: () => () => {}, sphereLeave: vi.fn(),
     spherePolicy: vi.fn(async () => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin, refused: null, why: null, admins: admin ? ['wellington'] : ['dana'], me: 'wellington' })),
     sphereInvite: vi.fn(async () => made),
-    sphereInviteMail: vi.fn(async (): Promise<string | null> => null),
   };
   return app;
 }
@@ -138,78 +137,25 @@ describe('SPHEREAPP-21', () => {
 });
 
 describe('SPHEREAPP-22', () => {
-  async function made() {
+  it('sphereapp_22_the_live_modal_has_no_email_field_nor_send_invitation_and_copy_shares_the_link', async () => {
     const app = bridge();
     await show('', app);
     await open('demo');
     await act(async () => { await vi.waitFor(() => expect(button('Invite member')).toBeDefined()); });
     await click('Invite member');
     await settle();
-    return app;
-  }
-
-  it('sphereapp_22_send_invitation_has_main_open_a_mail_draft_to_the_typed_addresses_with_the_link', async () => {
-    const app = await made();
-    expect(send().disabled).toBe(true);
-    await typeEmails('ana@example.com, ben@example.com');
-    expect(send().disabled).toBe(false);
-    await act(async () => send().click());
-    expect(app.sphereInviteMail).toHaveBeenCalledTimes(1);
-    expect(app.sphereInviteMail).toHaveBeenCalledWith(['ana@example.com', 'ben@example.com'], MADE);
-    await settle();
-    // nothing went out from Oby: the draft is in the mail app; nobody is listed as invited
-    expect(send().textContent).toBe('Draft opened');
+    // Sangam's title and link field, with no way to send anything by mail
+    expect(modal()!.querySelector('#invite-title')!.textContent).toBe('Invite to demo’s Obysphere');
+    expect(modal()!.querySelector('#invite-emails')).toBeNull();
+    expect(modal()!.textContent).not.toContain('Email');
+    expect(modal()!.querySelector('button[type="submit"]')).toBeNull();
+    expect(modal()!.textContent).not.toContain('Send invitation');
+    // Copy is how the link is shared
+    await act(async () => (modal()!.querySelector('[aria-label="Copy link"]') as HTMLButtonElement).click());
+    expect(writeText).toHaveBeenCalledWith(MADE);
+    // Enter in the modal sends nothing and lists nobody as invited
+    await act(async () => { modal()!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     expect(host.textContent).not.toContain('Invited');
-    expect(host.textContent).not.toContain('ana@example.com, ben@example.com');
-    // a moment to read it, then it closes
-    await act(async () => { await new Promise((r) => setTimeout(r, 1300)); });
-    expect(modal()).toBeNull();
-    expect(host.textContent).not.toContain('Invited');
-  });
-
-  it('sphereapp_22: main’s refusal says why, and the modal stays to try again', async () => {
-    const app = await made();
-    app.sphereInviteMail.mockResolvedValueOnce('Sending an invitation takes your own click.');
-    await typeEmails('ana@example.com');
-    await act(async () => send().click());
-    await settle();
-    expect(modal()!.querySelector('[role="alert"]')!.textContent).toBe('Sending an invitation takes your own click.');
-    expect(send().textContent).toBe('Send invitation');
-    expect(send().disabled).toBe(false);
-  });
-});
-
-describe('SPHEREAPP-22: no more addresses than the link lets in', () => {
-  async function opened(left?: number) {
-    const app = bridge({ made: { invitations: [], link: MADE, refused: null, why: null, left } });
-    await show('', app);
-    await open('demo');
-    await act(async () => { await vi.waitFor(() => expect(button('Invite member')).toBeDefined()); });
-    await click('Invite member');
-    await settle();
-    return app;
-  }
-  const note = () => modal()!.querySelector('.sphere-note')?.textContent;
-
-  it('sphereapp_22_more_addresses_than_the_link_has_joins_left_say_so_and_send_waits', async () => {
-    const app = await opened(2);
-    await typeEmails('a@example.com b@example.com');
-    expect(note()).toBeUndefined();
-    expect(send().disabled).toBe(false);
-    await typeEmails('a@example.com b@example.com c@example.com');
-    expect(note()).toBe('This link lets 2 people in. Take some out to send it.');
-    expect(send().disabled).toBe(true);
-    await act(async () => send().click());
-    expect(app.sphereInviteMail).not.toHaveBeenCalled();
-  });
-
-  it('sphereapp_22: a new link lets 5 in', async () => {
-    await opened();
-    await typeEmails('a@example.com b@example.com c@example.com d@example.com e@example.com');
-    expect(note()).toBeUndefined();
-    await typeEmails('a@example.com b@example.com c@example.com d@example.com e@example.com f@example.com');
-    expect(note()).toBe('This link lets 5 people in. Take some out to send it.');
-    expect(send().disabled).toBe(true);
   });
 });
 
@@ -231,8 +177,6 @@ describe('SPHEREAPP-23', () => {
     expect(said()).toBe('Only the Obysphere’s admins can invite.');
     expect(host.textContent).not.toContain('oby://');
     expect((modal()!.querySelector('[aria-label="Copy link"]') as HTMLButtonElement).disabled).toBe(true);
-    await typeEmails('ana@example.com');
-    expect(send().disabled).toBe(true);
   });
 
   it('sphereapp_23: not in an Obysphere, and no click main saw, say so too', async () => {
@@ -247,9 +191,8 @@ describe('SPHEREAPP-23', () => {
   });
 
   it('sphereapp_23: an Obysphere Oby couldn’t reach says so', async () => {
-    const app = await opened(null);
+    await opened(null);
     expect(said()).toBe('Oby couldn’t reach your Obysphere.');
-    expect(app.sphereInviteMail).not.toHaveBeenCalled();
   });
 });
 

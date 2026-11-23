@@ -1987,7 +1987,6 @@ button.connector { width: 100%; text-align: left; }
 .invite-link .icon-button:hover { color: var(--ink); }
 .invite-option { margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--text); font-size: var(--text-base); }
 .invite-option .set-switch { flex: none; }
-.modal-problem { margin: 16px 0 0; font-size: 13px; }
 .modal-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
 
 /* a modal's line on what it's for, under its title */

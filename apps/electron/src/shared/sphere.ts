@@ -293,8 +293,9 @@ export async function addStarterRule(call: Call, ownerKey: () => KeyObject, seen
 // the link handed back; the Sphere lists invitations without it. Nothing here throws.
 export type Invitation = { id: string; uses: number; maxUses: number; expiresAt: string };
 // handoffs: on a make, whether the members rule now lets members hand off tasks (main adds it, SPHEREAPP-10);
-// left: on Invite member's make or reuse, the joins its link has left (SPHEREAPP-21, 22)
-export type InvitesAnswer = { invitations: Invitation[]; link: string | null; refused: PolicyAnswer['refused']; why: string | null; handoffs?: boolean; left?: number };
+// unlisted: on a make, the link was made but the Sphere's list after it couldn't be read, so its
+// invitations are none known, never none open (SPHEREAPP-21)
+export type InvitesAnswer = { invitations: Invitation[]; link: string | null; refused: PolicyAnswer['refused']; why: string | null; handoffs?: boolean; unlisted?: true };
 const invites = (invitations: Invitation[], link: string | null = null): InvitesAnswer => ({ invitations, link, refused: null, why: null });
 const notInvited = (refused: PolicyAnswer['refused'], why: string): InvitesAnswer => ({ invitations: [], link: null, refused, why });
 
@@ -350,7 +351,8 @@ export async function makeInvitation(call: Call, ownerKey: () => KeyObject, http
     const link = typeof made.invitation_id === 'string' && typeof made.secret === 'string'
       ? inviteLink(String(a.m.url), String(a.m.sphere), String(a.m.owner), made.invitation_id, made.secret) : null;
     if (!link) throw new Error('the Obysphere’s invitation isn’t one Oby can read');
-    return invites(await listed(http, a.m, a.token).catch(() => []), link);
+    const now = await listed(http, a.m, a.token).catch(() => null);
+    return now ? invites(now, link) : { ...invites([], link), unlisted: true };
   } catch (e) { return asked(e); }
 }
 
