@@ -159,6 +159,16 @@ describe('COMPOSER-25: the slash menu, as Claude’s own', () => {
     expect(panel()).toBeNull();
   });
 
+  // round 3 of #2887: a page over Home with nothing typed closed no list, and must not keep one shut
+  it('composer_25_an_empty_box_hidden_and_shown_again_still_opens_its_list', async () => {
+    const { input, render } = await box({ home: true });
+    await render(true);
+    await render(false);
+    await act(async () => { input.focus(); });
+    await opened(input);
+    expect(rows()).toHaveLength(40);
+  });
+
   it('composer_25_a_click_outside_closes_it_picking_nothing', async () => {
     const { input, outside } = await box();
     const clicked = vi.fn();

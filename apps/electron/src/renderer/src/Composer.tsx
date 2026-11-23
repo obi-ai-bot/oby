@@ -415,7 +415,13 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // Home's box stepping aside (a page opened over it) puts its panel away
   // and its lists, `/`'s and @'s: a box no one sees holds none open, nor their keys and clicks on the
   // window (Esc in the page over it is that page's)
-  useEffect(() => { if (hidden) { setView(null); setSlashClosed(true); setAtClosed(true); } }, [hidden]);
+  useEffect(() => {
+    if (!hidden) return;
+    setView(null);
+    // only a list that is open: one closed with nothing typed would stay closed until a / is typed and taken out
+    if (slash !== null) setSlashClosed(true);
+    if (at !== null) setAtClosed(true);
+  }, [hidden]);
   // a click outside the box and its panel closes the panel (anywhere in the window)
   useClicksEverywhere(!!view);
   useEffect(() => {

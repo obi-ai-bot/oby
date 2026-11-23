@@ -347,10 +347,10 @@ const permissionAsk = (j: Pick<Job, 'agent' | 'mode'> & { permission: NonNullabl
   const p = j.permission, who = agentOf(j.agent).name;
   const mode = j.mode ? MODES.find((m) => m.id === j.mode) ?? (j.mode === SANDBOX.id ? SANDBOX : undefined) : undefined;
   const why = { text: p.why ?? (mode ? `${mode.label} mode: ${mode.help}.` : ''), tool: p.tool };
-  // the agent's plan is the owner's to approve, never something the agent is let do: Sangam's plan
-  // card (mock.ts), and any title of obid's that is a question already is asked as obid wrote it
-  if (p.tool === 'ExitPlanMode') return { ...why, headline: 'Go with this plan?' };
-  if (p.title?.trim().endsWith('?')) return { ...why, headline: p.title.trim() };
+  // a title of obid's addressed to the owner already ("Let Cursor run this repository's hooks: …",
+  // or one that asks) is asked as obid wrote it, with one question mark
+  const title = p.title?.trim() ?? '';
+  if (title.startsWith('Let ') || title.endsWith('?')) return { ...why, headline: `${title.replace(/\?+$/, '')}?` };
   const what = p.tool === 'Bash' ? 'run a command' : p.title ? p.title[0].toLowerCase() + p.title.slice(1) : asksTo(p.tool, p.detail) ?? 'go on';
   return { ...why, headline: `Let ${who} ${what}?` };
 };

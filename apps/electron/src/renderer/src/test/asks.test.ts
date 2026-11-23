@@ -79,17 +79,33 @@ describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
     s.inbox = [];
   });
 
-  // round 2 of #2887: the plan is the owner's to approve; a title of obid's that is a question stays one
-  it('LIVETASK-24: a plan is asked of the owner, and no headline asks twice', () => {
-    const plan = { id: 'j1', agent: 'claude', mode: 'plan', permission: { id: 'p1', tool: 'ExitPlanMode', title: 'Approve the plan?', detail: '1. Read\n2. Fix', rule: null, always: null } } as unknown as Job;
-    const ask = live.itemAsk(item('permission', { text: 'Approve the plan?' }), undefined, null, plan);
-    expect(ask.headline).toBe('Go with this plan?');
-    expect(ask.headline).not.toMatch(/Let |\?\?/);
-    const asks = { id: 'j1', agent: 'codex', permission: { id: 'p2', tool: 'Foo', title: 'Use the vault for this?', detail: '', rule: null, always: null } } as unknown as Job;
-    expect(live.itemAsk(item('permission', { text: 'Use the vault for this?' }), undefined, null, asks).headline).toBe('Use the vault for this?');
-    for (const [tool, title, headline] of [['WebSearch', 'Search the web', 'Let Codex search the web?'], ['mcp__x__y', 'Use mcp__x__y', 'Let Codex use mcp__x__y?'], ['Write', 'Write notes.md', 'Let Codex write notes.md?']]) {
-      const j = { id: 'j1', agent: 'codex', permission: { id: 'p3', tool, title, detail: '', rule: null, always: null } } as unknown as Job;
-      expect(live.itemAsk(item('permission', { text: title }), undefined, null, j).headline).toBe(headline);
+  // every permission title obid sends (permissions.rs `card`, jobs/permission_asks.rs) and its
+  // headline: one question, the agent named once, never "Let Cursor let Cursor …" (review of #2887)
+  it('LIVETASK-24: each permission title obid sends reads as one question', () => {
+    const hooks = "Let Cursor run this repository's hooks: npm run lint, npm test";
+    const allows = "Let Cursor run what this repository's .cursor/cli.json allows: git status";
+    const cases: [agent: string, tool: string, title: string, detail: string, headline: string][] = [
+      ['codex', 'Bash', 'Run npm test', 'npm test -- --watch=false', 'Let Codex run a command?'],
+      ['codex', 'Bash', 'Run git add a && git commit -m x', 'git add a && git commit -m x', 'Let Codex run a command?'],
+      ['claude', 'Edit', 'Edit notes.md', 'notes.md', 'Let Claude Code edit notes.md?'],
+      ['claude', 'Write', 'Write notes.md', 'notes.md', 'Let Claude Code write notes.md?'],
+      ['claude', 'MultiEdit', 'Edit 2 files', 'a.md, b.md', 'Let Claude Code edit 2 files?'],
+      ['claude', 'WebFetch', 'Fetch example.com', 'https://example.com', 'Let Claude Code fetch example.com?'],
+      ['claude', 'WebFetch', 'Fetch a web page', '', 'Let Claude Code fetch a web page?'],
+      ['codex', 'WebSearch', 'Search the web', '', 'Let Codex search the web?'],
+      ['claude', 'Read', 'Use Read', '/etc/hosts', 'Let Claude Code use Read?'],
+      ['claude', 'mcp__x__y', 'Use mcp__x__y', '', 'Let Claude Code use mcp__x__y?'],
+      ['cursor', 'RepositoryHooks', hooks, '', `${hooks}?`],
+      ['cursor', 'RepositoryHooks', allows, '', `${allows}?`],
+      ['cursor', 'RepositoryHooks', `${hooks.slice(0, 40)}…`, '', `${hooks.slice(0, 40)}…?`],
+      ['codex', 'Foo', 'Use the vault for this?', '', 'Use the vault for this?'],
+    ];
+    for (const [agent, tool, title, detail, headline] of cases) {
+      const j = { id: 'j1', agent, permission: { id: 'p1', tool, title, detail, rule: null, always: null } } as unknown as Job;
+      const ask = live.itemAsk(item('permission', { text: title }), detail, null, j);
+      expect(ask.headline, title).toBe(headline);
+      expect(ask.headline.match(/\?/g), title).toHaveLength(1);
+      expect(ask.headline, title).not.toMatch(/Let \S+( \S+)? let /);
     }
   });
 
