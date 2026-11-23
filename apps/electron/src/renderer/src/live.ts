@@ -818,6 +818,15 @@ export async function answerLimit(decision: LimitDecision, option: LimitDecision
   }
 }
 
+// What reads obid's lists of its own again each time main synced with obid: the window opened, or
+// came back to an obid that was away or restarted under it (the projects, projects.ts); a function
+// that stops following
+const syncFollowers = new Set<() => void>();
+export function onSynced(f: () => void) {
+  syncFollowers.add(f);
+  return () => { syncFollowers.delete(f); };
+}
+
 // Main's snapshot, then each message it sends (main.tsx)
 export function connect() {
   window.app!.obid.live(snapshot, message);
@@ -839,6 +848,7 @@ function snapshot(s: LiveSnapshot) {
   // what the room missed while the stream was away
   lookAgain();
   lookAgainAtThreads();
+  syncFollowers.forEach((f) => f());
   // Settings › Accounts' choices kept here before obid kept them: moved to it once (AGENTS-7)
   if (obid.status) void moveKeptChoices(obid.status).then((moved) => { if (moved) lookAtUsage(); });
   // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
