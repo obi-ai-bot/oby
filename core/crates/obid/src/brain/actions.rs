@@ -406,7 +406,7 @@ async fn dispatch(
     };
     if !waiting.is_empty() {
         let line = format!(
-            "Starting {} in Bypass mode waits for your OK: confirm it in your inbox.",
+            "Starting {} in Bypass mode waits for your OK: confirm it in Waiting for you.",
             waiting.len().to_string() + if waiting.len() == 1 { " job" } else { " jobs" }
         );
         text = if text.is_empty() {
@@ -550,7 +550,10 @@ fn named_checks(said: &str) -> Vec<String> {
 }
 
 /// What started, in Oby's voice (`Desk.startedLine`): "On it. Claude Code is fixing oby #12
-/// (Login screen) on Deskree, and Claude Code is reviewing oby PR #33 on Deskree."
+/// (Login screen) in Ask mode, on the account Deskree, and Claude Code is reviewing oby PR #33 in
+/// Plan mode, on the account Deskree." The mode is the one it runs in, in the app's words for it,
+/// and the account is labelled as one, so an account named "Default" isn't read as a mode
+/// (TASKCONV-41).
 pub(crate) fn started_line(shared: &Shared, jobs: &[Job]) -> String {
     let parts: Vec<String> = jobs
         .iter()
@@ -565,9 +568,10 @@ pub(crate) fn started_line(shared: &Shared, jobs: &[Job]) -> String {
                 other => other,
             };
             format!(
-                "{} is {doing} {} on {}",
+                "{} is {doing} {} in {} mode, on the account {}",
                 tool_name(&job.agent),
                 what(job),
+                crate::jobs::Jobs::mode_of(job).title(),
                 account_name(shared, &job.account)
             )
         })
@@ -746,7 +750,7 @@ async fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool, owners: bool) -> (
         );
         return (
             format!(
-                "{name} was started in another conversation, so trying it again waits for your OK: confirm it in your inbox."
+                "{name} was started in another conversation, so trying it again waits for your OK: confirm it in Waiting for you."
             ),
             true,
         );
@@ -854,26 +858,38 @@ pub(super) fn follow_up(shared: &Arc<Shared>, job: &Job, new: NewJob) -> Outcome
 /// What Oby says once `next`, the follow-up of `job`, started.
 pub(crate) fn follow_up_line(shared: &Shared, job: &Job, next: &Job) -> String {
     format!(
-        "{} is finished, so I started a follow-up: {}. {} has it in {} on {}.",
+        "{} is finished, so I started a follow-up: {}. {}.",
         job.short_title(),
         next.short_title(),
-        tool_name(&next.agent),
-        next.repo_name(),
-        account_name(shared, &next.account)
+        has_it(shared, next)
+    )
+}
+
+/// Who has a follow-up, where, in which mode and on which account: "Claude Code has it in oby, in
+/// Ask mode, on the account Default". As the start line does (TASKCONV-41), the mode is named in
+/// the app's words for it and the account labelled as one, so an account named "Default" isn't
+/// read as a mode (TASKCONV-43).
+fn has_it(shared: &Shared, job: &Job) -> String {
+    format!(
+        "{} has it in {}, in {} mode, on the account {}",
+        tool_name(&job.agent),
+        job.repo_name(),
+        crate::jobs::Jobs::mode_of(job).title(),
+        account_name(shared, &job.account)
     )
 }
 
 /// What Oby says once the owner's words for `job`, said on its page (`POST /v1/jobs/{id}/messages`),
 /// reached `heard`: `job` itself, the follow-up they started, or the one already following it up.
-/// Sangam's words (design/app `tasks.ts` `relay`); the apps say the same where no conversation
-/// keeps them (apps/shared/TaskFacts.swift `relay`).
+/// Sangam's words (design/app `tasks.ts` `relay`), with the follow-up's mode and account named as
+/// the start line names them (TASKCONV-43). The phone apps' own copy, where no conversation keeps
+/// them (apps/shared/TaskFacts.swift `relay`), is frozen with those apps and names no mode yet.
 pub(crate) fn told_line(shared: &Shared, job: &Job, heard: &Job) -> String {
     let agent = tool_name(&heard.agent);
     if heard.id != job.id && heard.heard.is_empty() {
         return format!(
-            "This one’s finished, so I started a follow-up. {agent} has it in {} on {}.",
-            heard.repo_name(),
-            account_name(shared, &heard.account)
+            "This one’s finished, so I started a follow-up. {}.",
+            has_it(shared, heard)
         );
     }
     let after = if heard.max_rounds() > 1 {
@@ -924,10 +940,10 @@ pub(super) async fn answer_inbox(
     owners_word: Option<i64>,
 ) -> Outcome {
     let Some(id) = plan.item.as_deref() else {
-        return Outcome::NeedsWhich("Say which inbox item to answer.".into());
+        return Outcome::NeedsWhich("Say which card to answer.".into());
     };
     let Some(item) = shared.link.item(id) else {
-        return Outcome::Failed("That inbox item isn't here any more.".into());
+        return Outcome::Failed("That card isn't here any more.".into());
     };
     // Words the brain wrote for a job's agent (a question's answer, a no's words) (crate::secretspec).
     if !item.job.is_empty()
@@ -1155,7 +1171,8 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
                     != crate::permissions::Decision::Deny =>
         {
             Owners::Waits(
-                "it touches secrets: it waits for your click on its card, in your inbox.".into(),
+                "it touches secrets: it waits for your click on its card, in Waiting for you."
+                    .into(),
             )
         }
         // A bare no to a job's permission is Oby's to say.
@@ -1692,7 +1709,7 @@ mod tests {
                 assert_eq!(
                     owners_call(&permission, words, Some(&job), owner),
                     Owners::Waits(
-                        "it touches secrets: it waits for your click on its card, in your inbox."
+                        "it touches secrets: it waits for your click on its card, in Waiting for you."
                             .into()
                     ),
                     "{words}"

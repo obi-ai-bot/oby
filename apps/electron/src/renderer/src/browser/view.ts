@@ -48,6 +48,8 @@ export type Tab = {
   pageLoading?: boolean;
   /** on obid: main's, from the tab's own webview: the address its last load failed at (obid's `url` is its last good one) */
   failedAt?: string;
+  /** an owner's own tab: its page's whole address now (none while it's blank), what its address bar edits */
+  href?: string;
 };
 
 /** The states a page didn't simply load in: board 10's box over the panel's middle, the page under it. */
@@ -55,6 +57,9 @@ export const STOPPED: BrowserTabState[] = ['failed', 'timedOut', 'certificate', 
 
 /** The owner's Back, Forward, Reload and Stop loading on a tab's own page. */
 export type NavOp = 'back' | 'forward' | 'reload' | 'stop';
+
+import { ownPartitionOk } from '../../../shared/browser-own';
+export { OWN_PARTITION, OWN_THREAD, ownPartitionOk, partitionOk, scratchPartition } from '../../../shared/browser-own';
 
 /**
  * An agent's ask (7–9). `reason`: the agent's words, whose first sentence heads its card; `choices`
@@ -107,4 +112,13 @@ export interface BrowserApi {
   answerMac(go: boolean): Promise<void>;
   /** Back, Forward, Reload or Stop loading on the tab's own page: on obid main moves it, with no obid call */
   nav(tab: string, op: NavOp): Promise<void>;
+  /** the address bar's words, opened in the owner's own tab: that one (`tab`), else a new one; a server from the list (`server`) in a throwaway partition of its own; why not, or null once it goes */
+  open(words: string, tab?: string, server?: boolean): Promise<string | null>;
+  /** New tab: a blank tab of the owner's own, shown, its address ready to type in */
+  newTab(): Promise<void>;
+  /** an owner's own tab closed: its page goes with it */
+  close(tab: string): Promise<void>;
 }
+
+/** an owner's own tab (BROWSERAPP-45 to 48): theirs, in one of the owner's partitions, never obid's */
+export const isOwn = (t: Pick<Tab, 'owner' | 'partition'>) => t.owner.kind === 'you' && ownPartitionOk(t.partition);

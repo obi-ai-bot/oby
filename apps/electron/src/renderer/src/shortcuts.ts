@@ -1,4 +1,4 @@
-// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 11), as T3 Code keeps
+// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 12), as T3 Code keeps
 // its own (packages/shared/src/keybindings.ts, apps/web/src/shortcuts/dispatcher.ts): one table of
 // keys to commands (shared/shortcuts.ts), one keydown listener on the window that runs the command of the newest screen
 // that handles it, and every label drawn from the same table, so a menu never says a key the window

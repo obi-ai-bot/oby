@@ -28,6 +28,7 @@ vi.mock('../Menu', async (original) => ({ ...await original<typeof import('../Me
 vi.mock('../chats', async (original) => ({ ...await original<typeof import('../chats')>(), useChats: () => page.chats, tellChat: vi.fn() }));
 vi.mock('../tasks', async (original) => ({ ...await original<typeof import('../tasks')>(), tell: vi.fn() }));
 vi.mock('../lean', async (original) => ({ ...await original<typeof import('../lean')>(), get onObid() { return page.obid; } }));
+vi.mock('../live', async (original) => ({ ...await original<typeof import('../live')>(), tellJob: vi.fn() }));
 const read = (html: string) => html.replaceAll('<!-- -->', '');
 function stub() {
   vi.stubGlobal('location', { search: '' });
@@ -182,15 +183,41 @@ describe('a task at work', () => {
   });
 
   it('LIVETASK-31: ended, its last words show under the card (what changed, the test run, the commit), its steps folded behind Show more', async () => {
+    // the agent's words as obid's transcript has them, its goal line last (TASKS-19)
     const result = 'Changes\n- Added divide(a, b)\n\nTest run\n- 4 passed\n\nCommit abc123\n\nGOAL MET';
-    const { card, log } = await views([plan, tool('Read', 'a.ts'), tool('Edited', 'math.ts'), { kind: 'said', text: result, at: '2:10 PM' }], {}, 'done');
+    const [said] = sessionOf([wire(9, { kind: 'said', summary: result, text: result, state: undefined })]);
+    const { card, log } = await views([plan, tool('Read', 'a.ts'), tool('Edited', 'math.ts'), said], {}, 'done');
     expect(log).toContain('>Show 2 more<');
     for (const word of ['a.ts', 'math.ts', 'ss-plan']) expect(log).not.toContain(word);
     const text = log.replace(/<[^>]+>/g, '');
-    for (const word of ['Added divide(a, b)', '4 passed', 'Commit abc123', 'GOAL MET']) expect(text).toContain(word);
+    for (const word of ['Added divide(a, b)', '4 passed', 'Commit abc123']) expect(text).toContain(word);
     // long words are cut to a few lines with Show more (lt-fold), and none of it is on the card
     expect(log).toContain('class="lt-fold');
+    // the goal line is between the agent and obid: a person never reads it, here or on the card (TASKS-19)
+    expect(text).not.toContain('GOAL MET');
     expect(card).not.toContain('GOAL MET');
+  });
+
+  it('TASKS-19: the goal line is never shown: `GOAL MET` goes, and `GOAL NOT MET: …` reads as Not done yet', () => {
+    const said = (text: string) => (sessionOf([wire(1, { kind: 'said', summary: text, text, state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text;
+    expect(said('Added it.\n\nGOAL MET')).toBe('Added it.');
+    expect(said('Half of it.\nGOAL NOT MET: the tests still fail')).toBe('Half of it.\nNot done yet: the tests still fail');
+    expect(said('GOAL NOT MET')).toBe('Not done yet.');
+    // words that only mention it stay as they are
+    expect(said('It ends with a GOAL MET line.')).toBe('It ends with a GOAL MET line.');
+  });
+
+  // round 2 of #2887: while the words stream, a last line that may still become the goal line waits
+  it('TASKS-19: streaming, a goal line being written never flashes', () => {
+    const streamed = (text: string, tail: string) => (sessionOf([wire(1, { kind: 'said', summary: text, text, tail, state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text;
+    for (const tail of ['G', 'GOAL', 'GOAL ', 'GOAL N', 'GOAL NOT', 'GOAL NOT ME', 'GOAL ME']) expect(streamed('Added it.\n\n', tail)).toBe('Added it.');
+    expect(streamed('Added it.\n\n', 'GOAL MET')).toBe('Added it.');
+    expect(streamed('Half.\n', 'GOAL NOT MET: the te')).toBe('Half.\nNot done yet: the te');
+    // a line that can't be one any more shows as it comes
+    expect(streamed('Added it.\n', 'Good')).toBe('Added it.\nGood');
+    expect(streamed('Added it.\n', 'GOALS')).toBe('Added it.\nGOALS');
+    // whole words, not streaming, are never held
+    expect((sessionOf([wire(2, { kind: 'said', summary: 'GOAL', text: 'GOAL', state: undefined })])[0] as Extract<Entry, { kind: 'said' }>).text).toBe('GOAL');
   });
 
   it('LIVETASK-5: what it did shows in the conversation under its card, outside it, with the box talking to Oby', async () => {
@@ -417,6 +444,80 @@ describe('a task at work', () => {
     expect(chats.tellChat).toHaveBeenCalledTimes(1);
   });
 
+  it('LIVETASK-22: in a task\'s own thread, all its session in order: what it was told, its lists, its words where it said them', async () => {
+    const said = (text: string): Entry => ({ kind: 'said', text, at: '1:50 PM' });
+    await views([{ kind: 'you', text: 'Fix the flaky login test', at: '1:40 PM' } as Entry, plan, tool('Read', 'a.ts'), said('Found the timer.'), tool('Edited', 'b.ts')], { finished: 1 }, 'done');
+    const { default: TaskLog } = await import('../TaskLog');
+    const task = await taskOf('j1', { finished: 1 }, 'done');
+    const whole = read(renderToStaticMarkup(<TaskLog task={task} whole />));
+    // (the agent's words, a word to a span)
+    const at = ['Fix the flaky login test', 'Replace the timer', 'a.ts', '>timer.<', 'b.ts'].map((w) => whole.indexOf(w));
+    expect(at.every((i) => i >= 0), `each shows: ${at}`).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    // in the conversation, as before: what it was told and its list left out, its last words its result, last
+    const compact = read(renderToStaticMarkup(<TaskLog task={task} />));
+    expect(compact).not.toContain('Fix the flaky login test');
+    expect(compact).toContain('>timer.<');
+    expect(compact).toContain('>Show 2 more<');
+    expect(compact).not.toContain('Replace the timer');
+  });
+
+  it('LIVETASK-22: in a task\'s own thread, the words it was started with show once (the thread\'s first message); other words told it first still show', async () => {
+    stub();
+    const { default: TaskLog } = await import('../TaskLog');
+    const { SESSIONS } = await import('../session');
+    const task = await taskOf('j1');
+    const count = (html: string, w: string) => html.split(w).length - 1;
+    // its session opens with the round's start and the request the thread already shows as its first message
+    SESSIONS.j1 = [{ kind: 'start', text: 'Started on Claude Code', at: '1:40 PM' }, { kind: 'you', text: 'Fix the flaky login test', at: '1:40 PM' }, tool('Read', 'a.ts'), { kind: 'you', text: 'Fix the flaky login test', at: '1:45 PM' }];
+    const once = read(renderToStaticMarkup(<TaskLog task={task} whole first="Fix the flaky login test" />));
+    expect(once).toContain('Started on Claude Code');
+    expect(once).toContain('a.ts');
+    // the same words told again later stay, where they were said
+    expect(count(once, 'Fix the flaky login test')).toBe(1);
+    expect(once.indexOf('Fix the flaky login test')).toBeGreaterThan(once.indexOf('a.ts'));
+    // a different first message (it came in from GitHub, its prompt its own): the session's words show
+    const other = read(renderToStaticMarkup(<TaskLog task={task} whole first="Issue #140: flaky login" />));
+    expect(count(other, 'Fix the flaky login test')).toBe(2);
+  });
+
+  it('LIVETASK-22: told something in a finished task\'s own thread, the follow-up obid starts is opened (onFollowUp); words for a running one start none', async () => {
+    stub();
+    const live = await import('../live');
+    const { default: ChatView } = await import('../ChatView');
+    const { replaceTasks } = await import('../tasks');
+    replaceTasks([await taskOf('j1', { finished: 1 }, 'done')]);
+    const followed = vi.fn();
+    renderToStaticMarkup(<ChatView kind="task" id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onFollowUp={followed} />);
+    page.obid = true;
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j9' } as never);
+    await page.boxes['Tell the agent about Fix the login test'].onSend('and the docs', {});
+    expect(live.tellJob).toHaveBeenCalledWith('j1', 'and the docs', undefined, true, undefined);
+    expect(followed).toHaveBeenCalledWith('j9');
+    // obid answered with the task itself (no follow-up): nothing to open
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j1' } as never);
+    await page.boxes['Tell the agent about Fix the login test'].onSend('thanks', {});
+    expect(followed).toHaveBeenCalledTimes(1);
+    // stopped at its safety limit (interrupted, its Confirm showing: needs you): obid decides, and its
+    // follow-up opens all the same (RECOVERY-18)
+    const box = async (status: 'running' | 'needs', more: Partial<JobView>) => {
+      page.obid = false;
+      replaceTasks([await taskOf('j1', more, status)]);
+      renderToStaticMarkup(<ChatView kind="task" id="j1" leaving={false} onBack={() => {}} onGone={() => {}} onFollowUp={followed} />);
+      page.obid = true;
+      return page.boxes['Tell the agent about Fix the login test'];
+    };
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j10' } as never);
+    await (await box('needs', { status: 'interrupted' })).onSend('go on past it', {});
+    expect(followed).toHaveBeenCalledTimes(2);
+    expect(followed).toHaveBeenLastCalledWith('j10');
+    // running: its words reach it, obid answers with the task itself, and nothing opens
+    vi.mocked(live.tellJob).mockResolvedValueOnce({ id: 'j1' } as never);
+    await (await box('running', {})).onSend('also the docs', {});
+    expect(live.tellJob).toHaveBeenLastCalledWith('j1', 'also the docs', undefined, true, undefined);
+    expect(followed).toHaveBeenCalledTimes(2);
+  });
+
   it('LIVETASK-29: the card is progress only: its ⋯ and a right-click open its menu, which tells its agent or stops it', async () => {
     stub();
     const { default: TaskMenu } = await import('../TaskMenu');
@@ -454,6 +555,21 @@ describe('a task at work', () => {
     // refused isn't failed
     expect(lines[3]).toMatchObject({ meta: 'Declined', state: 'declined' });
     expect(lines[2]).toMatchObject({ state: 'failed' });
+  });
+
+  // the drive of 2026-11-23: "Asking you a question" showed "you a question" in code font
+  it('LIVETASK-10: what a step acts on is code only for a file, a command or a pattern; obid\'s words stay words', async () => {
+    const lines = sessionOf([
+      wire(1, { summary: 'Asking you a question', state: 'running', tool: 'AskUserQuestion', activity: 'other' }),
+      wire(2, { summary: 'Reading the web', state: 'done', tool: 'WebFetch', activity: 'web' }),
+      wire(3, { summary: 'Reading a.ts', state: 'done', tool: 'Read', activity: 'read' }),
+      wire(4, { summary: 'Running npm test', state: 'done', tool: 'Bash', activity: 'command' }),
+    ]);
+    const { log } = await views(lines);
+    expect(log).toContain('<span class="ss-verb">Asking</span> you a question</span>');
+    expect(log).toContain('<span class="ss-verb">Read</span> the web</span>');
+    expect(log).toContain('<span class="ss-verb">Read</span> <code>a.ts</code>');
+    expect(log).toContain('<span class="ss-verb">Ran</span> <code>npm test</code>');
   });
 });
 

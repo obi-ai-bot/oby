@@ -1,4 +1,4 @@
-import { agentOf, ENDED } from './view';
+import { agentOf, asksWords, ENDED } from './view';
 import type { Task } from './tasks';
 
 // A conversation's tasks as the side panel nests them under its row (Sangam's screens 03 and 04,
@@ -20,11 +20,11 @@ export const kidState = (t: Task): KidState =>
 export const kidsOf = (tasks: Task[], chat: string, of: (taskId: string) => string | undefined) =>
   tasks.filter((t) => !t.job.archived && of(t.id) === chat).sort((a, b) => b.job.created - a.job.created);
 
-// What a task waits on, as the words after its agent's name: "asks to run a command"
+// What a task waits on, as the words after its agent's name: "asks to run a command", "asks to edit a file"
 export function asksFor(t: Task): string {
   const ask = t.job.ask;
   if (!ask) return 'needs you';
-  if (ask.kind === 'permission') return ask.detail ? 'asks to run a command' : 'asks for permission';
+  if (ask.kind === 'permission') return asksWords(ask.tool, ask.detail);
   if (ask.kind === 'question') return 'has a question';
   if (ask.kind === 'merge') return 'is ready to merge';
   if (ask.kind === 'failed') return 'stopped and needs you';
@@ -56,3 +56,27 @@ export function kidsLine(kids: Task[]): string | undefined {
 
 // Its row's title when hovered: the task and the account it runs on (screen 03's title attribute)
 export const kidTitle = (t: Task) => (t.job.account ? `${t.title} on ${t.job.account}` : t.title);
+
+// Which conversations' rows the owner folded or showed with its twist (LIVETASK-20), kept as
+// oby.kidsShown: conversation id to shown or not
+const KIDS = 'oby.kidsShown';
+export function keptKids(): Record<string, boolean> {
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(KIDS) ?? '{}');
+    return kept && typeof kept === 'object' && !Array.isArray(kept) ? Object.fromEntries(Object.entries(kept).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean> : {};
+  } catch { return {}; }
+}
+export function keepKids(next: Record<string, boolean>) {
+  try { localStorage.setItem(KIDS, JSON.stringify(next)); } catch { /* not remembered, that's all */ }
+}
+// A task's own thread opened (its card, its nested row): its conversation's rows show once, the lit
+// one among them, even folded by the owner before; the twist folds them again (LIVETASK-22)
+const revealed = new Set<(chat: string) => void>();
+export function revealKids(chat: string) {
+  const kept = keptKids();
+  if (kept[chat] !== false) return;
+  delete kept[chat];
+  keepKids(kept);
+  for (const f of revealed) f(chat);
+}
+export const onRevealKids = (f: (chat: string) => void) => { revealed.add(f); return () => { revealed.delete(f); }; };

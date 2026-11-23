@@ -6,7 +6,7 @@ import { liveBridge } from './liveBridge';
 import { wordsOf } from '../../../shared/words';
 
 // A conversation's workspace in the app (docs/contracts/folders.md, WORKSPACE-2 to 5): Home's box
-// offers "This folder" or "A new worktree" with folders picked, and sends the choice with the words
+// offers a Worktree checkbox with folders picked (unchecked: this folder), and sends the choice with the words
 // that start the conversation, in a shape main signs (WORDS-20); a conversation's finishing line
 // shows what obid says each folder can do, and a click goes through main's own dialog and
 // signature (window.app.obid.finish). The real Home and FinishLine on live.ts, main's bridge stood
@@ -78,8 +78,8 @@ const until = async (check: () => void) => { await act(async () => { await vi.wa
 const click = async (el: Element) => { await act(async () => (el as HTMLElement).click()); };
 const button = (text: string, within: ParentNode = host) => [...within.querySelectorAll('button')].find((b) => b.textContent === text || b.getAttribute('aria-label') === text);
 const homeBox = () => host.querySelector('form.composer:not(.chat-composer)')!;
-const choice = () => homeBox().querySelector('[role="radiogroup"][aria-label="Where it works"]');
-const checkedChoice = () => [...(choice()?.querySelectorAll('[role="radio"]') ?? [])].filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.textContent);
+// the Worktree checkbox, in the box's bottom row beside the mode chip (the owner's choice, 2026-11-23)
+const choice = () => homeBox().querySelector<HTMLButtonElement>('.composer-talk [role="checkbox"]');
 const plans = (calls: Call[]) => calls.filter((c) => c.method === 'POST' && c.path === '/v1/plans').map((c) => c.body as Record<string, unknown>);
 async function send(words: string) {
   const field = homeBox().querySelector<HTMLTextAreaElement>('[data-box]')!;
@@ -107,10 +107,16 @@ describe('WORKSPACE-3: Home’s box chooses where the conversation works', () =>
     // no folder, no choice
     expect(choice()).toBeNull();
     await pickFolder();
-    expect([...choice()!.querySelectorAll('[role="radio"]')].map((r) => r.textContent)).toEqual(['This folder', 'A new worktree']);
-    expect(checkedChoice()).toEqual(['This folder']);
-    await click(button('A new worktree', homeBox())!);
-    expect(checkedChoice()).toEqual(['A new worktree']);
+    expect(choice()!.textContent).toBe('Worktree');
+    // unchecked: this folder; no pill of two choices left over it
+    expect(choice()!.getAttribute('aria-checked')).toBe('false');
+    expect(homeBox().querySelector('[role="radiogroup"]')).toBeNull();
+    await click(choice()!);
+    expect(choice()!.getAttribute('aria-checked')).toBe('true');
+    // unchecked again and checked again: the last state is what goes
+    await click(choice()!);
+    expect(choice()!.getAttribute('aria-checked')).toBe('false');
+    await click(choice()!);
     await send('Tidy the notes');
     await until(() => expect(plans(o.calls)).toHaveLength(1));
     const body = plans(o.calls)[0];
@@ -127,6 +133,28 @@ describe('WORKSPACE-3: Home’s box chooses where the conversation works', () =>
     await until(() => expect(plans(o.calls)).toHaveLength(1));
     expect(plans(o.calls)[0]).toMatchObject({ new: true, workspace: 'folder' });
     expect(wordsOf('POST', '/v1/plans', plans(o.calls)[0])).toEqual(['Tidy the notes']);
+  });
+
+  // the owner's word (2026-11-23): only while the conversation is new and empty, as Claude Code offers it
+  it('workspace_3_a_reply_box_has_no_worktree_choice', async () => {
+    const o = obid();
+    await home(o, ['folders-v1', 'workspace-v1']);
+    await pickFolder();
+    expect(choice()!.textContent).toBe('Worktree');
+    await send('Tidy the notes');
+    await until(() => expect(plans(o.calls)).toHaveLength(1));
+    // the conversation the words started opens, its reply box with no choice: it was made with the first message
+    await until(() => expect(host.querySelector('form.chat-composer')).not.toBeNull());
+    expect(host.querySelector('form.chat-composer .composer-worktree')).toBeNull();
+    // a reply box of a conversation working in a folder, on its own
+    const { default: Composer } = await import('../Composer');
+    const { setFolders } = await import('../folders');
+    setFolders('c1', [API]);
+    await act(async () => root!.render(<Composer label="Reply to Oby" conversation="c1" talk={{ id: 'c1', title: 'Notes', said: [] } as never} onSend={() => {}} />));
+    expect(host.querySelector('.composer-worktree')).toBeNull();
+    // nor Home's kind of box, once it's a conversation's
+    await act(async () => root!.render(<Composer home label="Message Oby" conversation="c1" talk={{ id: 'c1', title: 'Notes', said: [] } as never} onSend={() => {}} />));
+    expect(host.querySelector('.composer-worktree')).toBeNull();
   });
 
   it('workspace_3_an_obid_without_workspace_v1_gets_no_choice', async () => {

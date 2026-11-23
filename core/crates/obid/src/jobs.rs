@@ -926,7 +926,7 @@ struct Ask {
 
 /// Why words that aren't the owner's own don't answer the agent's question (#858).
 pub const QUESTION_IS_THE_OWNERS: &str =
-    "It waits for the owner to answer its question, in their inbox.";
+    "It waits for the owner to answer its question, in Waiting for you.";
 /// Why an answer to the agent's question (#858) isn't one.
 const QUESTION_NEEDS_AN_ANSWER: &str = "Answer its question with one of its options or your own words (up to 2,000 characters), or say no.";
 
@@ -2958,7 +2958,7 @@ impl Jobs {
         // A plan goes back only on the owner's own words (#609).
         if waiting.as_ref().is_some_and(Permission::is_plan) && !source.direct() {
             return Some(Err(Refused(
-                "It waits for the owner to approve its plan or send it back, in their inbox."
+                "It waits for the owner to approve its plan or send it back, in Waiting for you."
                     .into(),
             )));
         }
@@ -3347,7 +3347,7 @@ impl Jobs {
             ));
         }
         Refused(format!(
-            "It stopped at its safety limit ({limit}): carrying it on waits for your Confirm in the inbox."
+            "It stopped at its safety limit ({limit}): carrying it on waits for your Confirm in Waiting for you."
         ))
     }
 
@@ -3525,11 +3525,13 @@ impl Jobs {
         if let Err(e) = self.store.remove(id) {
             tracing::error!("can't forget job {id}: {e}");
         }
+        // Gone now, for the apps too (TASKS-3). Its folders and branch go after, under the lock the
+        // clone is got ready with: removing its worktree while another's is added fails that add
+        // (#2626); `git branch -D` rewrites its .git/config (it drops the branch's section, there
+        // or not), and a `git config` of git::ensure_clone meanwhile fails on git's lock.
+        self.events.send("job", json!({"id": id, "deleted": true}));
+        self.changed.notify_waiters();
         let clone = self.clone_for(&job);
-        // Under the lock the clone is got ready with: removing its worktree while another's is
-        // added fails that add (#2626); `git branch -D` rewrites its .git/config (it drops the
-        // branch's section, there or not), and a `git config` of git::ensure_clone meanwhile fails
-        // on git's lock, and with it another job's start.
         let preparing = self.preparing(&job.repo);
         let preparing = preparing.lock().await;
         self.remove_folders(&clone, id).await;
@@ -3539,8 +3541,6 @@ impl Jobs {
             let _ = git::git(&clone, &["branch", "-D", "--", &job.branch]).await;
         }
         drop(preparing);
-        self.events.send("job", json!({"id": id, "deleted": true}));
-        self.changed.notify_waiters();
         Some(Ok(branch_stays))
     }
 
@@ -11267,6 +11267,48 @@ mod tests {
         drop(held);
         assert!(matches!(deleting.await, Some(Ok(false))));
         assert!(branch().is_empty(), "the branch went");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// TASKS-3: deleted, it's gone: its `deleted` event goes out as soon as obid forgets the job,
+    /// not once its worktree and branch are cleaned up, which wait for the clone's lock (another
+    /// job getting ready in the repository, a lookup's fetch). Until then the apps showed the
+    /// task, and offered Delete again, though obid had it no more.
+    #[tokio::test]
+    async fn tasks_3_a_deleted_job_is_said_gone_at_once_while_its_clone_is_busy() {
+        let root = std::env::temp_dir().join(format!("obid-delete-said-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut job = Job::new(
+            "eeee0007".into(),
+            "o/r".into(),
+            "research".into(),
+            "Read it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Done;
+        let clone = git::clone_path(&home, "o/r");
+        std::fs::create_dir_all(&clone).unwrap();
+        cleanup_git(&clone, &["init", "-q"]);
+        cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let jobs = jobs_with_kept(&home, &[&job]);
+        let mut events = jobs.events.subscribe();
+        // Another job is getting the clone ready.
+        let preparing = jobs.preparing("o/r");
+        let held = preparing.lock().await;
+        let mut deleting = Box::pin(jobs.delete("eeee0007"));
+        let waited = tokio::time::timeout(Duration::from_secs(2), &mut deleting).await;
+        assert!(waited.is_err(), "its cleanup waits on the lock: {waited:?}");
+        assert!(jobs.get("eeee0007").is_none(), "obid has it no more");
+        let said = std::iter::from_fn(|| events.try_recv().ok())
+            .find(|e| e.name == "job" && e.data["id"] == "eeee0007");
+        assert_eq!(
+            said.map(|e| e.data),
+            Some(json!({"id": "eeee0007", "deleted": true})),
+            "said gone while the lock is still held"
+        );
+        drop(held);
+        assert!(matches!(deleting.await, Some(Ok(_))));
         let _ = std::fs::remove_dir_all(&root);
     }
 

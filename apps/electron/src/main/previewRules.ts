@@ -14,6 +14,7 @@ export type Ask = { id: string; version: number; bounds: Bounds; edits?: Record<
 export const EDITS_MOST = 17 << 20;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DESIGN_HOST = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-v[1-9][0-9]{0,5}-[0-9a-f]{16}\.localhost$/;
 const size = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100_000;
 /** `{ id, version, bounds, edits? }` (a lower-case UUID, a version from 1, a box in the window, and
  * the owner's unsaved text for some of its files, ARTIFACTSAPP-8), or null. */
@@ -84,17 +85,33 @@ export function oneColour(bitmap: Uint8Array): boolean {
   return true;
 }
 
-/** Whether the preview's session lets a request go: its host page, or the relay on its port. */
+/** Whether the preview's session lets a request go: its host page, or the relay on its port (a
+ * preview's host, or a design's version's own, `<id>-v<n>-<secret>.localhost`, ARTIFACTSAPP-30). */
 export function allowed(url: string, relayPort: number, hostPage: string, devOrigin?: string): boolean {
   let u: URL;
   try { u = new URL(url); } catch { return false; }
   if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol === 'devtools:') return true;
   if (u.protocol === 'http:' && /^(?:[a-z0-9]{1,64}-)?preview\.localhost$/.test(u.hostname) && Number(u.port) === relayPort) return true;
+  if (u.protocol === 'http:' && DESIGN_HOST.test(u.hostname) && Number(u.port) === relayPort) return true;
   if (devOrigin) {
     const d = new URL(devOrigin);
     if ((u.protocol === 'http:' || u.protocol === 'ws:') && u.host === d.host) return true;
   }
   return u.protocol === 'file:' && url.startsWith(hostPage);
+}
+
+/** What the canvas host (obid's `__canvas.html`, `window.__OBY_CANVAS`) says of a design
+ * (ARTIFACTSAPP-29): null while its boards still draw; once every one has (or `final`, at the
+ * ceiling), each board's mistake as `<board>: <message>`, else drawn (or, unready at the ceiling, a
+ * timeout). It is the design's own page, so it only times the view and gives text. */
+export function canvasStatus(v: unknown, final = false): Status | null {
+  const s = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  const ready = s.ready === true;
+  if (!ready && !final) return null;
+  const errors = Array.isArray(s.errors) ? s.errors.filter((e): e is { board: string; message: string } => !!e && typeof e === 'object' && typeof (e as Record<string, unknown>).board === 'string' && typeof (e as Record<string, unknown>).message === 'string') : [];
+  const lines = errors.slice(0, 11).map((e) => `${e.board}: ${e.message}`.slice(0, 4_000));
+  if (lines.length) return { error: lines[0], console: lines.slice(1) };
+  return ready ? { drawn: true } : { timeout: true };
 }
 
 /** A version's files read from obid, by path: no prototype, so a file named `__proto__` or

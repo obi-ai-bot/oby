@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { startRelay, type Relay } from './sandpackRelay';
-import { allowed, noFiles, oneColour, overlay, pageError, previewAsk, previewStatus, shownAs, thumbAsk, type Status } from './previewRules';
+import { allowed, canvasStatus, noFiles, oneColour, overlay, pageError, previewAsk, previewStatus, shownAs, thumbAsk, type Status } from './previewRules';
 
 // An artifact's preview, drawn by Sandpack (docs/contracts/artifacts-app.md, ARTIFACTSAPP-1 and 3).
 // The page says which version and where (`artifact-preview`); main reads the version's files from
@@ -33,6 +33,15 @@ import { allowed, noFiles, oneColour, overlay, pageError, previewAsk, previewSta
 // what broke (`pageError`, ARTIFACTSAPP-24); a picture is taken once it has drawn, and again while
 // it comes out blank (ARTIFACTSAPP-25). The status is the artifact's own word and can be forged: it
 // only times these and gives text, never more.
+//
+// A Claude Design design (`design`) is drawn by obid's canvas host and Oby's runtime (ARTIFACTS-13 to
+// 15; ARTIFACTSAPP-29 and 30): a third view, built the same way in the same partition and on the same
+// lock, opens `__canvas.html` on its version's own origin, `<id>-v<n>.localhost` on the relay's port,
+// which the relay serves from obid's file route for that version only, with obid's board and host
+// policies as obid sent them. The canvas host is its top page (its policy lets no page frame it), each
+// board a sandboxed frame of its own in it; the pane shows that view instead of the preview's, once
+// every board has drawn or 4 s passed, and what a board threw is its `pageError`. A card's picture of
+// a design is none: the card keeps the board's blocks.
 
 export const PARTITION = 'oby-artifact-preview';
 const dev = process.env.ELECTRON_RENDERER_URL;
@@ -53,6 +62,10 @@ const refused: { n: number; url: string; by: number | undefined }[] = [];
 let refusals = 0;
 // the picture's view's, whose refusals are never the pane's page's
 let thumbContents: number | undefined;
+// the design's view, and the versions the relay may serve on their own origin: the one on view, and
+// the one being read (`<id>/<version>`)
+let designView: View | null = null;
+const designs = new Set<string>();
 const rendererDir = join(__dirname, '../renderer');
 
 function lockSession(s: Session, relay: Relay, hostPage: string) {
@@ -67,14 +80,18 @@ function lockSession(s: Session, relay: Relay, hostPage: string) {
 }
 
 function locked(): Promise<Relay> {
-  shared ??= startRelay().then((relay) => {
+  shared ??= startRelay({
+    shown: (id, version) => designs.has(`${id}/${version}`),
+    // `path` starts with its slash (designPath)
+    read: (id, version, path) => send('GET', `/v1/artifacts/${id}/${version}/${path.slice(1)}`, undefined),
+  }).then((relay) => {
     lockSession(session.fromPartition(PARTITION), relay, pathToFileURL(rendererDir).href + '/');
     return relay;
   }, (e) => { shared = null; throw e; });
   return shared;
 }
 
-async function makeView(win: BrowserWindow, thumb = false): Promise<View> {
+async function makeView(win: BrowserWindow, thumb = false, design = false): Promise<View> {
   const relay = await locked();
   const view = new WebContentsView({
     webPreferences: {
@@ -94,7 +111,8 @@ async function makeView(win: BrowserWindow, thumb = false): Promise<View> {
   view.setVisible(false);
   // the picture's view stays out of the window: a hidden view in it captures nothing (Electron 44)
   if (!thumb) win.contentView.addChildView(view);
-  const loaded = dev ? wc.loadURL(`${dev}/preview.html${thumb ? '?thumb' : ''}`) : wc.loadFile(join(rendererDir, 'preview.html'), thumb ? { search: 'thumb' } : undefined);
+  // the design's view loads its version's canvas host when it shows one
+  const loaded = design ? Promise.resolve() : dev ? wc.loadURL(`${dev}/preview.html${thumb ? '?thumb' : ''}`) : wc.loadFile(join(rendererDir, 'preview.html'), thumb ? { search: 'thumb' } : undefined);
   return { view, loaded, relay };
 }
 
@@ -103,6 +121,32 @@ const statusOf = (view: WebContentsView): Promise<Status> => Promise.race([
   view.webContents.executeJavaScript('window.obyStatus').then(previewStatus, (): Status => ({ timeout: true })),
   new Promise<Status>((done) => setTimeout(() => done({ timeout: true }), 4_000)),
 ]);
+
+// a design's canvas host (its view's origin is the relay's designOrigin), what it says once every board drew, at most 4 s; anything else drawing still
+async function canvasOf(view: WebContentsView): Promise<Status> {
+  const end = Date.now() + 4_000;
+  // each read cut off at the ceiling: a page that stops answering never holds the pane
+  const read = () => Promise.race([
+    view.webContents.executeJavaScript('window.__OBY_CANVAS ? JSON.parse(JSON.stringify({ ready: window.__OBY_CANVAS.ready, errors: window.__OBY_CANVAS.errors })) : null').catch(() => null),
+    new Promise<null>((done) => setTimeout(() => done(null), Math.max(0, end - Date.now()))),
+  ]);
+  for (;;) {
+    const v = await read();
+    const s = canvasStatus(v, Date.now() >= end);
+    if (s) return s;
+    await new Promise((done) => setTimeout(done, 100));
+  }
+}
+
+// an artifact's kind and its version's files, or why not
+async function kindOf(id: string, version: number): Promise<string | { error: string }> {
+  const r = await send('GET', `/v1/artifacts/${id}`, undefined);
+  if (!(r instanceof Response)) return { error: r.text || 'obid isn’t answering.' };
+  if (!r.ok) return { error: r.status === 404 ? 'That artifact isn’t there any more.' : `obid answered ${r.status}.` };
+  const a = await r.json() as { kind: string; versions: { version: number }[] };
+  if (!a.versions.some((x) => x.version === version)) return { error: `Version ${version} isn’t there.` };
+  return a.kind;
+}
 
 // a version's files as obid serves them: text, or base64 for bytes that aren't UTF-8
 async function readVersion(id: string, version: number): Promise<{ kind: string; title: string; files: Record<string, { text: string } | { base64: string }> } | string> {
@@ -130,7 +174,11 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
   let wanted = '';
   let onView = '';
   let reading: { key: string; done: Promise<Shown> } | null = null;
-  const hide = () => { wanted = ''; onView = ''; current?.view.setVisible(false); };
+  let bounds = { x: 0, y: 0, width: 0, height: 0 };
+  // whether the version on view is a design's, in the design's view
+  let onDesign = false;
+  // nothing on view: the relay serves no design either
+  const hide = () => { wanted = ''; onView = ''; designs.clear(); current?.view.setVisible(false); designView?.view.setVisible(false); };
   ipc(trusted).handle('artifact-preview', [previewAsk], async (_e, ask): Promise<Shown> => {
     const win = window();
     if (!ask || !win || win.isDestroyed()) { hide(); return { shown: true }; }
@@ -143,7 +191,9 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
       win.webContents.on('did-start-navigation', (d) => { if (d.isMainFrame && !d.isSameDocument) hide(); });
     }
     const b = ask.bounds;
-    current.view.setBounds({ x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) });
+    bounds = { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) };
+    current.view.setBounds(bounds);
+    designView?.view.setBounds(bounds);
     if (key === onView) return { shown: true };
     // the same version already being read (the pane moved while it read): that read shows it
     if (reading?.key === key) return reading.done;
@@ -154,23 +204,67 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
   }, null);
   // the version on view, run again; with none on view, nothing. It always answers null
   ipc(trusted).handle('artifact-reload', [], async (): Promise<null> => {
-    if (current && onView) await current.view.webContents.executeJavaScript('window.obyReload?.()').catch(() => {});
+    if (onView && onDesign) designView?.view.webContents.reload();
+    else if (current && onView) await current.view.webContents.executeJavaScript('window.obyReload?.()').catch(() => {});
     return null;
   }, null);
   async function show(key: string, id: string, version: number, edits?: Record<string, string>): Promise<Shown> {
-    const { view, loaded, relay } = current!;
     const since = refusals;
+    const kind = await kindOf(id, version);
+    if (wanted !== key) return { shown: true };
+    if (typeof kind !== 'string') { designs.clear(); current?.view.setVisible(false); designView?.view.setVisible(false); return kind; }
+    if (kind === 'design') return showDesign(key, id, version, since);
+    const { view, loaded, relay } = current!;
     const read = await readVersion(id, version);
     // each edit over its file, a file of that version only
     if (typeof read !== 'string') overlay(read.files, edits);
     // another version, or none, was asked for while this one read: that ask decides
     if (wanted !== key) return { shown: true };
-    if (typeof read === 'string') { view.setVisible(false); return { error: read }; }
+    // nothing shows, not the page nor a design before it
+    if (typeof read === 'string') { designs.clear(); designView?.view.setVisible(false); view.setVisible(false); return { error: read }; }
     await loaded;
     await view.webContents.executeJavaScript(shownAs({ ...read, bundler: relay.origin }));
     const status = await statusOf(view);
-    if (wanted === key) { onView = key; view.setVisible(true); }
-    const said = pageError(status, refused.filter((r) => r.n > since && r.by !== thumbContents).map((r) => r.url));
+    if (wanted === key) { onView = key; onDesign = false; designs.clear(); designView?.view.setVisible(false); view.setVisible(true); }
+    const said = pageError(status, refused.filter((r) => r.n > since && r.by !== thumbContents && r.by !== designView?.view.webContents.id).map((r) => r.url));
+    return said ? { shown: true, pageError: said } : { shown: true };
+  }
+  // a design: its canvas host on its version's own origin, in the design's view (ARTIFACTSAPP-29)
+  async function showDesign(key: string, id: string, version: number, since: number): Promise<Shown> {
+    const win = window();
+    if (!win || win.isDestroyed()) return { shown: true };
+    // the views taken away meanwhile (stop): nothing more is made, shown or served
+    const started = lifetime;
+    const gone = () => wanted !== key || lifetime !== started;
+    if (!designView) {
+      const made = await makeView(win, false, true);
+      // made as the window closed: taken away again, never kept for the next window
+      if (gone()) { drop(made); return { shown: true }; }
+      designView = made;
+    }
+    if (gone()) return { shown: true };
+    const { view, relay } = designView;
+    view.setBounds(bounds);
+    const pair = `${id}/${version}`;
+    // the relay serves this version alone; the design's view, opening it, is hidden until it drew
+    // (a page on view stays until then)
+    designs.clear();
+    designs.add(pair);
+    view.setVisible(false);
+    try {
+      await view.webContents.loadURL(`${relay.designOrigin(id, version)}/__canvas.html`);
+    } catch (e) {
+      if (gone()) return { shown: true };
+      return { error: `The design couldn’t open: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    const status = await canvasOf(view);
+    if (gone()) return { shown: true };
+    designs.clear();
+    designs.add(pair);
+    onView = key; onDesign = true;
+    current?.view.setVisible(false);
+    view.setVisible(true);
+    const said = pageError(status, refused.filter((r) => r.n > since && r.by === view.webContents.id).map((r) => r.url));
     return said ? { shown: true, pageError: said } : { shown: true };
   }
 
@@ -220,6 +314,8 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     const gone = () => answering !== key || lifetime !== started;
     const win = window();
     if (!win || win.isDestroyed()) return { none: true };
+    // a design's card keeps the board's blocks
+    if ((await kindOf(id, version)) === 'design' || gone()) return { none: true };
     const read = await readVersion(id, version);
     if (typeof read === 'string' || gone()) return { none: true };
     thumbView ??= makeView(win, true).then((v) => { v.view.setBounds({ x: 0, y: 0, ...HALF }); return v; }, (e) => { thumbView = null; throw e; });
@@ -263,6 +359,9 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     answering = '';
     if (current) drop(current);
     current = null;
+    if (designView) drop(designView);
+    designView = null;
+    designs.clear();
     void thumbView?.then(drop, () => {});
     thumbView = null;
     thumbs.clear();

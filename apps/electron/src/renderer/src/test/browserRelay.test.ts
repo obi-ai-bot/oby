@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { KEPT, METHODS, MAX_MESSAGE, NOT_PASSED, NO_SCRIPT, forms, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
+import { ATTACH_WAIT_MS, KEPT, METHODS, WAITING_BYTES, WAITING_MAX, WAITING_TABS, MAX_MESSAGE, NOT_PASSED, NO_SCRIPT, forms, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
 import { sseReader } from '../../../shared/obid-wire';
 
 vi.mock('electron', () => ({ session: { fromPartition: () => ({}) }, webContents: { fromId: () => null } }));
@@ -169,11 +169,14 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     expect(replies(o.all()).find((r) => r.id === 2)?.error?.code).toBe(-32601);
   });
 
-  it('browserapp_23: a command for a tab not attached is answered with an error; a message over 64 MB ends the tab\'s relay', async () => {
+  it('browserapp_23: a command for a tab that doesn\'t attach in time is answered with an error; a message over 64 MB ends the tab\'s relay', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const o = fakeObid();
     const host = relayHost(o.post, { home: HOME });
     host.command(cdp(7, 'Runtime.evaluate'));
-    await settle(); await settle();
+    await vi.advanceTimersByTimeAsync(ATTACH_WAIT_MS);
+    for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
     expect(replies(o.all())).toEqual([{ id: 7, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }]);
     const g = fakeGuest({ send: vi.fn(async () => ({ data: 'x'.repeat(MAX_MESSAGE) })) });
     host.attach(K, g);
@@ -181,6 +184,177 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     for (let i = 0; i < 6; i++) await settle();
     expect(o.all().map((e) => e.type).slice(-2)).toEqual(['attached', 'detached']);
     expect(KEPT).toBeGreaterThan(1000);
+  });
+});
+
+describe('BROWSERAPP-49: obid\'s first commands wait for the tab\'s webview to attach', () => {
+  it('browserapp_49: a command sent before the webview attached is run once it attaches, in order, and answered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    host.command(cdp(1, 'Page.enable'));
+    host.command(cdp(2, 'Runtime.evaluate', { expression: 'document.title' }));
+    vi.advanceTimersByTime(ATTACH_WAIT_MS - 1);
+    vi.useRealTimers();
+    await settle();
+    // nothing answered yet: the tab isn't attached, and its time isn't up
+    expect(replies(o.all())).toEqual([]);
+    const g = fakeGuest();
+    host.attach(K, g);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.enable', 'Runtime.evaluate']);
+    expect(replies(o.all())).toEqual([{ id: 1, result: { from: 'Page.enable' } }, { id: 2, result: { from: 'Runtime.evaluate' } }]);
+    // attached is told before the first answer
+    expect(o.all()[0].type).toBe('attached');
+  });
+
+  it('browserapp_49: a tab that was attached and detached answers at once, and never runs it after it attaches again', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    host.attach(K, fakeGuest());
+    host.detach(K);
+    // obid failed what it had sent this tab when it heard `detached`: run later, an act would happen twice
+    host.command(cdp(3, 'Input.dispatchMouseEvent', { type: 'mousePressed' }));
+    await settle(); await settle();
+    expect(replies(o.all())).toEqual([{ id: 3, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }]);
+    const again = fakeGuest();
+    host.attach(K, again);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(again.sent).toEqual([]);
+  });
+
+  it('browserapp_49: what waited runs one command at a time: the second goes only once the first is answered, and a later one after both', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    let release!: () => void;
+    const g = fakeGuest();
+    g.send = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      g.sent.push({ method, params });
+      if (method === 'Page.navigate') await new Promise<void>((done) => { release = done; });
+      return { from: method };
+    });
+    host.command(cdp(1, 'Page.navigate', { url: 'https://example.test/' }));
+    host.command(cdp(2, 'Runtime.evaluate', { expression: 'document.title' }));
+    host.attach(K, g);
+    host.command(cdp(3, 'Runtime.evaluate', { expression: 'location.href' }));
+    for (let i = 0; i < 6; i++) await settle();
+    // the navigation hasn't answered: nothing after it has run
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate']);
+    release();
+    for (let i = 0; i < 8; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate', 'Runtime.evaluate', 'Runtime.evaluate']);
+    expect(replies(o.all()).map((r) => r.id)).toEqual([1, 2, 3]);
+  });
+
+  // a guest whose Page.navigate stays unanswered until `release`
+  function holding() {
+    let release!: () => void;
+    const g = fakeGuest();
+    g.send = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      g.sent.push({ method, params });
+      if (method === 'Page.navigate') await new Promise<void>((done) => { release = done; });
+      return { from: method };
+    });
+    return { g, release: () => release() };
+  }
+  const NOT_ATTACHED = { code: -32000, message: 'This tab isn’t attached in the window.' };
+
+  it('browserapp_49: obid\'s relay connecting again calls off a drain: the first command still pending, none after it runs, each answered', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const { g, release } = holding();
+    host.command(cdp(1, 'Page.navigate', { url: 'https://example.test/' }));
+    host.command(cdp(2, 'Runtime.evaluate'));
+    host.command(cdp(3, 'Input.dispatchMouseEvent', { type: 'mousePressed' }));
+    host.attach(K, g);
+    for (let i = 0; i < 4; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate']);
+    host.reconnected();
+    // after the reconnect, a command of the new stream still runs (the tab is attached)
+    host.command(cdp(4, 'Runtime.evaluate', { expression: 'location.href' }));
+    release();
+    for (let i = 0; i < 8; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate', 'Runtime.evaluate']);
+    expect(g.sent[1].params).toEqual({ expression: 'location.href' });
+    const r = replies(o.all());
+    expect(r.filter((x) => x.id === 2 || x.id === 3)).toEqual([{ id: 2, error: NOT_ATTACHED }, { id: 3, error: NOT_ATTACHED }]);
+  });
+
+  it('browserapp_49: a detach and a reattach within the debugger\'s 250 ms call off a drain: none after the pending first command runs, on either webview', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const { g, release } = holding();
+    host.command(cdp(1, 'Page.navigate', { url: 'https://example.test/' }));
+    host.command(cdp(2, 'Runtime.evaluate'));
+    host.command(cdp(3, 'Input.dispatchMouseEvent', { type: 'mousePressed' }));
+    host.attach(K, g);
+    for (let i = 0; i < 4; i++) await settle();
+    host.detach(K);
+    const again = fakeGuest();
+    host.attach(K, again);
+    release();
+    for (let i = 0; i < 8; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.navigate']);
+    expect(again.sent).toEqual([]);
+    expect(replies(o.all()).filter((x) => x.id === 2 || x.id === 3)).toEqual([{ id: 2, error: NOT_ATTACHED }, { id: 3, error: NOT_ATTACHED }]);
+  });
+
+  it('browserapp_49: at most WAITING_MAX commands wait for one tab: one more answers the oldest at once', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    for (let id = 1; id <= WAITING_MAX + 1; id++) host.command(cdp(id, 'Runtime.evaluate'));
+    await settle(); await settle();
+    expect(replies(o.all())).toEqual([{ id: 1, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }]);
+    const g = fakeGuest();
+    host.attach(K, g);
+    for (let i = 0; i < 20; i++) await settle();
+    expect(g.sent).toHaveLength(WAITING_MAX);
+  });
+
+  it('browserapp_49: at most WAITING_BYTES wait for one tab, and one command bigger than that never waits', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    const big = (id: number, n: number) => cdp(id, 'Runtime.evaluate', { expression: 'x'.repeat(n) });
+    host.command(big(1, WAITING_BYTES / 2));
+    host.command(big(2, WAITING_BYTES / 2));
+    host.command(big(3, WAITING_BYTES + 1));
+    await settle(); await settle();
+    // the second pushed the tab over its bytes: the oldest went; the third was too big to keep at all
+    expect(replies(o.all()).map((r) => r.id)).toEqual([1, 3]);
+    const g = fakeGuest();
+    host.attach(K, g);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(g.sent).toHaveLength(1);
+  });
+
+  it('browserapp_49: at most WAITING_TABS tabs wait at once: a command for one more is answered at once', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    for (let n = 0; n <= WAITING_TABS; n++) host.command({ threadId: 'j1', tabId: `t${n}`, type: 'cdp', message: JSON.stringify({ id: n, method: 'Page.enable' }) });
+    await settle(); await settle();
+    expect(o.all().filter((e) => e.type === 'cdp').map((e) => [e.tabId, JSON.parse((e as { message: string }).message).id])).toEqual([[`t${WAITING_TABS}`, WAITING_TABS]]);
+  });
+
+  it('browserapp_49: obid\'s relay reconnecting answers what waited: a restarted obid names its tabs anew', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    host.command(cdp(5, 'Page.enable'));
+    host.reconnected();
+    await settle(); await settle();
+    expect(replies(o.all())).toEqual([{ id: 5, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }]);
+    const g = fakeGuest();
+    host.attach(K, g);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(g.sent).toEqual([]);
+  });
+
+  it('browserapp_49: a tab that goes for good answers what waited for it, at once', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    host.command(cdp(4, 'Page.enable'));
+    host.forget(K);
+    for (let i = 0; i < 3; i++) await settle();
+    expect(replies(o.all())).toEqual([{ id: 4, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }]);
   });
 });
 

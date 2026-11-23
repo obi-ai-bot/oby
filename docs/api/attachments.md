@@ -63,7 +63,7 @@ The brain still answers with `--output-format json`, all at once: streaming the 
 The answer is one of:
 
 ```json
-{"kind": "reply", "text": "On it. Claude Code is reviewing oby PR #33 on Deskree.", "jobs": [ …Job, status "queued" ], "drafts": []}
+{"kind": "reply", "text": "On it. Claude Code is reviewing oby PR #33 in Plan mode, on the account Deskree.", "jobs": [ …Job, status "queued" ], "drafts": []}
 {"kind": "reply", "text": "The route is in Runner/API.swift.", "details": "Read [Runner/API.swift](https://github.com/deskree-inc/oby/blob/<sha>/Runner/API.swift#L1).", "jobs": [], "drafts": []}
 {"kind": "question", "said": "Review PR 12", "question": {"text": "Which repository is PR #12 in?", "options": ["deskree-inc/oby", "deskree-inc/blok"], "recommended": 0, "plan": null}, "jobs": [], "drafts": []}
 {"kind": "reply", "text": "Not merged: GitHub's rules for dev still need an approving review on #33. Approve it on GitHub, or change dev's branch protection.", "jobs": [], "drafts": []}

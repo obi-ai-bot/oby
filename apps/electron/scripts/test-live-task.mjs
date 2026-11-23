@@ -2,8 +2,9 @@
 // obid in a scratch home, with stand-in agents and a local fixture repository. Nothing reaches a real
 // agent, account or GitHub. What only this proves: a task shows as a row nested under its conversation;
 // its card is progress only and what it did shows under it, in the conversation; a tool line there fetches
-// its detail and stays that call's as the to-dos change; a nested row and an alert's click open the
-// conversation at its card, lit; the card's ⋯ tells its agent through the message box (its chip) and its
+// its detail and stays that call's as the to-dos change; a nested row and a click on its card open its own
+// thread over the conversation, its row lit (LIVETASK-22); an alert's click opens the conversation at its
+// card, lit; the card's ⋯ tells its agent through the message box (its chip) and its
 // follow-up lands in the conversation; Stop from the card's menu stops it; a deleted job's card and row go;
 // a real permission waits in the drawer over the message box with the card lean, Later only taking it off
 // that drawer until the conversation is opened at the task again, and its answer leaves one line under
@@ -145,17 +146,75 @@ async function main() {
   await shot('2-line-open');
   ok('LIVETASK-15 an opened line stays that call’s as the to-dos change');
 
-  // LIVETASK-28: from elsewhere (a new conversation), its nested row opens the conversation at its card, lit
+  // LIVETASK-22: from elsewhere (a new conversation), its nested row opens the task's own thread over the
+  // conversation that started it, its row lit and all it did shown; back returns to the conversation, where
+  // a click on its card opens that thread again
   const talk = await page.locator('.convo-row.is-active .connector-name').innerText();
+  const own = page.locator(`.chat-layer:not(.is-leaving):not(.is-covered) [data-task="${job.id}"]`);
+  const ownBox = page.locator('.chat-layer:not(.is-leaving):not(.is-covered) [aria-label="Tell the agent about The list"]');
+  const back = async () => {
+    await page.locator('.convo-row', { has: page.locator('.connector-name', { hasText: talk }) }).first().click();
+    await until('back in its conversation', async () => (await page.locator('.convo-row.is-active .connector-name').count()) && (await page.locator('.convo-row.is-active .connector-name').innerText()) === talk, 10_000);
+    await sleep(300);
+  };
   await page.getByRole('button', { name: 'New conversation' }).first().click();
   await until('the conversation left', async () => (await page.locator('.convo-row.is-active').count()) === 0);
   if (!(await kid('The list').count())) await page.getByRole('button', { name: `Show ${talk}’s agents` }).click();
   await kid('The list').click();
-  await until('its conversation at its card, lit', () => page.locator(`.chat-layer:not(.is-leaving) .msg-task-work.is-lit[data-task="${job.id}"]`).count(), 10_000);
-  assert.equal(await page.locator('.convo-row.is-active .connector-name').innerText(), talk, 'its conversation, not a page of its own');
-  assert.equal(await page.locator('.agent-layer, .task-scroll').count(), 0, 'no full-screen task view');
-  await shot('3-row-opens-at-card');
-  ok('LIVETASK-28 a nested row opens the conversation at its card, lit a moment');
+  await until('its own thread, its box telling its agent', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
+  await until('its row lit', () => page.locator('.convo-kid.is-active', { hasText: 'The list' }).count(), 10_000);
+  assert.equal(await own.locator('.lt-log-more', { hasText: /^Show \d+ more$/ }).count(), 0, 'all it did, nothing folded');
+  await sleep(400);  // its way in over
+  await shot('3-row-opens-own-thread');
+  ok('LIVETASK-22 a nested row opens the task’s own thread, its row lit, all it did shown');
+  await back();
+  // a part of the card that is no button of its own (its title is one: below, from the keyboard)
+  await card('The list').locator('.msg-task-meta').first().click();
+  await until('its own thread again', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
+  await sleep(400);  // its way in over
+  await shot('3b-card-opens-own-thread');
+  ok('LIVETASK-22 a click on its card in the conversation opens its own thread');
+  await back();
+  // from the keyboard: its title is a button
+  await card('The list').getByRole('button', { name: 'Open The list' }).focus();
+  await page.keyboard.press('Enter');
+  await until('its own thread from the keyboard', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
+  ok('LIVETASK-22 Enter on its card’s title opens its own thread');
+  // LIVETASK-20 with the row lit: the twist still folds the conversation's rows
+  const kids = page.locator('.convo-nest', { has: page.locator('.convo-row .connector-name', { hasText: talk }) }).locator('.convo-kids');
+  await until('its rows shown, the lit one among them', async () => (await kids.count()) === 1, 10_000);
+  await page.getByRole('button', { name: `Hide ${talk}’s agents` }).click();
+  await until('folded while lit', async () => (await kids.count()) === 0, 10_000);
+  await sleep(300);
+  await shot('3c-twist-folds-while-lit');
+  ok('LIVETASK-20 the twist folds the rows while its task’s own thread shows');
+  // opening the thread again (its card) shows them once, the lit row among them
+  await back();
+  await card('The list').locator('.msg-task-meta').first().click();
+  await until('its own thread again, its rows shown again', async () => (await own.count()) === 1 && (await page.locator('.convo-kid.is-active', { hasText: 'The list' }).count()) === 1, 10_000);
+  await sleep(400);
+  await shot('3d-card-reveals-rows');
+  ok('LIVETASK-22 opening its own thread from its card shows its folded rows once, its row lit');
+  await back();
+  // from the keyboard: its title focused lights the card, as hovered
+  const title = card('The list').getByRole('button', { name: 'Open The list' });
+  await title.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await until('its title focused from the keyboard', () => title.evaluate((el) => el.matches(':focus-visible')), 5_000);
+  await sleep(400);  // the card's own fade
+  const lit = await card('The list').evaluate((el) => { const c = getComputedStyle(el); return { border: c.borderColor, background: c.backgroundColor }; });
+  await page.mouse.move(2, 2);
+  await page.keyboard.press('Tab');
+  await sleep(400);
+  const away = await card('The list').evaluate((el) => { const c = getComputedStyle(el); return { border: c.borderColor, background: c.backgroundColor }; });
+  assert.notDeepEqual(lit, away, `the card lit while its title has focus (${JSON.stringify(lit)} vs ${JSON.stringify(away)})`);
+  await title.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await sleep(300);
+  await shot('3e-title-focused');
+  ok('LIVETASK-22 its title focused from the keyboard lights the card');
 
   // LIVETASK-4, -31: ended, the card says so; under it, its last words with its lines folded
   await until('it ends', async () => ended(await s.call('GET', `/v1/jobs/${job.id}`)), 60_000);
@@ -204,7 +263,8 @@ async function main() {
   await until('it asks', async () => (await s.call('GET', `/v1/jobs/${asking.id}`)).permission, 30_000);
   const drawer = page.locator('.chat-layer:not(.is-leaving) .decision-bar');
   await until('the drawer over the box', () => drawer.count(), 15_000);
-  assert.match(await drawer.locator('.tc-ask-line').innerText(), /^Permission\s+The ask/);
+  // Sangam's card: a plain question naming its agent, the command once, on its own line under it
+  assert.match(await drawer.locator('.tc-ask-line').innerText(), /^Permission\s+Let Claude Code run a command\?\s+·\s+The ask/);
   assert.equal(await drawer.locator('.tc-ask-command', { hasText: 'curl https://example.invalid' }).count(), 1, 'its command on one line');
   assert.equal(await entry('The ask').locator('.tc-ask, .tc-option').count(), 0, 'the card and what is under it stay lean');
   assert.match(await card('The ask').locator('.msg-task-meta').first().innerText(), /^Needs you · /);
@@ -236,6 +296,19 @@ async function main() {
   assert.equal(await drawer.count(), 0, 'the drawer goes');
   await shot('10-answered');
   ok('LIVETASK-27 answered, one line stays under its card');
+
+  // LIVETASK-19, -21, -24: an edit is asked as an edit, never as a command
+  const editing = await dispatch('The edit', 'ASK: {"tool":"Edit","input":{"file_path":"notes.md","old_string":"a","new_string":"b"}}', talkBox);
+  await until('it asks', async () => (await s.call('GET', `/v1/jobs/${editing.id}`)).permission, 30_000);
+  await until('the drawer over the box', () => drawer.count(), 15_000);
+  assert.match(await drawer.locator('.tc-ask-line').innerText(), /^Permission\s+Let Claude Code edit notes\.md\?\s+·\s+The edit/);
+  await until('its row says it asks to edit a file', () => kid('The edit').filter({ hasText: 'asks to edit a file' }).count(), 15_000);
+  await until('its conversation says so', () => page.locator('.convo-row .connector-about', { hasText: 'Claude Code asks to edit a file' }).count(), 15_000);
+  await shot('11-edit');
+  await sleep(600);
+  await drawer.locator('.tc-option', { hasText: /^Deny$/ }).first().click();
+  await until('answered', async () => !(await s.call('GET', `/v1/jobs/${editing.id}`)).permission, 30_000);
+  ok('LIVETASK-21, -24 an edit is asked as an edit, in a plain question');
 
   assert.deepEqual(errors, [], 'no errors on the page');
 }

@@ -369,15 +369,15 @@ describe('BROWSERAPP-35: none of these acts calls obid or is signed', () => {
     expect(calls.every((c) => c.method === 'GET')).toBe(true);
   });
 
-  it('browserapp_35: New tab and Page options do nothing: no handler, no nav and no obid call', async () => {
+  it('browserapp_35: Page options does nothing (no handler), and New tab (the owner\'s own, BROWSERAPP-48) reaches no nav and no obid call', async () => {
     await onObid([tabOf('t1', 'ready')]);
     const before = calls.length;
-    click(host.querySelector('[aria-label="New tab"]') as HTMLButtonElement);
     click(button('Page options'));
+    click(host.querySelector('[aria-label="New tab"]') as HTMLButtonElement);
     expect(nav).not.toHaveBeenCalled();
     expect(calls.length).toBe(before);
     const panel = readFileSync(join(__dirname, '../browser/Panel.tsx'), 'utf8');
-    for (const label of ['aria-label={newTabLabel}', 'aria-label="Page options"']) expect(panel.split('\n').find((l) => l.includes(label)), label).not.toMatch(/onClick/);
+    expect(panel.split('\n').find((l) => l.includes('aria-label="Page options"'))).not.toMatch(/onClick/);
   });
 
   it('browserapp_35: the preload\'s nav invokes browser-nav with exactly the job, the tab and the act, nothing signed', async () => {

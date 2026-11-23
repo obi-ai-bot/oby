@@ -8,7 +8,8 @@ import {
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
-import { STOPPED, type AgentId, type BrowserState, type Download, type Tab } from './view';
+import { partitionOk } from '../../../shared/browser-own';
+import { OWN_THREAD, STOPPED, type AgentId, type BrowserState, type Download, type Tab } from './view';
 
 export type Live = {
   /** true once obid took the tab (a 2xx), false when it refused */
@@ -26,12 +27,17 @@ export type Live = {
   close(): void;
 };
 
+/** main's word on a tab's own page (`browser-nav-state`) */
+export type PageState = { url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null };
+
 export type Sinks = {
   /** whether this obid has the browser at all (GET /v1/browser answered) */
   offered: (on: boolean) => void;
   state: (s: BrowserState) => void;
   /** why the last call didn't go (obid's words), or null */
   problem: (why: string | null) => void;
+  /** main's word on an owner's own tab's page (keyed by OWN_THREAD): the window's, never obid's */
+  own?: (p: PageState & { tabId: string }) => void;
 };
 
 type Calls = {
@@ -98,7 +104,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         owner: t.owner.kind === 'agent' ? { kind: 'agent', agent: agentOf(t.owner.agent) } : { kind: 'you' },
         job: t.owner.kind === 'agent' ? t.owner.job : undefined,
         src: t.url,
-        partition: t.partition,
+        // only an agent's partition shapes: never the owner's own, whatever obid names (BROWSERAPP-24)
+        partition: t.owner.kind === 'agent' && partitionOk(t.partition) ? t.partition : undefined,
         title: t.title || shown(t.url),
         url: shown(at),
         secure: at.startsWith('https:'),
@@ -131,7 +138,11 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     return { tabs: mine, active, asks, downloads: dl, settings };
   };
   const publish = () => { if (!closed) sinks.state(view()); };
-  const unNav = calls.navState((s) => { pages.set(`${s.threadId}\n${s.tabId}`, { url: s.url, canGoBack: s.canGoBack, canGoForward: s.canGoForward, loading: s.loading, failed: s.failed }); publish(); });
+  const unNav = calls.navState((s) => {
+    if (s.threadId === OWN_THREAD) { sinks.own?.({ tabId: s.tabId, url: s.url, canGoBack: s.canGoBack, canGoForward: s.canGoForward, loading: s.loading, failed: s.failed }); return; }
+    pages.set(`${s.threadId}\n${s.tabId}`, { url: s.url, canGoBack: s.canGoBack, canGoForward: s.canGoForward, loading: s.loading, failed: s.failed });
+    publish();
+  });
 
   let following: (() => void) | null = null;
   const refresh = async () => {

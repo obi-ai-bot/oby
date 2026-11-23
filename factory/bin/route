@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Map intake's risk and surfaces to the job's agent set.
+"""Record a job's reviews: pstack's own, which its builder writes (factory/pstack.md).
 
-Usage: route <job-id>
+Usage: route <job-id> [--lenses]
 
-Reads `risk` and `surfaces` from intake.md (through job.json), looks them up in
-config.json's `routing` and `surface_reviewers` tables, and records the result
-in job.json with `job agents`. Prints the agent set.
+Reads `risk` and `surfaces` from intake.md (through job.json) and checks them against config.json's `routing` and
+`surface_reviewers` tables. With --lenses, the owner's ask, it adds the lens reviewers those tables give. It records
+the set in job.json with `job agents` and prints it. factory/bin/job adds Codex's review when the round starts, for a
+job that needs two (its two_reviews()).
 """
 
 import json
@@ -37,9 +38,18 @@ def reviewers(risk, surfaces, config=CONFIG):
     return routed
 
 
+def routed(risk, surfaces, lenses=False, config=CONFIG):
+    """The {review: who writes it} set: pstack's, then the lenses' {lens: model} with `lenses`. Raises ValueError as
+    reviewers() does, lenses or not."""
+    lens = reviewers(risk, surfaces, config)
+    return {"pstack": "builder", **(lens if lenses else {})}
+
+
 def main(argv):
+    lenses = "--lenses" in argv
+    argv = [a for a in argv if a != "--lenses"]
     if len(argv) != 1:
-        die("usage: route <job-id>")
+        die("usage: route <job-id> [--lenses]")
     job_id = argv[0]
     job_bin = str(FACTORY / "bin" / "job")
     res = subprocess.run([job_bin, "sync", job_id], capture_output=True, text=True)
@@ -48,14 +58,14 @@ def main(argv):
     job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
     intake = job["intake"] or die(f"{job_id} has no intake.md")
     try:
-        routed = reviewers(intake["risk"], intake["surfaces"])
+        chosen = routed(intake["risk"], intake["surfaces"], lenses)
     except ValueError as e:
         die(str(e))
-    agents = {"reviewers": routed}
+    agents = {"reviewers": chosen}
     res = subprocess.run([job_bin, "agents", job_id, json.dumps(agents)], capture_output=True, text=True)
     if res.returncode != 0:
         die(res.stderr.strip())
-    print(f"{job_id}: reviewers " + ", ".join(f"{k} {v}" for k, v in routed.items()))
+    print(f"{job_id}: reviewers " + ", ".join(f"{k} {v}" for k, v in chosen.items()))
 
 
 if __name__ == "__main__":

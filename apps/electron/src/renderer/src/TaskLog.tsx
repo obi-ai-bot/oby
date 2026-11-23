@@ -18,24 +18,30 @@ export const SHOWN = 4;
 // words (what changed, the test run, the commit, the result) with the lines before them folded. Long
 // words fold behind Show more, as T3 Code's do. The card above it stays progress only.
 // said: the owner's words in the thread around it; words told it that are there already show once,
-// there, as the owner's message (#2787)
-export default function TaskLog({ task, said }: { task: Task; said?: ReadonlySet<string> }) {
+// there, as the owner's message (#2787). whole: every line and all of its words shown, nothing folded (a
+// task's own thread, LIVETASK-22); first: that thread's first message, which its session's opening words
+// repeat when they're the same
+export default function TaskLog({ task, said, whole = false, first }: { task: Task; said?: ReadonlySet<string>; whole?: boolean; first?: string }) {
   const entries = useEntries(task.id);
   const [open, setOpen] = useState(false);
   const atWork = task.status === 'running' || task.status === 'needs';
   const live = useLiveLines(entries, atWork);
   const j = task.job, agent = agentOf(j.agent);
-  const plan = atWork ? entries.filter((e) => e.kind === 'plan').at(-1) : undefined;
+  // whole (its own thread): its whole session in order, its lists and what it was told where they came
+  const plan = atWork && !whole ? entries.filter((e) => e.kind === 'plan').at(-1) : undefined;
   // what it was told to start with is the conversation's already (Oby's answer that started it): the
   // words told it since stay, but those the thread shows as the owner's message already
-  const all = entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start' && !(e.kind === 'you' && said?.has(e.text.trim())));
-  const told = all.findIndex((e) => e.kind !== 'you');
+  // its own thread: the request it was started with, shown as the thread's first message, once
+  const opening = whole ? entries.findIndex((e) => e.kind !== 'start') : -1;
+  const repeats = opening >= 0 && entries[opening].kind === 'you' && !!first && (entries[opening] as Extract<Entry, { kind: 'you' }>).text.trim() === first.trim();
+  const all = whole ? (repeats ? entries.filter((_, i) => i !== opening) : entries) : entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start' && !(e.kind === 'you' && said?.has(e.text.trim())));
+  const told = whole ? 0 : all.findIndex((e) => e.kind !== 'you');
   const lines = told < 0 ? [] : all.slice(told);
-  // ended: its last words are its result, shown whole; the rest folds
-  const last = atWork ? -1 : lines.map((e) => e.kind).lastIndexOf('said');
+  // ended: its last words are its result, shown whole; the rest folds (its own thread: where it said them)
+  const last = atWork || whole ? -1 : lines.map((e) => e.kind).lastIndexOf('said');
   const result = last >= 0 ? (lines[last] as Extract<Entry, { kind: 'said' }>) : undefined;
   const steps = result ? lines.filter((_, i) => i !== last) : lines;
-  const extra = Math.max(0, steps.length - (atWork ? SHOWN : 0));
+  const extra = whole ? 0 : Math.max(0, steps.length - (atWork ? SHOWN : 0));
   const shown = open || !extra ? steps : steps.slice(extra);
   // obid's own line while it works: the stage past its agent's work, a wait of obid's, or a step its
   // session doesn't hold ("Trying again in 5 minutes (2 of 3)", RECOVERY-5)
@@ -56,12 +62,12 @@ export default function TaskLog({ task, said }: { task: Task; said?: ReadonlySet
       {shown.length > 0 && (
         <ol className="ss-entries">
           {shown.map((e, i) => (e.kind === 'said'
-            ? <Words key={e.n ?? `s${i}`} text={e.live ? live.shown : e.text} streaming={e.live} brand={agent.brand} />
+            ? <Words key={e.n ?? `s${i}`} text={e.live ? live.shown : e.text} streaming={e.live} brand={agent.brand} whole={whole} />
             : <Line key={e.n ?? i} entry={e} job={task.id} brand={agent.brand} live={liveFor(e, live)} />))}
         </ol>
       )}
       {says && <p className="lt-log-now"><span className="sheen">{says}</span></p>}
-      {result && <ol className="ss-entries"><Words text={result.text} brand={agent.brand} /></ol>}
+      {result && <ol className="ss-entries"><Words text={result.text} brand={agent.brand} whole={whole} /></ol>}
       {/* a decision answered: one line where it was asked, until obid asks something else (LIVETASK-27) */}
       {answered && <p className="lt-answered"><Check size={12} strokeWidth={2} />{j.ask!.label ?? ASK_LABEL[j.ask!.kind] ?? j.ask!.kind} · {task.answer}</p>}
       {context && <ContextMeter used={context.used} size={context.size} />}
@@ -70,27 +76,29 @@ export default function TaskLog({ task, said }: { task: Task; said?: ReadonlySet
   );
 }
 
-// The agent's words, folded past a few lines behind Show more
-function Words({ text, streaming, brand }: { text: string; streaming?: boolean; brand: Parameters<typeof BrandMark>[0]['brand'] }) {
+// The agent's words, folded past a few lines behind Show more; whole (its own thread, LIVETASK-22), never folded
+function Words({ text, streaming, brand, whole = false }: { text: string; streaming?: boolean; brand: Parameters<typeof BrandMark>[0]['brand']; whole?: boolean }) {
   return (
     <li className="ss-said">
       <span className="ss-mark"><BrandMark brand={brand} size={16} mono /></span>
-      <Fold><Said text={text} streaming={streaming} /></Fold>
+      <Fold whole={whole}><Said text={text} streaming={streaming} /></Fold>
       {/* its Copy (CHATFIRST-37), once all its words are in */}
       {!streaming && <CopyButton text={text} className="msg-copy" />}
     </li>
   );
 }
 
-// Something long, cut to a few lines with Show more; only when it's longer than that
-export function Fold({ children }: { children: React.ReactNode }) {
+// Something long, cut to a few lines with Show more; only when it's longer than that. whole: shown whole,
+// laid out the same, with nothing to fold (a task's own thread, LIVETASK-22)
+export function Fold({ children, whole = false }: { children: React.ReactNode; whole?: boolean }) {
   const body = useRef<HTMLDivElement>(null);
   const [long, setLong] = useState(false);
   const [open, setOpen] = useState(false);
   useLayoutEffect(() => {
     const el = body.current;
-    if (el && !open) setLong(el.scrollHeight > el.clientHeight + 2);
+    if (el && !open && !whole) setLong(el.scrollHeight > el.clientHeight + 2);
   });
+  if (whole) return <div className="lt-fold is-open"><div className="lt-fold-body">{children}</div></div>;
   return (
     <div className={`lt-fold${long ? ' is-long' : ''}${open ? ' is-open' : ''}`}>
       <div ref={body} className="lt-fold-body">{children}</div>

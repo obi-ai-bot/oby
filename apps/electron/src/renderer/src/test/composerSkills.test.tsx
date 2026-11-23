@@ -113,14 +113,16 @@ describe('COMPOSER-25: / lists the skills obid gives for the box', () => {
     await type('/');
     await listed();
     expect(skillAsks(o)).toEqual(['/v1/skills?conversation=c1']);
-    // only those the owner may start, each with its description
-    expect(names()).toEqual(['/write-tests', '/review:check-diff', '/testing:run']);
-    expect(rows()[0].querySelector('.add-item-about')?.textContent).toBe('Writes the tests for what you name');
+    // only those the owner may start, their names alone (Claude's own slash menu); the lit one's
+    // description in a tip beside it (slashMenu.test.tsx)
+    expect(names()).toEqual(['write-tests', 'review:check-diff', 'testing:run']);
+    expect(rows()[0].querySelector('.add-item-about')).toBeNull();
+    expect(document.querySelector('.skill-tip')?.textContent).toBe('Writes the tests for what you name');
     // what's typed after the / filters them: names starting with it, then names holding it, then descriptions
     await type('/TEST');
-    expect(names()).toEqual(['/testing:run', '/write-tests', '/review:check-diff']);
+    expect(names()).toEqual(['testing:run', 'write-tests', 'review:check-diff']);
     await type('/diff');
-    expect(names()).toEqual(['/review:check-diff']);
+    expect(names()).toEqual(['review:check-diff']);
     // a fresh ask each time it opens
     await type('/diff it');
     expect(rows()).toEqual([]);
