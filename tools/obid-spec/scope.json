@@ -1942,7 +1942,12 @@
             "SPHEREAPP-11": "Electron Obysphere UI.",
             "SPHEREAPP-12": "Electron Obysphere UI.",
             "SPHEREAPP-13": "Electron Obysphere UI.",
-            "SPHEREAPP-14": "Electron Obysphere UI: the side panel's revoked line (sphereMenu.test.tsx)."
+            "SPHEREAPP-14": "Electron Obysphere UI: the side panel's revoked line (sphereMenu.test.tsx).",
+            "SPHEREAPP-20": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",
+            "SPHEREAPP-21": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",
+            "SPHEREAPP-22": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx, ipc.test.ts).",
+            "SPHEREAPP-23": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",
+            "SPHEREAPP-24": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx)."
           }
         },
         "test-rig.md": {

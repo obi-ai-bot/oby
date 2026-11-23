@@ -23,6 +23,8 @@ const the = vi.hoisted(() => ({
   joins: 0,
   invites: 0,
 }));
+// the link main makes (SPHEREAPP-22 mails only one of these)
+const { MADE_LINK } = vi.hoisted(() => ({ MADE_LINK: `oby://join/sphere.example.com#sphere=demo&by=wellington&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'A'.repeat(43)}` }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
   class BrowserWindow extends EventEmitter {
@@ -94,7 +96,7 @@ vi.mock('../../../shared/sphere', async (original) => ({
   NotThisKey: class extends Error {}, join: async () => { the.joins++; }, joinWarning() {}, leave() {}, keepMembership: async () => {},
   readPolicy: async () => { the.policies++; }, addStarterRule: async () => { the.policies++; },
   listInvitations: async () => ({ invitations: [], link: null, refused: null, why: null }),
-  makeInvitation: async () => { the.invites++; return { invitations: [], link: 'oby://join/x#…', refused: null, why: null }; },
+  makeInvitation: async () => { the.invites++; return { invitations: [], link: MADE_LINK, refused: null, why: null }; },
   withdrawInvitation: async () => { the.invites++; return { invitations: [], link: null, refused: null, why: null }; },
   setAdmin: async () => { the.invites++; return { admins: ['dana', 'wellington'], refused: null, why: null }; },
   rebindOffer: async () => [{ id: 'google', name: 'Google' }],
@@ -145,6 +147,7 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-invitations': { args: [], refusal: null },
   'sphere-invite': { args: [], refusal: null },
   'sphere-withdraw': { args: ['9187a87a-3126-424c-8861-8811bba1a5ec'], refusal: null },
+  'sphere-invite-mail': { args: [['ana@example.com'], MADE_LINK], refusal: 'Not this app’s page.' },
   'sphere-admin': { args: ['dana', true], refusal: null },
   'sphere-rebind-offer': { args: ['sphere.example.com/demo'], refusal: null },
   'sphere-rebind': { args: ['sphere.example.com/demo', 'google'], refusal: 'Not this app’s page.' },
@@ -529,6 +532,45 @@ describe('SPHEREAPP-10', () => {
     // the list takes none
     expect(await call('sphere-invitations', own())).toMatchObject({ refused: null });
     expect(the.invites).toBe(before + 2);
+  });
+});
+
+describe('SPHEREAPP-22', () => {
+  it('sphereapp_22_main_opens_a_mailto_draft_only_right_after_a_click_and_only_for_a_link_it_made', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.opened.length;
+    const mail = (emails: unknown, link: unknown) => call('sphere-invite-mail', own(), emails, link);
+    // no click main saw: nothing opens
+    expect(await mail(['ana@example.com'], MADE_LINK)).toBe('Sending an invitation takes your own click.');
+    // a link main never made, even on a click
+    const other = MADE_LINK.replace('sphere=demo', 'sphere=other');
+    input();
+    expect(await mail(['ana@example.com'], other)).toBe('That link isn’t one Oby made. Close this and invite again.');
+    expect(the.opened.length).toBe(before);
+    // main makes the link on a click, then mails it on another: one mailto, to the addresses, with the link
+    input();
+    await call('sphere-invite', own());
+    input();
+    expect(await mail(['ana@example.com', 'ben+oby@example.com'], MADE_LINK)).toBeNull();
+    const body = 'wellington invited you to demo’s Obysphere on Oby.\r\n\r\nTo join, open this link on a Mac with Oby, or paste it into Oby’s Settings › Obysphere:\r\n'
+      + `${MADE_LINK}\r\n\r\nIt lets 5 people in, for 14 days.`;
+    expect(the.opened.slice(before)).toEqual([
+      `mailto:ana@example.com,ben%2Boby@example.com?subject=${encodeURIComponent('Join demo’s Obysphere')}&body=${encodeURIComponent(body)}`,
+    ]);
+    // one click, one draft
+    expect(await mail(['ana@example.com'], MADE_LINK)).toBe('Sending an invitation takes your own click.');
+    // not addresses: refused before anything runs
+    input();
+    expect(await mail(['not an address'], MADE_LINK)).toBe('Not this app’s page.');
+    expect(await mail([], MADE_LINK)).toBe('Not this app’s page.');
+    expect(await mail('ana@example.com', MADE_LINK)).toBe('Not this app’s page.');
+    takeInput();
+    expect(the.opened.length).toBe(before + 1);
+    // a mail app that won't open says so
+    the.refuseOpen = true;
+    input();
+    expect(await mail(['ana@example.com'], MADE_LINK)).toBe('Oby couldn’t open your mail app. Copy the link and send it yourself.');
+    the.refuseOpen = false;
   });
 });
 

@@ -3,8 +3,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// The Obysphere in the side panel (docs/contracts/obysphere.md, SPHERE-14 to 16): Invite member only
-// on the mock's and the sample, and the ⋮ menu's Leave through Settings' own confirmation. The real
+// The Obysphere in the side panel (docs/contracts/obysphere.md, SPHERE-14 to 16): Invite member, on a
+// joined one only its admins' (inviteMember.test.tsx), and the ⋮ menu's Leave through Settings' own confirmation. The real
 // Sidebar, with main's bridge (window.app.obid.call, onSphere, sphereLeave) stood in for.
 
 vi.mock('react-dom', async (original) => ({ ...await original<typeof import('react-dom')>(), createPortal: (node: unknown) => node }));
@@ -61,7 +61,7 @@ async function open(tile: string, heading = tile) {
 }
 
 describe('SPHERE-14', () => {
-  it('SPHERE-14: a joined Obysphere’s panel shows no Invite member', async () => {
+  it('SPHERE-14: a joined Obysphere’s panel shows no Invite member to a member who isn’t admin', async () => {
     await show('', joined().app);
     await open('demo');
     expect(button('Knowledge')).toBeDefined();

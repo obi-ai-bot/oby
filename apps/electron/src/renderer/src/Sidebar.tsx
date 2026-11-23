@@ -11,7 +11,8 @@ import { useScrollThumb } from './useScrollThumb';
 import { Menu } from './Menu';
 import { SETTINGS_PAGES } from './SettingsView';
 import { ConfirmModal } from './SphereSettings';
-import InviteModal from './InviteModal';
+import InviteModal, { useLiveAdmin } from './InviteModal';
+import type { InvitesAnswer } from '../../shared/sphere';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
 import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, revokedLine, urlOf, useSpheres, type Sphere } from './spheres';
@@ -250,8 +251,17 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // the one being left from it: its confirmation is open, and goes with it
   const [leaving, setLeaving] = useState<string | null>(null);
   const leavingSphere = all.find((x) => x.id === leaving);
-  // inviting people into the Obysphere (Invite member): its modal is open
+  // inviting people into the Obysphere (Invite member): its modal is open; on the live one, with
+  // the link main is making on that click (SPHEREAPP-21), for its admins only (SPHEREAPP-20)
   const [inviting, setInviting] = useState(false);
+  const [making, setMaking] = useState<Promise<InvitesAnswer | null> | undefined>(undefined);
+  const liveAdmin = useLiveAdmin(section === 'obysphere' && !!sphere.live && !sphere.revoked, sphere.id);
+  const inviteMember = () => {
+    if (sphere.sample) return tourDid('invite');
+    // on the live one, main makes the link right after this click it saw (SPHEREAPP-10's gating)
+    setMaking(sphere.live ? (window.app?.sphereInvite?.() ?? Promise.resolve(null)) : undefined);
+    setInviting(true);
+  };
   const archiveAfter = getArchiveAfter();
   // Home's groups: by kind of work (the default) or by status; remembered
   // (lean: by status only, needs you, running, completed; the kinds of work came from sources
@@ -698,15 +708,15 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
 
         {/* the Obysphere: what its Obys share (Knowledge: the knowledge sources
             connected for everyone), and inviting someone in (InviteModal), first;
-            Invite member is the mock's and the sample's, not on a joined one */}
+            on the live one, Invite member is its admins' (SPHEREAPP-20) */}
         {section === 'obysphere' && (
           <>
             <button className={`sidebar-new is-stacked${knowing ? ' is-active' : ''}${sphere.sample && tour.call === 'Knowledge' ? ' is-calling' : ''}`} aria-current={knowing || undefined} onClick={() => (sphere.sample ? tourDid('Knowledge') : onOpenKnowledge(sphere.id))}>
               <BookOpen size={16} strokeWidth={1.6} />
               <span className="sidebar-new-label">Knowledge</span>
             </button>
-            {!sphere.live && (
-              <button className="sidebar-new is-stacked" aria-haspopup={sphere.sample ? undefined : 'dialog'} onClick={() => (sphere.sample ? tourDid('invite') : setInviting(true))}>
+            {(!sphere.live || liveAdmin) && (
+              <button className="sidebar-new is-stacked" aria-haspopup={sphere.sample ? undefined : 'dialog'} onClick={inviteMember}>
                 <UserPlus size={16} strokeWidth={1.6} />
                 <span className="sidebar-new-label">Invite member</span>
               </button>
@@ -1034,7 +1044,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
       )}
       {editProfile && <EditProfileModal key={editProfile.id} profile={editProfile} defaultName={(profiles.list ?? []).find((p) => p.default)?.name ?? 'Default'} onClose={() => setEditProfile(null)} />}
       {newProfile && <NewProfileModal taken={(profiles.list ?? []).map((p) => p.color.toLowerCase())} onClose={() => setNewProfile(false)} />}
-      {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.domain} onSent={(emails) => invite(sphere.id, emails)} onClose={() => setInviting(false)} />}
+      {inviting && <InviteModal sphere={{ name: sphere.name, url: urlOf(sphere) }} domain={sphere.live ? undefined : sphere.domain} made={making} onSent={(emails) => { if (!sphere.live) invite(sphere.id, emails); }} onClose={() => setInviting(false)} />}
       {creating && <CreateSphereModal email={ME.email} onCreated={(id) => { setCreating(false); setSphereId(id); pick('obysphere'); }} onClose={() => setCreating(false)} />}
       {sphereMenu && (
         <Menu at={sphereMenu} onClose={() => setSphereMenu(null)} height={sphere.admin ? 120 : 170} width={201}>

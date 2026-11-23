@@ -193,6 +193,7 @@ contextBridge.exposeInMainWorld('app', {
   sphereInvitations: () => ipcRenderer.invoke('sphere-invitations') as Promise<InvitesAnswer | null>,
   sphereInvite: () => ipcRenderer.invoke('sphere-invite') as Promise<InvitesAnswer | null>,
   sphereWithdraw: (id: string) => ipcRenderer.invoke('sphere-withdraw', id) as Promise<InvitesAnswer | null>,
+  sphereInviteMail: (emails: string[], link: string) => ipcRenderer.invoke('sphere-invite-mail', emails, link) as Promise<string | null>,
   // Make admin (on) or Remove admin, right after the owner's click (main/sphere.ts, SPHEREAPP-11)
   sphereAdmin: (owner: string, on: boolean) => ipcRenderer.invoke('sphere-admin', owner, on) as Promise<AdminsAnswer | null>,
   // getting back in with a sign-in (main/sphere.ts, SPHEREAPP-12): what an Obysphere's address

@@ -78,6 +78,24 @@ export type Joined = { kind: 'joined'; name: string } | { kind: 'cancelled' } | 
 export const INVITE_USES = 5;
 export const INVITE_DAYS = 14;
 
+// An email address as the invite modal's field takes one (EmailField), and as main mails to
+export const EMAIL = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+
+// Send invitation on the live Obysphere (SPHEREAPP-22): the Obysphere sends no mail, so a new email in
+// the person's own mail app, to the addresses typed, carrying the link main made. Only a mailto: URL,
+// or null for an address or a link that isn't one. Nothing leaves until the person sends it there.
+export function inviteMail(emails: string[], link: string): string | null {
+  const i = parseInvite(link);
+  if (!i || !link.startsWith('oby://') || !emails.length || !emails.every((e) => EMAIL.test(e))) return null;
+  const body = [
+    `${i.by ? `${i.by} invited you` : 'You’re invited'} to ${i.name}’s Obysphere on Oby.`, '',
+    'To join, open this link on a Mac with Oby, or paste it into Oby’s Settings › Obysphere:', link, '',
+    `It lets ${INVITE_USES} people in, for ${INVITE_DAYS} days.`,
+  ].join('\r\n');
+  const to = emails.map((e) => encodeURIComponent(e).replace(/%40/g, '@')).join(',');
+  return `mailto:${to}?subject=${encodeURIComponent(`Join ${i.name}’s Obysphere`)}&body=${encodeURIComponent(body)}`;
+}
+
 // An Obysphere's address, for getting back in with a sign-in (SPHEREAPP-12): an invite link, used
 // up or not, or `<host>/<sphere>` (https:// optional; plain http only on this machine, as a local
 // Obysphere's). Its base URL, host and id, or null

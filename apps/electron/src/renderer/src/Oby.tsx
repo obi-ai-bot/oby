@@ -66,6 +66,7 @@ declare global {
       sphereInvitations?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
       sphereInvite?(): Promise<import('../../shared/sphere').InvitesAnswer | null>;
       sphereWithdraw?(id: string): Promise<import('../../shared/sphere').InvitesAnswer | null>;
+      sphereInviteMail?(emails: string[], link: string): Promise<string | null>;
       // Make admin or Remove admin (preload, main/sphere.ts, SPHEREAPP-11)
       sphereAdmin?(owner: string, on: boolean): Promise<import('../../shared/sphere').AdminsAnswer | null>;
       // getting back in with a sign-in: what an address offers, and the sign-in (preload, main/sphere.ts, SPHEREAPP-12)
