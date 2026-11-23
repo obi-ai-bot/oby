@@ -211,7 +211,8 @@ export async function send(method: string, path: string, body: unknown, signal?:
 //   that goes away;
 // - macOS may want the user's approval first (System Settings › General › Login Items);
 // - a registration macOS kept from an older signature can leave launchd refusing obid (exit 78,
-//   "Launch Constraint Violation"): registered again, once, when obid neither answers nor runs;
+//   "Launch Constraint Violation", `needs LWCR update`): taken out whole and registered again, once
+//   a launch, when obid neither answers nor runs (registerAfresh, ENGINE-26);
 // - an obid running from before the app was replaced keeps its old code: restarted once idle.
 // And one of its own: macOS 26 doesn't start a just-registered agent until the next login (launchd:
 // `copy_bundle_path … The specified path is not a bundle`, exit 78; backgroundtaskmanagementd:
@@ -250,9 +251,47 @@ async function launchd(label = LABEL): Promise<string | null> {
 const field = (printed: string | null, key: string) =>
   printed?.split('\n').map((l) => l.trim()).find((l) => l.startsWith(`${key} = `))?.slice(key.length + 3);
 
+// What this launch tried to get obid going, in plain words, for why() to say (ENGINE-28)
+let tried: string[] = [];
+function note(step: string, detail?: unknown) {
+  tried.push(step);
+  console.error(`Oby’s engine: ${step}${detail === undefined ? '' : `: ${detail instanceof Error ? detail.message : String(detail)}`}`);
+}
+
+// A registration launchd can't start this obid from: exit 78 (EX_CONFIG), a spawn that failed, or the
+// launch constraints macOS kept from another signature (`needs LWCR update`): an older copy's, signed
+// by another team, the case on 2026-11-23 when 0.2.26 replaced 0.2.23 (ENGINE-25, 26)
+function refused(printed: string | null) {
+  if (!printed || field(printed, 'state') === 'running') return false;
+  return /^78\b/.test(field(printed, 'last exit code') ?? '') || field(printed, 'job state') === 'spawn failed'
+    || /\bneeds LWCR update\b/.test(field(printed, 'properties') ?? '');
+}
+
+// Registered again from this copy. One macOS kept (enabled, but obid neither answers nor runs) or one
+// launchd refuses goes whole first, once a launch: unregistered, booted out, and waited for (at most
+// 10 s) until launchd lets go of it, since a registration made while launchd still holds the old job
+// keeps the old job's constraints (ENGINE-26)
+let cleared = false;
+async function registerAfresh() {
+  const printed = await launchd();
+  if (!cleared && (status() === 'enabled' || refused(printed))) {
+    cleared = true;
+    if (refused(printed)) note(`its registration was refused by launchd (${field(printed, 'last exit code') ?? field(printed, 'job state') ?? 'needs LWCR update'})`);
+    register(false);
+    await run('/bin/launchctl', ['bootout', `${domain()}/${LABEL}`], { timeout: 5000 }).catch(() => {});
+    for (let i = 0; i < 20 && await launchd(); i++) await sleep(500);
+    if (await launchd()) note('launchd still held its old registration after 10 s');
+    note('Oby registered its engine again');
+  }
+  register(true);
+}
+
 // The same obid as a job of this login session only: its plist is in the app's own folder, never in
-// ~/Library/LaunchAgents, so from the next login only the registered agent starts obid
-async function forThisSession() {
+// ~/Library/LaunchAgents, so from the next login only the registered agent starts obid. A bootstrap
+// right after a bootout can find launchd still holding the old job, and the obid it starts can exit:
+// each try waits for launchd to let go first, then checks the job runs and answers; three tries at
+// most, each failure logged (ENGINE-27). Whether an obid answers in the end
+async function forThisSession(): Promise<boolean> {
   const plist = join(app.getPath('userData'), `${SESSION}.plist`);
   writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -264,8 +303,22 @@ async function forThisSession() {
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 </dict></plist>
 `, { mode: 0o600 });
-  await run('/bin/launchctl', ['bootout', `${domain()}/${SESSION}`]).catch(() => {});
-  await run('/bin/launchctl', ['bootstrap', domain(), plist]);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await run('/bin/launchctl', ['bootout', `${domain()}/${SESSION}`], { timeout: 5000 }).catch(() => {});
+    for (let i = 0; i < 20 && await launchd(SESSION); i++) await sleep(500);
+    try {
+      await run('/bin/launchctl', ['bootstrap', domain(), plist], { timeout: 5000 });
+    } catch (e) {
+      note(`starting it for this session was refused (try ${attempt})`, e);
+      continue;
+    }
+    // a first start can take a while (its configuration, the security probes) while it runs
+    if (await answers(10_000)) return true;
+    const printed = await launchd(SESSION);
+    if (field(printed, 'state') === 'running' && await answers(50_000)) return true;
+    note(`it started for this session and didn’t keep running (try ${attempt}${field(printed, 'last exit code') ? `, exit code ${field(printed, 'last exit code')}` : ''})`, printed ? `state ${field(printed, 'state')}` : 'launchd doesn’t have it');
+  }
+  return false;
 }
 
 // Whether an obid listens on 7777 (any answer, a 401 too), trying for up to `ms`
@@ -291,7 +344,8 @@ function logTail(): string | null {
   }
 }
 
-// Why the obid launchd was given didn't start: obid's own reason, else launchd's and the log's
+// Why the obid launchd was given didn't start: obid's own reason, else launchd's and the log's; then
+// what this launch tried, and the one thing the person can do (ENGINE-28)
 async function why(): Promise<string> {
   const own = readOwn('last-start-error', false);
   if (own) return own;
@@ -299,6 +353,8 @@ async function why(): Promise<string> {
   const exit = field(printed, 'last exit code');
   const tail = logTail();
   return `Oby’s engine didn’t start: ${printed ? `launchd says ${exit ? `its last exit code was ${exit}` : `it’s ${field(printed, 'state') ?? 'not running'}`}` : `launchd doesn’t have it (macOS says its login item is ${status()})`}.`
+    + (tried.length ? `\nOby tried: ${tried.join('; ')}.` : '')
+    + (tried.length ? '\nIn System Settings › General › Login Items, turn Oby off and on again, then quit Oby and open it again.' : '')
     + (tail ? `\n~/Library/Logs/obid.log ends:\n${tail}` : '');
 }
 
@@ -316,13 +372,14 @@ async function moveToApplications() {
 
 // An obid launchd started before its executable was replaced (a newer Oby put over this one) runs
 // its old code: restarted once it runs no job. ponytail: waits for its jobs at most 10 minutes,
-// then restarts anyway (they carry on after a restart, docs/runner-api.md)
-async function restartIfStale(label: string, printed: string) {
+// then restarts anyway (they carry on after a restart, docs/runner-api.md). Whether an obid answers
+// after: launchd may refuse the new executable (an older copy's registration, exit 78, ENGINE-25)
+async function restartIfStale(label: string, printed: string): Promise<boolean> {
   try {
     // in C's words: Date.parse reads no other language's month names
     const lstart = await run('/bin/ps', ['-o', 'lstart=', '-p', field(printed, 'pid') ?? ''], { env: { ...process.env, LC_ALL: 'C' } });
-    if (!(Date.parse(lstart.stdout.trim()) < statSync(helper()).ctimeMs - 1000)) return;
-  } catch { return; }
+    if (!(Date.parse(lstart.stdout.trim()) < statSync(helper()).ctimeMs - 1000)) return true;
+  } catch { return true; }
   for (let i = 0; i < 20; i++) {
     const r = await send('GET', '/v1/status', undefined, undefined, undefined, true);
     const running = r instanceof Response && r.ok ? await r.json().then((s: { running?: number }) => s.running, () => 0) : 0;
@@ -332,7 +389,9 @@ async function restartIfStale(label: string, printed: string) {
   // starting again while it comes back (startObid's finally clears it)
   starting = true;
   await run('/bin/launchctl', ['kickstart', '-k', `${domain()}/${label}`]).catch(() => {});
-  await answers(10_000);
+  if (await answers(10_000)) return true;
+  note('the engine from before this copy of Oby was restarted and didn’t come back', field(await launchd(label), 'last exit code') ?? 'no exit code');
+  return false;
 }
 
 // The owner's decision of 2026-11-02: the Swift Oby is going away, and this app's engine is the
@@ -353,6 +412,7 @@ async function retireSwift(printed: string | null) {
 export async function startObid() {
   if (process.platform !== 'darwin' || !MANAGED) return;
   starting = true;
+  tried = [];
   try {
     const who = await listener();
     const swift = await launchd(SWIFT);
@@ -369,25 +429,29 @@ export async function startObid() {
       return;
     }
     const inApplications = app.isInApplicationsFolder();
+    let retired = false;
     if (who === 'mine') {
       problem = null;
-      if (inApplications) await retireSwift(swift);
+      if (inApplications) { await retireSwift(swift); retired = true; }
+      let back = true;
       for (const label of [LABEL, SESSION]) {
         const printed = await launchd(label);
         if (field(printed, 'state') !== 'running') continue;
         // adopted: it's up, so a crash while waiting for its jobs says its own reason
         starting = false;
-        return await restartIfStale(label, printed!);
+        back = await restartIfStale(label, printed!);
+        break;
       }
-      // an obid nobody registered (one run by hand): adopted, this app's agent kept for later logins
-      return;
+      // an obid nobody registered (one run by hand) is adopted, this app's agent kept for later
+      // logins. One restarted that launchd didn't bring back is started as below (ENGINE-25)
+      if (back) return;
+      starting = true;
     }
     if (!inApplications) return await moveToApplications();
-    await retireSwift(swift);
+    if (!retired) await retireSwift(swift);
     if (await listener() === 'foreign') { problem = TAKEN; return; }
-    // registered but not running: one macOS kept from an older signature, registered again once
-    if (status() === 'enabled') register(false);
-    register(true);
+    // registered but not running, or refused by launchd: registered again from this copy
+    await registerAfresh();
     // until it's approved (checked every 2 s, in this process), then it starts as below
     if (status() === 'requires-approval') {
       problem = APPROVAL;
@@ -399,8 +463,7 @@ export async function startObid() {
     const started = async () => await answers(10_000) || (field(await launchd(), 'state') === 'running' && await answers(60_000));
     if (await started()) { problem = null; return; }
     // macOS 26's just-registered agent: this session's job until the next login
-    await forThisSession();
-    if (await answers(60_000)) { problem = null; return; }
+    if (await forThisSession()) { problem = null; return; }
     problem = await why();
   } catch (e) {
     problem = `Oby’s engine couldn’t be started: ${e instanceof Error ? e.message : String(e)}`;

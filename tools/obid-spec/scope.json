@@ -1710,7 +1710,11 @@
             "ENGINE-17": "Electron main, launchd adoption and the renderer.",
             "ENGINE-18": "Electron main, launchd adoption and the renderer.",
             "ENGINE-19": "Electron main, launchd adoption and the renderer.",
-            "ENGINE-20": "Electron main, launchd adoption and the renderer."
+            "ENGINE-20": "Electron main, launchd adoption and the renderer.",
+            "ENGINE-25": "Electron main's launchd registration and session job: engine.test.ts on a fake launchd.",
+            "ENGINE-26": "Electron main's launchd registration and session job: engine.test.ts on a fake launchd.",
+            "ENGINE-27": "Electron main's launchd registration and session job: engine.test.ts on a fake launchd.",
+            "ENGINE-28": "Electron main's launchd registration and session job: engine.test.ts on a fake launchd."
           }
         },
         "factory.md": {
