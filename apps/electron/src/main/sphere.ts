@@ -207,23 +207,28 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   const notInvited = (why: string): InvitesAnswer => ({ invitations: [], link: null, refused: 'failed', why });
   const invited = (f: () => Promise<InvitesAnswer>) => f().catch((e) => notInvited(e instanceof Error ? e.message : String(e)));
   ipc(trusted).handle('sphere-invitations', [], () => invited(async () => pruned(await listInvitations(obid, ownerKey))), null);
+  // whether the members rule lets members hand off tasks, once main added what it lacked
+  const handoffs = async () => {
+    const rules = await readPolicy(obid, ownerKey);
+    const now = rules.policy && withStarterRule(rules.policy.rules) ? await addStarterRule(obid, ownerKey, rules.policy.version) : rules;
+    return !!now.policy && !withStarterRule(now.policy.rules);
+  };
   // `reuse` (Invite member's, SPHEREAPP-21): a link main made this run that the Sphere still lists as
-  // open hands that one back; only when none is, a new one is made.
+  // open hands that one back; only when none is, a new one is made. Either way the members rule gains
+  // what it lacks, so a rule a make couldn't add is added on the next click (SPHEREAPP-25).
   ipc(trusted).handle('sphere-invite', [flag], async (_e, reuse) => {
     if (!takeInput()) return notInvited('Making a link takes your own click.');
     return invited(async () => {
       if (reuse && madeLinks.size) {
         const now = pruned(await listInvitations(obid, ownerKey));
         if (now.refused) return now;
-        for (const [id, link] of madeLinks) if (openOf(now, id)) return { ...now, link };
+        for (const [id, link] of madeLinks) if (openOf(now, id)) return { ...now, link, handoffs: await handoffs() };
       }
       const made = pruned(await makeInvitation(obid, ownerKey));
       if (!made.link) return made;
       const id = parseInvite(made.link)?.id;
       if (id) madeLinks.set(id, made.link);
-      const rules = await readPolicy(obid, ownerKey);
-      const now = rules.policy && withStarterRule(rules.policy.rules) ? await addStarterRule(obid, ownerKey, rules.policy.version) : rules;
-      return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules) };
+      return { ...made, handoffs: await handoffs() };
     });
   }, null);
   // Getting back in with a sign-in (SPHEREAPP-12): what the Obysphere at an address offers (no

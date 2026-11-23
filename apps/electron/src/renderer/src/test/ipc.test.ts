@@ -27,6 +27,11 @@ const the = vi.hoisted(() => ({
   listed: [] as { id: string; uses: number; maxUses: number; expiresAt: string }[],
   nextLink: '',
   unlisted: false,
+  // the Sphere's rules as main reads them (null: none read, as before), whether that read fails, and
+  // how many times main added what the members rule lacks (SPHEREAPP-25)
+  rules: null as null | { version: number; updated_at: string; rules: { id: string; actions?: string[] }[] },
+  rulesFail: false,
+  starterAdds: 0,
 }));
 // the link main makes (SPHEREAPP-21 hands it back while the Sphere lists it open)
 const { MADE_LINK } = vi.hoisted(() => ({ MADE_LINK: `oby://join/sphere.example.com#sphere=demo&by=wellington&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'A'.repeat(43)}` }));
@@ -99,7 +104,19 @@ vi.mock('../../../shared/sphere', async (original) => ({
   // links read as main reads them; nothing joins
   parseInvite: (await original<typeof import('../../../shared/sphere')>()).parseInvite,
   NotThisKey: class extends Error {}, join: async () => { the.joins++; }, joinWarning() {}, leave() {}, keepMembership: async () => {},
-  readPolicy: async () => { the.policies++; return { sphere: 'demo', policy: null, admin: true, refused: null, why: null }; }, addStarterRule: async () => { the.policies++; },
+  readPolicy: async () => {
+    the.policies++;
+    if (the.rulesFail) return { sphere: 'demo', policy: null, admin: false, refused: 'failed', why: 'the Obysphere answered 503' };
+    return { sphere: 'demo', policy: the.rules, admin: true, refused: null, why: null };
+  },
+  addStarterRule: async () => {
+    the.policies++;
+    if (!the.rules) return undefined;
+    the.starterAdds++;
+    const { withStarterRule } = await import('../../../shared/policy');
+    the.rules = { ...the.rules, version: the.rules.version + 1, rules: withStarterRule(the.rules.rules as never) ?? the.rules.rules };
+    return { sphere: 'demo', policy: the.rules, admin: true, refused: null, why: null };
+  },
   listInvitations: async () => ({ invitations: the.listed, link: null, refused: null, why: null }),
   makeInvitation: async () => {
     the.invites++;
@@ -591,6 +608,34 @@ describe('SPHEREAPP-21', () => {
     input();
     expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK });
     expect(the.invites).toBe(before);
+  });
+});
+
+describe('SPHEREAPP-25', () => {
+  const ID = '9187a87a-3126-424c-8861-8811bba1a5ec';
+  it('sphereapp_25_a_reused_link_adds_what_the_members_rule_lacks_after_a_first_failure', async () => {
+    while (takeInput()) { /* other tests' */ }
+    // Invite member makes a link, but the Sphere's rules can't be read after it: the link, and no handoffs yet
+    the.listed = [];
+    the.rules = { version: 3, updated_at: '', rules: [] };
+    the.rulesFail = true;
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK, handoffs: false });
+    expect(the.starterAdds).toBe(0);
+    // the next click reuses that link (still open), and this time adds what the members rule lacks
+    the.listed = [{ id: ID, uses: 0, maxUses: 5, expiresAt: '2026-12-07T00:00:00Z' }];
+    the.rulesFail = false;
+    const made = the.invites;
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK, handoffs: true });
+    expect(the.invites).toBe(made);
+    expect(the.starterAdds).toBe(1);
+    // nothing missing now: the same link, nothing written
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK, handoffs: true });
+    expect(the.starterAdds).toBe(1);
+    expect(the.invites).toBe(made);
+    the.rules = null;
   });
 });
 

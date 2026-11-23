@@ -292,7 +292,7 @@ export async function addStarterRule(call: Call, ownerKey: () => KeyObject, seen
 // that call and dropped. The secret comes once, in the answer that made it, and goes no further than
 // the link handed back; the Sphere lists invitations without it. Nothing here throws.
 export type Invitation = { id: string; uses: number; maxUses: number; expiresAt: string };
-// handoffs: on a make, whether the members rule now lets members hand off tasks (main adds it, SPHEREAPP-10);
+// handoffs: on a make or Invite member's reused link, whether the members rule now lets members hand off tasks (main adds it, SPHEREAPP-10, 25);
 // unlisted: on a make, the link was made but the Sphere's list after it couldn't be read, so its
 // invitations are none known, never none open (SPHEREAPP-21)
 export type InvitesAnswer = { invitations: Invitation[]; link: string | null; refused: PolicyAnswer['refused']; why: string | null; handoffs?: boolean; unlisted?: true };
