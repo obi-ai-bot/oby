@@ -13,6 +13,14 @@ export const AGENTS: Record<Agent, { name: string; brand: Brand }> = {
 // An agent by obid's id: one this build doesn't know (docs/contracts/wire.md, WIRE-4) by that id,
 // with the gray circle lettered with it (docs/contracts/providers.md, PROVIDERS-5)
 export const agentOf = (id: string): { name: string; brand: Brand } => (isAgent(id) ? AGENTS[id] : { name: id, brand: lettered(id) });
+// Who has a task, where, in which mode and on which account, as obid's start line says it
+// (TASKCONV-41, 43): "Claude Code has it in oby, in Ask mode, on the account Default". The account
+// is labelled as one, so an account named like a mode (Claude Code's "Default") isn't read as it.
+export function hasIt(j: Job): string {
+  const repo = j.repo.includes('/') ? ` in ${j.repo.split('/')[1]}` : '';
+  const mode = j.page?.mode ? `, in ${j.page.mode} mode` : '';
+  return `${agentOf(j.agent).name} has it${repo}${mode}, on the account ${j.account}`;
+}
 
 // Job.status on the Mac. queued and running show as running here; a job
 // with an ask needs you whatever its status.

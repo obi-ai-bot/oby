@@ -858,26 +858,38 @@ pub(super) fn follow_up(shared: &Arc<Shared>, job: &Job, new: NewJob) -> Outcome
 /// What Oby says once `next`, the follow-up of `job`, started.
 pub(crate) fn follow_up_line(shared: &Shared, job: &Job, next: &Job) -> String {
     format!(
-        "{} is finished, so I started a follow-up: {}. {} has it in {} on {}.",
+        "{} is finished, so I started a follow-up: {}. {}.",
         job.short_title(),
         next.short_title(),
-        tool_name(&next.agent),
-        next.repo_name(),
-        account_name(shared, &next.account)
+        has_it(shared, next)
+    )
+}
+
+/// Who has a follow-up, where, in which mode and on which account: "Claude Code has it in oby, in
+/// Ask mode, on the account Default". As the start line does (TASKCONV-41), the mode is named in
+/// the app's words for it and the account labelled as one, so an account named "Default" isn't
+/// read as a mode (TASKCONV-43).
+fn has_it(shared: &Shared, job: &Job) -> String {
+    format!(
+        "{} has it in {}, in {} mode, on the account {}",
+        tool_name(&job.agent),
+        job.repo_name(),
+        crate::jobs::Jobs::mode_of(job).title(),
+        account_name(shared, &job.account)
     )
 }
 
 /// What Oby says once the owner's words for `job`, said on its page (`POST /v1/jobs/{id}/messages`),
 /// reached `heard`: `job` itself, the follow-up they started, or the one already following it up.
-/// Sangam's words (design/app `tasks.ts` `relay`); the apps say the same where no conversation
-/// keeps them (apps/shared/TaskFacts.swift `relay`).
+/// Sangam's words (design/app `tasks.ts` `relay`), with the follow-up's mode and account named as
+/// the start line names them (TASKCONV-43). The phone apps' own copy, where no conversation keeps
+/// them (apps/shared/TaskFacts.swift `relay`), is frozen with those apps and names no mode yet.
 pub(crate) fn told_line(shared: &Shared, job: &Job, heard: &Job) -> String {
     let agent = tool_name(&heard.agent);
     if heard.id != job.id && heard.heard.is_empty() {
         return format!(
-            "This one’s finished, so I started a follow-up. {agent} has it in {} on {}.",
-            heard.repo_name(),
-            account_name(shared, &heard.account)
+            "This one’s finished, so I started a follow-up. {}.",
+            has_it(shared, heard)
         );
     }
     let after = if heard.max_rounds() > 1 {
