@@ -148,8 +148,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   let head = -1;
   for (let k = thread.length - 1; k >= 0 && runOf(thread[k]) === 'oby'; k--) head = k;
   const working = typing && head >= 0 && !convo;
-  // Oby's words coming in, in that run: its face talks (a speech balloon)
-  const talking = head >= 0 ? (thread.slice(head).find((m) => (m as Message).streaming) as Message | undefined) : undefined;
+  // Oby's words coming in, in that run: its face talks (a speech balloon); its answer on its way with
+  // no words yet (only the card of a task it started) doesn't
+  const talking = head >= 0 ? (thread.slice(head).find((m) => (m as Message).streaming && (m.text || !(m as Message).jobs?.length)) as Message | undefined) : undefined;
 
   // the conversation's artifacts, each in the first message that tells of it: the Oby turn that
   // published it, or the report of the task that made it; the rest after the last turn

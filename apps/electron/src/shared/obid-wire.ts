@@ -103,7 +103,8 @@ export type Job = {
   model: string | null;
   dismissed: string | null;
   // obid only (#858): question, the agent's own question being asked now (docs/api/jobs.md), quoted data
-  permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null; question?: AgentQuestion | null } | null;
+  // why: why it asks when the job's mode would have answered it ("It reaches the network beyond the model's API."), none otherwise
+  permission: { id: string; tool: string; title: string; detail: string; rule: string | null; always: string | null; why?: string | null; question?: AgentQuestion | null } | null;
   pipeline: { number: number; total: number; stages: Stage[] } | null;
   title: string;
   // obid only: why its pull request couldn't be read last time (gh missing or signed out)

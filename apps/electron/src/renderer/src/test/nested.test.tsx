@@ -205,7 +205,12 @@ describe('nested.ts', () => {
     expect(kidLine(task('running'))).toBe('Reading a.ts');
     expect(kidLine(task('running', { status: 'queued' }))).toBe('Queued');
     expect(kidLine(task('needs', { ask: { kind: 'question', headline: 'Which?', text: '', options: [] } }))).toBe('has a question');
-    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Run it?', text: '', options: [], detail: 'npm test' } }))).toBe('asks to run a command');
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Run it?', text: '', options: [], detail: 'npm test', tool: 'Bash' } }))).toBe('asks to run a command');
+    // an edit's detail is its files, never a command (the drive of 2026-11-23: "Codex asks to run a command" for an edit)
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Let Codex edit a.md?', text: '', options: [], detail: 'docs/a.md', tool: 'Edit' } }))).toBe('asks to edit a file');
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Let Codex edit 2 files?', text: '', options: [], detail: 'a.md, b.md', tool: 'Write' } }))).toBe('asks to edit files');
+    expect(kidsLine([task('needs', { ask: { kind: 'permission', headline: 'Let Codex fetch x.dev?', text: '', options: [], detail: 'https://x.dev', tool: 'WebFetch' } })])).toBe('Codex asks to fetch a web page');
+    expect(kidLine(task('needs', { ask: { kind: 'permission', headline: 'Let Codex use Foo?', text: '', options: [], detail: 'x', tool: 'Foo' } }))).toBe('asks for permission');
     expect(kidLine(task('done', { nothingDone: true }))).toBe('Nothing done');
     expect([kidState(task('done', { status: 'failed' })), kidState(task('done', { status: 'stopped' })), kidState(task('done'))]).toEqual(['failed', 'failed', 'done']);
     expect(kidsLine([task('running'), task('running')])).toBe('2 agents working');

@@ -326,6 +326,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     return next;
   });
   const [newProject, setNewProject] = useState(false);
+  // the project just made: scrolled into view once its group shows (it may be below the fold)
+  const [made, setMade] = useState<string | null>(null);
+  useEffect(() => {
+    const group = made && list.current?.querySelector(`[data-project="${CSS.escape(made)}"]`);
+    if (group) { group.scrollIntoView({ block: 'nearest' }); setMade(null); }
+  });
+  // scrolled down: rows going under the title fade out rather than show cut in half
+  const [scrolled, setScrolled] = useState(false);
   // a project heading's menu (its ⋮, or a right-click: PROJECTS-26), and the sheet it opens on that
   // project, to change it or at the ask before deleting it
   const [projectMenu, setProjectMenu] = useState<{ id: string; at: DOMRect; atPointer?: boolean } | null>(null);
@@ -668,7 +676,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         </div>
         {/* everything under the title scrolls together; the title stays */}
         <div className="sidebar-scroll">
-        <div ref={list} className="sidebar-list" onScroll={onScroll}>
+        <div ref={list} className={`sidebar-list${scrolled ? ' is-scrolled' : ''}`} onScroll={(e) => { onScroll(); setScrolled(e.currentTarget.scrollTop > 0); }}>
         {/* slides open under the title (a one-row grid going 0fr → 1fr) */}
         <div className={`sidebar-search-wrap${searching ? ' is-open' : ''}`}>
           <div>
@@ -742,7 +750,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
               // while searching, a group with a match opens
               const shut = !q && projectsFolded.has(g.id);
               return (
-                <section key={g.id || 'none'} className={`sidebar-group project-group${shut ? ' is-folded' : ''}`}>
+                <section key={g.id || 'none'} className={`sidebar-group project-group${shut ? ' is-folded' : ''}`} data-project={g.id || undefined}>
                   {/* a project's heading has its own ⋮ beside it, so the heading stays a <button> */}
                   <div
                     className={`project-group-row${projectMenu?.id === g.id ? ' is-menu-open' : ''}`}
@@ -1012,7 +1020,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
       {profileMenu && !!profiles.list?.length && (
         <ProfileMenu list={profiles.list} kept={profiles.kept} at={profileMenu} onClose={() => setProfileMenu(null)} onNew={() => setNewProfile(true)} onEdit={setEditProfile} />
       )}
-      {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={() => setNewProject(false)} />}
+      {newProject && <ProjectSheet onClose={() => setNewProject(false)} onMade={(p) => { setNewProject(false); setMade(p.id); }} />}
       {projectMenu && (
         <Menu at={projectMenu.at} align={projectMenu.atPointer ? 'left' : 'right'} onClose={() => setProjectMenu(null)} height={94} width={180}>
           <button role="menuitem" onClick={() => { setProjectSheet({ id: projectMenu.id, deleting: false }); setProjectMenu(null); }}>Edit project…</button>

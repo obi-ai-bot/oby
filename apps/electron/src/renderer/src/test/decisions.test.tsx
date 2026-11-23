@@ -81,7 +81,7 @@ describe('a postponed decision is still reachable', () => {
 
     await act(async () => button('Later').click());
     // the next one shows; the first is off this drawer, and nothing went to obid
-    expect(head()).toBe('Run npm test · Run the tests');
+    expect(head()).toBe('Let Claude Code run a command? · Run the tests');
     expect(host.querySelector('.decision-count')).toBeNull();
     expect(call).not.toHaveBeenCalled();
     // it is still the task's decision: its card, its nested row and its conversation's line say so
@@ -101,7 +101,7 @@ describe('a postponed decision is still reachable', () => {
     expect(host.querySelector('.decision-count')!.textContent).toBe('1 of 2');
     // the next one's arrow
     await act(async () => host.querySelector<HTMLButtonElement>('.decision-next')!.click());
-    expect(head()).toBe('Run npm test · Run the tests');
+    expect(head()).toBe('Let Claude Code run a command? · Run the tests');
     expect(host.querySelector('.decision-count')!.textContent).toBe('2 of 2');
     expect(call).not.toHaveBeenCalled();
   });
