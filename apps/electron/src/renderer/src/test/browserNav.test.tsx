@@ -63,7 +63,7 @@ function aWindow() {
   const win = { webContents: new EventEmitter() };
   const report = vi.fn();
   const host = { attach: vi.fn(), detach: vi.fn(), forget: vi.fn(), event: vi.fn(), shown: vi.fn(), loadFailed: vi.fn() };
-  const h = hosting(win as unknown as BrowserWindow, host as unknown as RelayHost, () => 'persist:oby-agent-codex', report);
+  const h = hosting(win as unknown as BrowserWindow, host as unknown as RelayHost, () => 'persist:oby-agent-codex', report, { computer: () => null, send: vi.fn() });
   // a webview the page mounted, attached; keyed to a tab once registered
   const guest = (tabId?: string, o: Parameters<typeof fakeGuest>[1] = {}) => {
     const g = fakeGuest(win.webContents, o);

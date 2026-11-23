@@ -1,5 +1,7 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import { appPage, pageOk } from './pageRule';
+import { PARTITION, windowPartition } from '../shared/browserPartition';
+export { PARTITION } from '../shared/browserPartition';
 
 // The relay between obid's agents and the page in the window (docs/plans/browser-t3.md, as T3 Code
 // does it: packages/contracts/src/desktopBrowser.ts). obid sends page-level CDP for a tab on its
@@ -13,19 +15,24 @@ import { appPage, pageOk } from './pageRule';
 export type TabKey = { threadId: string; tabId: string };
 
 /**
- * The partitions a page may live in, as obid names them: one per agent for the owner's own work
- * (sign-ins kept), and one per job for another Oby's or an untrusted job (not persistent). Never the
- * default session or the window's own.
+ * Whether a webview may live in partition `p` while `computer` is in use (null: This Mac): only a
+ * name windowPartition gives for that computer, so `-on-<id>` only for the id in use, never on This
+ * Mac (BROWSERAPP-45).
  */
-export const PARTITION = /^(persist:oby-agent-(claude|codex|cursor)|oby-box-[A-Za-z0-9_-]{1,128})$/;
-export const partitionOk = (p: unknown): p is string => typeof p === 'string' && PARTITION.test(p);
+export function partitionOk(p: unknown, computer: string | null): p is string {
+  if (typeof p !== 'string') return false;
+  const on = computer === null ? '' : `-on-${computer}`;
+  return p.endsWith(on) && windowPartition(p.slice(0, p.length - on.length), computer) === p;
+}
 
 /**
- * The partition obid named for each agent tab, read from its `tab` events on /v1/browser/events: the
- * only one that tab's webview may use. The first one named stands: a later `tab` event naming
- * another for the same tab is refused, and the tab's `tabClosed` forgets it, as `drop` does.
+ * The partition the window opens for each agent tab, from the one obid named in its `tab` events on
+ * /v1/browser/events, on the computer in use (windowPartition): the only one that tab's webview may
+ * use. The first one named stands: a later `tab` event naming another for the same tab is refused,
+ * as is one the window opens none for (a box on another computer), and the tab's `tabClosed`
+ * forgets it, as `drop` does.
  */
-export function namedPartitions() {
+export function namedPartitions(computer: () => string | null) {
   const named = new Map<string, string>();
   const at = (k: TabKey) => `${k.threadId}\0${k.tabId}`;
   // the tab forgotten: its partition when no other tab names it (a box's last tab), else null
@@ -54,11 +61,12 @@ export function namedPartitions() {
       const t = e.tab;
       if (name !== 'tab' || !t || t.owner?.kind !== 'agent' || typeof t.owner.job !== 'string' || typeof t.id !== 'string' || t.partition === undefined) return null;
       const k = at({ threadId: t.owner.job, tabId: t.id });
-      if (!partitionOk(t.partition)) return 'refused';
+      const partition = windowPartition(t.partition, computer());
+      if (partition === null) return 'refused';
       const was = named.get(k);
-      if (was !== undefined && was !== t.partition) return 'refused';
-      named.set(k, t.partition);
-      on.kept?.(t.partition);
+      if (was !== undefined && was !== partition) return 'refused';
+      named.set(k, partition);
+      on.kept?.(partition);
       return 'kept';
     },
     of: (k: TabKey) => named.get(at(k)),
@@ -378,7 +386,7 @@ export function relayCommand(name: string, data: string): RelayCommand | null {
   if (name === 'turn') return typeof e.active === 'boolean' ? { type: 'turn', threadId: e.threadId, active: e.active } : null;
   if (name === 'box') {
     // only its own job's box, and only a door on loopback with a token of obid's shape
-    if (e.partition !== `oby-box-${e.threadId}` || !partitionOk(e.partition)) return null;
+    if (e.partition !== `oby-box-${e.threadId}` || !partitionOk(e.partition, null)) return null;
     const door = typeof e.proxy === 'string' ? BOX_PROXY.exec(e.proxy) : null;
     return door && Number(door[2]) <= 65535 ? { type: 'box', threadId: e.threadId, partition: e.partition, proxy: e.proxy as string } : null;
   }

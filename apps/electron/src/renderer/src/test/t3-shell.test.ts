@@ -84,7 +84,7 @@ vi.mock('electron', async () => {
     screen: { getCursorScreenPoint: () => ({ x: 0, y: 0 }) }, shell: { openExternal() {} },
   };
 });
-vi.mock('../../../main/obid', () => ({ bridge() {}, startObid() {}, obid: async () => ({ status: 200, text: '{"owner":"me"}' }) }));
+vi.mock('../../../main/obid', () => ({ bridge() {}, startObid() {}, openedComputer: () => null, onComputer() {}, send: async () => ({ status: 0, text: '' }), obid: async () => ({ status: 200, text: '{"owner":"me"}' }) }));
 vi.mock('../../../main/live', () => ({ living() {} }));
 vi.mock('../../../main/device', () => ({ confirming() {}, ownersWords() {}, keptKey() {}, typeInPages() {} }));
 vi.mock('../../../main/words', () => ({ input() {}, space() {}, picked() {}, takeInput: () => false }));

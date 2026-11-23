@@ -13,7 +13,10 @@ export { pageOk } from './pageRule';
 // partition (`oby-box-<job>`) has its session made before its guest attaches, as T3's getSession
 // makes a partition's (apps/desktop/src/preview/BrowserSession.ts:578-683): every request waits for
 // its job's egress door, the proxy obid hands main alone (`box`), and the box is cleared with its
-// last tab (BrowserSession.ts:689-740).
+// last tab (BrowserSession.ts:689-740). Another computer's agent partition (`…-on-<id>`) is held the
+// same way until main has set that computer's door as its proxy, only its loopback going there, as
+// T3's LoopbackTunnel.ts routes a remote environment's (BROWSERAPP-46): a page on that computer
+// never reaches this Mac's localhost.
 
 /** how long the first page may take to settle before the tab is announced anyway (T3: 5 s) */
 export const SETTLE_MS = 5_000;
@@ -31,7 +34,9 @@ export const BOX_PERMISSIONS = new Set(['fullscreen', 'pointerLock']);
  * the menu is stopped too (another Oby's page isn't theirs to copy from).
  */
 export const BOX_CLIPBOARD_GUARD = `(() => { const stop = (e) => { e.stopImmediatePropagation(); const s = getSelection(); if (s) s.removeAllRanges(); }; for (const t of ['beforecopy', 'copy', 'beforecut', 'cut']) addEventListener(t, stop, true); })();`;
-/** how long a box page's request waits for its job's door before it's cancelled */
+/** what a computer partition's loopback goes through: its door; every other address goes direct (T3: LoopbackTunnel.ts) */
+export const COMPUTER_BYPASS = '*,<-loopback>,169.254.0.0/16,fe80::/10';
+/** how long a box or computer page's request waits for its door before it's cancelled */
 export const BOX_HOLD_MS = 10_000;
 /** how long a page may take to answer before main leaves it anyway, stuck in a script (T3: Manager.ts:139) */
 export const BUSY_PAGE_PROBE_MS = 1_000;
@@ -41,9 +46,9 @@ export type NavOp = 'back' | 'forward' | 'reload' | 'stop';
 export type NavState = { threadId: string; tabId: string; url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null };
 
 // The webview's preferences, whatever the page asked for: sandboxed, no Node anywhere, no preload,
-// its partition checked (T3: DesktopWindow.ts:620-645)
-export function harden(prefs: Record<string, unknown>, params: { partition?: string; src?: string }): boolean {
-  if (!partitionOk(params.partition) || !pageOk(params.src)) return false;
+// its partition checked for the computer in use (T3: DesktopWindow.ts:620-645)
+export function harden(prefs: Record<string, unknown>, params: { partition?: string; src?: string }, computer: string | null): boolean {
+  if (!partitionOk(params.partition, computer) || !pageOk(params.src)) return false;
   delete prefs.preload;
   delete prefs.preloadURL;
   Object.assign(prefs, { sandbox: true, nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, webSecurity: true, allowRunningInsecureContent: false, disableHtmlFullscreenWindowResize: true });
@@ -127,11 +132,17 @@ const keyed = new Map<number, TabKey>();
 const folders = new Map<number, string | null>();
 const ready = new WeakSet<Session>();
 const isBox = (partition: string) => partition.startsWith('oby-box-');
-// each box session's partition, and each box's door once its session's proxy is set
+// the computer whose agent partition this is (`persist:oby-agent-<agent>-on-<id>`), or null
+const computerOf = (partition: string) => /^persist:oby-agent-[a-z]+-on-([0-9a-f]{16})$/.exec(partition)?.[1] ?? null;
+// each box session's partition; each box or computer session's partition, whose door's login it
+// answers; and each one's door once its session's proxy is set
 const boxes = new WeakMap<Session, string>();
+const doored = new WeakMap<Session, string>();
 const doors = new Map<string, { port: number; token: string }>();
-// each box's requests waiting for its door
+// each box's or computer partition's requests waiting for its door
 const waiting = new Map<string, Set<() => void>>();
+// the computer partitions whose door main is asking obid for now
+const asking = new Set<string>();
 // how many times each box was cleared: a door still being set when it was isn't kept
 const clears = new Map<string, number>();
 
@@ -151,26 +162,64 @@ function guardPreload(): string {
 const unguarded = new Set<string>();
 
 /**
+ * The computer the window works on (null: This Mac), and how main reaches this Mac's obid for that
+ * computer's door: main/obid.ts's `openedComputer` and `send`, handed in by main/browser.ts
+ */
+export type InUse = { computer: () => string | null; send: (method: 'POST', path: string, body: undefined, signal: undefined, signed: undefined, here: true) => Promise<unknown> };
+type Answer = (r: Electron.CallbackResponse) => void;
+// a request waiting for its partition's door: answered once the door is set, cancelled after
+// BOX_HOLD_MS without one
+function hold(partition: string, callback: Answer, answer: () => Electron.CallbackResponse) {
+  const held = waiting.get(partition) ?? new Set<() => void>();
+  waiting.set(partition, held);
+  const go = () => { clearTimeout(timer); held.delete(go); callback(answer()); };
+  const timer = setTimeout(() => { held.delete(go); callback({ cancel: true }); }, BOX_HOLD_MS);
+  held.add(go);
+}
+
+/**
+ * A computer page's request to `0.0.0.0` or `[::]`: that computer's loopback, so it goes to
+ * `localhost`, through the door; a WebSocket to either is cancelled (T3: LoopbackTunnel.ts)
+ */
+export function loopbackOnly(url: string): Electron.CallbackResponse {
+  let u: URL;
+  try { u = new URL(url); } catch { return {}; }
+  if (u.hostname !== '0.0.0.0' && u.hostname !== '[::]') return {};
+  if (u.protocol === 'ws:' || u.protocol === 'wss:') return { cancel: true };
+  u.hostname = 'localhost';
+  return { redirectURL: u.toString() };
+}
+
+/**
  * One partition's session, set up once: its permissions and where its downloads go; for a box, every
  * request held until its job's door is set, cancelled after BOX_HOLD_MS without one (T3: getSession,
- * BrowserSession.ts:578-683, its handlers at 618-643). Run before its guest attaches.
+ * BrowserSession.ts:578-683, its handlers at 618-643); for another computer's agent partition the
+ * same, until its computer's door is set, the door asked for now through `inUse` (none: never set).
+ * Run before its guest attaches.
  */
-export function prepare(s: Session, partition: string) {
+export function prepare(s: Session, partition: string, inUse: InUse | null) {
   if (ready.has(s)) return;
   ready.add(s);
   const box = isBox(partition);
-  // a box's hold first, before anything that can fail, so a setup that fails holds or cancels
+  const computer = computerOf(partition);
+  // a box's or computer's hold first, before anything that can fail, so a setup that fails holds or cancels
   if (box) {
     boxes.set(s, partition);
+    doored.set(s, partition);
     s.webRequest.onBeforeRequest((_details, callback) => {
       if (unguarded.has(partition)) return callback({ cancel: true });
       if (doors.has(partition)) return callback({});
-      const held = waiting.get(partition) ?? new Set<() => void>();
-      waiting.set(partition, held);
-      const go = () => { clearTimeout(timer); held.delete(go); callback(unguarded.has(partition) ? { cancel: true } : {}); };
-      const timer = setTimeout(() => { held.delete(go); callback({ cancel: true }); }, BOX_HOLD_MS);
-      held.add(go);
+      hold(partition, callback, () => (unguarded.has(partition) ? { cancel: true } : {}));
     });
+  } else if (computer) {
+    doored.set(s, partition);
+    s.webRequest.onBeforeRequest((details, callback) => {
+      if (doors.has(partition)) return callback(loopbackOnly(details.url));
+      hold(partition, callback, () => loopbackOnly(details.url));
+      // an earlier ask gave no door: asked again
+      if (inUse) void computerDoor(s, partition, computer, inUse);
+    });
+    if (inUse) void computerDoor(s, partition, computer, inUse);
   }
   const granted = box ? BOX_PERMISSIONS : PERMISSIONS;
   s.setPermissionRequestHandler((_wc, permission, done) => done(granted.has(permission)));
@@ -192,12 +241,39 @@ export function prepare(s: Session, partition: string) {
   }
 }
 
-/** obid's `box`: the box's session made ready, its proxy set to the job's door, then its held requests let go */
-export async function boxDoor(c: BoxCommand) {
+/**
+ * Another computer's door, asked of this Mac's obid (POST /v1/computers/<id>/door, COMPUTERS-28) once
+ * at a time: its partition's proxy set to it, only loopback going there, the connections it had
+ * closed, then its held requests let go. No door, or one not of BOX_PROXY's shape, leaves them held.
+ */
+async function computerDoor(s: Session, partition: string, id: string, inUse: InUse) {
+  if (doors.has(partition) || asking.has(partition)) return;
+  asking.add(partition);
+  try {
+    const r = await inUse.send('POST', `/v1/computers/${id}/door`, undefined, undefined, undefined, true);
+    if (!(r instanceof Response) || !r.ok) return;
+    const proxy = ((await r.json().catch(() => null)) as { proxy?: unknown } | null)?.proxy;
+    const door = typeof proxy === 'string' ? BOX_PROXY.exec(proxy) : null;
+    if (!door || Number(door[2]) > 65535) return;
+    const port = Number(door[2]);
+    await s.setProxy({ mode: 'fixed_servers', proxyRules: `127.0.0.1:${port}`, proxyBypassRules: COMPUTER_BYPASS });
+    await s.closeAllConnections();
+    doors.set(partition, { port, token: door[1] });
+    for (const go of [...(waiting.get(partition) ?? [])]) go();
+  } catch { /* no door: its requests stay held, and the next one asks again */ } finally {
+    asking.delete(partition);
+  }
+}
+
+/**
+ * obid's `box`: the box's session made ready, its proxy set to the job's door, then its held requests
+ * let go. Not while another `computer` is in use: its door would be that computer's (BROWSERAPP-46).
+ */
+export async function boxDoor(c: BoxCommand, computer: string | null) {
   const door = BOX_PROXY.exec(c.proxy);
-  if (!door) return;
+  if (!door || computer !== null) return;
   const s = session.fromPartition(c.partition);
-  prepare(s, c.partition);
+  prepare(s, c.partition, null);
   const port = Number(door[2]);
   const cleared = clears.get(c.partition) ?? 0;
   await s.setProxy({ mode: 'fixed_servers', proxyRules: `127.0.0.1:${port}`, proxyBypassRules: '<-loopback>' });
@@ -214,7 +290,7 @@ export async function boxDoor(c: BoxCommand) {
 export function boxing(drop: (k: TabKey) => string | null) {
   const last = (partition: string) => { void clearBox(partition).catch(() => undefined); };
   return {
-    kept: (partition: string) => { if (isBox(partition)) prepare(session.fromPartition(partition), partition); },
+    kept: (partition: string) => { if (isBox(partition)) prepare(session.fromPartition(partition), partition, null); },
     last,
     released: (k: TabKey) => { const was = drop(k); if (was) last(was); },
   };
@@ -299,9 +375,9 @@ async function leaveBusyPage(wc: WebContents) {
  * The window's webviews for the relay: `register` ties one the page mounted to obid's tab (the page
  * says which; main checks the webview is this window's and its partition is the one obid named),
  * `shown` passes on whether it's on screen, `nav` moves a tab's own page on the owner's click, and
- * `report` hears each tab's page state.
+ * `report` hears each tab's page state. Partitions are checked for the computer in use (`inUse`).
  */
-export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) => string | undefined, report: (s: NavState) => void) {
+export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) => string | undefined, report: (s: NavState) => void, inUse: InUse) {
   // the address each webview's last main-frame load failed at, or its page crashed at, until a load
   // starts again: did-stop-loading after did-fail-load proves no page (T3: Manager.ts:1226-1231)
   const failedLoad = new Map<number, string>();
@@ -313,24 +389,27 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
     report({ threadId: k.threadId, tabId: k.tabId, url: wc.getURL(), canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward(), loading: wc.isLoadingMainFrame(), failed: failedLoad.get(wc.id) ?? null });
   };
   win.webContents.on('will-attach-webview', (e, prefs, params) => {
-    if (!harden(prefs as Record<string, unknown>, params)) { e.preventDefault(); return; }
-    prepare(session.fromPartition(params.partition!), params.partition!);
+    if (!harden(prefs as Record<string, unknown>, params, inUse.computer())) { e.preventDefault(); return; }
+    prepare(session.fromPartition(params.partition!), params.partition!, inUse);
     // a box page's frames each run its session's preload (the clipboard guard), not only its top
     // one: still sandboxed, so no Node in any of them
     if (isBox(params.partition!)) (prefs as Record<string, unknown>).nodeIntegrationInSubFrames = true;
   });
   win.webContents.on('did-attach-webview', (_e, wc) => {
     const box = boxes.get(wc.session);
-    if (box) {
-      // a box page's connections go only through its door: no WebRTC beside the proxy
-      wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-      // the door's own login, only to that door; any other login a box page meets gets none
+    const routed = doored.get(wc.session);
+    if (routed) {
+      // the door's own login, only to that door; any other login a box's or computer's page meets gets none
       wc.on('login', (ev, _details, authInfo, callback) => {
         ev.preventDefault();
-        const door = doors.get(box);
+        const door = doors.get(routed);
         if (door && authInfo.isProxy && authInfo.host === '127.0.0.1' && authInfo.port === door.port) callback('oby', door.token);
         else callback();
       });
+    }
+    if (box) {
+      // a box page's connections go only through its door: no WebRTC beside the proxy
+      wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
       // no TLS identity of the owner's to another Oby's page: it goes on with no client certificate
       // (the same callback as app's, whose typings say what Electron does: none goes on without one)
       wc.on('select-client-certificate', (ev, _url, _list, callback) => { ev.preventDefault(); (callback as () => void)(); });
@@ -403,7 +482,7 @@ export function hosting(win: BrowserWindow, host: RelayHost, named: (k: TabKey) 
       const wc = webContents.fromId(webContentsId);
       if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== win.webContents) return 'Not one of this window’s pages.';
       const partition = named(k);
-      if (!partition || !partitionOk(partition) || wc.session !== session.fromPartition(partition)) return 'Not the partition obid named for this tab.';
+      if (!partition || !partitionOk(partition, inUse.computer()) || wc.session !== session.fromPartition(partition)) return 'Not the partition obid named for this tab.';
       const was = keyed.get(wc.id);
       if (was && (was.threadId !== k.threadId || was.tabId !== k.tabId)) return 'This page is already another tab’s.';
       keyed.set(wc.id, k);

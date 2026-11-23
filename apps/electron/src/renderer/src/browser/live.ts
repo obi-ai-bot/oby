@@ -3,11 +3,15 @@
 // it, and what an agent is doing from its `action` events; the page itself is the tab's own <webview>
 // (Webviews.tsx). Main holds obid's token and follows the events (window.app.browser); calls go
 // through window.app.obid, the owner's acts signed by main on their own click (shared/words.ts).
+// On another computer the tabs are that computer's, in its own partitions, with board 14's words
+// (BROWSERAPP-47): which computer is the computers store's, never the tab's own (obid calls its
+// own tabs `local`).
 import {
   BROWSER_DOWNLOADS, BROWSER_PATH, BROWSER_SETTINGS, browserAskPath, browserSaveCopyPath, browserTabPath,
   type BrowserAsk, type BrowserDownload, type BrowserDownloadsAnswer, type BrowserEvent,
   type BrowserSettings, type BrowserTab, type BrowserTabsAnswer,
 } from '../../../shared/obid-wire';
+import { windowPartition } from '../../../shared/browserPartition';
 import { STOPPED, type AgentId, type BrowserState, type Download, type Tab } from './view';
 
 export type Live = {
@@ -23,6 +27,8 @@ export type Live = {
   saveCopy(download: string): Promise<void>;
   /** one of Settings › General's switches (PUT /v1/browser/settings, one key) */
   setSettings(s: Partial<BrowserSettings>): Promise<void>;
+  /** the computer in use, or null for This Mac: another one drops the tabs shown and reads its lists */
+  computer(c: { id: string; name: string } | null): void;
   close(): void;
 };
 
@@ -75,6 +81,10 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
   // main's last word on each tab's own page, by job and tab: its address (obid's stays at its own
   // last command's), whether it has a page behind, one ahead, is loading, and where its last load failed
   const pages = new Map<string, { url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; failed: string | null }>();
+  // the computer in use (null: This Mac), and how many times it changed: a list read before the last
+  // change is another computer's, and isn't taken
+  let inUse: { id: string; name: string } | null = null;
+  let switches = 0;
 
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
     const a = await calls.call(method, path, body);
@@ -98,7 +108,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         owner: t.owner.kind === 'agent' ? { kind: 'agent', agent: agentOf(t.owner.agent) } : { kind: 'you' },
         job: t.owner.kind === 'agent' ? t.owner.job : undefined,
         src: t.url,
-        partition: t.partition,
+        partition: windowPartition(t.partition, inUse?.id ?? null) ?? undefined,
         title: t.title || shown(t.url),
         url: shown(at),
         secure: at.startsWith('https:'),
@@ -109,7 +119,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
         holder: t.heldBy ? 'you' : t.owner.kind === 'agent' ? 'agent' : null,
         hold: t.holdGeneration,
         dialog: t.dialog,
-        computer: t.computer.id === 'local' ? undefined : { name: t.computer.name, os: '' },
+        computer: inUse ? { name: inUse.name, os: '' } : undefined,
         action: t.heldBy ? undefined : d?.text,
         pointer: t.heldBy ? undefined : d?.pointer ? { ...d.pointer, ring: true } : undefined,
         ran: ran.has(t.id) && !d ? {} : undefined,
@@ -135,8 +145,10 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
 
   let following: (() => void) | null = null;
   const refresh = async () => {
+    const at = switches;
     try {
       const [b, d] = await Promise.all([call<BrowserTabsAnswer>('GET', BROWSER_PATH), call<BrowserDownloadsAnswer>('GET', BROWSER_DOWNLOADS)]);
+      if (at !== switches) return true;
       // an obid from before `seq` (none on the answer): taken as it comes, the watermark unmoved
       if (b.seq === undefined || b.seq >= tabsSeq) { tabs = b.tabs; settings = b.settings; tabsSeq = b.seq ?? tabsSeq; }
       if (d.seq === undefined || d.seq >= downloadsSeq) { downloads = d.downloads; downloadsSeq = d.seq ?? downloadsSeq; }
@@ -144,6 +156,7 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
       publish();
       return true;
     } catch (e) {
+      if (at !== switches) return true;
       // an obid without the browser: not offered, and nothing followed
       if (e instanceof Refused && e.status === 404) { sinks.offered(false); return false; }
       sinks.problem((e as Error).message);
@@ -184,7 +197,8 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     }
     publish();
   };
-  void refresh().then((has) => { if (has && !closed) following = calls.follow(on); });
+  const begin = () => { void refresh().then((has) => { if (has && !closed && !following) following = calls.follow(on); }); };
+  begin();
 
   const act = async (path: string) => {
     let done = false;
@@ -216,6 +230,17 @@ export function connectLive(sinks: Sinks, calls: Calls): Live {
     setSettings: async (x) => {
       try { settings = (await call<BrowserSettings>('PUT', BROWSER_SETTINGS, x)) ?? settings; sinks.problem(null); publish(); } catch (e) { sinks.problem((e as Error).message); }
       await refresh();
+    },
+    computer: (c) => {
+      const same = (inUse?.id ?? null) === (c?.id ?? null);
+      inUse = c;
+      if (same) { publish(); return; }
+      // another computer's tabs: none shown until its own lists are read
+      switches++;
+      tabs = []; downloads = []; tabsSeq = 0; downloadsSeq = 0; active = null;
+      doing.clear(); ran.clear(); saved.clear();
+      publish();
+      begin();
     },
     close: () => { closed = true; following?.(); unNav(); },
   };

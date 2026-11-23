@@ -1,7 +1,7 @@
 import { app, shell, type BrowserWindow } from 'electron';
 import { existsSync } from 'node:fs';
 import { downloadsFile } from './reveal';
-import { HOME, send } from './obid';
+import { HOME, onComputer, openedComputer, send } from './obid';
 import { ipc, type Trusted } from './ipc';
 import { flag, oneOf, safeInteger, string } from '../shared/decode';
 import { fillSecret, typeInPages } from './device';
@@ -21,10 +21,14 @@ import { boxDoor, boxing, hosting, type NavState } from './browserGuest';
 // comes back never runs an earlier command again, it only announces the live tabs again. The
 // webviews' events go back on POST /v1/browser/relay, in order, on the same token. With the window
 // closed nothing follows the relay: obid's agents are told `no_window`, never given another browser.
+// Both follows track the computer in use (BROWSERAPP-45 to 47): on a switch they start again on the
+// one now in use, so while the window shows another computer nothing follows this Mac's relay, and
+// this Mac's agents are told `no_window` as with the window closed.
 
-// the partition obid named for each agent tab, from its `tab` events: the only one its webview may
-// use; a box's session is made ready as soon as a tab names it, and cleared once none does
-const partitions = namedPartitions();
+// the partition the window opens for each agent tab, from the one obid named in its `tab` events on
+// the computer in use: the only one its webview may use; a box's session is made ready as soon as a
+// tab names it, and cleared once none does
+const partitions = namedPartitions(openedComputer);
 const boxed = boxing((k) => partitions.drop(k));
 function heard(name: string, data: string) {
   if (partitions.heard(name, data, boxed) === 'refused') console.warn('The browser: a tab event named a partition main doesn’t take for that tab; the first one stands.');
@@ -43,7 +47,7 @@ let navState: ((s: NavState) => void) | null = null;
 
 /** the window's webviews, once it exists: hardened, checked against obid's partitions, relayed */
 export function hostBrowser(win: BrowserWindow) {
-  webviews = hosting(win, relay!, (k) => partitions.of(k), (s) => navState?.(s));
+  webviews = hosting(win, relay!, (k) => partitions.of(k), (s) => navState?.(s), { computer: openedComputer, send });
   // Fill in types into the tab's own page, never through obid (BROWSERAPP-12)
   const w = webviews;
   typeInPages((tab, field, value, code) => w.type(tab, field, value, code));
@@ -93,23 +97,32 @@ export function browsing(trusted: Trusted, page: Page) {
   relay = relayHost(post, {
     get home() { return HOME; },
     pointer: (c) => to('browser-pointer', { threadId: c.threadId, tabId: c.tabId, phase: c.phase, x: c.x, y: c.y }),
-    // a foreign job's door, for its box partition's session only (browserGuest.ts): never to the page
-    box: (c) => { void boxDoor(c).catch(() => undefined); },
+    // a foreign job's door, for its box partition's session only (browserGuest.ts): never to the page,
+    // and none while another computer is in use
+    box: (c) => { void boxDoor(c, openedComputer()).catch(() => undefined); },
     released: boxed.released,
   });
   // whether a tab's own page has one behind, one ahead, and is loading, from its webview (T3: Manager.ts:1214-1257)
   navState = (s) => to('browser-nav-state', s);
   let events: (() => void) | null = null;
   let commands: (() => void) | null = null;
-  // the browser's events from now on, once per window; `open` each time the stream (re)connects, so
-  // the page reads the lists again for what it missed
-  channels.handle('browser-follow', [], () => {
-    events ??= follow(BROWSER_EVENTS, (name, data) => { heard(name, data); to('browser-event', { name, data }); }, () => to('browser-event', { name: 'open', data: '' }));
+  const start = () => {
+    // the browser's events from now on; `open` each time the stream (re)connects, so the page reads
+    // the lists again for what it missed
+    events = follow(BROWSER_EVENTS, (name, data) => { heard(name, data); to('browser-event', { name, data }); }, () => to('browser-event', { name: 'open', data: '' }));
     // obid's commands for the window's webviews: main's alone, the page never sees the CDP its agents
     // send; each time the relay (re)connects, every live tab is announced again, nothing run again
-    commands ??= follow(BROWSER_RELAY, (name, data) => { const c = relayCommand(name, data); if (c) relay?.command(c); }, () => relay?.reconnected());
-    return true;
-  }, null);
+    commands = follow(BROWSER_RELAY, (name, data) => { const c = relayCommand(name, data); if (c) relay?.command(c); }, () => relay?.reconnected());
+  };
+  // once per window
+  channels.handle('browser-follow', [], () => { if (!events) start(); return true; }, null);
+  // another computer in use: both follows start again there, if they were started; a partition's
+  // storage and proxy stay as they are for its next visit (T3's "off stays routed")
+  onComputer(() => {
+    if (!events) return;
+    events(); commands?.();
+    start();
+  });
   // a webview the page mounted for obid's tab: main checks it and relays it (browserGuest.ts); null once it's relayed
   channels.handle('browser-register', [string, string, safeInteger], (_e, threadId, tabId, webContentsId) =>
     webviews ? webviews.register({ threadId, tabId }, webContentsId) : 'The window isn’t up yet.', 'Not this app’s page.');

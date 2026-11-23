@@ -67,7 +67,7 @@ function request(s: FakeSession) {
 function aWindow(named: string | undefined = undefined) {
   const win = { webContents: new EventEmitter() };
   const host = { attach: vi.fn(), detach: vi.fn(), forget: vi.fn(), event: vi.fn(), shown: vi.fn(), loadFailed: vi.fn() };
-  const h = hosting(win as unknown as BrowserWindow, host as unknown as RelayHost, () => named, () => {});
+  const h = hosting(win as unknown as BrowserWindow, host as unknown as RelayHost, () => named, () => {}, { computer: () => null, send: vi.fn() });
   const attaching = (partition: string, src = 'https://example.com/', prefs: Record<string, unknown> = {}) => {
     const e = { preventDefault: vi.fn() };
     win.webContents.emit('will-attach-webview', e, prefs, { partition, src });
@@ -115,7 +115,7 @@ describe('BROWSERAPP-36: a box partition\'s session is made before its guest att
   });
 
   it('browserapp_36: the first kept tab event naming a box prepares its session; a refused one doesn\'t', () => {
-    const p = namedPartitions();
+    const p = namedPartitions(() => null);
     const boxed = boxing((k) => p.drop(k));
     expect(p.heard('tab', tab('b36c', 't1'), boxed)).toBe('kept');
     expect(sessionOf('oby-box-b36c').requests).toHaveLength(1);
@@ -129,7 +129,7 @@ describe('BROWSERAPP-36: a box partition\'s session is made before its guest att
     aWindow().attaching('oby-box-b36e');
     const s = sessionOf('oby-box-b36e');
     const early = request(s);
-    const set = boxDoor(boxFor('b36e'));
+    const set = boxDoor(boxFor('b36e'), null);
     await settle();
     expect(early.got).toBe('held');
     s.proxied!.resolve();
@@ -172,7 +172,7 @@ describe('BROWSERAPP-36: a box partition\'s session is made before its guest att
     expect(agent.nodeIntegrationInSubFrames).toBe(false);
     expect(sessionOf('persist:oby-agent-codex').preloads).toEqual([]);
     // the first tab event naming a box sets it up the same way, once
-    const p = namedPartitions();
+    const p = namedPartitions(() => null);
     p.heard('tab', tab('b36k', 't1'), boxing((k) => p.drop(k)));
     w.attaching('oby-box-b36k');
     expect(sessionOf('oby-box-b36k').preloads).toHaveLength(1);
@@ -181,7 +181,7 @@ describe('BROWSERAPP-36: a box partition\'s session is made before its guest att
   it('browserapp_36: an agent partition\'s session gets no request handler and no proxy', () => {
     const w = aWindow();
     expect(w.attaching('persist:oby-agent-claude')).toBe(true);
-    const p = namedPartitions();
+    const p = namedPartitions(() => null);
     expect(p.heard('tab', tab('b36g', 't1', 'persist:oby-agent-claude'), boxing((k) => p.drop(k)))).toBe('kept');
     w.guest('persist:oby-agent-claude');
     const s = sessionOf('persist:oby-agent-claude');
@@ -192,7 +192,7 @@ describe('BROWSERAPP-36: a box partition\'s session is made before its guest att
 
 describe('BROWSERAPP-37: a box\'s session goes only through its job\'s door', () => {
   it('browserapp_37: box sets exactly the door as the session\'s proxy, loopback included', async () => {
-    const set = boxDoor(boxFor('b37a', 50137));
+    const set = boxDoor(boxFor('b37a', 50137), null);
     const s = sessionOf('oby-box-b37a');
     expect(s.proxies).toEqual([{ mode: 'fixed_servers', proxyRules: '127.0.0.1:50137', proxyBypassRules: '<-loopback>' }]);
     s.proxied!.resolve();
@@ -203,10 +203,10 @@ describe('BROWSERAPP-37: a box\'s session goes only through its job\'s door', ()
     const w = aWindow();
     w.attaching('oby-box-b37b');
     const wc = w.guest('oby-box-b37b');
-    const set = boxDoor(boxFor('b37b', 50138));
+    const set = boxDoor(boxFor('b37b', 50138), null);
     sessionOf('oby-box-b37b').proxied!.resolve();
     await set;
-    const theirs = boxDoor(boxFor('b37c', 50139));
+    const theirs = boxDoor(boxFor('b37c', 50139), null);
     sessionOf('oby-box-b37c').proxied!.resolve();
     await theirs;
     const door = login(wc, { isProxy: true, host: '127.0.0.1', port: 50138 });
@@ -236,7 +236,7 @@ describe('BROWSERAPP-37: a box\'s session goes only through its job\'s door', ()
     const wc = w.guest('oby-box-b37f');
     const s = sessionOf('oby-box-b37f');
     const early = request(s);
-    const set = boxDoor(boxFor('b37f', 50140));
+    const set = boxDoor(boxFor('b37f', 50140), null);
     await clearBox('oby-box-b37f');
     s.proxied!.resolve();
     await set;
@@ -295,11 +295,11 @@ describe('BROWSERAPP-37: a box\'s session goes only through its job\'s door', ()
 describe('BROWSERAPP-38: a box is cleared with its last tab', () => {
   const STORAGES = { storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] };
   async function opened(job: string, tabs: string[]) {
-    const p = namedPartitions();
+    const p = namedPartitions(() => null);
     const boxed = boxing((k) => p.drop(k));
     for (const id of tabs) p.heard('tab', tab(job, id), boxed);
     const host = relayHost(async () => true, { home: '/nowhere', released: boxed.released });
-    const set = boxDoor(boxFor(job));
+    const set = boxDoor(boxFor(job), null);
     const s = sessionOf(`oby-box-${job}`);
     s.proxied!.resolve();
     await set;

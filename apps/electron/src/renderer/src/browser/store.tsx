@@ -13,6 +13,7 @@ import { demoBoard } from './demo';
 import { connectLive, type Live } from './live';
 import { focusPage } from './Webviews';
 import { closeChanges, useChangesOpen } from '../ChangesPanel';
+import { current, useComputers } from '../computers/store';
 
 /** The window's own state: not the browser's, never sent anywhere. */
 export type Ui = {
@@ -83,6 +84,12 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
   const changes = useChangesOpen();
   useEffect(() => { if (changes) setUiState((o) => (o.open ? { ...o, open: false, full: false } : o)); }, [changes]);
   useEffect(() => { if (ui.open) closeChanges(); }, [ui.open]);
+  // the computer in use, whose browser the panel shows (BROWSERAPP-47): none for This Mac
+  const on = current(useComputers());
+  const [onId, onName] = [on?.id, on?.name ?? ''];
+  const inUse = useMemo(() => (onId ? { id: onId, name: onName } : null), [onId, onName]);
+  const latestComputer = useRef(inUse);
+  latestComputer.current = inUse;
 
   useEffect(() => {
     const app = window.app;
@@ -94,9 +101,11 @@ export function BrowserProvider({ children, board = demoNumber(), live = onObid 
       state: (next) => setS((o) => ({ ...next, active: o.active && next.tabs.some((t) => t.id === o.active) ? o.active : next.active })),
       problem: (why) => { if (why) console.warn(`The browser: ${why}`); },
     }, { call: (m, p, b) => app.obid.call(m, p, b), follow: (fn) => browser.follow(fn), fill: (tab, field, value, ask) => browser.fill(tab, field, value, ask), navState: (fn) => browser.navState(fn) });
+    c.computer(latestComputer.current);
     conn.current = c;
     return () => { c.close(); conn.current = null; };
   }, [onLive]);
+  useEffect(() => { conn.current?.computer(inUse); }, [inUse]);
 
   const api = useMemo<BrowserApi>(() => {
     if (onLive) {
