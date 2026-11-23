@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { current as onAnotherComputer } from './computers/store';
 import { knownUpTo, withEntries, withLine, withOutput, withTail } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
 import { ApiError, api, isInboxKind, isJobStatus, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type AgentQuestion, type CheckRun, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark, type SkillsAnswer } from './obid';
@@ -1081,7 +1082,9 @@ export async function moveToProject(shown: string, project: string | null) {
   try { const c = await api.editConversation(realId(shown), { project }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
 // whether obid has projects (projects-v1): with none, nothing names one (projects.ts)
-export const takesProjects = (s: Pick<Live, 'status'> = state) => has(s.status, 'projects-v1');
+// Projects are this Mac's: while the window works on another computer, none shows and none is sent
+// (that computer's obid refuses a project from anything but its own window, PROJECTS-33)
+export const takesProjects = (s: Pick<Live, 'status'> = state) => has(s.status, 'projects-v1') && !onAnotherComputer();
 // obid takes a new conversation's workspace and answers its finishing actions (WORKSPACE-2 to 6)
 export const takesWorkspace = (s: Pick<Live, 'status'> = state) => has(s.status, 'workspace-v1');
 export async function pinConversation(shown: string, pinned: boolean) {

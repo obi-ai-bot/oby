@@ -1306,7 +1306,8 @@
             "PROJECTS-29": "Electron side panel, chips and sheet.",
             "PROJECTS-30": "Electron side panel, chips and sheet.",
             "PROJECTS-31": "Electron side panel, chips and sheet.",
-            "PROJECTS-32": "Electron projects store: projects.test.tsx (a failed first read tried again, a reconnect read again)."
+            "PROJECTS-32": "Electron projects store: projects.test.tsx (a failed first read tried again, a reconnect read again).",
+            "PROJECTS-33": "Electron projects store: projects.test.tsx (another computer in use shows and sends no project)."
           }
         },
         "folders.md": {

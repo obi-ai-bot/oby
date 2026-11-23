@@ -747,3 +747,24 @@ describe('PROJECTS-32', () => {
     expect(reads(o)).toBe(before + 1);
   });
 });
+
+describe('PROJECTS-33', () => {
+  it('PROJECTS-33: projects_33_another_computer_shows_and_sends_no_project', async () => {
+    const o = obid([OBY], [convo('c1', 'In the app', { project: OBY.id }), convo('c2', 'Elsewhere')]);
+    await showHome(o);
+    await until(() => expect(listed()).toContain('# Oby app'));
+    // the window switches to another computer: this Mac's projects aren't that computer's
+    const store = await import('../computers/store');
+    const studio = { id: 'studio', name: 'Studio', os: 'mac' as const, state: 'connected' as const, route: { kind: 'lan' as const } };
+    await act(async () => { await vi.waitFor(() => expect(o.calls.some((c) => c.path === '/v1/computers')).toBe(true)).catch(() => {}); });
+    await act(async () => { await store.startComputers({ list: async () => ({ current: 'studio', computers: [studio] }), follow: () => () => {} } as never); });
+    await until(() => expect(listed()).not.toContain('# Oby app'));
+    expect(listed()).not.toContain('# No project');
+    const live = await import('../live');
+    expect(live.takesProjects()).toBe(false);
+    // back on This Mac: its projects again
+    await act(async () => { await store.startComputers({ list: async () => ({ current: 'this', computers: [studio] }), follow: () => () => {} } as never); });
+    await until(() => expect(listed()).toContain('# Oby app'));
+    expect(live.takesProjects()).toBe(true);
+  });
+});
