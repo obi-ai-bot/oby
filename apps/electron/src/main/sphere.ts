@@ -5,7 +5,7 @@ import { keptKey, replaceKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
-import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
+import { boolean, flag, safeInteger, string, type Decoder } from '../shared/decode';
 import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPolicy, rebindOffer, setAdmin, signinStatus, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
@@ -39,6 +39,17 @@ function onWindow(f: (w: BrowserWindow) => void) {
 }
 
 const NOT_A_LINK = 'It isn’t an Obysphere invite link.';
+
+// The invite links main made this run, by invitation id (SPHEREAPP-10's Make a link, Invite member's
+// click): Invite member hands back one the Sphere still lists as open. Every list the Sphere answers
+// drops those it no longer lists (withdrawn, expired, used up); a refusal, a Sphere that couldn't be
+// read, or a make whose list after it couldn't be read (`unlisted`) drops nothing. Leaving drops them all.
+const madeLinks = new Map<string, string>();
+const openOf = (a: InvitesAnswer, id: string) => a.invitations.find((i) => i.id === id && i.uses < i.maxUses);
+function pruned(a: InvitesAnswer): InvitesAnswer {
+  if (!a.refused && !a.unlisted) for (const id of [...madeLinks.keys()]) if (!openOf(a, id)) madeLinks.delete(id);
+  return a;
+}
 
 // obid's owner id now: who a join would act for, or null when obid can't say
 async function ownerNow() {
@@ -167,6 +178,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
     try {
       const { membership, untold, sphere } = await leave(obid, ownerKey);
+      madeLinks.clear();
       if (untold) void said(w, `You left ${sphere}, but it couldn’t be told.`, `${untold}. It still lists your Oby until its admin removes it.`);
       return untold ?? (membership.state === 'none' ? null : 'obid is still in it.');
     } catch (err) {
@@ -194,12 +206,21 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // new member can hand off tasks, and says whether it now does.
   const notInvited = (why: string): InvitesAnswer => ({ invitations: [], link: null, refused: 'failed', why });
   const invited = (f: () => Promise<InvitesAnswer>) => f().catch((e) => notInvited(e instanceof Error ? e.message : String(e)));
-  ipc(trusted).handle('sphere-invitations', [], () => invited(() => listInvitations(obid, ownerKey)), null);
-  ipc(trusted).handle('sphere-invite', [], async () => {
+  ipc(trusted).handle('sphere-invitations', [], () => invited(async () => pruned(await listInvitations(obid, ownerKey))), null);
+  // `reuse` (Invite member's, SPHEREAPP-21): a link main made this run that the Sphere still lists as
+  // open hands that one back; only when none is, a new one is made.
+  ipc(trusted).handle('sphere-invite', [flag], async (_e, reuse) => {
     if (!takeInput()) return notInvited('Making a link takes your own click.');
     return invited(async () => {
-      const made = await makeInvitation(obid, ownerKey);
+      if (reuse && madeLinks.size) {
+        const now = pruned(await listInvitations(obid, ownerKey));
+        if (now.refused) return now;
+        for (const [id, link] of madeLinks) if (openOf(now, id)) return { ...now, link };
+      }
+      const made = pruned(await makeInvitation(obid, ownerKey));
       if (!made.link) return made;
+      const id = parseInvite(made.link)?.id;
+      if (id) madeLinks.set(id, made.link);
       const rules = await readPolicy(obid, ownerKey);
       const now = rules.policy && withStarterRule(rules.policy.rules) ? await addStarterRule(obid, ownerKey, rules.policy.version) : rules;
       return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules) };
@@ -255,5 +276,5 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     takeInput() ? setAdmin(obid, ownerKey, owner, on).catch((e) => ({ admins: null, refused: 'failed' as const, why: e instanceof Error ? e.message : String(e) }))
       : { admins: null, refused: 'failed', why: 'Changing who’s admin takes your own click.' }), null);
   ipc(trusted).handle('sphere-withdraw', [string], async (_e, id) => (
-    takeInput() ? invited(() => withdrawInvitation(obid, ownerKey, id)) : notInvited('Withdrawing a link takes your own click.')), null);
+    takeInput() ? invited(async () => pruned(await withdrawInvitation(obid, ownerKey, id))) : notInvited('Withdrawing a link takes your own click.')), null);
 }

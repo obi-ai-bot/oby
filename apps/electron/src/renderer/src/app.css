@@ -1982,6 +1982,8 @@ button.connector { width: 100%; text-align: left; }
 .invite-link { height: 44px; padding: 0 6px 0 14px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
 .invite-url { flex: 1; min-width: 0; color: #8cbcff; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); user-select: text; }
 .invite-link .icon-button { flex: none; }
+/* the live Obysphere's (SPHEREAPP-23): why there's no link, in words, in its place */
+.invite-url.is-problem { color: var(--danger); font-family: inherit; white-space: normal; mask-image: none; }
 .invite-link .icon-button:hover { color: var(--ink); }
 .invite-option { margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: var(--text); font-size: var(--text-base); }
 .invite-option .set-switch { flex: none; }

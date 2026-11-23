@@ -550,6 +550,18 @@ describe('the app’s Obysphere (sphere-app.md)', () => {
     expect(await withdrawInvitation(fakeObid('wellington', 'joined').call, () => key, id, sphere.http)).toMatchObject({ refused: null });
   });
 
+  it('sphereapp_21_a_make_whose_list_after_it_couldnt_be_read_says_so_never_an_empty_list', async () => {
+    const sphere = fakeSphere();
+    // the Sphere makes the link, then its list doesn't answer
+    const http = vi.fn(async (url: string, init: RequestInit = {}) => ((init.method ?? 'GET') === 'GET' && url.endsWith('/spheres/demo/invitations')
+      ? new Response('{}', { status: 503 }) : sphere.http(url, init)));
+    const made = await makeInvitation(fakeObid('wellington', 'joined').call, () => key, http as unknown as typeof fetch);
+    expect(made).toMatchObject({ refused: null, why: null, invitations: [], unlisted: true });
+    expect(made.link).toContain(`id=${sphere.invitations[0].invitation_id}`);
+    // a list that answers is no such thing
+    expect(await makeInvitation(fakeObid('wellington', 'joined').call, () => key, sphere.http)).not.toHaveProperty('unlisted');
+  });
+
   it('sphereapp_10: the page takes only types from main’s engine, which needs Node', () => {
     // a value from shared/sphere.ts in the renderer pulls node:crypto into the window, which then draws nothing
     const dir = path(__dirname, '..');
