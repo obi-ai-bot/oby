@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Folder, Pencil, Plus, X } from 'lucide-react';
 import { Menu } from './Menu';
 import { folderName, pickFolders } from './folders';
-import { changeOf, createProject, deleteProject, editProject, loadProjects, repoCount, reposToAdd, useProjects } from './projects';
+import { changeOf, createProject, deleteProject, editProject, loadProjects, repoCount, useProjects } from './projects';
 import type { Project } from './obid';
 
 // The project chip (screens 01 and 03): in Home's box, the project the words start a conversation in;
@@ -70,9 +70,11 @@ export function ProjectChip({ chosen, onChoose, className = '' }: {
   );
 }
 
-// New project (screen 02): its name, then its folders on this Mac (main's own dialog) and its
-// repositories (obid's list), each a row with a × to take it out. Sent as made (POST /v1/projects);
-// obid's refusal shows in the sheet, which stays as it was. Esc, Cancel or a click outside closes it.
+// New project (screen 02): its name, then its folders on this Mac (main's own dialog), each a row
+// with a × to take it out. Nothing in the sheet adds a repository (the owner's word, 2026-11-23:
+// add the folder and that's it); a project kept with some shows them, each with its ×, and keeps
+// them. Sent as made (POST /v1/projects); obid's refusal shows in the sheet, which stays as it
+// was. Esc, Cancel or a click outside closes it.
 // The same sheet edits a project (PROJECTS-25 to 30): filled in with it, Save sends only what changed
 // (PATCH /v1/projects/{id}; nothing changed: it just closes), and Delete project… asks first, then
 // sends DELETE (its conversations stay, with its folders as their own). `deleting` opens it at that ask.
@@ -87,17 +89,12 @@ export default function ProjectSheet({ editing, deleting = false, onClose, onMad
   const [repos, setRepos] = useState<string[]>(editing?.repos ?? []);
   // the ask before a delete (opened at it: Cancel closes the sheet; from the sheet: back to it)
   const [confirming, setConfirming] = useState(deleting);
-  // Add from GitHub…'s menu: where it opens, and the repositories it lists
-  const [github, setGithub] = useState<{ at: DOMRect; list: string[] } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [making, setMaking] = useState(false);
   const ready = name.trim().length > 0 && !making;
   const addFolders = async () => {
     const picked = await pickFolders();
     if (picked.length) setFolders((f) => [...new Set([...f, ...picked])]);
-  };
-  const openGithub = async (at: DOMRect) => {
-    try { setGithub({ at, list: await reposToAdd() }); } catch (e) { setProblem((e as Error).message); }
   };
   const create = async () => {
     if (!ready) return;
@@ -125,14 +122,11 @@ export default function ProjectSheet({ editing, deleting = false, onClose, onMad
     }
   };
 
-  // the latest onClose (the panel behind re-renders often, as Oby's words stream in); Esc with
-  // GitHub's menu open is the menu's
+  // the latest onClose (the panel behind re-renders often, as Oby's words stream in)
   const close = useRef(onClose);
   close.current = onClose;
-  const menuOpen = useRef(false);
-  menuOpen.current = !!github;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !menuOpen.current) { e.stopImmediatePropagation(); close.current(); } };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); close.current(); } };
     addEventListener('keydown', onKey, true);
     return () => removeEventListener('keydown', onKey, true);
   }, []);
@@ -177,7 +171,6 @@ export default function ProjectSheet({ editing, deleting = false, onClose, onMad
         {repos.map((r) => row(`repo:${r}`, r.split('/').pop() ?? r, r, 'GitHub', () => setRepos((all) => all.filter((x) => x !== r))))}
         <div className="project-adds">
           <button type="button" className="set-button" onClick={() => void addFolders()}>Add a folder…</button>
-          <button type="button" className="set-button" aria-haspopup="menu" aria-expanded={!!github} onClick={(e) => (github ? setGithub(null) : void openGithub(e.currentTarget.getBoundingClientRect()))}>Add from GitHub…</button>
         </div>
         {problem && <p className="sphere-note is-bad" role="alert">{problem}</p>}
         <div className="modal-actions">
@@ -185,18 +178,6 @@ export default function ProjectSheet({ editing, deleting = false, onClose, onMad
           <button type="button" className="set-button" onClick={onClose}>Cancel</button>
           <button type="submit" className="modal-primary" disabled={!ready}>{editing ? 'Save' : 'Create project'}</button>
         </div>
-        {/* (none listed: it says so, rather than opening nothing) */}
-        {github && (
-          <Menu at={github.at} onClose={() => setGithub(null)} align="left" width={240} height={Math.max(github.list.length, 1) * 36 + 12}>
-            {!github.list.length && <span className="menu-label" role="status">No repositories to add</span>}
-            {github.list.map((r) => (
-              <button key={r} type="button" role="menuitemcheckbox" aria-checked={repos.includes(r)} onClick={() => { setRepos((all) => (all.includes(r) ? all : [...all, r])); setGithub(null); }}>
-                {r}
-                {repos.includes(r) && <Check size={14} strokeWidth={1.8} className="menu-check" />}
-              </button>
-            ))}
-          </Menu>
-        )}
       </form>,
   );
 }

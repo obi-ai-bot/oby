@@ -15,6 +15,13 @@
 @media (prefers-reduced-motion: reduce) { .msg-task-work.is-lit > .msg-task { animation: none; border-color: var(--line-strong); } }
 /* its ⋯, on the title's line: shown while the card is hovered or its menu is open */
 .msg-task-more { flex: none; align-self: flex-start; width: 24px; height: 24px; margin: -3px -4px -3px -2px; border-radius: 6px; opacity: 0; transition: opacity var(--fade), color var(--fade), background-color var(--fade); }
+/* a card in a conversation opens its task's own thread (LIVETASK-22) */
+.msg-task.is-link:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--line-strong); }  /* over its white 6% at rest */
+/* its title, the button a keyboard opens it with: laid out as the title it is, left aligned */
+button.msg-task-title { display: block; max-width: 100%; text-align: left; }
+/* focused from the keyboard, the card lights as it does hovered: its title's own ring would be cut by its fade */
+button.msg-task-title:focus-visible { outline: none; }
+.msg-task.is-link:has(> .msg-task-text > .msg-task-title:focus-visible) { background: rgba(255, 255, 255, 0.1); border-color: var(--line-strong); }
 .msg-task:hover .msg-task-more, .msg-task-more:focus-visible, .msg-task-more[aria-expanded="true"] { opacity: 1; }
 
 /* A task's card in the conversation (Sangam's screen 03): its stages as a bar; waiting on the owner, the

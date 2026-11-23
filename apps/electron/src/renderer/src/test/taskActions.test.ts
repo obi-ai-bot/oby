@@ -462,6 +462,26 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     confirm: { action: 'delete_job', target: 'j1', payload: { snapshot: {} } },
   };
 
+  it('TASKS-11: Delete\'s Confirm comes onto a card that already held another decision of obid\'s (a failed card), and its Confirm deletes', async () => {
+    const { tasks, live } = await load(true);
+    // interrupted with its agent's work left (obid's `wip:` commit), and obid's failed card on it from before
+    const event = await following(live, [job({ status: 'interrupted', step: 'Interrupted', reason: 'obid kept going down with it.', commits: 1 })]);
+    event('inbox', { ...confirmItem, id: 'j1-crash-1', kind: 'failed', title: 'Fix it', text: 'obid kept going down with it.', options: ['Try again', 'Dismiss'], confirm: null, created: '2026-10-30T10:30:00Z' });
+    expect(tasks.dev!.get()[0].job.ask).toMatchObject({ kind: 'failed' });
+
+    answers['POST /v1/jobs/j1/delete'] = { status: 200, body: { deleted: false, ask: confirmItem } };
+    tasks.deleteTask('j1');
+    await flush();
+    // the owner's Delete is what's asked now: its Confirm, not the card from before
+    expect(tasks.dev!.get()[0].job.ask).toMatchObject({ kind: 'confirm', headline: confirmItem.title, options: ['Confirm', 'Cancel'] });
+
+    calls.length = 0;
+    answers['CONFIRM confirm-1'] = { status: 200, body: { ...confirmItem, state: 'done', answer: 'Confirm' } };
+    tasks.answer('j1', 'Confirm');
+    await flush();
+    expect(calls).toEqual([{ method: 'CONFIRM', path: 'confirm-1' }]);
+  });
+
   it('TASKS-11: a task deleted on its Confirm leaves the side panel when its event comes, before the Confirm\'s answer', async () => {
     const { tasks, live } = await load(true);
     const event = await following(live, [job()]);

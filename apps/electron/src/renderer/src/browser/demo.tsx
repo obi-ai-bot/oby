@@ -21,7 +21,8 @@ const cursor = { kind: 'agent', agent: 'cursor' } as const;
 const t = (id: string, rest: Partial<Tab & ScreenHints> & Pick<Tab, 'title' | 'url'>): Tab & ScreenHints => ({ id, owner: codex, state: 'ready', holder: 'agent', ...rest });
 
 const signIn = t('signin', { title: 'Sign in · Acme', url: 'localhost:3000/login', action: 'Clicking Sign in', pointer: { x: 322, y: 338, ring: true } });
-const signUp = t('signup', { title: 'Sign up · Acme', url: 'localhost:3000/signup', action: 'Clicking Sign in' });
+// its own line, as board 4 has this tab: Codex typing the email its page shows
+const signUp = t('signup', { title: 'Sign up · Acme', url: 'localhost:3000/signup', action: 'Typing in Email' });
 const admin = t('admin', { title: 'Sign in · Acme Admin', url: 'staging.acme.dev/admin/login', secure: true, holder: 'agent' });
 // the conversation folded to one line while the page is full width: its task, and what it's at (5)
 const signupPeek = { agent: codex, title: 'Sign-up flow works end to end', line: 'Signed up and in; now inviting a teammate' };

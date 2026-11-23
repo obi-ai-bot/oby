@@ -511,6 +511,17 @@ impl Conn {
         Ok(answer)
     }
 
+    /// Gives back `line`, read before the turn that's its own: [`Conn::next`] returns it first.
+    /// Only when nothing else waits there.
+    pub fn put_back(&mut self, line: &Value) {
+        if self.buffer.is_empty()
+            && let Ok(mut bytes) = serde_json::to_vec(line)
+        {
+            bytes.push(b'\n');
+            self.buffer = bytes;
+        }
+    }
+
     /// Writes one message as a line. An agent that stopped reading says so through its exit.
     pub async fn send(&mut self, message: &Value) {
         let mut message = message.clone();

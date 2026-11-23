@@ -471,7 +471,8 @@ class Prove(unittest.TestCase):
         res = self.job("advance", d.name, "review")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(self.state(d)["stage"], "review")
-        self.assertEqual(self.state(d)["reviews"], {"code": "pending"})
+        # RISK high: Codex's review joins the routed one (factory/bin/job's two_reviews()).
+        self.assertEqual(self.state(d)["reviews"], {"code": "pending", "codex": "pending"})
 
     def test_prove_9_an_advisory_fail_goes_on_to_review(self):
         d = self.make_job("001-a00-99-advisory", stage="prove")

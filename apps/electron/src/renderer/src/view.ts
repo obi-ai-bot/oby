@@ -13,6 +13,14 @@ export const AGENTS: Record<Agent, { name: string; brand: Brand }> = {
 // An agent by obid's id: one this build doesn't know (docs/contracts/wire.md, WIRE-4) by that id,
 // with the gray circle lettered with it (docs/contracts/providers.md, PROVIDERS-5)
 export const agentOf = (id: string): { name: string; brand: Brand } => (isAgent(id) ? AGENTS[id] : { name: id, brand: lettered(id) });
+// Who has a task, where, in which mode and on which account, as obid's start line says it
+// (TASKCONV-41, 43): "Claude Code has it in oby, in Ask mode, on the account Default". The account
+// is labelled as one, so an account named like a mode (Claude Code's "Default") isn't read as it.
+export function hasIt(j: Job): string {
+  const repo = j.repo.includes('/') ? ` in ${j.repo.split('/')[1]}` : '';
+  const mode = j.page?.mode ? `, in ${j.page.mode} mode` : '';
+  return `${agentOf(j.agent).name} has it${repo}${mode}, on the account ${j.account}`;
+}
 
 // Job.status on the Mac. queued and running show as running here; a job
 // with an ask needs you whatever its status.
@@ -72,6 +80,7 @@ export type Ask = {
   multi?: boolean;
   checks?: CheckRun[];  // a GitHub offer's pull request's checks, each its own line (PrChecks.tsx, GITHUBWORK-9)
   detail?: string;    // the command, the diff stat, the plan
+  tool?: string;      // a permission's tool, obid's (Bash, Edit, WebFetch…): what it asks to do (asksTo)
   label?: string;     // over the headline, in place of the kind's (a merge card's own: Ready to merge)
   always?: string;    // what Always allow saves, in obid's words: on its button's hover (proposed, Sangam's to change)
   repos?: { offered: string[]; chosen: string[] };  // the repositories to tick, on the card that asks to share (PEER-38)
@@ -212,7 +221,7 @@ export type Attachments = { files?: { name: string; preview?: string; file?: Fil
   defaults?: { mode?: string; agent?: string; model?: string; effort?: string };
   // the skill picked in the box (docs/contracts/composer.md, COMPOSER-27): beside the words, never in them
   skill?: string;
-  // where the conversation these words start works (WORKSPACE-3): "This folder" or "A new worktree"
+  // where the conversation these words start works (WORKSPACE-3): this folder, or Worktree checked
   workspace?: 'folder' | 'worktree' };
 // (a skill picked is something to send, words or none: COMPOSER-27)
 export const hasAttachments = (a?: Attachments) => !!(a?.files?.length || a?.obys?.length || a?.jobs?.length || a?.skill);
@@ -242,6 +251,20 @@ export type Share = { owner: string; agent: Agent; account: string; share: numbe
 export type PeerMessage = { who: string; text: string; ago: number; task?: string; streaming?: boolean } & Attachments;
 // unread: something in it you haven't opened yet (a blue dot on it, and on its Obys)
 export type PeerConvo = { id: string; title: string; with: string[]; messages: PeerMessage[]; unread?: boolean };
+
+// What a permission asks to do, by its tool as obid names it (Codex's commands and file changes too:
+// Bash, Edit), in the words after its agent's name (docs/contracts/live-task.md, LIVETASK-19, 21):
+// "asks to run a command", "asks to edit a file"; none for a tool with no plain words
+const EDITS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'];
+export function asksTo(tool: string | undefined, detail = ''): string | undefined {
+  if (tool === 'Bash') return 'run a command';
+  if (tool && EDITS.includes(tool)) return detail.includes(', ') ? 'edit files' : 'edit a file';
+  if (tool === 'WebFetch') return 'fetch a web page';
+  if (tool === 'WebSearch') return 'search the web';
+  return undefined;
+}
+// those words after its agent's name, in the side panel and Waiting for you alike
+export const asksWords = (tool: string | undefined, detail?: string) => { const to = asksTo(tool, detail); return to ? `asks to ${to}` : 'asks for permission'; };
 
 // how long ago: now, minutes under an hour, hours under a day, then days
 export const ago = (min: number) => (min < 1 ? 'now' : min < 60 ? `${Math.round(min)}m` : min < 24 * 60 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 1440)}d`);
