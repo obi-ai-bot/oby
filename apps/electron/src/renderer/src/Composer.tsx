@@ -65,11 +65,11 @@ export const stackedAt = (was: boolean, height: number, text: string) => was || 
 // The message box: Home's, and the one at the foot of a conversation (or a
 // task's or an Oby's page): tags for what's attached over one row of +, the
 // text and send; once the text runs past one line, the text over a row of +
-// and send instead (until it's sent). At the end, voice while the box is
-// empty and send in its place once there's something to send; before them,
-// usage (a gauge: how much of the agents' accounts' 5-hour session and week
-// is used). In v1 (no voice) send is there all along, dim till there's
-// something to send, and before the gauge, which keeps the end. The +
+// and send instead (until it's sent). Send is there all along, dim till
+// there's something to send (the window has no voice button), next to usage
+// (a gauge: how much of the agents' accounts' 5-hour session and week is
+// used): after it in the design (?everything), before it in v1, where the
+// gauge keeps the end. The +
 // opens a panel as wide as the box:
 // add files or photos (straight to the file browser), add other Obys, attach
 // tasks; the last two turn the panel into a search over the Obys or your
@@ -646,15 +646,8 @@ export default function Composer({ placeholder, prompts = false, note, label, on
           {talk && <div className="composer-talk">{chipsShown && <TaskChips box={draft} />}<TalkPill chat={talk === true ? undefined : talk} /></div>}
           {/* how much of the agents' accounts is used, session and week (UsagePanel on a click) */}
           {!wordsOnly && <UsageGauge ref={gauge} open={view === 'usage'} onClick={() => (view === 'usage' ? closePanel() : setView('usage'))} />}
-          {/* at the end: talk instead of typing while the box is empty; once there's
-              something to send, send takes its place. Talking comes back later, with Voice in
-              Settings › General (only with ?everything): till then send is there all along, dim till
-              there's something to send */}
-          {everything && !wordsOnly && !stopping && <button type="button" className={`composer-button composer-voice${ready || attached.length ? ' is-away' : ''}`} aria-label="Talk to Oby" aria-hidden={ready || attached.length > 0 || undefined} tabIndex={ready || attached.length ? -1 : 0}>
-            <svg width="18" height="16" viewBox="0 0 20 18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-              <path d="M2 7v4M6 4v10M10 1v16M14 4v10M18 7v4" />
-            </svg>
-          </button>}
+          {/* at the end, send, there all along and dim till there's something to send: the window has
+              no voice button (AGENTS.md, "Sangam's design leads"), as his boards show (board 2) */}
           {/* Oby answering, and nothing to send: Stop where send is (the owner's ask of 2026-11-10);
               words typed meanwhile are sent as ever, and wait their turn */}
           {stopping ? (
@@ -664,7 +657,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
               <Square size={13} strokeWidth={1.8} fill="currentColor" />
             </button>
           ) : (
-            <button type="submit" className={`composer-button composer-send${everything && !wordsOnly ? '' : ' is-always'}${ready || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!ready && !attached.length} aria-hidden={(everything && !wordsOnly && !ready && !attached.length) || undefined}>
+            <button type="submit" className={`composer-button composer-send is-always${ready || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!ready && !attached.length}>
               <ArrowUp size={18} strokeWidth={1.8} />
             </button>
           )}

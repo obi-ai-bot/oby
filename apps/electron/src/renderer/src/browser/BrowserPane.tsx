@@ -3,7 +3,7 @@
 // (17); and the globe at the title bar's end that shows and hides it (1). Built from the lab's
 // screens (tools/obid-spec/lab-ui/browser/src/scenes.tsx), whose conversations were the boards'
 // own: here the conversation is the app's.
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CodeXml, Globe, Server, X } from 'lucide-react';
 import { Control, FileRow, Nav, Panel, Pointer, Tabs, View, YouPointer } from './Panel';
 import { Globe17, Logo, agentName } from './pieces';
@@ -11,20 +11,24 @@ import { useBrowser } from './store';
 import { demoPage } from './demo';
 import { shown } from './live';
 import { useLive } from '../live';
+import { registerCommands, shortcutLabel } from '../shortcuts';
 import './browser.css';
 
 /** The globe at the bar's end: closed, it says how many tabs and who's using one; open, it hides the panel. */
 export function BrowserGlobe() {
   const { offered, ui, setUi, s } = useBrowser();
   const [tip, setTip] = useState(false);
-  if (!offered || !s.settings.agentsUseBrowser) return null;
+  const globe = offered && s.settings.agentsUseBrowser;
+  // ⇧⌘B (SHORTCUTS-12): the globe's own click, while there's a globe
+  useEffect(() => (globe ? registerCommands({ 'browser.show': () => setUi({ open: true }) }) : undefined), [globe]);
+  if (!globe) return null;
   if (ui.open) return <Globe17 on label="Hide the browser" onClick={() => setUi({ open: false, full: false })} />;
   const using = s.tabs.find((t) => t.holder === 'agent' && t.action);
   const who = using?.owner.kind === 'agent' ? `, ${agentName(using.owner.agent)} is using one` : '';
   return (
     <div style={{ position: 'relative' }} onMouseEnter={() => setTip(true)} onMouseLeave={() => setTip(false)}>
       <Globe17 label={`Show the browser, ${s.tabs.length} ${s.tabs.length === 1 ? 'tab' : 'tabs'}${who}`} badge={!!using} onClick={() => setUi({ open: true })} />
-      {tip && <span className="tip-under" role="tooltip">Show the browser<kbd>⇧⌘B</kbd></span>}
+      {tip && <span className="tip-under" role="tooltip">Show the browser<kbd>{shortcutLabel('browser.show')}</kbd></span>}
     </div>
   );
 }

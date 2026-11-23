@@ -7,7 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Chat } from '../chats';
 import { liveBridge } from './liveBridge';
 
-// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 11) and the side
+// The window's keyboard shortcuts (docs/contracts/shortcuts.md, SHORTCUTS-1 to 12) and the side
 // panel's search over every conversation (docs/contracts/chat-first.md, SEARCH-1 to 3): the real
 // Home, Sidebar and find bar, with main's bridge (window.app.obid.call) stood in for as obid.
 
@@ -98,7 +98,7 @@ async function showSidebar(o: ReturnType<typeof obid>, chats: Chat[], props: Rec
 const talk = (id: string, title: string, more: Partial<Chat> = {}): Chat => ({ id, title, said: [], at: 5, ...more });
 
 // Home and the side panel render slowly on a busy Mac: each test may take minutes
-describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘,, ⌘B, ⌘1 to ⌘9, ⌘⇧[ ⌘⇧] and Esc', { timeout: 180_000 }, () => {
+describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘,, ⌘B, ⇧⌘B, ⌘1 to ⌘9, ⌘⇧[ ⌘⇧] and Esc', { timeout: 180_000 }, () => {
   it('shortcuts_1_2_4_new_conversation_search_and_settings_from_anywhere', async () => {
     const o = obid();
     await showHome(o, [convo('c1', 'Release notes')]);
@@ -197,7 +197,7 @@ describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘,, ⌘B, ⌘1 to �
     for (const b of KEYBINDINGS) expect(all.find((i) => i.label === b.label)?.accelerator, b.command).toBe(accelerator(b.command));
     expect(all.filter((i) => i.accelerator).map((i) => [i.label, i.accelerator])).toEqual([
       ['Settings…', 'CmdOrCtrl+,'], ['New Conversation', 'CmdOrCtrl+N'], ['Search', 'CmdOrCtrl+K'], ['Find in Conversation', 'CmdOrCtrl+F'],
-      ['Toggle Sidebar', 'CmdOrCtrl+B'], ['Previous Conversation', 'CmdOrCtrl+Shift+['], ['Next Conversation', 'CmdOrCtrl+Shift+]'],
+      ['Toggle Sidebar', 'CmdOrCtrl+B'], ['Show the Browser', 'CmdOrCtrl+Shift+B'], ['Previous Conversation', 'CmdOrCtrl+Shift+['], ['Next Conversation', 'CmdOrCtrl+Shift+]'],
       ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`Conversation ${n}`, `CmdOrCtrl+${n}`]),
     ]);
     // and the side panel's: New conversation's key, Settings' and Search's tips
@@ -221,8 +221,45 @@ describe('SHORTCUTS: the window answers ⌘N, ⌘K, ⌘F, ⌘,, ⌘B, ⌘1 to �
     await until(() => expect(shown()).toBe(!before));
     await press('b');
     await until(() => expect(shown()).toBe(before));
-    // ⇧⌘B isn't it
+    // ⇧⌘B isn't it (the browser's, SHORTCUTS-12, and no browser here)
     expect((await press('b', { shiftKey: true })).defaultPrevented).toBe(false);
+    expect(shown()).toBe(before);
+  });
+
+  it('shortcuts_12_cmd_shift_b_shows_the_browser_as_the_globe_does', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const { BrowserProvider } = await import('../browser/store');
+    const { BrowserGlobe, BrowserPane } = await import('../browser/BrowserPane');
+    const { run } = await import('../shortcuts');
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    const panel = () => host.querySelector('aside.br');
+    const globe = () => host.querySelector('[data-browser="globe"]');
+    // no browser offered, no globe: ⇧⌘B is left alone (the check below can fail)
+    await act(async () => root!.render(<BrowserProvider board={null}><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>));
+    expect(globe()).toBeNull();
+    expect((await press('B', { shiftKey: true })).defaultPrevented).toBe(false);
+    // board 1: the panel closed, the globe saying Show the browser and its key
+    await act(async () => root!.render(<BrowserProvider board={1}><BrowserGlobe /><BrowserPane width={640} /></BrowserProvider>));
+    expect(panel()).toBeNull();
+    await act(async () => { globe()!.parentElement!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })); });
+    expect(host.querySelector('[role="tooltip"]')?.textContent).toBe('Show the browser⇧⌘B');
+    // ⌘B without ⇧ isn't it
+    expect((await press('b')).defaultPrevented).toBe(false);
+    expect(panel()).toBeNull();
+    // ⇧⌘B opens it, as the globe's click does, and the page takes the key
+    const e = await press('B', { shiftKey: true });
+    expect(e.defaultPrevented).toBe(true);
+    expect(panel()).not.toBeNull();
+    expect(globe()?.getAttribute('aria-label')).toBe('Hide the browser');
+    // pressed again it stays shown; hidden by the lit globe, the menu bar's item shows it again
+    await press('B', { shiftKey: true });
+    expect(panel()).not.toBeNull();
+    await act(async () => (globe() as HTMLButtonElement).click());
+    expect(panel()).toBeNull();
+    await act(async () => { expect(run('browser.show')).toBe(true); });
+    expect(panel()).not.toBeNull();
   });
 
   it('shortcuts_8_cmd_1_to_9_open_the_conversations_in_the_panels_order', async () => {
