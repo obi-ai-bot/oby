@@ -5,12 +5,13 @@ import { keptKey, replaceKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
-import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
+import { boolean, flag, safeInteger, string, type Decoder } from '../shared/decode';
 import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPolicy, rebindOffer, setAdmin, signinStatus, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
-import { EMAIL, inviteMail, sphereAddress, type Joined } from '../shared/invite';
+import { EMAIL, INVITE_USES, inviteDraft, sphereAddress, tooMany, type Joined } from '../shared/invite';
+import { scanText, type Scan } from './help';
 
 // Joining an Obysphere by a private link (docs/contracts/obysphere.md). The owner key, Ed25519, is
 // made here in main and kept as the device key is (device.ts): it never leaves main, and the page
@@ -40,9 +41,33 @@ function onWindow(f: (w: BrowserWindow) => void) {
 
 const NOT_A_LINK = 'It isn’t an Obysphere invite link.';
 
-// The invite links main made this run (SPHEREAPP-10's Make a link, Invite member's click): Send
-// invitation mails only one of these
-const madeLinks = new Set<string>();
+// The invite links main made this run, by invitation id (SPHEREAPP-10's Make a link, Invite member's
+// click): Invite member reuses one the Sphere still lists as open, and Send invitation mails only one
+// of these. Every list the Sphere answers drops those it no longer lists (withdrawn, expired, used
+// up); a refusal or a Sphere that couldn't be read drops nothing. Leaving drops them all.
+const madeLinks = new Map<string, string>();
+const openOf = (a: InvitesAnswer, id: string) => a.invitations.find((i) => i.id === id && i.uses < i.maxUses);
+function pruned(a: InvitesAnswer): InvitesAnswer {
+  if (!a.refused) for (const id of [...madeLinks.keys()]) if (!openOf(a, id)) madeLinks.delete(id);
+  return a;
+}
+const NOT_MADE = 'That link isn’t one Oby made. Close this and invite again.';
+
+// The draft, through the secret scan before it leaves for the mail app (AGENTS.md, "Non-negotiable"):
+// main's own scan, gitleaks as obid runs it with its canary (help.ts, scanText), over the whole draft:
+// the recipients, the subject and the body with the link (shared/invite.ts, inviteDraft). A finding,
+// or a scan that can't run, opens nothing. gitleaks flags the invitation's own secret in the link
+// (generic-api-key, `secret=…`), so today every draft is refused: whether that one value is left out
+// of the scan is the owner's to decide, not this code's. null once the draft opened, or why not
+export async function draftInvite(emails: string[], link: string, left: number, the: { scan?: (text: string) => Promise<Scan>; open?: (url: string) => Promise<void> } = {}): Promise<string | null> {
+  const draft = inviteDraft(emails, link, left);
+  if (!draft?.url.startsWith('mailto:')) return NOT_MADE;
+  const scan = await (the.scan ?? scanText)(draft.scanned);
+  if (scan.kind === 'found') return `The secret scan found what looks like a secret (${scan.rules.join(', ')}), so no draft was opened.`;
+  if (scan.kind === 'couldNotRun') return `The secret scan couldn’t run (${scan.why}), so no draft was opened.`;
+  try { await (the.open ?? ((u: string) => shell.openExternal(u)))(draft.url); return null; } catch { return 'Oby couldn’t open your mail app. Copy the link and send it yourself.'; }
+}
+
 // Send invitation's addresses: 1 to 50, each an email address
 const addresses: Decoder<string[]> = (v) =>
   Array.isArray(v) && v.length >= 1 && v.length <= 50 && v.every((e) => typeof e === 'string' && EMAIL.test(e)) ? { value: v as string[] } : undefined;
@@ -174,6 +199,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
     try {
       const { membership, untold, sphere } = await leave(obid, ownerKey);
+      madeLinks.clear();
       if (untold) void said(w, `You left ${sphere}, but it couldn’t be told.`, `${untold}. It still lists your Oby until its admin removes it.`);
       return untold ?? (membership.state === 'none' ? null : 'obid is still in it.');
     } catch (err) {
@@ -201,27 +227,45 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // new member can hand off tasks, and says whether it now does.
   const notInvited = (why: string): InvitesAnswer => ({ invitations: [], link: null, refused: 'failed', why });
   const invited = (f: () => Promise<InvitesAnswer>) => f().catch((e) => notInvited(e instanceof Error ? e.message : String(e)));
-  ipc(trusted).handle('sphere-invitations', [], () => invited(() => listInvitations(obid, ownerKey)), null);
-  ipc(trusted).handle('sphere-invite', [], async () => {
+  ipc(trusted).handle('sphere-invitations', [], () => invited(async () => pruned(await listInvitations(obid, ownerKey))), null);
+  // `reuse` (Invite member's, SPHEREAPP-21): a link main made this run that the Sphere still lists as
+  // open hands that one back, with the joins it has left; only when none is, a new one is made.
+  ipc(trusted).handle('sphere-invite', [flag], async (_e, reuse) => {
     if (!takeInput()) return notInvited('Making a link takes your own click.');
     return invited(async () => {
-      const made = await makeInvitation(obid, ownerKey);
+      if (reuse && madeLinks.size) {
+        const now = pruned(await listInvitations(obid, ownerKey));
+        if (now.refused) return now;
+        for (const [id, link] of madeLinks) {
+          const i = openOf(now, id);
+          if (i) return { ...now, link, left: i.maxUses - i.uses };
+        }
+      }
+      const made = pruned(await makeInvitation(obid, ownerKey));
       if (!made.link) return made;
-      madeLinks.add(made.link);
+      const id = parseInvite(made.link)?.id;
+      if (id) madeLinks.set(id, made.link);
       const rules = await readPolicy(obid, ownerKey);
       const now = rules.policy && withStarterRule(rules.policy.rules) ? await addStarterRule(obid, ownerKey, rules.policy.version) : rules;
-      return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules) };
+      return { ...made, handoffs: !!now.policy && !withStarterRule(now.policy.rules), left: INVITE_USES };
     });
   }, null);
   // Send invitation, Invite member's (SPHEREAPP-22): the Obysphere sends no mail, so a new email in
   // the person's own mail app, to the addresses typed, carrying a link main made this run (never one
-  // the page wrote), only right after a click or key main saw itself, one each, and only as mailto:.
-  // Nothing leaves until the person sends it there. Answers null once the draft opened, or why not.
+  // the page wrote) that the Sphere still lists as open, to no more people than it has joins left,
+  // only right after a click or key main saw itself, one each, only as mailto:, and only once the
+  // secret scan read the draft clean. Answers null once the draft opened, or why not.
   ipc(trusted).handle('sphere-invite-mail', [addresses, string], async (_e, emails, link): Promise<string | null> => {
     if (!takeInput()) return 'Sending an invitation takes your own click.';
-    const url = madeLinks.has(link) ? inviteMail(emails, link) : null;
-    if (!url?.startsWith('mailto:')) return 'That link isn’t one Oby made. Close this and invite again.';
-    try { await shell.openExternal(url); return null; } catch { return 'Oby couldn’t open your mail app. Copy the link and send it yourself.'; }
+    const id = [...madeLinks].find(([, l]) => l === link)?.[0];
+    if (!id) return NOT_MADE;
+    const now = pruned(await invited(() => listInvitations(obid, ownerKey)));
+    if (now.refused) return now.why ?? 'Oby couldn’t reach your Obysphere.';
+    const i = openOf(now, id);
+    if (!i) return 'That link is used up, withdrawn or out of date. Close this and invite again.';
+    const left = i.maxUses - i.uses;
+    if (emails.length > left) return tooMany(left);
+    return draftInvite(emails, link, left);
   }, 'Not this app’s page.');
   // Getting back in with a sign-in (SPHEREAPP-12): what the Obysphere at an address offers (no
   // click: two public reads); then, right after a click main saw and the owner's Sign in in main's
@@ -273,5 +317,5 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
     takeInput() ? setAdmin(obid, ownerKey, owner, on).catch((e) => ({ admins: null, refused: 'failed' as const, why: e instanceof Error ? e.message : String(e) }))
       : { admins: null, refused: 'failed', why: 'Changing who’s admin takes your own click.' }), null);
   ipc(trusted).handle('sphere-withdraw', [string], async (_e, id) => (
-    takeInput() ? invited(() => withdrawInvitation(obid, ownerKey, id)) : notInvited('Withdrawing a link takes your own click.')), null);
+    takeInput() ? invited(async () => pruned(await withdrawInvitation(obid, ownerKey, id))) : notInvited('Withdrawing a link takes your own click.')), null);
 }

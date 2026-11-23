@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +23,10 @@ const the = vi.hoisted(() => ({
   policies: 0,
   joins: 0,
   invites: 0,
+  // the invitations the Sphere lists as open (SPHEREAPP-21, 22), and the secret scan's verdict on what it read
+  listed: [] as { id: string; uses: number; maxUses: number; expiresAt: string }[],
+  scans: [] as string[],
+  scan: { kind: 'clean' } as { kind: 'clean' } | { kind: 'found'; rules: string[] } | { kind: 'couldNotRun'; why: string },
 }));
 // the link main makes (SPHEREAPP-22 mails only one of these)
 const { MADE_LINK } = vi.hoisted(() => ({ MADE_LINK: `oby://join/sphere.example.com#sphere=demo&by=wellington&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'A'.repeat(43)}` }));
@@ -82,6 +87,11 @@ vi.mock('electron-updater', () => ({
   default: { autoUpdater: { setFeedURL() {}, on() {}, isUpdateSupported: () => true, checkForUpdates: async () => { the.checks++; return null; } } },
 }));
 // obid's calls, counted; the event stream never answers
+// main's secret scan (help.ts, scanText): what it read, and the verdict the test sets
+vi.mock('../../../main/help', async (original) => ({
+  ...await original<typeof import('../../../main/help')>(),
+  scanText: async (text: string) => { the.scans.push(text); return the.scan; },
+}));
 vi.mock('../../../main/obid', async (original) => ({
   ...await original<typeof import('../../../main/obid')>(),
   obid: async (...a: unknown[]) => { the.calls.push(a); return { status: 200, text: '[]' }; },
@@ -94,8 +104,8 @@ vi.mock('../../../shared/sphere', async (original) => ({
   // links read as main reads them; nothing joins
   parseInvite: (await original<typeof import('../../../shared/sphere')>()).parseInvite,
   NotThisKey: class extends Error {}, join: async () => { the.joins++; }, joinWarning() {}, leave() {}, keepMembership: async () => {},
-  readPolicy: async () => { the.policies++; }, addStarterRule: async () => { the.policies++; },
-  listInvitations: async () => ({ invitations: [], link: null, refused: null, why: null }),
+  readPolicy: async () => { the.policies++; return { sphere: 'demo', policy: null, admin: true, refused: null, why: null }; }, addStarterRule: async () => { the.policies++; },
+  listInvitations: async () => ({ invitations: the.listed, link: null, refused: null, why: null }),
   makeInvitation: async () => { the.invites++; return { invitations: [], link: MADE_LINK, refused: null, why: null }; },
   withdrawInvitation: async () => { the.invites++; return { invitations: [], link: null, refused: null, why: null }; },
   setAdmin: async () => { the.invites++; return { admins: ['dana', 'wellington'], refused: null, why: null }; },
@@ -535,27 +545,61 @@ describe('SPHEREAPP-10', () => {
   });
 });
 
+describe('SPHEREAPP-21', () => {
+  const ID = '9187a87a-3126-424c-8861-8811bba1a5ec';
+  it('sphereapp_21_invite_member_reuses_a_link_main_made_that_the_sphere_lists_open_else_makes_one', async () => {
+    while (takeInput()) { /* other tests' */ }
+    the.listed = [];
+    const before = the.invites;
+    // still a click each, reused or made
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ why: 'Making a link takes your own click.', link: null });
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK, left: 5 });
+    expect(the.invites).toBe(before + 1);
+    // the Sphere lists it open, two used: the same link, three left, nothing made
+    the.listed = [{ id: ID, uses: 2, maxUses: 5, expiresAt: '2026-12-07T00:00:00Z' }];
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK, left: 3 });
+    expect(the.invites).toBe(before + 1);
+    // used up, withdrawn or out of date (the Sphere no longer lists it): a new one
+    the.listed = [];
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK, left: 5 });
+    expect(the.invites).toBe(before + 2);
+    // Settings' Make a link always makes one
+    the.listed = [{ id: ID, uses: 0, maxUses: 5, expiresAt: '2026-12-07T00:00:00Z' }];
+    input();
+    await call('sphere-invite', own());
+    expect(the.invites).toBe(before + 3);
+  });
+});
+
 describe('SPHEREAPP-22', () => {
+  const ID = '9187a87a-3126-424c-8861-8811bba1a5ec';
+  const listed = (uses: number) => [{ id: ID, uses, maxUses: 5, expiresAt: '2026-12-07T00:00:00Z' }];
+  const mail = (emails: unknown, link: unknown) => call('sphere-invite-mail', own(), emails, link);
+  const bodyOf = (link: string, left: number) => 'wellington invited you to demo’s Obysphere on Oby.\r\n\r\nTo join, open this link on a Mac with Oby, or paste it into Oby’s Settings › Obysphere:\r\n'
+    + `${link}\r\n\r\nIt lets ${left} people join before it runs out.`;
+
   it('sphereapp_22_main_opens_a_mailto_draft_only_right_after_a_click_and_only_for_a_link_it_made', async () => {
     while (takeInput()) { /* other tests' */ }
+    the.scan = { kind: 'clean' };
     const before = the.opened.length;
-    const mail = (emails: unknown, link: unknown) => call('sphere-invite-mail', own(), emails, link);
     // no click main saw: nothing opens
     expect(await mail(['ana@example.com'], MADE_LINK)).toBe('Sending an invitation takes your own click.');
     // a link main never made, even on a click
-    const other = MADE_LINK.replace('sphere=demo', 'sphere=other');
     input();
-    expect(await mail(['ana@example.com'], other)).toBe('That link isn’t one Oby made. Close this and invite again.');
+    expect(await mail(['ana@example.com'], MADE_LINK.replace('sphere=demo', 'sphere=other'))).toBe('That link isn’t one Oby made. Close this and invite again.');
     expect(the.opened.length).toBe(before);
-    // main makes the link on a click, then mails it on another: one mailto, to the addresses, with the link
+    // main makes the link on a click; the Sphere lists it open; one more click mails it
+    the.listed = [];
     input();
-    await call('sphere-invite', own());
+    await call('sphere-invite', own(), true);
+    the.listed = listed(0);
     input();
     expect(await mail(['ana@example.com', 'ben+oby@example.com'], MADE_LINK)).toBeNull();
-    const body = 'wellington invited you to demo’s Obysphere on Oby.\r\n\r\nTo join, open this link on a Mac with Oby, or paste it into Oby’s Settings › Obysphere:\r\n'
-      + `${MADE_LINK}\r\n\r\nIt lets 5 people in, for 14 days.`;
     expect(the.opened.slice(before)).toEqual([
-      `mailto:ana@example.com,ben%2Boby@example.com?subject=${encodeURIComponent('Join demo’s Obysphere')}&body=${encodeURIComponent(body)}`,
+      `mailto:ana@example.com,ben%2Boby@example.com?subject=${encodeURIComponent('Join demo’s Obysphere')}&body=${encodeURIComponent(bodyOf(MADE_LINK, 5))}`,
     ]);
     // one click, one draft
     expect(await mail(['ana@example.com'], MADE_LINK)).toBe('Sending an invitation takes your own click.');
@@ -571,6 +615,65 @@ describe('SPHEREAPP-22', () => {
     input();
     expect(await mail(['ana@example.com'], MADE_LINK)).toBe('Oby couldn’t open your mail app. Copy the link and send it yourself.');
     the.refuseOpen = false;
+  });
+
+  it('sphereapp_22_the_secret_scan_reads_the_draft_first_and_a_finding_or_a_scan_that_cant_run_opens_nothing', async () => {
+    while (takeInput()) { /* other tests' */ }
+    the.listed = listed(0);
+    the.scans.length = 0;
+    const before = the.opened.length;
+    the.scan = { kind: 'found', rules: ['github-pat'] };
+    input();
+    expect(await mail(['ana@example.com'], MADE_LINK)).toBe('The secret scan found what looks like a secret (github-pat), so no draft was opened.');
+    // it read the whole draft: the recipients, the subject and the body, the link and its secret in it
+    expect(the.scans).toEqual([['ana@example.com', 'Join demo’s Obysphere', ...bodyOf(MADE_LINK, 5).split('\r\n')].join('\n')]);
+    the.scan = { kind: 'couldNotRun', why: 'gitleaks isn’t installed' };
+    input();
+    expect(await mail(['ana@example.com'], MADE_LINK)).toBe('The secret scan couldn’t run (gitleaks isn’t installed), so no draft was opened.');
+    expect(the.opened.length).toBe(before);
+    the.scan = { kind: 'clean' };
+  });
+
+  it('sphereapp_22_no_more_addresses_than_the_link_has_joins_left_and_never_a_dead_link', async () => {
+    while (takeInput()) { /* other tests' */ }
+    the.scan = { kind: 'clean' };
+    const before = the.opened.length;
+    // three of five used: two left
+    the.listed = listed(3);
+    input();
+    expect(await mail(['a@example.com', 'b@example.com', 'c@example.com'], MADE_LINK)).toBe('This link lets 2 people in. Take some out to send it.');
+    input();
+    expect(await mail(['a@example.com', 'b@example.com'], MADE_LINK)).toBeNull();
+    expect(decodeURIComponent(the.opened.at(-1)!)).toContain('It lets 2 people join before it runs out.');
+    // used up, withdrawn or out of date: the Sphere no longer lists it, and main forgets it for good
+    the.listed = [];
+    input();
+    expect(await mail(['a@example.com'], MADE_LINK)).toBe('That link is used up, withdrawn or out of date. Close this and invite again.');
+    the.listed = listed(0);
+    input();
+    expect(await mail(['a@example.com'], MADE_LINK)).toBe('That link isn’t one Oby made. Close this and invite again.');
+    expect(the.opened.length).toBe(before + 1);
+  });
+
+  // gitleaks itself, where it's installed: it flags the invitation's own secret in every real draft
+  // (generic-api-key), so today no draft opens; nothing here leaves that value out of the scan (the
+  // owner's to decide). A token typed among the addresses is refused too.
+  const gitleaks = ['/opt/homebrew/bin/gitleaks', '/usr/local/bin/gitleaks', '/usr/bin/gitleaks'].find((p) => existsSync(p));
+  it.skipIf(!gitleaks)('sphereapp_22: with the real gitleaks, the invitation’s own secret is flagged and no draft opens', async () => {
+    const help = await vi.importActual<typeof import('../../../main/help')>('../../../main/help');
+    const { draftInvite } = await import('../../../main/sphere');
+    const { inviteDraft } = await import('../../../shared/invite');
+    const scan = (text: string) => help.scanText(text, help.runGitleaks(gitleaks!));
+    const secret = randomBytes(32).toString('base64url');
+    const link = MADE_LINK.replace('A'.repeat(43), secret);
+    const opened: string[] = [];
+    const open = async (u: string) => { opened.push(u); };
+    expect(await scan(inviteDraft(['ana@example.com'], link)!.scanned)).toEqual({ kind: 'found', rules: ['generic-api-key'] });
+    expect(await draftInvite(['ana@example.com'], link, 5, { scan, open })).toBe('The secret scan found what looks like a secret (generic-api-key), so no draft was opened.');
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const token = `ghp_${[...randomBytes(36)].map((b) => letters[b % letters.length]).join('')}`;
+    expect(await draftInvite([`${token}@example.com`], link, 5, { scan, open })).toMatch(/^The secret scan found what looks like a secret \(.*github-pat.*\), so no draft was opened\.$/);
+    expect(opened).toEqual([]);
   });
 });
 

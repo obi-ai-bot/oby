@@ -4,6 +4,7 @@ import { Check, Copy, X } from 'lucide-react';
 import { useScrollThumb } from './useScrollThumb';
 import EmailField, { useEmails } from './EmailField';
 import type { InvitesAnswer } from '../../shared/sphere';
+import { INVITE_USES, tooMany } from '../../shared/invite';
 
 // Inviting people into an Obysphere by email (EmailField), then Send
 // invitation. Under it, the other way in: a link to pass on yourself, copied
@@ -41,7 +42,7 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
   const live = !!made;
   const [mock] = useState(() => `${sphere.url}/join/${code()}`);
   // the live link, or why there's none (in words), or neither while main makes it
-  const [real, setReal] = useState<{ link: string | null; why: string | null }>({ link: null, why: null });
+  const [real, setReal] = useState<{ link: string | null; why: string | null; left: number }>({ link: null, why: null, left: INVITE_USES });
   const link = live ? real.link : mock;
   const [problem, setProblem] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -52,13 +53,16 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
   const input = useRef<HTMLInputElement>(null);
   // the app's scroll thumb, for the card (in a short window)
   const card = useScrollThumb<HTMLFormElement>();
-  const ready = list.all.length > 0 && list.valid && !sent && !!link && !sending;
+  // the live link lets so many people in: more addresses than that, and the rest couldn't join (SPHEREAPP-22)
+  const over = live && !!real.link && list.all.length > real.left;
+  const ready = list.all.length > 0 && list.valid && !sent && !!link && !sending && !over;
   useEffect(() => {
     if (!made) return;
     let gone = false;
     const take = (a: InvitesAnswer | null) => {
       if (gone) return;
-      setReal(!a ? { link: null, why: UNREACHED } : a.link && !a.refused ? { link: a.link, why: null } : { link: null, why: a.why ?? UNREACHED });
+      setReal(!a ? { link: null, why: UNREACHED, left: 0 } : a.link && !a.refused ? { link: a.link, why: null, left: a.left ?? INVITE_USES }
+        : { link: null, why: a.why ?? UNREACHED, left: 0 });
     };
     made.then(take, () => take(null));
     return () => { gone = true; };
@@ -107,6 +111,7 @@ export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
         </header>
         <label className="modal-label" htmlFor="invite-emails">Email</label>
         <EmailField list={list} id="invite-emails" inputRef={input} onEnterEmpty={send} />
+        {over && <p className="sphere-note">{tooMany(real.left)}</p>}
 
         <span className="modal-label invite-link-label">Invite link</span>
         <div className="invite-link">

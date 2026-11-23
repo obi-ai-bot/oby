@@ -191,7 +191,7 @@ contextBridge.exposeInMainWorld('app', {
   // the admin's invite links (main/sphere.ts, SPHEREAPP-10): the list; a new one and a withdrawal,
   // right after the owner's click. Main holds the owner token; the page gets the link and the list
   sphereInvitations: () => ipcRenderer.invoke('sphere-invitations') as Promise<InvitesAnswer | null>,
-  sphereInvite: () => ipcRenderer.invoke('sphere-invite') as Promise<InvitesAnswer | null>,
+  sphereInvite: (reuse?: boolean) => ipcRenderer.invoke('sphere-invite', reuse === true) as Promise<InvitesAnswer | null>,
   sphereWithdraw: (id: string) => ipcRenderer.invoke('sphere-withdraw', id) as Promise<InvitesAnswer | null>,
   sphereInviteMail: (emails: string[], link: string) => ipcRenderer.invoke('sphere-invite-mail', emails, link) as Promise<string | null>,
   // Make admin (on) or Remove admin, right after the owner's click (main/sphere.ts, SPHEREAPP-11)

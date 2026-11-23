@@ -258,8 +258,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const liveAdmin = useLiveAdmin(section === 'obysphere' && !!sphere.live && !sphere.revoked, sphere.id);
   const inviteMember = () => {
     if (sphere.sample) return tourDid('invite');
-    // on the live one, main makes the link right after this click it saw (SPHEREAPP-10's gating)
-    setMaking(sphere.live ? (window.app?.sphereInvite?.() ?? Promise.resolve(null)) : undefined);
+    // on the live one, right after this click it saw (SPHEREAPP-10's gating), main hands back a link it
+    // made this run that's still open, or makes one (SPHEREAPP-21)
+    setMaking(sphere.live ? (window.app?.sphereInvite?.(true) ?? Promise.resolve(null)) : undefined);
     setInviting(true);
   };
   const archiveAfter = getArchiveAfter();

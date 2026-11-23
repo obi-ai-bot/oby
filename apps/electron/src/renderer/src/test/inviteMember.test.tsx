@@ -124,8 +124,10 @@ describe('SPHEREAPP-21', () => {
     await open('demo');
     await act(async () => { await vi.waitFor(() => expect(button('Invite member')).toBeDefined()); });
     await click('Invite member');
-    // on that click, one link, through sphere-invite (SPHEREAPP-10's gating, in main)
+    // on that click, one link, through sphere-invite (SPHEREAPP-10's gating, in main), one main made
+    // this run reused while the Sphere still lists it open
     expect(app.sphereInvite).toHaveBeenCalledTimes(1);
+    expect(app.sphereInvite).toHaveBeenCalledWith(true);
     await settle();
     expect(modal()!.querySelector('#invite-title')!.textContent).toBe('Invite to demo’s Obysphere');
     expect(modal()!.querySelector('.invite-url')!.textContent).toBe(MADE);
@@ -174,6 +176,40 @@ describe('SPHEREAPP-22', () => {
     expect(modal()!.querySelector('[role="alert"]')!.textContent).toBe('Sending an invitation takes your own click.');
     expect(send().textContent).toBe('Send invitation');
     expect(send().disabled).toBe(false);
+  });
+});
+
+describe('SPHEREAPP-22: no more addresses than the link lets in', () => {
+  async function opened(left?: number) {
+    const app = bridge({ made: { invitations: [], link: MADE, refused: null, why: null, left } });
+    await show('', app);
+    await open('demo');
+    await act(async () => { await vi.waitFor(() => expect(button('Invite member')).toBeDefined()); });
+    await click('Invite member');
+    await settle();
+    return app;
+  }
+  const note = () => modal()!.querySelector('.sphere-note')?.textContent;
+
+  it('sphereapp_22_more_addresses_than_the_link_has_joins_left_say_so_and_send_waits', async () => {
+    const app = await opened(2);
+    await typeEmails('a@example.com b@example.com');
+    expect(note()).toBeUndefined();
+    expect(send().disabled).toBe(false);
+    await typeEmails('a@example.com b@example.com c@example.com');
+    expect(note()).toBe('This link lets 2 people in. Take some out to send it.');
+    expect(send().disabled).toBe(true);
+    await act(async () => send().click());
+    expect(app.sphereInviteMail).not.toHaveBeenCalled();
+  });
+
+  it('sphereapp_22: a new link lets 5 in', async () => {
+    await opened();
+    await typeEmails('a@example.com b@example.com c@example.com d@example.com e@example.com');
+    expect(note()).toBeUndefined();
+    await typeEmails('a@example.com b@example.com c@example.com d@example.com e@example.com f@example.com');
+    expect(note()).toBe('This link lets 5 people in. Take some out to send it.');
+    expect(send().disabled).toBe(true);
   });
 });
 

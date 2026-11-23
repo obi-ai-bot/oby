@@ -78,22 +78,31 @@ export type Joined = { kind: 'joined'; name: string } | { kind: 'cancelled' } | 
 export const INVITE_USES = 5;
 export const INVITE_DAYS = 14;
 
+// More addresses than a link has joins left: the rest couldn't join, so the draft waits (SPHEREAPP-22)
+export const tooMany = (left: number) => `This link lets ${left} ${left === 1 ? 'person' : 'people'} in. Take some out to send it.`;
+
 // An email address as the invite modal's field takes one (EmailField), and as main mails to
 export const EMAIL = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
 // Send invitation on the live Obysphere (SPHEREAPP-22): the Obysphere sends no mail, so a new email in
-// the person's own mail app, to the addresses typed, carrying the link main made. Only a mailto: URL,
-// or null for an address or a link that isn't one. Nothing leaves until the person sends it there.
-export function inviteMail(emails: string[], link: string): string | null {
+// the person's own mail app, to the addresses typed, carrying the link main made (`left`: the joins it
+// has left). `url` is only a
+// mailto: URL. `scanned` is the same draft as text for the secret scan, whole: the recipients, the
+// subject and the body, the link and its secret in it. null for an address or a link that isn't one.
+export function inviteDraft(emails: string[], link: string, left = INVITE_USES): { url: string; scanned: string } | null {
   const i = parseInvite(link);
   if (!i || !link.startsWith('oby://') || !emails.length || !emails.every((e) => EMAIL.test(e))) return null;
+  const subject = `Join ${i.name}’s Obysphere`;
   const body = [
     `${i.by ? `${i.by} invited you` : 'You’re invited'} to ${i.name}’s Obysphere on Oby.`, '',
     'To join, open this link on a Mac with Oby, or paste it into Oby’s Settings › Obysphere:', link, '',
-    `It lets ${INVITE_USES} people in, for ${INVITE_DAYS} days.`,
+    `It lets ${left} ${left === 1 ? 'person' : 'people'} join before it runs out.`,
   ].join('\r\n');
   const to = emails.map((e) => encodeURIComponent(e).replace(/%40/g, '@')).join(',');
-  return `mailto:${to}?subject=${encodeURIComponent(`Join ${i.name}’s Obysphere`)}&body=${encodeURIComponent(body)}`;
+  return {
+    url: `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+    scanned: [emails.join(', '), subject, body.replace(/\r\n/g, '\n')].join('\n'),
+  };
 }
 
 // An Obysphere's address, for getting back in with a sign-in (SPHEREAPP-12): an invite link, used
