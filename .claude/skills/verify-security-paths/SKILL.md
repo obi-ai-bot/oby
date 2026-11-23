@@ -23,7 +23,7 @@ The tests in `merge::tests` build every path from the `SECURITY_PATHS` array its
 - **Kind:** an entry ending in `/` is a folder, one with a `/` inside a whole path, any other a name, as `SECURITY_PATHS`'s doc states.
 - **Letter case:** every upper/lower assignment of an entry's ASCII letters when it has at most 10; for a longer one, every one-letter flip, every two-letter flip, all upper and all lower.
 - **Prefixes:** `""`, `a/`, `src/a/`, `x/y/z/` (depth 0 to 3) and `.github/`. Names and folders are caught at every prefix, whole paths only at `""`.
-- **Folder suffixes:** `f` and `a/b/f`, caught. No suffix (the folder's own name) is its own test, a finding (section 5).
+- **Folder suffixes:** `f` and `a/b/f`, caught. No suffix (the folder's own name) is caught too, in its own test `merging_15_a_folder_entrys_own_name_is_caught`.
 - **Near misses**, caught by no entry, at every prefix:
   - one character added before (`xAGENTS.md`, `x.claude/f`, `xdocs/build-and-run.md`);
   - one added after (`AGENTS.mdx`, `AGENTS.md.bak`, `docs/build-and-run.mdx`; a folder's before its `/`, `.claudex/f`);
@@ -48,14 +48,13 @@ APFS takes `ſ` (U+017F) for `s` and `K` (U+212A) for `k`: one name. So each ent
 
 ## 5. Open findings
 
-- **V01-39** (`factory/queue/tasks/V01-39.md`): a folder entry's own name (`.claude`, `a/.github/workflows`) is not caught. Test: `merging_15_a_folder_entrys_own_name_is_caught`, `#[ignore = "finding V01-39"]`.
 - **V01-40** (`factory/queue/tasks/V01-40.md`): an entry in Unicode case folding (`AGENTſ.md`, `.buildKite/f`) is not caught. Test: `merging_15_a_unicode_case_fold_of_an_entry_is_caught`, `#[ignore = "finding V01-40"]`.
 
 When a fix lands, its `#[ignore]` line goes and this section loses its line.
 
 ## 6. Sync
 
-SYNC: 50e200d5e88413a764e6366f775e76cb3b11bda1
+SYNC: 09197a491f54cc132e0146e708f07bb7a3e74924
 
 ## 7. The one command
 
@@ -78,4 +77,4 @@ A new `SECURITY_PATHS` entry is covered by itself: the tests read the array, and
 On a committed tree, apply one break to `caught_by` in merge.rs, run the command in section 7, see `merging_15_every_entry_is_caught_in_any_case_and_depth` fail, then `git restore core/crates/obid/src/merge.rs` and see it green. Never commit a break.
 
 1. `let lower = path.to_ascii_lowercase();` → `let lower = path.to_owned();` (letter case counts).
-2. `.any(|(i, b)| b == b'/' && lower[i + 1..].starts_with(&p))),` → `.any(|(i, b)| i == 0 && b == b'/' && lower[i + 1..].starts_with(&p))),` (folders only at the root).
+2. `.any(|(i, b)| b == b'/' && on(&lower[i + 1..]))` → `.any(|(i, b)| i == 0 && b == b'/' && on(&lower[i + 1..]))` (folders only at the root).

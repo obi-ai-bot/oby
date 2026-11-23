@@ -1372,8 +1372,8 @@ pub fn security_paths(changed: &[String], command: Option<&str>) -> Vec<String> 
 }
 
 /// Whether the changed `path` is on the [`SECURITY_PATHS`] `entry`, in any letter case: the same
-/// file name, inside the entry's folder at any depth, or the same whole path from the root, as the
-/// entry is anchored (docs/proofs.md: its proof is still to come).
+/// file name, inside the entry's folder or the folder's own name at any depth, or the same whole
+/// path from the root, as the entry is anchored (docs/proofs.md: its proof is still to come).
 pub(crate) fn caught_by(path: &str, entry: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let p = entry.to_ascii_lowercase();
@@ -1389,13 +1389,16 @@ pub(crate) fn caught_by(path: &str, entry: &str) -> bool {
             let start = lower.bytes().rposition(|b| b == b'/').map_or(0, |i| i + 1);
             lower[start..] == p
         },
-        // At the root, or after any `/`: `/` and the entry, with nothing built.
-        folder: anchor == Anchor::Folder
-            && (lower.starts_with(&p)
+        // At the root, or after any `/`: inside the entry's folder, or the folder's own name (the
+        // entry without its `/`), with nothing built.
+        folder: anchor == Anchor::Folder && {
+            let on = |s: &str| s.starts_with(&p) || s == &p[..p.len() - 1];
+            on(&lower)
                 || lower
                     .bytes()
                     .enumerate()
-                    .any(|(i, b)| b == b'/' && lower[i + 1..].starts_with(&p))),
+                    .any(|(i, b)| b == b'/' && on(&lower[i + 1..]))
+        },
         whole: anchor == Anchor::Whole && lower == p,
     };
     fits(anchor, fit)
@@ -3705,7 +3708,6 @@ mod tests {
     /// MERGING-15: a folder entry's own name (`.claude`, which git prints for a symlink or a file
     /// of that name) is caught in any letter case and at any depth.
     #[test]
-    #[ignore = "finding V01-39"]
     fn merging_15_a_folder_entrys_own_name_is_caught() {
         for case in security_path_cases()
             .iter()
