@@ -276,15 +276,16 @@ function chatsOf(s: Live): Chat[] {
 }
 
 // The decision a job's card shows, of its open inbox items: what its agent waits on first (a
-// permission or a question, its agent's own among them), else the oldest (an offer like a check to
-// keep). The card holds one.
+// permission or a question, its agent's own among them), then obid's Confirm of something asked
+// for it (Delete's, TASKS-11: never hidden behind a card from before, such as a failed one), else
+// the oldest (an offer like a check to keep). The card holds one.
 const WAITS = new Set(['permission', 'agentQuestion']);
 const itemOf = (s: Live, job: string) => {
   const items = s.inbox.filter((i) => i.job === job);
   // Oby's own question comes last: it's about the task, and hides no decision it may lead to (a
   // Confirm to go past a safety limit)
   const others = items.filter((i) => i.kind !== 'question');
-  return others.find((i) => WAITS.has(i.kind)) ?? others[0] ?? items[0];
+  return others.find((i) => WAITS.has(i.kind)) ?? others.find((i) => i.kind === 'confirm') ?? others[0] ?? items[0];
 };
 // Oby's own question: its escalation takes an answer that settles it. A stalled task's
 // (supervisor-) takes none: only obid can settle it, so it means something only while it's stopped.
