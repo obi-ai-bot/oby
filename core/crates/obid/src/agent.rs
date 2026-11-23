@@ -522,50 +522,80 @@ pub enum ObysTools {
 /// and `mcp_reconnect`; its hooks' lines that come meanwhile are dropped, as a waiting one's are
 /// (CONVERSATION-AGENT-25), and any other line is kept for the turn and ends the look.
 pub async fn obys_tools(conn: &mut Conn) -> ObysTools {
-    let held = |status: &Value| {
-        let servers = status["mcpServers"].as_array().cloned().unwrap_or_default();
-        let oby = servers.into_iter().find(|s| s["name"] == OBY_SERVER)?;
-        // One still connecting gets its tools as it connects.
-        (oby["status"] != "pending").then(|| oby["tools"].as_array().map_or(0, Vec::len))
-    };
-    let status = control(
-        conn,
-        "oby-status",
-        json!({"subtype": "mcp_status"}),
-        SERVERS_WAIT,
-    )
-    .await;
-    if status.as_ref().and_then(held) != Some(0) {
-        return ObysTools::Left;
-    }
-    let again = json!({"subtype": "mcp_reconnect", "serverName": OBY_SERVER});
-    if control(conn, "oby-again", again, RECONNECT_WAIT)
-        .await
-        .is_none()
-    {
-        return ObysTools::Again(0);
-    }
-    let status = control(
-        conn,
-        "oby-again-status",
-        json!({"subtype": "mcp_status"}),
-        SERVERS_WAIT,
-    );
-    ObysTools::Again(status.await.as_ref().and_then(held).unwrap_or(0))
+    obys_tools_within(conn, SERVERS_WAIT, RECONNECT_WAIT).await
 }
 
-/// Claude Code's answer to the control request `request`, sent as `id`, within `wait`; none when
-/// it refused it, said nothing in time, or wrote a line of something else first.
-async fn control(conn: &mut Conn, id: &str, request: Value, wait: Duration) -> Option<Value> {
+/// [`obys_tools`], `servers` the most each look at the servers takes (one still connecting looked at
+/// again until it has settled) and `again` the most the connection again takes.
+async fn obys_tools_within(conn: &mut Conn, servers: Duration, again: Duration) -> ObysTools {
+    if settled(conn, servers).await != Some(0) {
+        return ObysTools::Left;
+    }
+    let reconnect = json!({"subtype": "mcp_reconnect", "serverName": OBY_SERVER});
+    if control(conn, reconnect, again).await.is_none() {
+        return ObysTools::Again(0);
+    }
+    ObysTools::Again(settled(conn, servers).await.unwrap_or(0))
+}
+
+/// How often Claude Code is asked again about Oby's server while it's still connecting.
+const PENDING_LOOK: Duration = Duration::from_millis(250);
+
+/// How many tools Oby's server gave the Claude Code on `conn` once it's no longer connecting
+/// (`pending`: its `tools/list` may still fail), asked again every [`PENDING_LOOK`] within `wait`;
+/// none when it has no Oby server, didn't answer, was still connecting when `wait` ran out, or named
+/// no tools at all (a newer Claude Code's status without them: not known to have lost them).
+async fn settled(conn: &mut Conn, wait: Duration) -> Option<usize> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let status = control(conn, json!({"subtype": "mcp_status"}), left).await?;
+        let servers = status["mcpServers"].as_array().cloned().unwrap_or_default();
+        let oby = servers.into_iter().find(|s| s["name"] == OBY_SERVER)?;
+        if oby["status"] != "pending" {
+            // Only a list, empty, says the tools went: a status without one says nothing.
+            let tools = oby["tools"].as_array().map(Vec::len);
+            if tools.is_none() {
+                static SAID: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "Claude Code's MCP status names no tools for Oby's server: obid can't tell whether it holds them, so it connects nothing again"
+                    );
+                }
+            }
+            return tools;
+        }
+        if tokio::time::Instant::now() + PENDING_LOOK >= deadline {
+            return None;
+        }
+        tokio::time::sleep(PENDING_LOOK).await;
+    }
+}
+
+/// Claude Code's answer to the control request `request`, within `wait`; none when it refused it,
+/// said nothing in time, or wrote a line of something else first. Each request has an id of its
+/// own (`oby-<n>`), so an answer to an earlier one that ran out of time, come late, is dropped,
+/// never taken for this one's.
+async fn control(conn: &mut Conn, request: Value, wait: Duration) -> Option<Value> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = format!(
+        "oby-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     conn.send(&json!({"type": "control_request", "request_id": id, "request": request}))
         .await;
     let answer = async {
         loop {
             let line = conn.next().await.ok()?;
             let response = &line["response"];
-            if line["type"] == "control_response" && response["request_id"] == id {
-                return (response["subtype"] == "success")
-                    .then(|| response.get("response").cloned().unwrap_or(Value::Null));
+            if line["type"] == "control_response" {
+                if response["request_id"] == id.as_str() {
+                    return (response["subtype"] == "success")
+                        .then(|| response.get("response").cloned().unwrap_or(Value::Null));
+                }
+                // An earlier request's, come late.
+                continue;
             }
             let hook = line["type"] == "system"
                 && matches!(
@@ -1223,6 +1253,110 @@ mod tests {
         .await
         .unwrap();
         (turn, began.elapsed(), root)
+    }
+
+    /// A Claude Code that answers obid's control requests as `script` (sh, after the functions
+    /// `id <line>`, the request's id, and `answer <id> <json>`), run in its own folder.
+    async fn scripted(name: &str, script: &str) -> (Conn, PathBuf, watch::Sender<process::Signal>) {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("claude");
+        let functions = r#"id() { printf '%s' "$1" | sed -E 's/.*"request_id":"([^"]*)".*/\1/'; }
+answer() { printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":%s}}\n' "$1" "$2"; }"#;
+        std::fs::write(&bin, format!("#!/bin/sh\n{functions}\n{script}\n")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = Launch {
+            own_sandbox: false,
+            group: None,
+            argv: vec![bin.into_os_string()],
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: root.clone(),
+            stderr: root.join("agent.log"),
+        };
+        let (signal, stop) = watch::channel(process::Signal::Run);
+        let conn = Conn::spawn(&launch, Duration::from_secs(60), stop, false)
+            .await
+            .unwrap();
+        (conn, root, signal)
+    }
+
+    const NO_TOOLS: &str = r#"'{"mcpServers":[{"name":"oby","status":"connected","tools":[]}]}'"#;
+    const ITS_TOOLS: &str =
+        r#"'{"mcpServers":[{"name":"oby","status":"connected","tools":[{"name":"oby_jobs"}]}]}'"#;
+
+    /// CONVERSATION-AGENT-53: a Claude Code still connecting to Oby's server (`pending`) is asked
+    /// again until it has settled; settled with no tools (its listing failed), it connects again.
+    #[tokio::test]
+    async fn conversation_agent_53_a_pending_server_that_settles_with_no_tools_is_connected_again()
+    {
+        let pending = r#"'{"mcpServers":[{"name":"oby","status":"pending"}]}'"#;
+        let script = format!(
+            "read l; answer \"$(id \"$l\")\" {pending}\n\
+             read l; answer \"$(id \"$l\")\" {NO_TOOLS}\n\
+             read l; printf '%s\\n' \"$l\" >> asked; answer \"$(id \"$l\")\" null\n\
+             read l; answer \"$(id \"$l\")\" {ITS_TOOLS}\n\
+             read l"
+        );
+        let (mut conn, root, _signal) = scripted("agent-53-pending", &script).await;
+        let found =
+            obys_tools_within(&mut conn, Duration::from_secs(10), Duration::from_secs(10)).await;
+        assert_eq!(found, ObysTools::Again(1));
+        let asked = std::fs::read_to_string(root.join("asked")).unwrap_or_default();
+        assert!(asked.contains(r#""subtype":"mcp_reconnect""#), "{asked}");
+        assert!(asked.contains(r#""serverName":"oby""#), "{asked}");
+        conn.finish_within(Duration::ZERO).await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CONVERSATION-AGENT-53: a status that names no tools for Oby's server (a field a Claude Code
+    /// left out) isn't taken for tools lost: nothing connects again.
+    #[tokio::test]
+    async fn conversation_agent_53_a_status_without_a_tools_list_connects_nothing_again() {
+        let unnamed = r#"'{"mcpServers":[{"name":"oby","status":"connected"}]}'"#;
+        let script = format!(
+            "read l; answer \"$(id \"$l\")\" {unnamed}\n\
+             while read l; do printf '%s\\n' \"$l\" >> asked; answer \"$(id \"$l\")\" {NO_TOOLS}; done"
+        );
+        let (mut conn, root, _signal) = scripted("agent-53-unnamed", &script).await;
+        let found =
+            obys_tools_within(&mut conn, Duration::from_secs(10), Duration::from_secs(10)).await;
+        assert_eq!(found, ObysTools::Left);
+        assert!(
+            !root.join("asked").exists(),
+            "it connected again on no list"
+        );
+        conn.finish_within(Duration::ZERO).await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CONVERSATION-AGENT-53: an answer to an earlier look that ran out of time, come late, is never
+    /// taken for the next look's: the next look sees the tools it holds now, and connects nothing.
+    #[tokio::test]
+    async fn conversation_agent_53_a_late_answer_to_an_earlier_check_is_not_taken() {
+        let script = format!(
+            "read a\nread b\n\
+             answer \"$(id \"$a\")\" {NO_TOOLS}\n\
+             answer \"$(id \"$b\")\" {ITS_TOOLS}\n\
+             while read l; do printf '%s\\n' \"$l\" >> asked; answer \"$(id \"$l\")\" {NO_TOOLS}; done"
+        );
+        let (mut conn, root, _signal) = scripted("agent-53-late", &script).await;
+        let short = Duration::from_millis(300);
+        assert_eq!(
+            obys_tools_within(&mut conn, short, short).await,
+            ObysTools::Left,
+            "no answer in time: the turn goes as it is"
+        );
+        let found =
+            obys_tools_within(&mut conn, Duration::from_secs(10), Duration::from_secs(10)).await;
+        assert_eq!(found, ObysTools::Left);
+        assert!(
+            !root.join("asked").exists(),
+            "it connected again on a late answer"
+        );
+        conn.finish_within(Duration::ZERO).await;
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A content block obid doesn't parse (a server tool's use and result, an MCP tool's) reaches
