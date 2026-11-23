@@ -126,7 +126,11 @@ async function loadLive() {
   const live = liveSphere(membership, members, names());
   // whom `@` in the message box asks (ASK-37): none out of a Sphere, or revoked
   setAskable(live && !live.revoked ? askableOf(members) : []);
-  set([...spheres.filter((s) => !s.live), ...(live ? [live] : [])]);
+  // its picture, from main (SPHEREAPP-15): the one shown stays when main couldn't read it
+  const read = live && !live.revoked ? await window.app!.spherePicture?.().catch(() => null) : null;
+  const shown = spheres.find((s) => s.live && s.slug === live?.slug)?.image;
+  const image = read?.refused === null && read.sphere === live?.slug ? read.image ?? undefined : shown;
+  set([...spheres.filter((s) => !s.live), ...(live ? [image ? { ...live, image } : live] : [])]);
   // whether it has a room, and what came since: with this minute's look at the directory, below
   if (live && !live.revoked) { if (ROOM_SHOWS) void lookAtRoom(live.slug); } else { forgetRoom(); forgetThreads(); }
 }

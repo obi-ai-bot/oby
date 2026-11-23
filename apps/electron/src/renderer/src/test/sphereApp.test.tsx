@@ -493,3 +493,79 @@ describe('SPHEREAPP-13: Add sign-in in Settings › Obysphere', () => {
     expect(host.textContent).toContain('You’re the only admin of demo. Make someone else an admin so it never hangs on one Mac. Add sign-in too, so you can get back in yourself.');
   });
 });
+
+describe('SPHEREAPP-15 to 17: the live Obysphere’s picture', () => {
+  const JOINED = { state: 'joined', url: 'https://sphere.example.com', sphere: 'demo', owner: 'wellington', obiId: 'obi-1' };
+  const LOGO = 'data:image/png;base64,iVBORw0KGgo=';
+  const picture = (image: string | null, sphere = 'demo') => ({ sphere, sha256: null, image, refused: null, why: null });
+  const policyOf = (admins: string[]) => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin: admins.includes('wellington'), refused: null, why: null, admins, me: 'wellington' });
+  const sphereSetPicture = vi.fn();
+  const sphereRemovePicture = vi.fn();
+  async function settings(admins: string[], image: string | null) {
+    answers['GET /v1/obid/sphere'] = JOINED;
+    answers['GET /v1/obid/sphere/members'] = [{ owner: 'dana' }];
+    sphereSetPicture.mockReset(); sphereRemovePicture.mockReset();
+    Object.assign((window as unknown as { app: Record<string, unknown> }).app, {
+      onSphere: () => () => {}, spherePolicy: vi.fn(async () => policyOf(admins)),
+      sphereInvitations: vi.fn(async () => ({ invitations: [], link: null, refused: null, why: null })),
+      spherePicture: vi.fn(async () => picture(image)), sphereSetPicture, sphereRemovePicture,
+    });
+    await import('../spheres');
+    await settle();
+    const { default: SphereSettings } = await import('../SphereSettings');
+    await act(async () => root.render(<SphereSettings id="live:demo" leaving={false} onClose={() => {}} onGone={() => {}} />));
+    await settle();
+  }
+  const avatar = () => host.querySelector<HTMLImageElement>('.set-avatar img');
+
+  it('sphereapp_15_the_live_obysphere_shows_the_picture_main_read_and_none_without_one', async () => {
+    await settings(['wellington'], LOGO);
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    vi.resetModules();
+    await settings(['wellington'], null);
+    expect(avatar()).toBeNull();
+    expect(host.querySelector('.set-avatar .sphere-tile-letter')!.textContent).toBe('D');
+  });
+
+  it('sphereapp_16_an_admin_changes_the_picture_through_main_and_a_refusal_says_why', async () => {
+    await settings(['wellington'], null);
+    expect(host.textContent).toContain('A square image, at least 128px');
+    // main picks the file and sends it; the page shows what main answers
+    sphereSetPicture.mockResolvedValueOnce(picture(LOGO));
+    await act(async () => (host.querySelector('[aria-label="Change avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(sphereSetPicture).toHaveBeenCalledTimes(1);
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+    expect(host.querySelector('.set-saved')).toBeTruthy();
+    // main's dialog cancelled: nothing changes
+    sphereSetPicture.mockResolvedValueOnce(null);
+    await act(async () => (host.querySelector('[aria-label="Change avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+    // a refusal: its words, and the picture it had stays
+    sphereSetPicture.mockResolvedValueOnce({ sphere: 'demo', sha256: null, image: null, refused: 'failed', why: 'The Obysphere didn’t take that picture. Try another image.' });
+    await act(async () => (host.querySelector('[aria-label="Change avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(host.querySelector('[role="alert"]')!.textContent).toBe('The Obysphere didn’t take that picture. Try another image.');
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+  });
+
+  it('sphereapp_17_the_badge_removes_it_and_a_member_who_isn_t_admin_sees_it_read_only', async () => {
+    await settings(['wellington'], LOGO);
+    sphereRemovePicture.mockResolvedValueOnce(picture(null));
+    await act(async () => (host.querySelector('[aria-label="Remove avatar"]') as HTMLButtonElement).click());
+    await settle();
+    expect(sphereRemovePicture).toHaveBeenCalledTimes(1);
+    expect(avatar()).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    vi.resetModules();
+    await settings(['dana'], LOGO);
+    expect(avatar()!.getAttribute('src')).toBe(LOGO);
+    expect(host.querySelector('[aria-label="Change avatar"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Remove avatar"]')).toBeNull();
+    expect(host.textContent).not.toContain('A square image, at least 128px');
+  });
+});

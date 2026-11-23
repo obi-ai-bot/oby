@@ -101,6 +101,9 @@ vi.mock('../../../shared/sphere', async (original) => ({
   getBackIn: async () => { the.invites++; return { kind: 'back', owner: 'wellington', admin: false }; },
   signinStatus: async () => ({ providers: [{ id: 'google', name: 'Google' }], linked: false }),
   addSignin: async () => { the.invites++; return { linked: true }; },
+  readPicture: async () => ({ sphere: 'demo', sha256: null, image: null, refused: null, why: null }),
+  setPicture: async (_c: unknown, _k: unknown, png: Uint8Array | null) => { the.invites++; return { sphere: 'demo', sha256: null, image: png ? 'data:image/png;base64,' : null, refused: null, why: null }; },
+  centreSquare: () => ({ x: 0, y: 0, width: 1, height: 1 }), fitPicture: () => null,
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -150,6 +153,9 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'sphere-rebind': { args: ['sphere.example.com/demo', 'google'], refusal: 'Not this app’s page.' },
   'sphere-signin-status': { args: [], refusal: null },
   'sphere-add-signin': { args: ['google'], refusal: 'Not this app’s page.' },
+  'sphere-picture': { args: [], refusal: null },
+  'sphere-set-picture': { args: [], refusal: null },
+  'sphere-remove-picture': { args: [], refusal: null },
   'sphere-join': { args: [LINK], refusal: { kind: 'failed', name: '', why: 'Not this app’s page.' } },
   'sphere-handoff': { args: [{ to: 'dana', goal: 'Add a name option', repo: 'acme/app', base: 'main' }], refusal: 'Not this app’s page.' },
   'render-error': { args: ['TypeError', 'm', ''], refusal: undefined },
@@ -543,6 +549,35 @@ describe('SPHEREAPP-11', () => {
     expect(the.invites).toBe(before + 1);
     // the page's owner and choice are read as a string and a boolean, nothing else
     expect(await call('sphere-admin', own(), 'dana', 'yes')).toBeNull();
+  });
+});
+
+describe('SPHEREAPP-16 and 17', () => {
+  it('sphereapp_16_the_picture_changes_only_right_after_a_click_main_saw_from_a_file_main_s_own_dialog_picks', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = { dialogs: the.dialogs, invites: the.invites };
+    // reading it takes no click
+    expect(await call('sphere-picture', own())).toMatchObject({ refused: null, image: null });
+    // no click: words, no dialog, nothing sent
+    expect(await call('sphere-set-picture', own())).toMatchObject({ refused: 'failed', why: 'Changing the picture takes your own click.' });
+    expect(await call('sphere-remove-picture', own())).toMatchObject({ refused: 'failed', why: 'Removing the picture takes your own click.' });
+    expect(the.dialogs).toBe(before.dialogs);
+    expect(the.invites).toBe(before.invites);
+    // a click: main's own open dialog; its Cancel sends nothing
+    input();
+    expect(await call('sphere-set-picture', own())).toBeNull();
+    expect(the.dialogs).toBe(before.dialogs + 1);
+    expect(the.invites).toBe(before.invites);
+  });
+
+  it('sphereapp_17_the_picture_is_removed_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.invites;
+    input();
+    expect(await call('sphere-remove-picture', own())).toMatchObject({ refused: null, image: null });
+    expect(the.invites).toBe(before + 1);
+    expect(await call('sphere-remove-picture', own())).toMatchObject({ why: 'Removing the picture takes your own click.' });
+    expect(the.invites).toBe(before + 1);
   });
 });
 

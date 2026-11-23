@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { FILL_IN, WITHIN_MS, owners } from '../shared/words';
-import type { AdminsAnswer, InvitesAnswer, PolicyAnswer, SigninStatus } from '../shared/sphere';
+import type { AdminsAnswer, InvitesAnswer, PictureAnswer, PolicyAnswer, SigninStatus } from '../shared/sphere';
 import type { HandoffAsk } from '../shared/handoff';
 import type { Joined } from '../shared/invite';
 import type { LoadWhat } from '../shared/decode';
@@ -202,6 +202,11 @@ contextBridge.exposeInMainWorld('app', {
   // Add sign-in (main/sphere.ts, SPHEREAPP-13): whether one is linked, and linking one right after the owner's click
   sphereSigninStatus: () => ipcRenderer.invoke('sphere-signin-status') as Promise<SigninStatus | null>,
   sphereAddSignin: (provider: string) => ipcRenderer.invoke('sphere-add-signin', provider) as Promise<string | null>,
+  // its picture (main/sphere.ts, SPHEREAPP-15 to 17): read as a data: URL; set from a file main's own
+  // dialog picks, and removed, right after the owner's click
+  spherePicture: () => ipcRenderer.invoke('sphere-picture') as Promise<PictureAnswer | null>,
+  sphereSetPicture: () => ipcRenderer.invoke('sphere-set-picture') as Promise<PictureAnswer | null>,
+  sphereRemovePicture: () => ipcRenderer.invoke('sphere-remove-picture') as Promise<PictureAnswer | null>,
   // an agent using the Mac (main/macPill.ts, BROWSERAPP-19): the window tells main who has it (null:
   // nobody), and hears its Stop; the pill's own window hears who has it and sends its Stop
   mac: {

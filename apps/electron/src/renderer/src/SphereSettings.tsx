@@ -12,7 +12,7 @@ import { plainId } from './peers';
 import { acceptPin, canVerify, decisionWords, decisions as readDecisions, forgetDecision, members as readMembers, pins as readPins, toCompare } from './sphereTrust';
 import { withStarterRule } from '../../shared/policy';
 import { PIN_VERIFY } from '../../shared/words';
-import type { Policy, PolicyAnswer } from '../../shared/sphere';
+import type { PictureAnswer, Policy, PolicyAnswer } from '../../shared/sphere';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
@@ -94,6 +94,19 @@ function Settings({ sphere }: { sphere: Sphere }) {
   const live = useSphereAdmins(!!sphere.live && !sphere.revoked);
   const signin = useSigninStatus(!!sphere.live && !sphere.revoked && isSoleAdmin(live.admins, live.me));
   const roleOf = (owner: string) => (live.admins?.includes(owner) ? 'Admin' : 'Member');
+  // A live Obysphere's picture is its admins' to change, as the Sphere says (SPHEREAPP-16): main picks
+  // the file in its own dialog and sends it; the badge's × asks main to take it away
+  const mayPicture = sphere.live ? live.amAdmin && !sphere.revoked : admin;
+  const [pictureProblem, setPictureProblem] = useState<string | null>(null);
+  const livePicture = (change?: () => Promise<PictureAnswer | null>) => void change?.().then((a) => {
+    if (!a) return;
+    if (a.refused) return setPictureProblem(a.why);
+    setPictureProblem(null);
+    updateSphere(sphere.id, { image: a.image ?? undefined });
+    setSaved('avatar');
+  }, () => setPictureProblem('Oby couldn’t reach your Obysphere.'));
+  const pick = () => (sphere.live ? livePicture(window.app?.sphereSetPicture) : file.current?.click());
+  const unpick = () => (sphere.live ? livePicture(window.app?.sphereRemovePicture) : setImage(undefined));
 
   return <>
     {sphere.revoked && <Revoked sphere={sphere} />}
@@ -102,13 +115,13 @@ function Settings({ sphere }: { sphere: Sphere }) {
       footer={admin ? 'Its URL is in every invite link: a new one stops the old links working.' : 'Only its admins can change these.'}
     >
       {/* the avatar, at the right: a click picks a new image; its badge takes the image out */}
-      <Row label="Avatar" about={savedNote('avatar') ?? (admin ? 'A square image, at least 128px' : undefined)}>
-        {admin ? (
+      <Row label="Avatar" about={pictureProblem ? <span className="set-problem" role="alert">{pictureProblem}</span> : savedNote('avatar') ?? (mayPicture ? 'A square image, at least 128px' : undefined)}>
+        {mayPicture ? (
           <span className="sphere-logo set-avatar">
-            <button className="sphere-logo-pick" aria-label="Change avatar" title="Change avatar" onClick={() => file.current?.click()}>
+            <button className="sphere-logo-pick" aria-label="Change avatar" title="Change avatar" onClick={pick}>
               <SphereTile name={sphere.name} brand={sphere.brand} image={sphere.image} />
             </button>
-            {sphere.image && <button className="sphere-logo-badge" aria-label="Remove avatar" title="Remove avatar" onClick={() => setImage(undefined)}><X size={12} strokeWidth={2} /></button>}
+            {sphere.image && <button className="sphere-logo-badge" aria-label="Remove avatar" title="Remove avatar" onClick={unpick}><X size={12} strokeWidth={2} /></button>}
             <input
               ref={file}
               type="file"

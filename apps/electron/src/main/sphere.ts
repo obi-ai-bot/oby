@@ -1,12 +1,13 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron';
 import { createServer } from 'node:http';
+import { statSync } from 'node:fs';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { keptKey, replaceKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
 import { takeInput } from './words';
 import { boolean, safeInteger, string, type Decoder } from '../shared/decode';
-import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPolicy, rebindOffer, setAdmin, signinStatus, withdrawInvitation, type AdminsAnswer, type InvitesAnswer, type PolicyAnswer } from '../shared/sphere';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, addSignin, getBackIn, listInvitations, makeInvitation, parseInvite, readPicture, readPolicy, rebindOffer, setAdmin, setPicture, signinStatus, withdrawInvitation, centreSquare, fitPicture, type AdminsAnswer, type InvitesAnswer, type PictureAnswer, type PolicyAnswer } from '../shared/sphere';
 import { withStarterRule } from '../shared/policy';
 import { SCRATCH } from '../shared/build';
 import { HANDOFF_OPEN, handoffBody, type HandoffAsk } from '../shared/handoff';
@@ -95,6 +96,18 @@ export function signinListener(): Promise<{ returnTo: string; back: Promise<{ st
       ready({ returnTo: `http://127.0.0.1:${port}${SIGNIN_PATH}`, back, close });
     });
   });
+}
+
+// The owner's image file as the Sphere takes its picture (SPHEREAPP-16): read by main itself, at most
+// 20 MB, a PNG or JPEG; its centre square, 256 px a side, as a PNG under 128 KB (fitPicture). Null
+// for a file that isn't one.
+export function squarePng(file: string): Uint8Array | null {
+  try { if (statSync(file).size > 20 * 1024 * 1024) return null; } catch { return null; }
+  const image = nativeImage.createFromPath(file);
+  if (image.isEmpty()) return null;
+  const { width, height } = image.getSize();
+  const square = image.crop(centreSquare(width, height));
+  return fitPicture((side) => new Uint8Array(square.resize({ width: side, height: side, quality: 'best' }).toPNG()));
 }
 
 export function sphering(trusted: Trusted, show: () => BrowserWindow) {
@@ -256,4 +269,24 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       : { admins: null, refused: 'failed', why: 'Changing who’s admin takes your own click.' }), null);
   ipc(trusted).handle('sphere-withdraw', [string], async (_e, id) => (
     takeInput() ? invited(() => withdrawInvitation(obid, ownerKey, id)) : notInvited('Withdrawing a link takes your own click.')), null);
+
+  // Its picture (SPHEREAPP-15 to 17): read with no click (the last answer kept, so an unchanged one
+  // isn't fetched again), handed to the page as a data: URL; set from a file picked in main's own
+  // dialog, and removed, only right after a click or key main saw itself, one each, with the
+  // owner's admin token. The page sends no bytes: main reads the file the owner picked.
+  let picture: PictureAnswer | null = null;
+  const pictured = (a: PictureAnswer) => { if (a.refused === null) picture = a; return a; };
+  const noPicture = (why: string): PictureAnswer => ({ sphere: null, sha256: null, image: null, refused: 'failed', why });
+  ipc(trusted).handle('sphere-picture', [], async () => pictured(await readPicture(obid, ownerKey, fetch, picture)), null);
+  ipc(trusted).handle('sphere-set-picture', [], async (e): Promise<PictureAnswer | null> => {
+    if (!takeInput()) return noPicture('Changing the picture takes your own click.');
+    const w = BrowserWindow.fromWebContents(e.sender) ?? show();
+    const { canceled, filePaths } = await dialog.showOpenDialog(w, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }] });
+    if (canceled || !filePaths[0]) return null;
+    const png = squarePng(filePaths[0]);
+    if (!png) return noPicture('Oby can’t read that image. Pick a PNG or JPEG.');
+    return pictured(await setPicture(obid, ownerKey, png));
+  }, null);
+  ipc(trusted).handle('sphere-remove-picture', [], async () => (
+    takeInput() ? pictured(await setPicture(obid, ownerKey, null)) : noPicture('Removing the picture takes your own click.')), null);
 }
