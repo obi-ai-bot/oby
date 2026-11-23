@@ -137,7 +137,7 @@ impl Facts {
     }
 
     /// The facts counted in obid's own words, for when no model writes them: "Since you last
-    /// looked: 2 jobs done and 1 item waits in your inbox."
+    /// looked: 2 jobs done and 1 card is waiting for you."
     pub fn count(&self) -> String {
         let n = |count: usize, one: &str, many: &str| match count {
             0 => None,
@@ -159,8 +159,8 @@ impl Facts {
             ),
             n(
                 self.waiting.len(),
-                "item waits in your inbox",
-                "items wait in your inbox",
+                "card is waiting for you",
+                "cards are waiting for you",
             ),
         ]
         .into_iter()
@@ -181,7 +181,7 @@ impl Facts {
             super::briefing::elapsed(away)
         );
         for (heading, lines) in [
-            ("Waiting for the owner in the inbox", &self.waiting),
+            ("Waiting for the owner, in Waiting for you", &self.waiting),
             ("Jobs done", &self.done),
             ("Pull requests merged", &self.merged),
             (
@@ -1181,6 +1181,27 @@ mod tests {
         assert_eq!(presence.away(T0 + 2 * HOUR + 31 * MIN), Some(T0 + 2 * HOUR));
     }
 
+    /// TASKCONV-42: obid's own count names what waits as the app does, cards waiting for the
+    /// owner (Sangam's "Waiting for you"), never an inbox.
+    #[test]
+    fn taskconv_42_the_check_in_counts_cards_waiting_for_you() {
+        let one = [item("i1", "Pick a base branch", T0 + HOUR)];
+        assert_eq!(
+            facts(&[], &one, T0).count(),
+            "Since you last looked: 1 card is waiting for you."
+        );
+        let two = [
+            item("i1", "Pick a base branch", T0 + HOUR),
+            item("i2", "Pick a name", T0 + 2 * HOUR),
+        ];
+        let counted = facts(&[], &two, T0).count();
+        assert_eq!(
+            counted,
+            "Since you last looked: 2 cards are waiting for you."
+        );
+        assert!(!counted.to_lowercase().contains("inbox"));
+    }
+
     #[tokio::test]
     async fn a_quiet_day_posts_nothing_and_an_item_already_waiting_isnt_news() {
         let inbox = [item("i1", "Pick a base branch", T0 - HOUR)];
@@ -1207,7 +1228,7 @@ mod tests {
         assert!(news.happened());
         assert_eq!(
             news.count(),
-            "Since you last looked: 1 job done and 1 item waits in your inbox."
+            "Since you last looked: 1 job done and 1 card is waiting for you."
         );
     }
 

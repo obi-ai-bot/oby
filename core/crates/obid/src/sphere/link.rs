@@ -1764,7 +1764,7 @@ impl Link {
         });
         api(
             StatusCode::UNPROCESSABLE_ENTITY,
-            format!("Adding {repo} waits for your Confirm in the inbox."),
+            format!("Adding {repo} waits for your Confirm in Waiting for you."),
         )
     }
 

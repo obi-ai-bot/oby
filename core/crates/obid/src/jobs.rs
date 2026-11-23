@@ -926,7 +926,7 @@ struct Ask {
 
 /// Why words that aren't the owner's own don't answer the agent's question (#858).
 pub const QUESTION_IS_THE_OWNERS: &str =
-    "It waits for the owner to answer its question, in their inbox.";
+    "It waits for the owner to answer its question, in Waiting for you.";
 /// Why an answer to the agent's question (#858) isn't one.
 const QUESTION_NEEDS_AN_ANSWER: &str = "Answer its question with one of its options or your own words (up to 2,000 characters), or say no.";
 
@@ -2958,7 +2958,7 @@ impl Jobs {
         // A plan goes back only on the owner's own words (#609).
         if waiting.as_ref().is_some_and(Permission::is_plan) && !source.direct() {
             return Some(Err(Refused(
-                "It waits for the owner to approve its plan or send it back, in their inbox."
+                "It waits for the owner to approve its plan or send it back, in Waiting for you."
                     .into(),
             )));
         }
@@ -3347,7 +3347,7 @@ impl Jobs {
             ));
         }
         Refused(format!(
-            "It stopped at its safety limit ({limit}): carrying it on waits for your Confirm in the inbox."
+            "It stopped at its safety limit ({limit}): carrying it on waits for your Confirm in Waiting for you."
         ))
     }
 
