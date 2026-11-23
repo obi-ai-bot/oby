@@ -54,7 +54,9 @@ APPROVE only if all of these hold:
 - Every acceptance criterion in the spec is met, with evidence in build.md that
   you find convincing. Spot-check at least one criterion yourself.
 - The final round's `checks.md` says `GATE: PASS`, every review in it is
-  `VERDICT: PASS`, and no Note in them describes a real problem.
+  `VERDICT: PASS` (pstack's `review-pstack.md`, Codex's `review-codex.md` when
+  there is one, each for that `COMMIT`), and no Note or finding in them
+  describes a real problem.
 - The change stays inside intake's Scope.
 - The change stays in intake's `LANE:` (AGENTS.md, "Dispatcher, not
   harness"): no new obid code does the agent CLI's own work (reads or edits
@@ -72,7 +74,8 @@ ESCALATE if any of them fails, or if the change:
   `.codex/`, `.cursor/`, `.mcp.json`, `.gitleaks.toml`, `.gitleaksignore`,
   `secretspec.toml`, `CODEOWNERS`, `.github/workflows/` or `.github/actions/`.
   Oby's own rule is two reviews by different tools or the owner's click
-  (MERGING-13 to 16), and the factory's reviewers are one tool;
+  (MERGING-13 to 16), and AGENTS.md's "Software factory" leaves these to the
+  owner even once pstack's and Codex's reviews passed;
 - changes the check: `scripts/oby-check.sh`, `scripts/oby-check-test.sh`,
   `tools/oby-check-blok/`, or `jobs_rs_limit`;
 - changes access or identity: who may call an obid route, the lanes and Oby's
