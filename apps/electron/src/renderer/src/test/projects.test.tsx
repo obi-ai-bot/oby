@@ -35,6 +35,7 @@ async function reset() {
   document.body.innerHTML = '';
 }
 afterEach(async () => {
+  vi.useRealTimers();
   await reset();
   localStorage.clear();
 });
@@ -49,15 +50,21 @@ const STATUS = (capabilities: string[]) => ({ runner: { version: '0.2.4', host: 
 const at = '2026-11-16T10:00:00Z';
 const convo = (id: string, title: string, more: object = {}) => ({ id, title, pinned: false, created: at, lastActivity: at, cursor: '', project: null, ...more });
 
-// main's bridge, as obid answers: its projects (a create is listed, a change kept, a delete gone), a
-// conversation's move (its answer, or a refusal), words (taken), its repositories and one helper; the rest 404
+// main's bridge, as obid answers: its projects (a create is listed, a change kept, a delete gone; the
+// first `failing` reads of the list refused, as an obid still starting; one answered only once `hold`
+// is), a conversation's move (its
+// answer, or a refusal), words (taken), its repositories and one helper; the rest 404
 function obid(projects: Project[], conversations: ReturnType<typeof convo>[] = []) {
-  const said = { projects, create: undefined as Answer | undefined, patch: undefined as Answer | undefined, edit: undefined as Answer | undefined, del: undefined as Answer | undefined,
+  const said = { projects, failing: 0, hold: undefined as Promise<void> | undefined, create: undefined as Answer | undefined, patch: undefined as Answer | undefined, edit: undefined as Answer | undefined, del: undefined as Answer | undefined,
     repos: [{ repo: 'o/website-cms', defaultBranch: 'main', listed: true }, { repo: 'o/docs', defaultBranch: 'main', listed: true }] };
   const calls: Call[] = [];
   const call = vi.fn(async (method: string, path: string, body?: unknown) => {
     calls.push({ method, path, body });
-    if (method === 'GET' && path === '/v1/projects') return { status: 200, text: JSON.stringify(said.projects) };
+    if (method === 'GET' && path === '/v1/projects') {
+      if (said.hold) await said.hold;
+      if (said.failing > 0) { said.failing--; return { status: 503, text: '{"error":"obid is starting."}' }; }
+      return { status: 200, text: JSON.stringify(said.projects) };
+    }
     if (method === 'POST' && path === '/v1/projects') {
       if (said.create) return said.create;
       const made = { id: `6f1c2b9e-0000-4000-8000-0000000000f${said.projects.length}`, ...(body as object) } as Project;
@@ -655,5 +662,70 @@ describe('PROJECTS-24', () => {
     expect(chipName(barChip())).toBe('Oby app');
     await click(button('New project')!);
     expect(dialog()!.querySelector('h2')!.textContent).toBe('New project');
+  });
+});
+
+describe('PROJECTS-32', () => {
+  const reads = (o: ReturnType<typeof obid>) => o.calls.filter((c) => c.path === '/v1/projects').length;
+  const later = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it('PROJECTS-32: projects_32_a_failed_first_read_is_tried_again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const o = obid([OBY], [convo('c1', 'In the app', { project: OBY.id }), convo('c2', 'Elsewhere')]);
+    o.said.failing = 2;
+    await showHome(o);
+    expect(reads(o)).toBe(1);
+    // obid not answering it yet: the list as it was (none), with nothing shown as an error
+    expect(listed()).not.toContain('# Oby app');
+    expect(host.textContent).not.toContain('obid is starting.');
+    // tried again 1 s later (refused again), then 2 s after that, with no click
+    await later(999);
+    expect(reads(o)).toBe(1);
+    await later(1);
+    expect(reads(o)).toBe(2);
+    expect(listed()).not.toContain('# Oby app');
+    await later(1999);
+    expect(reads(o)).toBe(2);
+    await later(1);
+    expect(reads(o)).toBe(3);
+    expect(listed()).toEqual(['# Oby app', 'In the app', '# No project', 'Elsewhere', '+ New project']);
+    // once read, not tried again
+    await later(60_000);
+    expect(reads(o)).toBe(3);
+  });
+
+  it('PROJECTS-32: projects_32_one_read_at_a_time', async () => {
+    const o = obid([OBY], [convo('c1', 'In the app', { project: OBY.id })]);
+    let answer!: () => void;
+    o.said.hold = new Promise<void>((done) => { answer = done; });
+    await showHome(o);
+    expect(reads(o)).toBe(1);
+    // the chip's menu opened twice while the first read waits: no read beside it
+    await click(homeChip()!);
+    await click(homeChip()!);
+    await click(homeChip()!);
+    expect(reads(o)).toBe(1);
+    // answered: one read after it, for all that was asked meanwhile
+    o.said.hold = undefined;
+    await act(async () => answer());
+    await until(() => expect(reads(o)).toBe(2));
+    await act(async () => {});
+    expect(reads(o)).toBe(2);
+    expect(listed()).toEqual(['# Oby app', 'In the app', '+ New project']);
+  });
+
+  it('PROJECTS-32: projects_32_a_reconnect_reads_the_list_again', async () => {
+    const o = obid([OBY], [convo('c1', 'In the app', { project: OBY.id }), convo('c2', 'Elsewhere', { project: TETRIX.id })]);
+    await showHome(o);
+    await until(() => expect(listed()).toEqual(['# Oby app', 'In the app', '# No project', 'Elsewhere', '+ New project']));
+    const before = reads(o);
+    // obid restarts under the window (an update's restart once idle): the stream goes, and comes back
+    // to an obid that lists Tetrix too
+    o.said.projects = [OBY, TETRIX];
+    await act(async () => o.bridge.send({ kind: 'connection', connection: 'down', problem: 'obid stopped.' }));
+    expect(reads(o)).toBe(before);
+    await act(async () => o.bridge.sync({ status: STATUS(['folders-v1', 'projects-v1']), conversations: o.conversations }));
+    await until(() => expect(listed()).toEqual(['# Oby app', 'In the app', '# Tetrix', 'Elsewhere', '+ New project']));
+    expect(reads(o)).toBe(before + 1);
   });
 });
