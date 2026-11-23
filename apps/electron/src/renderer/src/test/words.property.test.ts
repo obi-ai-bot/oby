@@ -216,13 +216,17 @@ it('WORDS-1: main signs only the app’s own shapes and chosen folders, whatever
     check(++kase, shape, pick(rng, applicable(shape)));
   }
   // every shape, and every mutation that applies to it, was checked
-  expect(new Set(SHAPES.map((s) => s.name)).size).toBe(SHAPES.length);
-  for (const shape of SHAPES) for (const mutation of applicable(shape)) expect(checked.has(`${shape.name} | ${mutation}`), `${shape.name} | ${mutation}`).toBe(true);
+  const coverage = (wanted: string) => `seed ${SEED}, coverage of cases 1 to ${kase} (replay: OBY_SEED=${SEED}): expected ${wanted}`;
+  expect(new Set(SHAPES.map((s) => s.name)).size, coverage(`${SHAPES.length} shapes, each named once: ${SHAPES.map((s) => s.name).join('; ')}`)).toBe(SHAPES.length);
+  for (const shape of SHAPES) for (const mutation of applicable(shape)) {
+    expect(checked.has(`${shape.name} | ${mutation}`), coverage(`shape "${shape.name}" checked with mutation ${mutation}; checked: ${[...checked].join('; ')}`)).toBe(true);
+  }
 });
 
 // Property 3 (WORDS-16): sequences of the page's messages through ownersWords
 const PATH = '/v1/jobs/j1/messages';
 const AGAIN_MS = 10_000, AGAIN = 2;
+const SEQUENCES = 1_000;
 const AGAIN_GAPS = [0, 1, 500, 1_999, 2_000, 2_001, 5_000, 9_999, 10_000];
 
 it('WORDS-16: a signature with no new input is only the same unanswered keyed request, at most twice in 10 s', async () => {
@@ -232,7 +236,7 @@ it('WORDS-16: a signature with no new input is only the same unanswered keyed re
     // the outcomes the run must reach, so it isn't vacuous
     const reached = { 'signed on an input': 0, 'signed again with no input': 0, 'refused a third time': 0, 'refused past 10 s': 0, 'refused while obid takes no keys': 0 };
     let now = Date.parse('2026-11-22T10:00:00Z');
-    for (let kase = 1; kase <= 1_000; kase++) {
+    for (let kase = 1; kase <= SEQUENCES; kase++) {
       // past every earlier case's kept request, and no earlier input left
       vi.setSystemTime(now += AGAIN_MS);
       while (takeInput()) { /* earlier cases' */ }
@@ -276,7 +280,9 @@ it('WORDS-16: a signature with no new input is only the same unanswered keyed re
         vi.setSystemTime(now += pick(rng, AGAIN_GAPS));
       }
     }
-    for (const [outcome, times] of Object.entries(reached)) expect(times, `seed ${SEED}: ${outcome}`).toBeGreaterThanOrEqual(10);
+    for (const [outcome, times] of Object.entries(reached)) {
+      expect(times, `seed ${SEED}, outcomes of cases 1 to ${SEQUENCES} (replay: OBY_SEED=${SEED}): expected "${outcome}" at least 10 times; reached: ${JSON.stringify(reached)}`).toBeGreaterThanOrEqual(10);
+    }
   } finally {
     vi.useRealTimers();
     the.receipts = false;
