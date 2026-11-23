@@ -266,6 +266,25 @@ class TaskClose(unittest.TestCase):
         self.git(self.wt, "replace", real, harmless)
         self.assert_scan_refused_the_push(self.env, "the secret scan found a secret")
 
+    def test_taskclose_1_the_re_close_push_sends_no_tag_the_scan_never_read(self):
+        # With push.followTags, a push also sends annotated tags into the branch's history; the scan reads only the
+        # commit's diff. A GitHub token made here, so this file holds none.
+        token = "ghp_" + hashlib.sha256(b"taskclose-tag").hexdigest()[:36]
+        self.git(self.wt, "config", "push.followTags", "true")
+        self.write("code.txt", "the change\n")
+        self.write(DONE, EARLIER)
+        self.commit("fix: something")
+        self.dev_queues_the_task_and_the_branch_merges_it()
+        self.push()
+        self.git(self.wt, "tag", "-a", "v-local", "-m", f"token = {token}")
+
+        res = self.advance()
+
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(self.git(self.wt, "ls-remote", "origin", self.branch).split()[0],
+                         self.git(self.wt, "rev-parse", "HEAD").strip())
+        self.assertEqual(self.git(self.wt, "ls-remote", "--tags", "origin"), "")
+
     def test_taskclose_1_a_git_that_cant_write_the_scans_copy_refuses_the_push(self):
         self.write("code.txt", "the change\n")
         self.write(DONE, EARLIER)

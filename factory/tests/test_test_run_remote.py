@@ -801,6 +801,50 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assertIn(b"GIT binary patch", diff)
         self.assertEqual(self.stdin(call), b"%d\n" % len(diff) + diff)
 
+    def assert_sent_only_what_was_scanned(self, token):
+        """The run starts on the VM, whose tree matched, and the token the scan never read is on no ssh call."""
+        code, out, err, _ = self.run_test_run("cargo", "test", "--test", "one")
+        self.assertEqual(code, 0, out + err)
+        self.assertFalse(any(token.encode() in self.stdin(call) for call in self.ssh_calls()), err)
+        self.assertIn("oby-remote-gate: running in builder slot 1", out, err)
+        self.assertEqual(len(self.vm_runs()), 1)
+
+    def test_remote_66_a_textconv_that_decodes_sends_nothing_the_scan_never_read(self):
+        # The file holds the token in rot13, which no rule finds; a textconv that decodes it must not put it in the
+        # payload. Made here, so this file holds no token.
+        pick = random.Random(66).choice
+        token = "ghp" + "_" + "".join(pick(string.ascii_letters + string.digits) for _ in range(36))
+        rot13 = str.maketrans(string.ascii_letters, string.ascii_lowercase[13:] + string.ascii_lowercase[:13]
+                              + string.ascii_uppercase[13:] + string.ascii_uppercase[:13])
+        self.git(self.worktree, "config", "diff.rot.textconv", "tr A-Za-z N-ZA-Mn-za-m <")
+        self.write(".gitattributes", "*.txt diff=rot\n")
+        self.write("core/notes.txt", f'token = "{token}"\n'.translate(rot13))
+        self.assert_sent_only_what_was_scanned(token)
+
+    def test_remote_66_a_replace_ref_sends_nothing_the_scan_never_read(self):
+        # A replace ref shows a blob holding the token in place of the worktree's harmless one. Made here, so this
+        # file holds no token.
+        pick = random.Random(66).choice
+        token = "ghp" + "_" + "".join(pick(string.ascii_letters + string.digits) for _ in range(36))
+        self.write("core/notes.txt", "nothing to see\n")
+        harmless = self.git(self.worktree, "hash-object", "-w", "core/notes.txt")
+        secret = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.worktree, env=self.env,
+                                input=f'token = "{token}"\n', capture_output=True, text=True, check=True).stdout.strip()
+        self.git(self.worktree, "replace", harmless, secret)
+        self.assert_sent_only_what_was_scanned(token)
+
+    def test_remote_66_a_branchs_gitleaksignore_hides_no_secret_from_the_scan(self):
+        # gitleaks reads a .gitleaksignore from the folder it runs in; the branch's own must not silence it. Made
+        # here, so this file holds no token.
+        pick = random.Random(66).choice
+        token = "ghp" + "_" + "".join(pick(string.ascii_letters + string.digits) for _ in range(36))
+        self.write("apps/notes.txt", f'token = "{token}"\n')
+        self.write("core/.gitleaksignore", "".join(f":github-pat:{n}\n" for n in range(1, 50)))
+        self.assert_on_this_mac(self.run_test_run("cargo", "test", "--test", "one"),
+                                "on this Mac: the secret scan found a secret in the changes, or couldn't run "
+                                "(gitleaks exit 1)")
+        self.assertEqual(self.ssh_calls(), [])
+
     def test_remote_66_a_git_that_cant_write_the_scans_copy_keeps_the_run_here(self):
         stand_in = self.dir / "git-bin"
         self.tool(stand_in / "git", STAND_IN_GIT.format(git=shlex.quote(shutil.which("git"))))
