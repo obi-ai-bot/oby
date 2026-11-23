@@ -461,6 +461,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
             get(crate::remote::window::list).post(crate::remote::window::add),
         )
         .route("/v1/computers/link", post(crate::remote::window::read_link))
+        .route("/v1/computers/invite", post(crate::remote::window::invite))
         .route(
             "/v1/computers/current",
             axum::routing::put(crate::remote::window::use_computer),

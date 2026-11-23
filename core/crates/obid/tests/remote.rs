@@ -2020,3 +2020,124 @@ fn computers_27_a_computer_forgotten_mid_handshake_gets_no_first_request() {
     );
     let _ = asking.join();
 }
+
+/// COMPUTERS-29 and 30, on two real obids: Studio's window makes its one link as its owner's
+/// signed act; the Mac reads it (Studio's name, asked there over the pinned route; no code needed)
+/// and adds Studio with the link alone; the same link again adds nothing. A link with a byte of its
+/// secret changed adds nothing; an obid with no direct address says what to set; the window's
+/// link isn't made unsigned. A link and its code still add a computer as before (COMPUTERS-19).
+#[test]
+fn computers_29_and_30_a_mac_is_added_with_one_link_once() {
+    use base64::Engine as _;
+    let studio_folder = Folder::new("remote-one-link-studio");
+    let studio = start(&studio_folder.0, &with_direct(&studio_folder), None);
+    direct_of(&studio);
+    let mac_folder = Folder::new("remote-one-link-mac");
+    let mac = started(&mac_folder);
+
+    // COMPUTERS-30: the owner's act; signed, a one link with what it holds.
+    let unsigned = call(&studio, "POST", "/v1/computers/invite", Some(&json!({})));
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    let made = call_signed(&studio, "POST", "/v1/computers/invite", Some(&json!({})));
+    assert_eq!(made.status, 200, "{}", made.text);
+    let link = made.body["link"].as_str().unwrap().to_owned();
+    assert!(link.starts_with("oby-computer:"), "{link}");
+    assert!(link.len() <= 100, "{} chars: {link}", link.len());
+    assert!(!link.contains("127.0.0.1"), "{link}");
+    assert_eq!(
+        made.body["fingerprint"].as_str().unwrap().len(),
+        39,
+        "{}",
+        made.text
+    );
+    assert_eq!(made.body["reach"][0]["on"], true, "{}", made.text);
+    assert_eq!(
+        made.body["reach"][0]["address"], "127.0.0.1",
+        "{}",
+        made.text
+    );
+    assert!(made.body["expiresAt"].is_string(), "{}", made.text);
+    assert!(made.body.get("code").is_none(), "no code: {}", made.text);
+
+    // COMPUTERS-29: read on the Mac: Studio's own name, asked there; no code needed.
+    let read = call(
+        &mac,
+        "POST",
+        "/v1/computers/link",
+        Some(&json!({"link": link})),
+    );
+    assert_eq!(read.status, 200, "{}", read.text);
+    assert_eq!(read.body["name"], made.body["name"], "{}", read.text);
+    assert_eq!(read.body["fingerprint"], made.body["fingerprint"]);
+    assert_eq!(read.body["needsCode"], false, "{}", read.text);
+
+    // A byte of its secret changed: refused there, nothing added.
+    let body = link.strip_prefix("oby-computer:").unwrap();
+    let mut bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(body)
+        .unwrap();
+    bytes[1] ^= 1;
+    let tampered = format!(
+        "oby-computer:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
+    );
+    let wrong = call_signed(
+        &mac,
+        "POST",
+        "/v1/computers",
+        Some(&json!({"link": tampered})),
+    );
+    assert_eq!(wrong.status, 422, "{}", wrong.text);
+    assert_eq!(wrong.body["reason"], "wrong_code", "{}", wrong.text);
+
+    // The link alone adds Studio, once.
+    let add = json!({"link": link});
+    let unsigned = call(&mac, "POST", "/v1/computers", Some(&add));
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    let added = call_signed(&mac, "POST", "/v1/computers", Some(&add));
+    assert_eq!(added.status, 201, "{}", added.text);
+    assert_eq!(added.body["name"], made.body["name"], "{}", added.text);
+    assert_eq!(added.body["state"], "connected", "{}", added.text);
+    let pairings = call(&studio, "GET", "/v1/pairing/devices", None);
+    assert_eq!(pairings.body[0]["computer"], true, "{}", pairings.text);
+    let again = call_signed(&mac, "POST", "/v1/computers", Some(&add));
+    assert_eq!(again.status, 422, "{}", again.text);
+    assert_eq!(again.body["reason"], "code_ended", "{}", again.text);
+    let listed = call(&mac, "GET", "/v1/computers", None);
+    assert_eq!(
+        listed.body["computers"].as_array().unwrap().len(),
+        1,
+        "once: {}",
+        listed.text
+    );
+
+    // A version 1 link without its code adds nothing.
+    let (status, out, err) = invite_computer(&studio);
+    assert_eq!(status, 0, "{out}{err}");
+    let invited: Value = serde_json::from_str(out.trim()).unwrap();
+    assert!(
+        invited["oneLink"]
+            .as_str()
+            .unwrap()
+            .starts_with("oby-computer:"),
+        "{out}"
+    );
+    let no_code = call_signed(
+        &mac,
+        "POST",
+        "/v1/computers",
+        Some(&json!({"link": invited["link"]})),
+    );
+    assert_eq!(no_code.status, 422, "{}", no_code.text);
+    assert_eq!(no_code.body["reason"], "bad_body", "{}", no_code.text);
+
+    // No direct address: words that say what to set.
+    let none = call_signed(&mac, "POST", "/v1/computers/invite", Some(&json!({})));
+    assert_eq!(none.status, 409, "{}", none.text);
+    assert_eq!(none.body["reason"], "no_address", "{}", none.text);
+    assert!(
+        none.body["error"].as_str().unwrap().contains("\"direct\""),
+        "{}",
+        none.text
+    );
+}

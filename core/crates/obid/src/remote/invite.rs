@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::{Value, json};
 
 use super::addresses;
-use super::link::Link;
+use super::link::{Link, OneLink};
 use super::pair::Refused;
 use super::pin::Pin;
 use super::route::{Route, rank};
@@ -101,6 +101,18 @@ pub fn link(name: &str, direct: &Value) -> Option<Link> {
     })
 }
 
+/// The one link for an invitation whose secret `make` answered (base64url of 16 bytes) and the
+/// routes of its link (COMPUTERS-29); `None` for a secret of another size.
+pub fn one_link(secret: &str, link: &Link) -> Option<String> {
+    use base64::Engine as _;
+    let bytes: [u8; 16] = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(secret)
+        .ok()?
+        .try_into()
+        .ok()?;
+    OneLink::of(bytes, &link.routes)?.encode()
+}
+
 /// This machine's own addresses another computer could reach: no loopback, no IPv6 link-local
 /// (it needs a scope a link can't carry); IPv6 too when `v6` (a `::` listener takes both).
 fn interface_addresses(v6: bool) -> Vec<IpAddr> {
@@ -140,7 +152,8 @@ pub fn fingerprint(pin: &Pin) -> String {
 
 /// `obid invite-computer`: makes this computer's invitation on the obid `config` names, as its
 /// owner at this machine, and answers the line to print: `{"code", "link", "name",
-/// "fingerprint", "expiresAt"}`.
+/// "fingerprint", "expiresAt", "oneLink"}`: `link` and `code` as COMPUTERS-13 has them, and
+/// `oneLink` the same invitation as one link with no code (COMPUTERS-29), which redeems it too.
 pub async fn run(config: &Path) -> Result<String, Refused> {
     let refused = |code: u8, said: String| Refused { code, said };
     let config = Config::load(config).map_err(|e| refused(1, e.to_string()))?;
@@ -203,11 +216,15 @@ pub async fn run(config: &Path) -> Result<String, Refused> {
         super::route::Via::Https { pin, .. } => *pin,
         super::route::Via::Ssh { .. } => unreachable!("a link holds direct routes only"),
     };
-    Ok(
-        json!({"code": body["code"], "link": body["computerLink"], "name": name,
-              "fingerprint": fingerprint(&pin), "expiresAt": body["expiresAt"]})
-        .to_string(),
-    )
+    Ok(json!({
+        "code": body["code"],
+        "link": body["computerLink"],
+        "name": name,
+        "fingerprint": fingerprint(&pin),
+        "expiresAt": body["expiresAt"],
+        "oneLink": body["computerOneLink"],
+    })
+    .to_string())
 }
 
 #[cfg(test)]

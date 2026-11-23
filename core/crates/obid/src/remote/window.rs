@@ -16,7 +16,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use super::link::Link;
+use super::link::Read;
 use super::route::Via;
 use crate::api::{ApiError, Shared};
 
@@ -48,35 +48,125 @@ pub async fn list(State(shared): State<Arc<Shared>>) -> Response {
     axum::Json(shared.computers.list()).into_response()
 }
 
+/// `{"kind", "address"}` for each route, as a person reads it.
+fn routes_of(routes: &[super::route::Route]) -> Vec<Value> {
+    routes
+        .iter()
+        .map(|r| json!({"kind": r.kind, "address": r.describe().split_once(' ').map_or("", |(_, a)| a)}))
+        .collect()
+}
+
+/// A refusal from the other computer, or from reaching it, as the window's answer.
+fn refused_there(r: super::code::Refused) -> ApiError {
+    match r.status {
+        Some(401) => refused(StatusCode::UNPROCESSABLE_ENTITY, r.said, "wrong_code"),
+        Some(410) => refused(StatusCode::UNPROCESSABLE_ENTITY, r.said, "code_ended"),
+        Some(_) => refused(StatusCode::BAD_GATEWAY, r.said, "refused_there"),
+        None if r.said.starts_with("Oby can") => {
+            refused(StatusCode::BAD_GATEWAY, r.said, "unreachable")
+        }
+        None => refused(StatusCode::UNPROCESSABLE_ENTITY, r.said, "not_a_link"),
+    }
+}
+
 /// `POST /v1/computers/link` `{"link"}`: the name, fingerprint and routes a link holds, read by
-/// obid so the window never parses one.
+/// obid so the window never parses one, and `needsCode`: a link of version 1 goes with a code, a
+/// one link (COMPUTERS-29) alone, its name asked of the other computer over a pinned route.
 pub async fn read_link(
     State(shared): State<Arc<Shared>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let _ = &shared;
     let body = body_of(&body, "{\"link\": \"oby-computer:…\"}")?;
-    let link = Link::decode(body["link"].as_str().unwrap_or_default().trim())
+    let link = Read::decode(body["link"].as_str().unwrap_or_default().trim())
         .map_err(|why| refused(StatusCode::UNPROCESSABLE_ENTITY, why, "not_a_link"))?;
-    let pin = link.routes.iter().find_map(|r| match &r.via {
+    let pin = link.routes().iter().find_map(|r| match &r.via {
         Via::Https { pin, .. } => Some(*pin),
         Via::Ssh { .. } => None,
     });
-    let routes: Vec<Value> = link
-        .routes
-        .iter()
-        .map(|r| json!({"kind": r.kind, "address": r.describe().split_once(' ').map_or("", |(_, a)| a)}))
-        .collect();
+    let name = super::code::name_of(&link).await.map_err(refused_there)?;
     Ok(axum::Json(json!({
-        "name": link.name,
+        "name": name,
         "fingerprint": pin.map(|p| super::invite::fingerprint(&p)),
-        "routes": routes,
+        "routes": routes_of(link.routes()),
+        "needsCode": matches!(link, Read::WithCode(_)),
     }))
     .into_response())
 }
 
-/// `POST /v1/computers` `{"link", "code"}`: adds the computer the link names with its code, as the
-/// owner's act. The device that signed it registers its key there.
+/// `POST /v1/computers/invite` `{}`, the owner's act (COMPUTERS-30): this Mac's own one link, for
+/// another Mac to add it, with its name, fingerprint, when it ends and the addresses it holds. The
+/// invitation is the owner's (signed words), so the Mac it pairs may add its own key here. Only
+/// the window on this Mac makes one: through the gateway or the relay it's `403`. With no direct
+/// address it's `409` `no_address`, in words that say what to set.
+pub async fn invite(
+    State(shared): State<Arc<Shared>>,
+    uri: Uri,
+    headers: HeaderMap,
+    extensions: axum::http::Extensions,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    if extensions.get::<crate::gateway::PairedDevice>().is_some()
+        || extensions.get::<crate::gateway::Relayed>().is_some()
+    {
+        return Err(refused(
+            StatusCode::FORBIDDEN,
+            "Only Oby's window on this Mac makes its link.",
+            "not_the_window",
+        ));
+    }
+    if crate::routes::signed_by(&shared, "POST", &uri, &headers, &body).is_none() {
+        return Err(crate::routes::needs_the_owners_app());
+    }
+    let name = shared.host.clone();
+    let Some(link) = shared
+        .gateway_state
+        .as_ref()
+        .and_then(|state| super::invite::link(&name, &state["direct"]))
+    else {
+        return Err(refused(StatusCode::CONFLICT, NO_ADDRESS, "no_address"));
+    };
+    let first = &link.routes[0];
+    let Via::Https { host, port, pin } = &first.via else {
+        return Err(refused(StatusCode::CONFLICT, NO_ADDRESS, "no_address"));
+    };
+    let invitation = shared.gateway.invite_computer(
+        &format!("https://{host}:{port}"),
+        &name,
+        host,
+        std::time::SystemTime::now(),
+        true,
+        None,
+    );
+    let Some(one) = super::invite::one_link(&invitation.secret, &link) else {
+        return Err(refused(StatusCode::CONFLICT, NO_ADDRESS, "no_address"));
+    };
+    let held = Read::decode(&one)
+        .map(|r| r.routes().to_vec())
+        .unwrap_or_default();
+    // Each address the link holds, as the design shows one: its host alone.
+    let reach: Vec<Value> = held
+        .iter()
+        .filter_map(|r| match &r.via {
+            Via::Https { host, .. } => Some(json!({"kind": r.kind, "address": host, "on": true})),
+            Via::Ssh { .. } => None,
+        })
+        .collect();
+    Ok(axum::Json(json!({
+        "link": one,
+        "name": name,
+        "fingerprint": super::invite::fingerprint(pin),
+        "expiresAt": invitation.expires_at,
+        "reach": reach,
+    }))
+    .into_response())
+}
+
+/// Why this Mac has no link to give: obid's configuration names no direct address.
+pub const NO_ADDRESS: &str = "This Mac has no address another computer can reach. Turn it on in obid's configuration: \"gateway\" and \"direct\", like \"direct\": [\"0.0.0.0:8443\"], then restart Oby. Or add this Mac over SSH instead.";
+
+/// `POST /v1/computers` `{"link", "code"}`, or a one link alone `{"link"}` (COMPUTERS-29): adds the
+/// computer the link names, as the owner's act. The device that signed it registers its key there.
 pub async fn add(
     State(shared): State<Arc<Shared>>,
     uri: Uri,
@@ -93,13 +183,22 @@ pub async fn add(
     if let Some(host) = asked["ssh"].as_str() {
         return over_ssh(shared, &device, host.trim());
     }
-    let (Some(link), Some(code)) = (asked["link"].as_str(), asked["code"].as_str()) else {
+    // A one link alone (COMPUTERS-29), or a link and its code (COMPUTERS-19).
+    let Some(link) = asked["link"].as_str() else {
+        return Err(refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Adding a computer here takes its link, and its code if it has one.",
+            "bad_body",
+        ));
+    };
+    let code = asked["code"].as_str().unwrap_or_default();
+    if code.is_empty() && !matches!(Read::decode(link.trim()), Ok(Read::One(_))) {
         return Err(refused(
             StatusCode::UNPROCESSABLE_ENTITY,
             "Adding a computer here takes its link and its code.",
             "bad_body",
         ));
-    };
+    }
     let key = shared.devices.public_key(&device).ok_or_else(|| {
         refused(
             StatusCode::FORBIDDEN,
@@ -110,15 +209,7 @@ pub async fn add(
     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
     let paired = super::code::redeem(link.trim(), &code, &shared.host, &key)
         .await
-        .map_err(|r| match r.status {
-            Some(401) => refused(StatusCode::UNPROCESSABLE_ENTITY, r.said, "wrong_code"),
-            Some(410) => refused(StatusCode::UNPROCESSABLE_ENTITY, r.said, "code_ended"),
-            Some(_) => refused(StatusCode::BAD_GATEWAY, r.said, "refused_there"),
-            None if r.said.starts_with("Oby can") => {
-                refused(StatusCode::BAD_GATEWAY, r.said, "unreachable")
-            }
-            None => refused(StatusCode::UNPROCESSABLE_ENTITY, r.said, "not_a_link"),
-        })?;
+        .map_err(refused_there)?;
     let os = os_of(&paired).await;
     let route = paired.route.clone();
     let computer = shared

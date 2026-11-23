@@ -338,6 +338,10 @@ pub struct Invitation {
     /// pinned (crate::remote::invite, COMPUTERS-13), when it has any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub computer_link: Option<String>,
+    /// The same invitation as one link with no code (COMPUTERS-29): its secret, the pin and the
+    /// direct addresses, base64url; it redeems this invitation, once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computer_one_link: Option<String>,
 }
 
 /// What a phone needs to reach obid through its Obysphere (docs/runner-api.md, "obid only: the
@@ -387,6 +391,20 @@ pub struct Gateway {
     own_ports: std::sync::OnceLock<Vec<u16>>,
     /// Bumped on each pairing that ends: an open preview tunnel ends with its device's.
     revoked: tokio::sync::watch::Sender<u64>,
+}
+
+const GONE: &str = "That pairing invitation has expired or was already used.";
+
+/// A wrong try counts against each open invitation; the fifth ends it.
+fn missed(computer: &mut Option<Pending>, phone: &mut Option<Pending>) {
+    for slot in [computer, phone] {
+        if let Some(open) = slot.as_mut() {
+            open.attempts += 1;
+            if open.attempts >= ATTEMPTS {
+                *slot = None;
+            }
+        }
+    }
 }
 
 fn digest(value: &str) -> String {
@@ -488,7 +506,8 @@ impl Gateway {
         owned: bool,
         computer: Option<Option<String>>,
     ) -> Invitation {
-        let secret = random(32);
+        // A computer's is 128 bits, so it fits in its one link (COMPUTERS-29); a phone's QR has room.
+        let secret = random(if computer.is_some() { 16 } else { 32 });
         let code = {
             let mut bytes = [0u8; 4];
             getrandom::fill(&mut bytes).expect("the system's random source works");
@@ -533,7 +552,40 @@ impl Gateway {
             expires_at: obi_protocol::time::format(seconds(expires)),
             relay,
             computer_link: None,
+            computer_one_link: None,
         }
+    }
+
+    /// The name of the computer's open invitation `credential` is the secret of (COMPUTERS-29): a
+    /// one link's holder asks before adding, so the person sees who they add. Its code says
+    /// nothing, nor does a relay; a wrong secret counts as a wrong try, as redeeming's does. It
+    /// uses nothing up.
+    pub fn peek(
+        &self,
+        credential: &str,
+        now: SystemTime,
+        via: Option<&str>,
+    ) -> Result<String, (StatusCode, &'static str)> {
+        let given = digest(credential);
+        let mut phone = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut computer = self.computer.lock().unwrap_or_else(|e| e.into_inner());
+        if computer.as_ref().is_some_and(|p| now > p.expires) {
+            *computer = None;
+        }
+        if via.is_none()
+            && let Some(open) = computer.as_ref()
+            && crate::token::same(&given, &open.secret)
+        {
+            return Ok(open.name.clone());
+        }
+        if computer.is_none() {
+            return Err((StatusCode::GONE, GONE));
+        }
+        missed(&mut computer, &mut phone);
+        Err((
+            StatusCode::UNAUTHORIZED,
+            "That link isn't this computer's invitation.",
+        ))
     }
 
     /// Redeems the open invitation with its secret or its code, once: `410` when there's none or
@@ -548,7 +600,6 @@ impl Gateway {
         now: SystemTime,
         via: Option<&str>,
     ) -> Result<Redeemed, (StatusCode, &'static str)> {
-        const GONE: &str = "That pairing invitation has expired or was already used.";
         let given = digest(credential);
         let open = {
             let mut phone = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -571,15 +622,7 @@ impl Gateway {
             } else if phone.as_ref().is_some_and(matches) {
                 phone.take().expect("checked above")
             } else {
-                // A wrong try counts against each open invitation; the fifth ends it.
-                for slot in [&mut *computer, &mut *phone] {
-                    if let Some(open) = slot.as_mut() {
-                        open.attempts += 1;
-                        if open.attempts >= ATTEMPTS {
-                            *slot = None;
-                        }
-                    }
-                }
+                missed(&mut computer, &mut phone);
                 return Err((StatusCode::UNAUTHORIZED, "That pairing code is not valid."));
             }
         };
@@ -881,11 +924,14 @@ pub async fn invite(
             owned,
             request.device,
         );
-        invitation.computer_link = shared
+        let link = shared
             .gateway_state
             .as_ref()
-            .and_then(|state| crate::remote::invite::link(&name, &state["direct"]))
-            .map(|link| link.encode());
+            .and_then(|state| crate::remote::invite::link(&name, &state["direct"]));
+        invitation.computer_one_link = link
+            .as_ref()
+            .and_then(|link| crate::remote::invite::one_link(&invitation.secret, link));
+        invitation.computer_link = link.map(|link| link.encode());
         return axum::Json(invitation).into_response();
     }
     let invitation = shared
@@ -953,6 +999,7 @@ struct Through {
 pub fn router(shared: Arc<Shared>, api: Router) -> Router {
     Router::new()
         .route("/v1/pairing", post(redeem).delete(unpair))
+        .route("/v1/pairing/peek", post(peek))
         .route("/v1/preview/tunnel", get(preview_tunnel))
         .fallback(forward)
         .with_state(Through { shared, api })
@@ -1019,6 +1066,46 @@ async fn redeem(State(through): State<Through>, request: Request) -> Response {
             }
             axum::Json(redeemed).into_response()
         }
+        Err((status, message)) => error(status, message),
+    }
+}
+
+#[derive(Deserialize)]
+struct PeekRequest {
+    credential: String,
+}
+
+/// `POST /v1/pairing/peek` `{"credential"}`, on the gateway only (COMPUTERS-29): the name of the
+/// computer whose open invitation that secret is, `{"name"}`, before the Mac adds it. Taken as
+/// redeeming is: JSON, no `Origin`, never through a relay; it uses nothing up.
+async fn peek(State(through): State<Through>, request: Request) -> Response {
+    let via = request.extensions().get::<Relayed>().map(|r| r.0.clone());
+    if request.headers().contains_key(header::ORIGIN) {
+        return error(StatusCode::FORBIDDEN, "Only another computer asks this.");
+    }
+    let json = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().starts_with("application/json"));
+    if !json {
+        return error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Pairing takes JSON (Content-Type: application/json).",
+        );
+    }
+    let Ok(bytes) = axum::body::to_bytes(request.into_body(), 64 * 1024).await else {
+        return error(StatusCode::PAYLOAD_TOO_LARGE, "That request is too large.");
+    };
+    let Ok(asked) = serde_json::from_slice::<PeekRequest>(&bytes) else {
+        return error(StatusCode::BAD_REQUEST, "It takes {\"credential\": …}.");
+    };
+    match through
+        .shared
+        .gateway
+        .peek(&asked.credential, SystemTime::now(), via.as_deref())
+    {
+        Ok(name) => axum::Json(json!({"name": name})).into_response(),
         Err((status, message)) => error(status, message),
     }
 }
@@ -1945,6 +2032,71 @@ mod tests {
         assert!(phone["resumeCommand"].is_null(), "{body}");
         let frames = scrubber.frame(&format!("event: job\ndata: {job}\n\n"));
         assert!(!frames.contains("claude --resume"), "{frames}");
+    }
+
+    #[test]
+    fn computers_29_a_one_links_secret_redeems_once_within_ten_minutes_and_names_its_computer() {
+        let home = folder("one-link");
+        let gateway = Gateway::open(&home);
+        let now = SystemTime::now();
+        let minute = Duration::from_secs(60);
+        let url = "https://10.0.0.2:8443";
+        let made = gateway.invite_computer(url, "Studio", "10.0.0.2", now, true, None);
+        // 128 bits, base64url: what a one link holds.
+        assert_eq!(made.secret.len(), 22, "{}", made.secret);
+        // Its holder learns its name, as often as it asks, using nothing up; its code says nothing.
+        assert_eq!(gateway.peek(&made.secret, now, None).unwrap(), "Studio");
+        assert_eq!(gateway.peek(&made.secret, now, None).unwrap(), "Studio");
+        assert_eq!(
+            gateway.peek(&made.code, now, None).unwrap_err().0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(gateway.peek(&made.secret, now, Some("relay")).is_err());
+        // Redeemed once by its secret; a second time it's gone.
+        let paired = gateway
+            .redeem(&made.secret, "Laptop", now + 9 * minute, None)
+            .unwrap();
+        assert!(gateway.may_add_key(&paired.device_id, now + 9 * minute));
+        let again = gateway.redeem(&made.secret, "Laptop", now + 9 * minute, None);
+        assert_eq!(again.unwrap_err().0, StatusCode::GONE, "once");
+        assert_eq!(
+            gateway.peek(&made.secret, now, None).unwrap_err().0,
+            StatusCode::GONE
+        );
+        // Past ten minutes, neither its name nor a pairing.
+        let late = gateway.invite_computer(url, "Studio", "10.0.0.2", now, true, None);
+        assert_eq!(
+            gateway
+                .peek(&late.secret, now + 11 * minute, None)
+                .unwrap_err()
+                .0,
+            StatusCode::GONE
+        );
+        assert_eq!(
+            gateway
+                .redeem(&late.secret, "x", now + 11 * minute, None)
+                .unwrap_err()
+                .0,
+            StatusCode::GONE
+        );
+        // A wrong secret is a wrong try; the fifth ends it, whichever asked.
+        let tried = gateway.invite_computer(url, "Studio", "10.0.0.2", now, true, None);
+        for _ in 0..ATTEMPTS {
+            let wrong = gateway.peek("AAAAAAAAAAAAAAAAAAAAAA", now, None);
+            assert_eq!(wrong.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(
+            gateway.redeem(&tried.secret, "x", now, None).unwrap_err().0,
+            StatusCode::GONE
+        );
+        // A phone's stays as long as it was.
+        assert_eq!(
+            gateway
+                .invite(url, "Mac", "mac", now, None, false)
+                .secret
+                .len(),
+            43
+        );
     }
 
     #[test]
