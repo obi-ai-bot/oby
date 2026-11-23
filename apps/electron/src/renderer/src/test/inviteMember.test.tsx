@@ -116,6 +116,49 @@ describe('SPHEREAPP-20', () => {
   });
 });
 
+describe('SPHEREAPP-26', () => {
+  // the side panel's minute read of the live Obysphere (spheres.ts's loadLive), run by hand
+  const aMinuteLater = async () => { await act(async () => { vi.advanceTimersByTime(60_000); }); await settle(); };
+  const policyOf = (admin: boolean) => ({ sphere: 'demo', policy: { version: 1, updated_at: '', rules: [] }, admin, refused: null, why: null, admins: admin ? ['wellington'] : ['dana'], me: 'wellington' });
+
+  it('sphereapp_26_a_member_made_admin_sees_invite_member_while_the_panel_stays_open', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    const app = bridge({ admin: false });
+    await show('', app);
+    await open('demo');
+    expect(button('Invite member')).toBeUndefined();
+    // another admin makes this owner one: at the next read, Invite member shows, the panel never left
+    app.spherePolicy.mockImplementation(async () => policyOf(true));
+    await aMinuteLater();
+    expect(host.querySelector('.sidebar-title')?.textContent).toBe('demo');
+    expect(button('Invite member')).toBeDefined();
+  });
+
+  it('sphereapp_26: an admin removed as admin loses Invite member while the panel stays open', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    const app = bridge();
+    await show('', app);
+    await open('demo');
+    await act(async () => { await vi.waitFor(() => expect(button('Invite member')).toBeDefined()); });
+    app.spherePolicy.mockImplementation(async () => policyOf(false));
+    await aMinuteLater();
+    expect(host.querySelector('.sidebar-title')?.textContent).toBe('demo');
+    expect(button('Invite member')).toBeUndefined();
+  });
+
+  it('sphereapp_26: a read that fails keeps what the Sphere last said, so the button doesn’t flicker', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    const app = bridge();
+    await show('', app);
+    await open('demo');
+    await act(async () => { await vi.waitFor(() => expect(button('Invite member')).toBeDefined()); });
+    app.spherePolicy.mockImplementation(async () => ({ sphere: 'demo', policy: null, admin: false, refused: 'failed', why: 'the Obysphere answered 503' } as never));
+    await aMinuteLater();
+    expect(app.spherePolicy.mock.calls.length).toBeGreaterThan(1);
+    expect(button('Invite member')).toBeDefined();
+  });
+});
+
 describe('SPHEREAPP-21', () => {
   it('sphereapp_21_invite_member_s_click_has_main_make_one_link_the_modal_shows_and_copies', async () => {
     const app = bridge();

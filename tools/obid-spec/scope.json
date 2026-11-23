@@ -1947,7 +1947,9 @@
             "SPHEREAPP-21": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx, ipc.test.ts, sphere.test.ts).",
             "SPHEREAPP-22": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",
             "SPHEREAPP-23": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",
-            "SPHEREAPP-24": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx)."
+            "SPHEREAPP-24": "Electron Obysphere UI: Invite member in the side panel (inviteMember.test.tsx).",
+            "SPHEREAPP-25": "Electron main: Invite member's reused link adds what the members rule lacks (ipc.test.ts).",
+            "SPHEREAPP-26": "Electron Obysphere UI: Invite member follows the Sphere's admin word while the panel stays open (inviteMember.test.tsx)."
           }
         },
         "test-rig.md": {

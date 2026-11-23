@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, Copy, X } from 'lucide-react';
 import { useScrollThumb } from './useScrollThumb';
 import EmailField, { useEmails } from './EmailField';
+import { useLiveReads } from './spheres';
 import type { InvitesAnswer } from '../../shared/sphere';
 
 // Inviting people into an Obysphere by email (EmailField), then Send
@@ -19,16 +20,19 @@ const code = () => Math.random().toString(36).slice(2, 8);
 const UNREACHED = 'Oby couldn’t reach your Obysphere.';
 
 // Invite member shows on the live Obysphere only to its admins: the Sphere's word, as the rules'
-// read brings it (as Invite teammates reads it); nothing asked while `on` is false
+// read brings it (as Invite teammates reads it); nothing asked while `on` is false. Read again at each
+// read of the live Obysphere (useLiveReads), so a promotion or a demotion shows while the panel stays
+// open (SPHEREAPP-26); a read that failed keeps what the Sphere last said.
 export function useLiveAdmin(on: boolean, sphere: string) {
   const [admin, setAdmin] = useState(false);
+  const read = useLiveReads();
+  useEffect(() => setAdmin(false), [on, sphere]);
   useEffect(() => {
-    setAdmin(false);
     if (!on || !window.app?.spherePolicy) return;
     let gone = false;
-    void window.app.spherePolicy().then((p) => { if (!gone) setAdmin(!!p?.admin); }, () => {});
+    void window.app.spherePolicy().then((p) => { if (!gone && p && p.refused !== 'failed') setAdmin(p.admin); }, () => {});
     return () => { gone = true; };
-  }, [on, sphere]);
+  }, [on, sphere, read]);
   return on && admin;
 }
 

@@ -116,6 +116,11 @@ export const revokedLine = (s: Sphere) =>
 export const outOfSphere = (l: { kind: string; id?: string }, all: Sphere[]) =>
   ((l.kind === 'sphere' || l.kind === 'knowledge' || l.kind === 'room') && !all.some((s) => s.id === l.id)) || (l.kind === 'member' && !all.some((s) => s.live));
 const names = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(NAMES) ?? '{}'); } catch { return {}; } };
+// Each read of the live Obysphere (loadLive: at launch, on a join, every minute), counted: what the
+// side panel reads with it, such as whether this owner is its admin (SPHEREAPP-26), reads again
+let reads = 0;
+const readers = new Set<() => void>();
+export const useLiveReads = () => useSyncExternalStore((l) => { readers.add(l); return () => { readers.delete(l); }; }, () => reads);
 async function loadLive() {
   const call = window.app!.obid.call;
   const m = await call('GET', '/v1/obid/sphere');
@@ -129,6 +134,8 @@ async function loadLive() {
   set([...spheres.filter((s) => !s.live), ...(live ? [live] : [])]);
   // whether it has a room, and what came since: with this minute's look at the directory, below
   if (live && !live.revoked) { if (ROOM_SHOWS) void lookAtRoom(live.slug); } else { forgetRoom(); forgetThreads(); }
+  reads++;
+  readers.forEach((l) => l());
 }
 if (onObid && window.app?.onSphere) {
   window.app.onSphere(({ sphere, name }) => {
