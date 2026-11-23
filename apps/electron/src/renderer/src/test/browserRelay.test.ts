@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { KEPT, METHODS, MAX_MESSAGE, NOT_PASSED, NO_SCRIPT, forms, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
+import { ATTACH_WAIT_MS, KEPT, METHODS, MAX_MESSAGE, NOT_PASSED, NO_SCRIPT, forms, insideDownloads, namedPartitions, relayCommand, relayHost, type Guest, type RelayEvent } from '../../../main/browserRelay';
 import { sseReader } from '../../../shared/obid-wire';
 
 vi.mock('electron', () => ({ session: { fromPartition: () => ({}) }, webContents: { fromId: () => null } }));
@@ -169,11 +169,14 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     expect(replies(o.all()).find((r) => r.id === 2)?.error?.code).toBe(-32601);
   });
 
-  it('browserapp_23: a command for a tab not attached is answered with an error; a message over 64 MB ends the tab\'s relay', async () => {
+  it('browserapp_23: a command for a tab that doesn\'t attach in time is answered with an error; a message over 64 MB ends the tab\'s relay', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const o = fakeObid();
     const host = relayHost(o.post, { home: HOME });
     host.command(cdp(7, 'Runtime.evaluate'));
-    await settle(); await settle();
+    await vi.advanceTimersByTimeAsync(ATTACH_WAIT_MS);
+    for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
     expect(replies(o.all())).toEqual([{ id: 7, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }]);
     const g = fakeGuest({ send: vi.fn(async () => ({ data: 'x'.repeat(MAX_MESSAGE) })) });
     host.attach(K, g);
@@ -181,6 +184,51 @@ describe('BROWSERAPP-23: main runs page-level CDP only, on the tab\'s own webvie
     for (let i = 0; i < 6; i++) await settle();
     expect(o.all().map((e) => e.type).slice(-2)).toEqual(['attached', 'detached']);
     expect(KEPT).toBeGreaterThan(1000);
+  });
+});
+
+describe('BROWSERAPP-49: obid\'s first commands wait for the tab\'s webview to attach', () => {
+  it('browserapp_49: a command sent before the webview attached is run once it attaches, in order, and answered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    host.command(cdp(1, 'Page.enable'));
+    host.command(cdp(2, 'Runtime.evaluate', { expression: 'document.title' }));
+    vi.advanceTimersByTime(ATTACH_WAIT_MS - 1);
+    vi.useRealTimers();
+    await settle();
+    // nothing answered yet: the tab isn't attached, and its time isn't up
+    expect(replies(o.all())).toEqual([]);
+    const g = fakeGuest();
+    host.attach(K, g);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(g.sent.map((c) => c.method)).toEqual(['Page.enable', 'Runtime.evaluate']);
+    expect(replies(o.all())).toEqual([{ id: 1, result: { from: 'Page.enable' } }, { id: 2, result: { from: 'Runtime.evaluate' } }]);
+    // attached is told before the first answer
+    expect(o.all()[0].type).toBe('attached');
+  });
+
+  it('browserapp_49: in the gap while a dropped debugger is attached again, a command waits and runs on the new attach', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    host.attach(K, fakeGuest());
+    host.detach(K);
+    host.command(cdp(3, 'Runtime.evaluate'));
+    await settle();
+    const again = fakeGuest();
+    host.attach(K, again);
+    for (let i = 0; i < 6; i++) await settle();
+    expect(again.sent.map((c) => c.method)).toEqual(['Runtime.evaluate']);
+    expect(replies(o.all())).toEqual([{ id: 3, result: { from: 'Runtime.evaluate' } }]);
+  });
+
+  it('browserapp_49: a tab that goes for good answers what waited for it, at once', async () => {
+    const o = fakeObid();
+    const host = relayHost(o.post, { home: HOME });
+    host.command(cdp(4, 'Page.enable'));
+    host.forget(K);
+    for (let i = 0; i < 3; i++) await settle();
+    expect(replies(o.all())).toEqual([{ id: 4, error: { code: -32000, message: 'This tab isn’t attached in the window.' } }]);
   });
 });
 
