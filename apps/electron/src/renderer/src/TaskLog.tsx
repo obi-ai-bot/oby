@@ -19,8 +19,9 @@ export const SHOWN = 4;
 // words fold behind Show more, as T3 Code's do. The card above it stays progress only.
 // said: the owner's words in the thread around it; words told it that are there already show once,
 // there, as the owner's message (#2787). whole: every line and all of its words shown, nothing folded (a
-// task's own thread, LIVETASK-22)
-export default function TaskLog({ task, said, whole = false }: { task: Task; said?: ReadonlySet<string>; whole?: boolean }) {
+// task's own thread, LIVETASK-22); first: that thread's first message, which its session's opening words
+// repeat when they're the same
+export default function TaskLog({ task, said, whole = false, first }: { task: Task; said?: ReadonlySet<string>; whole?: boolean; first?: string }) {
   const entries = useEntries(task.id);
   const [open, setOpen] = useState(false);
   const atWork = task.status === 'running' || task.status === 'needs';
@@ -30,7 +31,10 @@ export default function TaskLog({ task, said, whole = false }: { task: Task; sai
   const plan = atWork && !whole ? entries.filter((e) => e.kind === 'plan').at(-1) : undefined;
   // what it was told to start with is the conversation's already (Oby's answer that started it): the
   // words told it since stay, but those the thread shows as the owner's message already
-  const all = whole ? entries : entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start' && !(e.kind === 'you' && said?.has(e.text.trim())));
+  // its own thread: the request it was started with, shown as the thread's first message, once
+  const opening = whole ? entries.findIndex((e) => e.kind !== 'start') : -1;
+  const repeats = opening >= 0 && entries[opening].kind === 'you' && !!first && (entries[opening] as Extract<Entry, { kind: 'you' }>).text.trim() === first.trim();
+  const all = whole ? (repeats ? entries.filter((_, i) => i !== opening) : entries) : entries.filter((e) => e.kind !== 'plan' && e.kind !== 'start' && !(e.kind === 'you' && said?.has(e.text.trim())));
   const told = whole ? 0 : all.findIndex((e) => e.kind !== 'you');
   const lines = told < 0 ? [] : all.slice(told);
   // ended: its last words are its result, shown whole; the rest folds (its own thread: where it said them)

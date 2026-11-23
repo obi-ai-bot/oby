@@ -132,9 +132,11 @@ describe('a task in its conversation', () => {
       await show();
       expect(tools()).toBe(4);
       expect(button('Show 2 more')).toBeDefined();
-      // its own thread: every line, nothing folded
+      // its own thread: every line, nothing folded; the request it started with (its first message), once
+      SESSIONS.j1 = [{ kind: 'you', text: 'Fix the login test', at: '10:00 AM' }, ...SESSIONS.j1];
       await act(async () => root.render(<ChatView kind="task" id="j1" leaving={false} onBack={() => {}} onGone={() => {}} />));
       expect(tools()).toBe(6);
+      expect(host.querySelector('.chat')!.textContent!.split('Fix the login test').length - 1).toBe(1 + host.querySelectorAll('.msg-task-title').length);
       expect(button('Show 2 more')).toBeUndefined();
     } finally { SESSIONS.j1 = kept; }
   });

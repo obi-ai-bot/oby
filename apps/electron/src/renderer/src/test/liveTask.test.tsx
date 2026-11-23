@@ -436,6 +436,25 @@ describe('a task at work', () => {
     expect(compact).not.toContain('Replace the timer');
   });
 
+  it('LIVETASK-22: in a task\'s own thread, the words it was started with show once (the thread\'s first message); other words told it first still show', async () => {
+    stub();
+    const { default: TaskLog } = await import('../TaskLog');
+    const { SESSIONS } = await import('../session');
+    const task = await taskOf('j1');
+    const count = (html: string, w: string) => html.split(w).length - 1;
+    // its session opens with the round's start and the request the thread already shows as its first message
+    SESSIONS.j1 = [{ kind: 'start', text: 'Started on Claude Code', at: '1:40 PM' }, { kind: 'you', text: 'Fix the flaky login test', at: '1:40 PM' }, tool('Read', 'a.ts'), { kind: 'you', text: 'Fix the flaky login test', at: '1:45 PM' }];
+    const once = read(renderToStaticMarkup(<TaskLog task={task} whole first="Fix the flaky login test" />));
+    expect(once).toContain('Started on Claude Code');
+    expect(once).toContain('a.ts');
+    // the same words told again later stay, where they were said
+    expect(count(once, 'Fix the flaky login test')).toBe(1);
+    expect(once.indexOf('Fix the flaky login test')).toBeGreaterThan(once.indexOf('a.ts'));
+    // a different first message (it came in from GitHub, its prompt its own): the session's words show
+    const other = read(renderToStaticMarkup(<TaskLog task={task} whole first="Issue #140: flaky login" />));
+    expect(count(other, 'Fix the flaky login test')).toBe(2);
+  });
+
   it('LIVETASK-22: told something in a finished task\'s own thread, the follow-up obid starts is opened (onFollowUp); words for a running one start none', async () => {
     stub();
     const live = await import('../live');

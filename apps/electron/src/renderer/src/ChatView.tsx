@@ -342,7 +342,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
                     // in a task's own thread, all it did; in a conversation, its card opens that thread
-                    return t ? <TaskEntry key={jid} task={t} lit={lit === jid} said={yours} whole={kind === 'task'} onOpen={kind === 'oby' && onOpenTask ? () => onOpenTask(jid) : undefined} onMenu={(at) => setMenu({ id: jid, at })} /> : null;
+                    return t ? <TaskEntry key={jid} task={t} lit={lit === jid} said={yours} whole={kind === 'task'} first={kind === 'task' ? thread[0]?.text : undefined} onOpen={kind === 'oby' && onOpenTask ? () => onOpenTask(jid) : undefined} onMenu={(at) => setMenu({ id: jid, at })} /> : null;
                   }),
                 ].filter(Boolean);
                 // the artifacts it tells of, last (ARTIFACTSAPP-16): with the words just before them, they
@@ -564,14 +564,14 @@ export function ThreadTask({ task, onMenu, onOpen }: { task: Task; onMenu?: (at:
 
 // A task in the conversation: its card, its Changes (CHANGES-4), and what it did under it, outside the card (TaskLog); data-task is
 // where opening the conversation at the task scrolls to (LIVETASK-28); whole: all it did, not only its
-// last lines (its own thread, LIVETASK-22); onOpen: its card clicked
-export function TaskEntry({ task, lit = false, said, whole, onOpen, onMenu }: { task: Task; lit?: boolean; said?: ReadonlySet<string>; whole?: boolean; onOpen?: () => void; onMenu?: (at: DOMRect) => void }) {
+// last lines (its own thread, LIVETASK-22), first that thread's first message; onOpen: its card clicked
+export function TaskEntry({ task, lit = false, said, whole, first, onOpen, onMenu }: { task: Task; lit?: boolean; said?: ReadonlySet<string>; whole?: boolean; first?: string; onOpen?: () => void; onMenu?: (at: DOMRect) => void }) {
   return (
     <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${lit ? ' is-lit' : ''}`} data-task={task.id}>
       <ThreadTask task={task} onMenu={onMenu} onOpen={onOpen} />
       {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
       <ChangesPill task={task} />
-      <TaskLog task={task} said={said} whole={whole} />
+      <TaskLog task={task} said={said} whole={whole} first={first} />
     </div>
   );
 }
