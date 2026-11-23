@@ -4,7 +4,7 @@ import { Fragment, createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
-import { namedPartitions, relayCommand, type BoxCommand, type RelayHost } from '../../../main/browserRelay';
+import { namedPartitions, relayCommand, relayHost, type BoxCommand, type Guest, type RelayEvent, type RelayHost } from '../../../main/browserRelay';
 import { windowPartition } from '../../../shared/browserPartition';
 
 // Another computer's browser in this Mac's window (docs/contracts/browser-app.md, BROWSERAPP-45 to
@@ -196,6 +196,29 @@ describe('BROWSERAPP-46: a computer partition\'s loopback goes only to that comp
     await vi.advanceTimersByTimeAsync(BOX_HOLD_MS);
     expect(again.got).toEqual({ cancel: true });
     expect(f.proxies).toEqual([]);
+  });
+});
+
+describe('BROWSERAPP-46: another computer\'s downloads folder is that computer\'s', () => {
+  it('browserapp_46: with no folder of this Mac\'s obid, a page\'s downloads are kept nowhere here, and obid\'s setDownloadBehavior is answered', async () => {
+    const posted: RelayEvent[] = [];
+    const folders: (string | null)[] = [];
+    const guest = { send: vi.fn(async () => ({})), downloadsTo: (f: string | null) => { folders.push(f); }, passwordFields: async () => [] } as unknown as Guest;
+    const k = { threadId: 'j46d', tabId: 't1' };
+    // this Mac's obid's home, then another computer's in use: none
+    let home: string | null = '/mac/obid';
+    const relay = relayHost(async (e) => { posted.push(...e); return true; }, { get home() { return home; } });
+    relay.attach(k, guest);
+    const download = (id: number, downloadPath: string) => relay.command({ ...k, type: 'cdp', message: JSON.stringify({ id, method: 'Page.setDownloadBehavior', params: { behavior: 'allow', downloadPath } }) });
+    const answer = (id: number) => posted.map((e) => (e.type === 'cdp' ? JSON.parse(e.message) : null)).find((m) => m?.id === id);
+    download(1, '/devbox/obid/browser/downloads/j46d');
+    await settle();
+    expect(answer(1).error).toBeDefined();
+    home = null;
+    download(2, '/devbox/obid/browser/downloads/j46d');
+    await settle();
+    expect(answer(2)).toEqual({ id: 2, result: {} });
+    expect(folders).toEqual([null]);
   });
 });
 

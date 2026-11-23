@@ -93,9 +93,10 @@ export function browsing(trusted: Trusted, page: Page) {
   const channels = ipc(trusted);
   const to = (channel: string, message: unknown) => { const w = page(); if (w && !w.isDestroyed()) w.webContents.send(channel, message); };
   // the agent's pointer is drawn by the page over its webview (T3: AgentBrowserCursor), nothing more
-  // obid's home is read only when obid names a download folder
+  // obid's home is read only when obid names a download folder: none while another computer is in
+  // use, whose obid names a folder of its own
   relay = relayHost(post, {
-    get home() { return HOME; },
+    get home() { return openedComputer() === null ? HOME : null; },
     pointer: (c) => to('browser-pointer', { threadId: c.threadId, tabId: c.tabId, phase: c.phase, x: c.x, y: c.y }),
     // a foreign job's door, for its box partition's session only (browserGuest.ts): never to the page,
     // and none while another computer is in use

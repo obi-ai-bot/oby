@@ -173,7 +173,7 @@ function bare(url: string, values: string[]): string {
   } catch { return ''; }
 }
 
-export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, options: { home: string; pointer?: (c: Extract<RelayCommand, { type: 'pointer' }>) => void; box?: (c: BoxCommand) => void; released?: (k: TabKey) => void; wait?: (ms: number) => Promise<void> }) {
+export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, options: { home: string | null; pointer?: (c: Extract<RelayCommand, { type: 'pointer' }>) => void; box?: (c: BoxCommand) => void; released?: (k: TabKey) => void; wait?: (ms: number) => Promise<void> }) {
   const tabs = new Map<string, Tab>();
   // what was said of a tab before it attached (a first load's failure, whether it shows): sent on attach
   const early = new Map<string, { failed: RelayEvent | null; shown: boolean | null }>();
@@ -243,8 +243,11 @@ export function relayHost(post: (events: RelayEvent[]) => Promise<boolean>, opti
       let result: unknown = {};
       if (method === 'Page.reload') t.guest.reload();
       else if (method === 'Page.setDownloadBehavior') {
-        // downloads go where obid says, inside its own folder, and nowhere else
-        if (params?.behavior === 'allow' && insideDownloads(options.home, params.downloadPath)) t.guest.downloadsTo(resolve(params.downloadPath as string));
+        // downloads go where obid says, inside its own folder, and nowhere else; with no folder of
+        // this Mac's obid (another computer in use: the folder obid names is that computer's),
+        // nothing a page downloads is kept (BROWSERAPP-46)
+        if (options.home === null) t.guest.downloadsTo(null);
+        else if (params?.behavior === 'allow' && insideDownloads(options.home, params.downloadPath)) t.guest.downloadsTo(resolve(params.downloadPath as string));
         else if (params?.behavior === 'deny') t.guest.downloadsTo(null);
         else return refuse(t, id, 'Downloads go only into a folder inside obid’s own browser/downloads.');
       } else if (method === 'Input.insertText' && !t.guest.focused()) await t.guest.insertText(String(params?.text ?? ''));
