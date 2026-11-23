@@ -151,3 +151,4 @@ One row per file, sorted by date, then by file name; a file listed under several
 | 2026-11-20 | [2026-11-20-headless-shell.md](2026-11-20-headless-shell.md) |
 | 2026-11-20 | [2026-11-20-preflight-before-push.md](2026-11-20-preflight-before-push.md) |
 | 2026-11-21 | [2026-11-21-lean-ci.md](2026-11-21-lean-ci.md) |
+| 2026-11-23 | [2026-11-23-new-worktree-checkbox.md](2026-11-23-new-worktree-checkbox.md) |

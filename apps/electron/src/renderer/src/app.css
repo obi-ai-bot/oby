@@ -1683,10 +1683,9 @@ button.connector { width: 100%; text-align: left; }
 .finish-action:hover:not(:disabled) { background: var(--hover); }
 .finish-action:disabled { opacity: 0.5; cursor: default; }
 .finish-said { color: var(--item); }
-/* where a new conversation works: This folder or A new worktree (WORKSPACE-3) */
-.composer-workspace { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--hover); }
-.composer-workspace button { padding: 2px 8px; border: 0; border-radius: 999px; background: none; color: var(--item); font: inherit; font-size: var(--text-sm); cursor: pointer; }
-.composer-workspace button[aria-checked="true"] { background: var(--surface); color: inherit; }
+/* where a new conversation works: the New worktree checkbox beside the mode chip (WORKSPACE-3) */
+.composer-worktree { padding-right: 8px; }
+.composer-worktree[aria-checked="true"], .composer-worktree[aria-checked="true"] > svg:first-child { color: var(--ink); }
 .cant-run-text, .refusal-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cant-run-action { flex: none; padding: 3px 9px; border-radius: 8px; color: var(--ink); background: rgba(255, 255, 255, 0.08); font-size: var(--text-sm); }
 .cant-run-action:hover { background: rgba(255, 255, 255, 0.14); }
