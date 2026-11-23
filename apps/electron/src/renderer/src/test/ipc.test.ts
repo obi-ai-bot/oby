@@ -32,7 +32,14 @@ const the = vi.hoisted(() => ({
   // how many picture reads reached the Sphere; held: the one read now held
   reads: 0,
   held: false,
+  // the invitations the Sphere lists as open (SPHEREAPP-21); the link the next make answers, and
+  // whether the Sphere's list after that make couldn't be read
+  listed: [] as { id: string; uses: number; maxUses: number; expiresAt: string }[],
+  nextLink: '',
+  unlisted: false,
 }));
+// the link main makes (SPHEREAPP-21 hands it back while the Sphere lists it open)
+const { MADE_LINK } = vi.hoisted(() => ({ MADE_LINK: `oby://join/sphere.example.com#sphere=demo&by=wellington&id=9187a87a-3126-424c-8861-8811bba1a5ec&secret=${'A'.repeat(43)}` }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
   class BrowserWindow extends EventEmitter {
@@ -106,9 +113,12 @@ vi.mock('../../../shared/sphere', async (original) => ({
   // links read as main reads them; nothing joins
   parseInvite: (await original<typeof import('../../../shared/sphere')>()).parseInvite,
   NotThisKey: class extends Error {}, join: async () => { the.joins++; }, joinWarning() {}, leave() {}, keepMembership: async () => {},
-  readPolicy: async () => { the.policies++; }, addStarterRule: async () => { the.policies++; },
-  listInvitations: async () => ({ invitations: [], link: null, refused: null, why: null }),
-  makeInvitation: async () => { the.invites++; return { invitations: [], link: 'oby://join/x#…', refused: null, why: null }; },
+  readPolicy: async () => { the.policies++; return { sphere: 'demo', policy: null, admin: true, refused: null, why: null }; }, addStarterRule: async () => { the.policies++; },
+  listInvitations: async () => ({ invitations: the.listed, link: null, refused: null, why: null }),
+  makeInvitation: async () => {
+    the.invites++;
+    return { invitations: the.unlisted ? [] : the.listed, link: the.nextLink || MADE_LINK, refused: null, why: null, ...(the.unlisted ? { unlisted: true } : {}) };
+  },
   withdrawInvitation: async () => { the.invites++; return { invitations: [], link: null, refused: null, why: null }; },
   setAdmin: async () => { the.invites++; return { admins: ['dana', 'wellington'], refused: null, why: null }; },
   rebindOffer: async () => [{ id: 'google', name: 'Google' }],
@@ -558,6 +568,58 @@ describe('SPHEREAPP-10', () => {
     // the list takes none
     expect(await call('sphere-invitations', own())).toMatchObject({ refused: null });
     expect(the.invites).toBe(before + 2);
+  });
+});
+
+describe('SPHEREAPP-21', () => {
+  const ID = '9187a87a-3126-424c-8861-8811bba1a5ec';
+  it('sphereapp_21_invite_member_reuses_a_link_main_made_that_the_sphere_lists_open_else_makes_one', async () => {
+    while (takeInput()) { /* other tests' */ }
+    the.listed = [];
+    const before = the.invites;
+    // still a click each, reused or made
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ why: 'Making a link takes your own click.', link: null });
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK });
+    expect(the.invites).toBe(before + 1);
+    // the Sphere lists it open, two used: the same link, nothing made
+    the.listed = [{ id: ID, uses: 2, maxUses: 5, expiresAt: '2026-12-07T00:00:00Z' }];
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK });
+    expect(the.invites).toBe(before + 1);
+    // used up, withdrawn or out of date (the Sphere no longer lists it): a new one
+    the.listed = [];
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK });
+    expect(the.invites).toBe(before + 2);
+    // Settings' Make a link always makes one
+    the.listed = [{ id: ID, uses: 0, maxUses: 5, expiresAt: '2026-12-07T00:00:00Z' }];
+    input();
+    await call('sphere-invite', own());
+    expect(the.invites).toBe(before + 3);
+  });
+
+  it('sphereapp_21_a_make_whose_list_after_it_couldnt_be_read_forgets_no_link_still_open', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const OTHER = MADE_LINK.replace(ID, '0b6f1c2e-5d4a-4e3b-9a8c-7d6e5f4a3b2c');
+    const open = [{ id: ID, uses: 1, maxUses: 5, expiresAt: '2026-12-07T00:00:00Z' }];
+    // Invite member's link, made and listed open
+    the.listed = [];
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK });
+    // Settings' Make a link makes another, but the Sphere's list after it can't be read
+    the.listed = open;
+    the.nextLink = OTHER;
+    the.unlisted = true;
+    input();
+    expect(await call('sphere-invite', own())).toMatchObject({ link: OTHER, unlisted: true });
+    the.unlisted = false;
+    the.nextLink = '';
+    // Invite member again: the first link is still open, so it comes back and nothing is made
+    const before = the.invites;
+    input();
+    expect(await call('sphere-invite', own(), true)).toMatchObject({ link: MADE_LINK });
+    expect(the.invites).toBe(before);
   });
 });
 

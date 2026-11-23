@@ -3,21 +3,47 @@ import { createPortal } from 'react-dom';
 import { Check, Copy, X } from 'lucide-react';
 import { useScrollThumb } from './useScrollThumb';
 import EmailField, { useEmails } from './EmailField';
+import type { InvitesAnswer } from '../../shared/sphere';
 
 // Inviting people into an Obysphere by email (EmailField), then Send
 // invitation. Under it, the other way in: a link to pass on yourself, copied
 // with the icon in its field, which can be held to the org's own email
 // addresses. Send invitation, at the foot; sent, it says so and closes.
 // Esc, the x or a click outside closes it.
+// On the live Obysphere (docs/contracts/sphere-app.md, SPHEREAPP-20 to 24), for its admins: the
+// link is the one main handed back on Invite member's click (`made`, SPHEREAPP-10's gating), copied
+// as it is; no Email field nor Send invitation (the Obysphere sends no mail, and a mail draft would
+// carry the link's secret past the secret scan), nor domain toggle (this app can't sign a joiner in
+// for one). Copy is how the link is shared. The mock's stays as it was.
 const code = () => Math.random().toString(36).slice(2, 8);
+const UNREACHED = 'Oby couldn’t reach your Obysphere.';
 
-export default function InviteModal({ sphere, domain, onSent, onClose }: {
+// Invite member shows on the live Obysphere only to its admins: the Sphere's word, as the rules'
+// read brings it (as Invite teammates reads it); nothing asked while `on` is false
+export function useLiveAdmin(on: boolean, sphere: string) {
+  const [admin, setAdmin] = useState(false);
+  useEffect(() => {
+    setAdmin(false);
+    if (!on || !window.app?.spherePolicy) return;
+    let gone = false;
+    void window.app.spherePolicy().then((p) => { if (!gone) setAdmin(!!p?.admin); }, () => {});
+    return () => { gone = true; };
+  }, [on, sphere]);
+  return on && admin;
+}
+
+export default function InviteModal({ sphere, domain, made, onSent, onClose }: {
   sphere: { name: string; url: string };
   domain?: string;  // the org's email domain: the link can be held to it
+  made?: Promise<InvitesAnswer | null>;  // the live Obysphere's: the link main is making on Invite member's click
   onSent: (emails: string[]) => void;  // who was asked in
   onClose: () => void;
 }) {
-  const [link] = useState(() => `${sphere.url}/join/${code()}`);
+  const live = !!made;
+  const [mock] = useState(() => `${sphere.url}/join/${code()}`);
+  // the live link, or why there's none (in words), or neither while main makes it
+  const [real, setReal] = useState<{ link: string | null; why: string | null }>({ link: null, why: null });
+  const link = live ? real.link : mock;
   const [copied, setCopied] = useState(false);
   const [onlyDomain, setOnlyDomain] = useState(true);
   const list = useEmails();
@@ -26,6 +52,16 @@ export default function InviteModal({ sphere, domain, onSent, onClose }: {
   // the app's scroll thumb, for the card (in a short window)
   const card = useScrollThumb<HTMLFormElement>();
   const ready = list.all.length > 0 && list.valid && !sent;
+  useEffect(() => {
+    if (!made) return;
+    let gone = false;
+    const take = (a: InvitesAnswer | null) => {
+      if (gone) return;
+      setReal(!a ? { link: null, why: UNREACHED } : a.link && !a.refused ? { link: a.link, why: null } : { link: null, why: a.why ?? UNREACHED });
+    };
+    made.then(take, () => take(null));
+    return () => { gone = true; };
+  }, [made]);
 
   // the latest onClose (the panel behind re-renders often, as Oby's words stream in)
   const close = useRef(onClose);
@@ -49,7 +85,7 @@ export default function InviteModal({ sphere, domain, onSent, onClose }: {
   }, [sent]);
 
   const send = () => {
-    if (!ready) return;
+    if (!ready || live) return;
     list.take(list.draft);
     onSent(list.all);
     setSent(true);
@@ -62,33 +98,40 @@ export default function InviteModal({ sphere, domain, onSent, onClose }: {
           <h2 id="invite-title">Invite to {sphere.name}’s Obysphere</h2>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
         </header>
-        <label className="modal-label" htmlFor="invite-emails">Email</label>
-        <EmailField list={list} id="invite-emails" inputRef={input} onEnterEmpty={send} />
+        {!live && <>
+          <label className="modal-label" htmlFor="invite-emails">Email</label>
+          <EmailField list={list} id="invite-emails" inputRef={input} onEnterEmpty={send} />
+        </>}
 
         <span className="modal-label invite-link-label">Invite link</span>
         <div className="invite-link">
-          <span className="invite-url">{link}</span>
+          {real.why
+            ? <span className="invite-url is-problem" role="alert">{real.why}</span>
+            : <span className="invite-url">{link ?? 'Making a link…'}</span>}
           <button
             type="button"
             className="icon-button"
             aria-label={copied ? 'Copied' : 'Copy link'}
-            onClick={() => { navigator.clipboard?.writeText(`https://${link}`).then(() => setCopied(true), () => {}); }}
+            disabled={!link}
+            onClick={() => { navigator.clipboard?.writeText(live ? link! : `https://${link}`).then(() => setCopied(true), () => {}); }}
           >
             {copied ? <Check size={16} strokeWidth={1.8} /> : <Copy size={16} strokeWidth={1.6} />}
           </button>
         </div>
         {/* held to the org's addresses, where it has one */}
-        {domain && (
+        {domain && !live && (
           <div className="invite-option">
             <span>Only allow @{domain} emails to join</span>
             <button type="button" role="switch" aria-checked={onlyDomain} aria-label={`Only allow @${domain} emails to join with the link`} className="set-switch" onClick={() => setOnlyDomain(!onlyDomain)} />
           </div>
         )}
-        <div className="modal-actions">
-          <button type="submit" className="modal-primary" disabled={!ready && !sent}>
-            {sent ? <><Check size={14} strokeWidth={2} />Sent</> : 'Send invitation'}
-          </button>
-        </div>
+        {!live && (
+          <div className="modal-actions">
+            <button type="submit" className="modal-primary" disabled={!ready && !sent}>
+              {sent ? <><Check size={14} strokeWidth={2} />Sent</> : 'Send invitation'}
+            </button>
+          </div>
+        )}
       </form>
       <div {...card.thumbProps} />
     </div>,
