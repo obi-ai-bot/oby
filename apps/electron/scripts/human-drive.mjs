@@ -102,7 +102,10 @@ function driver(page, record, state) {
         const wc = webContents.getAllWebContents().find((w) => w.getURL().endsWith('/preview.html'));
         const win = BrowserWindow.getAllWindows().find((w) => w.contentView.children.some((c) => c.webContents === wc));
         const view = win?.contentView.children.find((c) => c.webContents === wc);
-        return view?.getVisible() ? (await wc.capturePage()).toPNG().toString('base64') : null;
+        if (!view?.getVisible()) return null;
+        // bounded, as inHost and inFrame are: a capture that hangs gives no picture, never a stalled run
+        const png = await Promise.race([wc.capturePage().then((i) => i.toPNG().toString('base64')), new Promise((done) => setTimeout(() => done(null), 5_000))]);
+        return png;
       }).catch(() => null);
       if (preview) {
         const also = file.replace(/\.png$/, '-preview.png');

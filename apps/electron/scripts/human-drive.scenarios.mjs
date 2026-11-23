@@ -755,9 +755,21 @@ export default [
       t.step('clicked the globe');
       const panel = t.page.locator('aside[data-browser="browser"]');
       await panel.waitFor({ timeout: 10_000 });
-      // its tab, by its page's title or address (the owner's other agents may have tabs too)
-      const tab = panel.locator('.br-tab', { hasText: /Example Domain|example\.com/i }).first();
-      await until(t, () => tab.isVisible(), 60_000).catch(async () => { throw new Error(`no tab for ${PAGE} in the panel: ${(await panel.locator('.br-tabs').innerText()).replace(/\n+/g, ' · ')}`); });
+      // its tab: one showing the page, and the one this task owns, as Full width's line names its task
+      // (BROWSERAPP-5: "<its task> · <what its agent is at>"), never another of the owner's agents' tabs
+      const candidates = panel.locator('.br-tab', { hasText: /Example Domain|example\.com/i });
+      await until(t, () => candidates.first().isVisible(), 60_000).catch(async () => { throw new Error(`no tab for ${PAGE} in the panel: ${(await panel.locator('.br-tabs').innerText()).replace(/\n+/g, ' · ')}`); });
+      let tab = null;
+      for (let i = 0; i < (await candidates.count()) && !tab; i++) {
+        await candidates.nth(i).click();
+        await t.click('Full width');
+        const peek = await until(t, async () => (await t.page.locator('.peek-text b').innerText()).trim(), 10_000).catch(() => '');
+        if (i === 0) await t.shot('full-width');
+        t.note(`tab ${i + 1}, “${(await candidates.nth(i).innerText()).trim()}”, is the task “${peek}”'s`);
+        await t.click('Back beside the conversation');
+        if (peek === task.title) tab = candidates.nth(i);
+      }
+      if (!tab) throw new Error(`no tab of ${PAGE} is this task's (“${task.title}”)`);
       await tab.click();
       const address = panel.locator('.br-address');
       await until(t, async () => /example\.com/.test(await address.innerText()), 30_000).catch(async () => { throw new Error(`the address doesn't say example.com: “${await address.innerText()}”`); });
@@ -773,16 +785,23 @@ export default [
       await until(t, async () => (await strip.innerText()).includes('You have this tab.'), 20_000).catch(async () => { throw new Error(`Take control didn't hold the tab: the strip says “${(await strip.innerText()).replace(/\n+/g, ' · ')}”`); });
       // the keyboard moves once obid has answered the take (BROWSERAPP-40): waited for, not sampled once
       const onPage = await until(t, () => t.page.evaluate(() => document.activeElement?.tagName === 'WEBVIEW'), 5000).then(() => true, () => false);
-      t.note(`held: “${(await strip.innerText()).replace(/\n+/g, ' · ')}”; the page ringed: ${(await panel.locator('.br-view.is-held').count()) ? 'yes' : 'NO'}; the keyboard on the page within 5 s: ${onPage ? 'yes' : `NO (focus on ${await t.page.evaluate(() => document.activeElement?.tagName ?? 'nothing')})`}`);
+      const ringed = (await panel.locator('.br-view.is-held').count()) > 0;
+      const focus = onPage ? 'WEBVIEW' : await t.page.evaluate(() => document.activeElement?.tagName ?? 'nothing');
+      t.note(`held: “${(await strip.innerText()).replace(/\n+/g, ' · ')}”; the page ringed: ${ringed ? 'yes' : 'NO'}; the keyboard on the page within 5 s: ${onPage ? 'yes' : `NO (focus on ${focus})`}`);
       await t.shot('held');
+      if (!ringed) throw new Error('held, the page isn’t ringed (BROWSERAPP-9, 41)');
+      if (!onPage) throw new Error(`held, the keyboard didn't move to the page within 5 s: focus on ${focus} (BROWSERAPP-40)`);
       // Give back: the strip is the agent's again, the keyboard back in the message box (BROWSERAPP-41)
       await strip.getByRole('button', { name: 'Give back' }).click();
       t.step('clicked “Give back”');
       await until(t, async () => { const now = await strip.innerText(); return !now.includes('You have this tab.') && now.includes(who); }, 20_000)
         .catch(async () => { throw new Error(`Give back didn't give the tab back: the strip says “${(await strip.innerText().catch(() => 'nothing')).replace(/\n+/g, ' · ')}”`); });
       const inBox = await until(t, () => t.page.evaluate(() => !!document.activeElement?.closest('[contenteditable="true"]')), 5000).then(() => true, () => false);
-      t.note(`given back: “${(await strip.innerText()).replace(/\n+/g, ' · ')}”; the keyboard in the message box within 5 s: ${inBox ? 'yes' : `NO (focus on ${await t.page.evaluate(() => document.activeElement?.tagName ?? 'nothing')})`}`);
+      const back = inBox ? 'the message box' : await t.page.evaluate(() => document.activeElement?.tagName ?? 'nothing');
+      t.note(`given back: “${(await strip.innerText()).replace(/\n+/g, ' · ')}”; the keyboard in the message box within 5 s: ${inBox ? 'yes' : `NO (focus on ${back})`}`);
       await t.shot('given-back');
+      if (!inBox) throw new Error(`given back, the keyboard didn't come back to the message box within 5 s: focus on ${back} (BROWSERAPP-41)`);
+      if (await panel.locator('.br-view.is-held').count()) throw new Error('given back, the page is still ringed (BROWSERAPP-9)');
       // its end, and its answer in the conversation (not the panel's tab title)
       const end = Date.now() + 10 * MIN;
       while (!ended(t.job(id)) && Date.now() < end) { await answerBar(t); await sleep(2000); }
@@ -826,6 +845,7 @@ export default [
       t.note(`its picture: ${picture ? 'shown' : 'NOT shown in 30 s (the board’s blocks)'}`);
       await t.shot('card');
       const problems = [];
+      if (!picture) problems.push('its card shows no picture of its page within 30 s (ARTIFACTSAPP-18)');
       if (!/Oby artifact · Page · v\d+/.test(await card.innerText())) problems.push(`its card doesn't say “Oby artifact · Page · v<n>”: “${(await card.innerText()).replace(/\n+/g, ' · ')}”`);
       // the pane: an artifact made in the conversation on view may open by itself (ARTIFACTSAPP-6)
       const strip = t.page.locator('[data-artifact-strip]');
@@ -912,21 +932,25 @@ export default [
       await t.shot('menu');
       await del.click();
       t.step('clicked “Delete task”');
-      // gone (TASKS-3), at once, with no reload: no card's menu, no row in the side panel
-      const gone = async () => !(await more.count()) && !(await row.count());
-      // or obid's Confirm (TASKS-11): commits that aren't published, or work that isn't committed
-      const confirm = t.page.locator('.msg-ask, .decision-bar, article.ask-card').filter({ visible: true }).filter({ hasText: /lost|isn.t committed|aren.t published|Delete/i })
-        .getByRole('button', { name: 'Confirm', exact: true }).first();
+      // gone (TASKS-3), at once, with no reload: its card (data-task) out of its conversation, no menu
+      // for it, no row in the side panel
+      const chat = openChat(t), card = chat.locator(`[data-task="${id}"]`);
+      const gone = async () => !(await card.count()) && !(await more.count()) && !(await row.count());
+      // or obid's Confirm (TASKS-11) for this run's task only: in the open conversation (never Home's
+      // cards under it, which may be the owner's), on its card or in the drawer naming its title
+      if (!(t.state.titles ?? []).includes(title)) throw new Error(`“${title}” isn't this run's task`);
+      const asks = chat.locator('.msg-ask, .decision-bar').filter({ visible: true }).filter({ hasText: title }).filter({ hasText: /lost|isn.t committed|aren.t published|Delete/i }).or(card);
+      const confirm = asks.getByRole('button', { name: 'Confirm', exact: true }).first();
       const outcome = await until(t, async () => ((await gone()) ? 'gone' : (await confirm.count()) ? 'confirm' : null), 10_000).catch(() => null);
       await t.shot('after-delete');
       if (outcome === 'confirm') {
-        t.note(`obid asked first: ${(await t.page.locator('.msg-ask, .decision-bar, article.ask-card').filter({ has: confirm }).first().innerText()).replace(/\n+/g, ' · ')}`);
+        t.note(`obid asked first: ${(await asks.filter({ has: confirm }).first().innerText()).replace(/\n+/g, ' · ')}`);
         await sleep(700); // (a click in a card's first half second answers nothing: AskBlock)
         await confirm.click();
         t.step('clicked “Confirm”');
         const after = await until(t, gone, 10_000).then(() => true, () => false);
         await t.shot('confirmed');
-        if (!after) throw new Error(`after Delete then Confirm the task is still shown: ${await row.count()} side-panel rows, its card's menu ${(await more.count()) ? 'still there' : 'gone'}`);
+        if (!after) throw new Error(`after Delete then Confirm the task is still shown: its card ${(await card.count()) ? 'still there' : 'gone'}, ${await row.count()} side-panel rows, its card's menu ${(await more.count()) ? 'still there' : 'gone'}`);
       } else if (outcome !== 'gone') {
         // still there: what's new on screen (obid's words, a 409's), and whether its menu still offers Delete
         const added = (await t.shown()).split('\n').map((l) => l.trim()).filter((l) => l && !before.has(l));
@@ -938,7 +962,7 @@ export default [
           await t.page.keyboard.press('Escape');
         }
         const kept = jobOrNone(t, id) ? `obid still keeps it (${jobOrNone(t, id).status})` : 'obid deleted its job file';
-        throw new Error(`10 s after Delete task it is still shown: ${await row.count()} side-panel rows; its card's menu ${offers}; ${kept}; new on screen: ${added.length ? added.slice(0, 6).map((l) => `“${l.slice(0, 120)}”`).join(', ') : 'nothing (no words from obid)'}`);
+        throw new Error(`10 s after Delete task it is still shown: its card ${(await card.count()) ? 'still in the conversation' : 'gone'}; ${await row.count()} side-panel rows; its card's menu ${offers}; ${kept}; new on screen: ${added.length ? added.slice(0, 6).map((l) => `“${l.slice(0, 120)}”`).join(', ') : 'nothing (no words from obid)'}`);
       }
       // Home and the side panel, as the owner comes back to them: no card, no row
       await home(t);
