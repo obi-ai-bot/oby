@@ -651,8 +651,8 @@ export default [
       // with it, as no one can click a hidden window's sheet
       const scratch = mkdtempSync(join(homedir(), '.oby-drive-folder-'));
       const folder = basename(scratch);
-      await t.app.evaluate(({ dialog }, to) => { globalThis.__obyDriveOpen ??= dialog.showOpenDialog; dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [to] }); }, scratch);
       try {
+        await t.app.evaluate(({ dialog }, to) => { globalThis.__obyDriveOpen ??= dialog.showOpenDialog; dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [to] }); }, scratch);
         const add = t.page.getByRole('button', { name: 'New project' });
         if (!(await add.count())) throw new Error('no New project in the side panel (projects off?)');
         await add.first().click();
