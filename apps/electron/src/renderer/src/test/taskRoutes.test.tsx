@@ -13,12 +13,14 @@ const seen = vi.hoisted(() => ({
   waiting: {} as Record<string, (id: string) => void>,
   stack: [] as ((id: string) => void)[],
   open: null as null | ((place: { job?: string; conversation?: string }) => void),
+  chat: {} as Record<string, (id: string) => void>,
 }));
 vi.mock('../ChatView', async () => {
   const { useEffect } = await import('react');
   // gone once it leaves, as the real one says after its way out
-  const ChatView = ({ id, kind, leaving, flash, onGone }: { id: string; kind: string; leaving: boolean; flash?: { task: string }; onGone: () => void }) => {
+  const ChatView = ({ id, kind, leaving, flash, onGone, onOpenTask }: { id: string; kind: string; leaving: boolean; flash?: { task: string }; onGone: () => void; onOpenTask?: (id: string) => void }) => {
     useEffect(() => { if (leaving) onGone(); }, [leaving, onGone]);
+    if (onOpenTask) seen.chat[id] = onOpenTask;
     return leaving ? null : <div data-chat={id} data-kind={kind} data-at={flash?.task} />;
   };
   return { default: ChatView, clock: () => '' };
@@ -69,10 +71,23 @@ describe('every way to a task opens its conversation at its card', () => {
     expect(host.querySelector('[data-page]')).toBeNull();
   });
 
-  it('LIVETASK-28: a nested row in the side panel opens its conversation at its card', async () => {
+  // the conversation views open, bottom to top
+  const trail = () => [...host.querySelectorAll<HTMLElement>('[data-chat]')].map((v) => `${v.dataset.kind}:${v.dataset.chat}`);
+
+  it('LIVETASK-22: a nested row in the side panel opens the task\'s own thread, over the conversation that started it', async () => {
     await act(async () => seen.sidebar.onOpenAgent('r1'));
     await settle();
-    expect(top()?.dataset).toMatchObject({ chat: 'c-route', at: 'r1' });
+    expect(trail()).toEqual(['oby:c-route', 'task:r1']);
+    expect(host.querySelector('[data-page]')).toBeNull();
+  });
+
+  it('LIVETASK-22: a task\'s card clicked in its conversation opens its own thread over it, so back returns to the conversation', async () => {
+    await act(async () => seen.sidebar.onOpenTalk('c-route'));
+    await settle();
+    expect(trail()).toEqual(['oby:c-route']);
+    await act(async () => seen.chat['c-route']('r1'));
+    await settle();
+    expect(trail()).toEqual(['oby:c-route', 'task:r1']);
   });
 
   it('LIVETASK-28: Waiting for you\'s Open opens the conversation at the card, over the list so back returns to it', async () => {

@@ -75,6 +75,35 @@ describe('a task in its conversation', () => {
     expect(scrolled).toHaveBeenCalledTimes(1);
   });
 
+  it('LIVETASK-22: a click on a task\'s card opens its own thread; its ⋯ only opens its menu', async () => {
+    const { default: ChatView } = await import('../ChatView');
+    const opened = vi.fn();
+    await act(async () => root.render(<ChatView kind="oby" id="c1" leaving={false} onOpenTask={opened} onBack={() => {}} onGone={() => {}} />));
+    await click(button('More for Fix the login test'));
+    expect(opened).not.toHaveBeenCalled();
+    await click(host.querySelector('[data-task="j1"] .msg-task-title'));
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(opened).toHaveBeenCalledWith('j1');
+  });
+
+  it('LIVETASK-22: a task\'s own thread shows all it did, not only its last lines', async () => {
+    const { SESSIONS } = await import('../session');
+    const kept = SESSIONS.j1;
+    SESSIONS.j1 = ['a', 'b', 'c', 'd', 'e', 'f'].map((f) => ({ kind: 'tool' as const, tool: 'Read', verb: 'Read', target: `${f}.ts`, state: 'done' as const, seconds: 1 }));
+    try {
+      const { default: ChatView } = await import('../ChatView');
+      const tools = () => host.querySelectorAll('[data-task="j1"] .lt-log .ss-tool').length;
+      // in the conversation, its last 4 and Show 2 more
+      await show();
+      expect(tools()).toBe(4);
+      expect(button('Show 2 more')).toBeDefined();
+      // its own thread: every line, nothing folded
+      await act(async () => root.render(<ChatView kind="task" id="j1" leaving={false} onBack={() => {}} onGone={() => {}} />));
+      expect(tools()).toBe(6);
+      expect(button('Show 2 more')).toBeUndefined();
+    } finally { SESSIONS.j1 = kept; }
+  });
+
   it('LIVETASK-30: the card\'s Tell Claude Code puts its chip on the box, which tells that job alone, then talks to Oby again', async () => {
     const tasks = await import('../tasks'), chats = await import('../chats');
     await show();

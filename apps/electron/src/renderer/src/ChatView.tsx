@@ -68,11 +68,13 @@ type Entry = Message;
 // (peers.ts): each Oby's words under its owner's picture and name. Whatever is
 // happening now comes last: an Oby at work, or the agent's line. It lies over
 // what's open; back (in the title bar, or Esc) returns to it. A task's card is
-// its progress only; what it did shows under it, in the conversation (TaskLog),
-// and every way to a task opens here at its card (flash, LIVETASK-28). The
+// its progress only; what it did shows under it, in the conversation (TaskLog);
+// a click on it, or its nested row, opens the task's own thread over this one,
+// all it did there as it happens (onOpenTask, LIVETASK-22), and every other way
+// to a task opens here at its card (flash, LIVETASK-28). The
 // message box at the foot talks to Oby, or to one card's agent once its menu's
 // "Tell Claude Code…" has put that task's chip on it (replyTarget, LIVETASK-17).
-export default function ChatView({ id, kind = 'task', leaving, covered = false, flash, onFlashed, onBack, onGone, onOpenMember }: {
+export default function ChatView({ id, kind = 'task', leaving, covered = false, flash, onFlashed, onBack, onGone, onOpenMember, onOpenTask }: {
   id: string;
   kind?: 'task' | 'oby' | 'peer';
   leaving: boolean;
@@ -82,6 +84,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   onBack: () => void;
   onGone: () => void;
   onOpenMember?: (owner: string) => void;  // a question's card: that person's thread
+  onOpenTask?: (id: string) => void;  // a task's card clicked: its own thread, over this conversation (LIVETASK-22)
 }) {
   const tasks = useTasks();
   const chats = useChats();
@@ -332,7 +335,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   // what this message started
                   ...('jobs' in m ? m.jobs ?? [] : []).map((jid) => {
                     const t = tasks.find((x) => x.id === jid);
-                    return t ? <TaskEntry key={jid} task={t} lit={lit === jid} said={yours} onMenu={(at) => setMenu({ id: jid, at })} /> : null;
+                    // in a task's own thread, all it did; in a conversation, its card opens that thread
+                    return t ? <TaskEntry key={jid} task={t} lit={lit === jid} said={yours} whole={kind === 'task'} onOpen={kind === 'oby' && onOpenTask ? () => onOpenTask(jid) : undefined} onMenu={(at) => setMenu({ id: jid, at })} /> : null;
                   }),
                 ].filter(Boolean);
                 // the artifacts it tells of, last (ARTIFACTSAPP-16): with the words just before them, they
@@ -528,17 +532,18 @@ const Face = ({ live = false, talk, color }: { live?: boolean; talk?: number; co
 // A task started in the conversation, as a card under Oby's message (Sangam's screen 03): its progress
 // only (LIVETASK-29): its agent, its title, how it stands, who has it and where ("Running · Claude Code ·
 // oby"), its stages as a bar, and its status mark at the right (as on its nested row in the side panel).
-// What it did shows under it, never in it (TaskLog). A click opens nothing: every way to a task opens
-// this conversation at this card (LIVETASK-28). Its ⋯, or a right-click, opens its menu (onMenu): tell
+// What it did shows under it, never in it (TaskLog). A click on it (onOpen; its ⋯ and links are their
+// own) opens the task's own thread (LIVETASK-22). Its ⋯, or a right-click, opens its menu (onMenu): tell
 // its agent something, Stop. Waiting on the owner, it stays its head: "Needs you", the stage it waits on
 // orange; the decision waits over the message box (DecisionBar, LIVETASK-9, LIVETASK-25). A status this
 // build doesn't know says no word and shows StatusDot's neutral mark (docs/contracts/wire.md, WIRE-3).
-export function ThreadTask({ task, onMenu }: { task: Task; onMenu?: (at: DOMRect) => void }) {
+export function ThreadTask({ task, onMenu, onOpen }: { task: Task; onMenu?: (at: DOMRect) => void; onOpen?: () => void }) {
   return (
     <div
-      className="msg-task"
+      className={`msg-task${onOpen ? ' is-link' : ''}`}
       role="group"
       aria-label={task.title}
+      onClick={onOpen && ((e) => { if (!(e.target as Element).closest('button, a')) onOpen(); })}
       onContextMenu={onMenu && ((e) => { e.preventDefault(); onMenu(new DOMRect(e.clientX, e.clientY, 0, 0)); })}
     >
       <TaskHead task={task} />
@@ -552,14 +557,15 @@ export function ThreadTask({ task, onMenu }: { task: Task; onMenu?: (at: DOMRect
 }
 
 // A task in the conversation: its card, its Changes (CHANGES-4), and what it did under it, outside the card (TaskLog); data-task is
-// where opening the conversation at the task scrolls to (LIVETASK-28)
-export function TaskEntry({ task, lit = false, said, onMenu }: { task: Task; lit?: boolean; said?: ReadonlySet<string>; onMenu?: (at: DOMRect) => void }) {
+// where opening the conversation at the task scrolls to (LIVETASK-28); whole: all it did, not only its
+// last lines (its own thread, LIVETASK-22); onOpen: its card clicked
+export function TaskEntry({ task, lit = false, said, whole, onOpen, onMenu }: { task: Task; lit?: boolean; said?: ReadonlySet<string>; whole?: boolean; onOpen?: () => void; onMenu?: (at: DOMRect) => void }) {
   return (
     <div className={`msg-task-work${task.status === 'running' || task.status === 'needs' ? ' is-live' : ''}${lit ? ' is-lit' : ''}`} data-task={task.id}>
-      <ThreadTask task={task} onMenu={onMenu} />
+      <ThreadTask task={task} onMenu={onMenu} onOpen={onOpen} />
       {/* what it changed, in the side panel beside the conversation (CHANGES-4) */}
       <ChangesPill task={task} />
-      <TaskLog task={task} said={said} />
+      <TaskLog task={task} said={said} whole={whole} />
     </div>
   );
 }

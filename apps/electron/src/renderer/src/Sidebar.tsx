@@ -83,7 +83,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   atHome: boolean;  // on Home's own page, nothing open over it
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
-  onOpenAgent?: (id: string) => void;  // a nested task: the conversation that started it, at its card (LIVETASK-28)
+  onOpenAgent?: (id: string) => void;  // a nested task: its own thread, over the conversation that started it (LIVETASK-22)
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
   onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
@@ -416,7 +416,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     const latest = chatFirst ? latestTask(tasks, c.id, chatIdOf) : undefined;
     const mark = chatFirst ? rowMark({ needs: !!c.needs || needing.has(c.id), working: working.has(c.id), unread: !!c.unread, latest }) : null;
     const nested = kids.length + arts.length > 0;
-    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || kids.some((k) => k.status === 'needs')));
+    // one of its tasks' own thread showing: its row lit, so its rows show
+    const lit = kids.some((k) => k.id === active);
+    const shown = nested && (kidsShown[c.id] ?? (activeTalk === c.id || lit || kids.some((k) => k.status === 'needs')));
     return (
     <div key={c.id} className={`convo-nest${nested ? ' has-kids' : ''}`}>
     {nested && (
@@ -474,13 +476,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <EllipsisVertical size={14} strokeWidth={1.6} />
       </button>
     </div>
-    {/* its tasks, each a mark of its progress: its agent, its title, what it's on, its state (screen 03); a click opens this conversation at its card */}
+    {/* its tasks, each a session of its own: its agent, its title, what it's on, its state (screen 03); a click opens its own thread, its row lit */}
     {shown && (
       <div className="convo-kids" role="group" aria-label={`${c.title}’s tasks`}>
         {kids.map((k) => (
           <button
             key={k.id}
-            className="convo-kid"
+            className={`convo-kid${active === k.id ? ' is-active' : ''}`}
+            aria-current={active === k.id || undefined}
             title={kidTitle(k)}
             onClick={() => { markSeen(k.id); onOpenAgent?.(k.id); }}
             onContextMenu={(e) => { e.preventDefault(); setTaskMenu({ id: k.id, at: new DOMRect(e.clientX, e.clientY, 0, 0), atPointer: true }); }}

@@ -18,8 +18,9 @@ export const SHOWN = 4;
 // words (what changed, the test run, the commit, the result) with the lines before them folded. Long
 // words fold behind Show more, as T3 Code's do. The card above it stays progress only.
 // said: the owner's words in the thread around it; words told it that are there already show once,
-// there, as the owner's message (#2787)
-export default function TaskLog({ task, said }: { task: Task; said?: ReadonlySet<string> }) {
+// there, as the owner's message (#2787). whole: every line shown, nothing folded (a task's own thread,
+// LIVETASK-22)
+export default function TaskLog({ task, said, whole = false }: { task: Task; said?: ReadonlySet<string>; whole?: boolean }) {
   const entries = useEntries(task.id);
   const [open, setOpen] = useState(false);
   const atWork = task.status === 'running' || task.status === 'needs';
@@ -35,7 +36,7 @@ export default function TaskLog({ task, said }: { task: Task; said?: ReadonlySet
   const last = atWork ? -1 : lines.map((e) => e.kind).lastIndexOf('said');
   const result = last >= 0 ? (lines[last] as Extract<Entry, { kind: 'said' }>) : undefined;
   const steps = result ? lines.filter((_, i) => i !== last) : lines;
-  const extra = Math.max(0, steps.length - (atWork ? SHOWN : 0));
+  const extra = whole ? 0 : Math.max(0, steps.length - (atWork ? SHOWN : 0));
   const shown = open || !extra ? steps : steps.slice(extra);
   // obid's own line while it works: the stage past its agent's work, a wait of obid's, or a step its
   // session doesn't hold ("Trying again in 5 minutes (2 of 3)", RECOVERY-5)

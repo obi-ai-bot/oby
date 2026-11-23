@@ -2,8 +2,9 @@
 // obid in a scratch home, with stand-in agents and a local fixture repository. Nothing reaches a real
 // agent, account or GitHub. What only this proves: a task shows as a row nested under its conversation;
 // its card is progress only and what it did shows under it, in the conversation; a tool line there fetches
-// its detail and stays that call's as the to-dos change; a nested row and an alert's click open the
-// conversation at its card, lit; the card's ⋯ tells its agent through the message box (its chip) and its
+// its detail and stays that call's as the to-dos change; a nested row and a click on its card open its own
+// thread over the conversation, its row lit (LIVETASK-22); an alert's click opens the conversation at its
+// card, lit; the card's ⋯ tells its agent through the message box (its chip) and its
 // follow-up lands in the conversation; Stop from the card's menu stops it; a deleted job's card and row go;
 // a real permission waits in the drawer over the message box with the card lean, Later only taking it off
 // that drawer until the conversation is opened at the task again, and its answer leaves one line under
@@ -145,17 +146,32 @@ async function main() {
   await shot('2-line-open');
   ok('LIVETASK-15 an opened line stays that call’s as the to-dos change');
 
-  // LIVETASK-28: from elsewhere (a new conversation), its nested row opens the conversation at its card, lit
+  // LIVETASK-22: from elsewhere (a new conversation), its nested row opens the task's own thread over the
+  // conversation that started it, its row lit and all it did shown; back returns to the conversation, where
+  // a click on its card opens that thread again
   const talk = await page.locator('.convo-row.is-active .connector-name').innerText();
+  const own = page.locator(`.chat-layer:not(.is-leaving):not(.is-covered) [data-task="${job.id}"]`);
+  const ownBox = page.locator('.chat-layer:not(.is-leaving):not(.is-covered) [aria-label="Tell the agent about The list"]');
+  const back = async () => {
+    await page.locator('.convo-row', { has: page.locator('.connector-name', { hasText: talk }) }).first().click();
+    await until('back in its conversation', async () => (await page.locator('.convo-row.is-active .connector-name').count()) && (await page.locator('.convo-row.is-active .connector-name').innerText()) === talk, 10_000);
+    await sleep(300);
+  };
   await page.getByRole('button', { name: 'New conversation' }).first().click();
   await until('the conversation left', async () => (await page.locator('.convo-row.is-active').count()) === 0);
   if (!(await kid('The list').count())) await page.getByRole('button', { name: `Show ${talk}’s agents` }).click();
   await kid('The list').click();
-  await until('its conversation at its card, lit', () => page.locator(`.chat-layer:not(.is-leaving) .msg-task-work.is-lit[data-task="${job.id}"]`).count(), 10_000);
-  assert.equal(await page.locator('.convo-row.is-active .connector-name').innerText(), talk, 'its conversation, not a page of its own');
-  assert.equal(await page.locator('.agent-layer, .task-scroll').count(), 0, 'no full-screen task view');
-  await shot('3-row-opens-at-card');
-  ok('LIVETASK-28 a nested row opens the conversation at its card, lit a moment');
+  await until('its own thread, its box telling its agent', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
+  await until('its row lit', () => page.locator('.convo-kid.is-active', { hasText: 'The list' }).count(), 10_000);
+  assert.equal(await own.locator('.lt-log-more', { hasText: /^Show \d+ more$/ }).count(), 0, 'all it did, nothing folded');
+  await shot('3-row-opens-own-thread');
+  ok('LIVETASK-22 a nested row opens the task’s own thread, its row lit, all it did shown');
+  await back();
+  await card('The list').locator('.msg-task-title').click();
+  await until('its own thread again', async () => (await own.count()) === 1 && (await ownBox.count()) === 1, 10_000);
+  await shot('3b-card-opens-own-thread');
+  ok('LIVETASK-22 a click on its card in the conversation opens its own thread');
+  await back();
 
   // LIVETASK-4, -31: ended, the card says so; under it, its last words with its lines folded
   await until('it ends', async () => ended(await s.call('GET', `/v1/jobs/${job.id}`)), 60_000);

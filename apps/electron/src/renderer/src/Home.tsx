@@ -217,6 +217,10 @@ export default function Home() {
   // over what's open (back returns to it), or a fresh start
   const [flash, setFlash] = useState<{ task: string; n: number } | null>(null);
   const openAt = (id: string, how: (step: Step) => void = start) => { how(conversationOf(id)); setFlash({ task: id, n: ++flashes }); };
+  // its card in a conversation, or its nested row: the task's own thread, all it did as it happens and
+  // its box telling its agent, over the conversation that started it (back returns there), its row lit
+  // (LIVETASK-22)
+  const openOwn = (id: string) => { const c = chatOfTask(id); start(...(c ? [{ kind: 'talk', id: c.id } as Step] : []), { kind: 'thread', id }); };
   // chat first, a task opens in its conversation; Home's earlier design (?home) keeps its page
   const openTask = (id: string) => (chatFirst ? openAt(id, push) : push({ kind: 'task', id }));
   const goToConversation = (id: string) => push(conversationOf(id));
@@ -414,7 +418,8 @@ export default function Home() {
   const label = (l: Layer) => {
     if (l.kind === 'group') return TYPES.find((t) => t.id === l.id)?.label ?? '';
     if (l.kind === 'task') { const t = tasks.find((k) => k.id === l.id); return t ? `${t.who ? `${t.who} ` : ''}${t.title}` : ''; }
-    if (l.kind === 'thread') { const t = tasks.find((k) => k.id === l.id); return t ? convoTitle(t.job) : ''; }
+    // a task's own thread: its title when a conversation started it (that conversation is the step before)
+    if (l.kind === 'thread') { const t = tasks.find((k) => k.id === l.id); return t ? (chatOfTask(t.id) ? t.title : convoTitle(t.job)) : ''; }
     if (l.kind === 'talk') return chats.find((c) => c.id === l.id)?.title ?? '';
     if (l.kind === 'archive') return 'Archived';
     if (l.kind === 'waiting') return 'Waiting for you';
@@ -446,7 +451,7 @@ export default function Home() {
         onHome={home}
         onOpenGroup={(id) => start({ kind: 'group', id, tab: firstTab(id) })}
         onOpenTask={(id) => (chatFirst ? openAt(id) : start({ kind: 'task', id }))}
-        onOpenAgent={(id) => openAt(id)}
+        onOpenAgent={openOwn}
         onOpenChat={(id) => start({ kind: 'task', id }, conversationOf(id))}
         onOpenOby={(name) => start({ kind: 'oby', id: name })}
         onOpenMember={(owner) => start({ kind: 'member', id: owner })}
@@ -657,7 +662,7 @@ export default function Home() {
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         // opened at a task: the conversation on top lights its card
         const at = flash && i === live.length - 1 && kind !== 'peer' ? flash : undefined;
-        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
+        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} flash={at} onFlashed={() => setFlash(null)} onBack={back} onGone={onGone} onOpenMember={(owner) => push({ kind: 'member', id: owner })} onOpenTask={(id) => push({ kind: 'thread', id })} />;
       })}
       {/* chat first: nothing over a conversation but its own: what it and its tasks ask waits in the
           drawer over its box (ChatView, DecisionBar), what other conversations ask on their rows and
