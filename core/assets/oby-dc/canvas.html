@@ -152,7 +152,8 @@ html,body{margin:0;height:100%;overflow:hidden;background:#0b0b0b;color:#ececec;
     if (m.oby === 'open-outside' && typeof m.url === 'string') {
       // Only a web address outside this version is asked for: never a script (javascript:), which
       // would run here, out of the board's sandbox, nor data:, blob: or a page of this origin's. The
-      // app stops the navigation and asks the person first; the canvas never leaves.
+      // app refuses the navigation (asking the person first is the artifact tab's, P7); the canvas
+      // never leaves.
       var out = null;
       try { out = new URL(m.url, location.href); } catch (_) {}
       if (out && (out.protocol === 'http:' || out.protocol === 'https:') && out.origin !== location.origin) {

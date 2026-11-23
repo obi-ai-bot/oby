@@ -235,7 +235,12 @@ export function previewing(trusted: Trusted, window: () => BrowserWindow | null)
     // the views taken away meanwhile (stop): nothing more is made, shown or served
     const started = lifetime;
     const gone = () => wanted !== key || lifetime !== started;
-    designView ??= await makeView(win, false, true);
+    if (!designView) {
+      const made = await makeView(win, false, true);
+      // made as the window closed: taken away again, never kept for the next window
+      if (gone()) { drop(made); return { shown: true }; }
+      designView = made;
+    }
     if (gone()) return { shown: true };
     const { view, relay } = designView;
     view.setBounds(bounds);
